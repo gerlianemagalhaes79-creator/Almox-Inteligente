@@ -26,6 +26,7 @@ db.exec(`
     item_id INTEGER,
     type TEXT CHECK(type IN ('entry', 'exit')),
     quantity INTEGER,
+    sector TEXT,
     date DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(item_id) REFERENCES items(id)
   );
@@ -55,6 +56,11 @@ async function startServer() {
     try {
       db.prepare("ALTER TABLE items ADD COLUMN batch_number TEXT").run();
     } catch (e) {}
+    
+    // Migration for transactions
+    try {
+      db.prepare("ALTER TABLE transactions ADD COLUMN sector TEXT").run();
+    } catch (e) {}
 
     const items = db.prepare("SELECT * FROM items").all();
     res.json(items);
@@ -77,14 +83,15 @@ async function startServer() {
   });
 
   app.post("/api/transactions", (req, res) => {
-    const { item_id, type, quantity } = req.body;
+    const { item_id, type, quantity, sector } = req.body;
     
     const dbTransaction = db.transaction(() => {
       // Record transaction
-      db.prepare("INSERT INTO transactions (item_id, type, quantity) VALUES (?, ?, ?)").run(
+      db.prepare("INSERT INTO transactions (item_id, type, quantity, sector) VALUES (?, ?, ?, ?)").run(
         item_id,
         type,
-        quantity
+        quantity,
+        sector
       );
 
       // Update item quantity
@@ -93,6 +100,37 @@ async function startServer() {
         adjustment,
         item_id
       );
+    });
+
+    try {
+      dbTransaction();
+      res.json({ success: true });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/transactions/bulk", (req, res) => {
+    const { transactions, sector } = req.body;
+    
+    const dbTransaction = db.transaction(() => {
+      for (const t of transactions) {
+        const { item_id, type, quantity } = t;
+        // Record transaction
+        db.prepare("INSERT INTO transactions (item_id, type, quantity, sector) VALUES (?, ?, ?, ?)").run(
+          item_id,
+          type,
+          quantity,
+          sector
+        );
+
+        // Update item quantity
+        const adjustment = type === 'entry' ? quantity : -quantity;
+        db.prepare("UPDATE items SET quantity = quantity + ? WHERE id = ?").run(
+          adjustment,
+          item_id
+        );
+      }
     });
 
     try {

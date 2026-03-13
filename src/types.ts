@@ -18,5 +18,6 @@ export interface Transaction {
   item_name: string;
   type: 'entry' | 'exit';
   quantity: number;
+  sector?: string;
   date: string;
 }

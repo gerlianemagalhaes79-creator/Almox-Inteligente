@@ -25,6 +25,12 @@ interface ItemGroup {
   batches: Item[];
 }
 
+const SECTORS = [
+  'Imagem', 'Ilha', 'Pé Diabético', 'Direção', 'Setor Pessoal', 
+  'CER', 'Setor de Terapias', 'SSVV', 'Recepção', 
+  'Higienização', 'Manutenção', 'Almoxarifado'
+];
+
 export default function App() {
   const [items, setItems] = useState<Item[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -46,6 +52,10 @@ export default function App() {
     batch_number: ''
   });
   const [transactionQty, setTransactionQty] = useState(1);
+  const [selectedSector, setSelectedSector] = useState(SECTORS[0]);
+  const [selectedItemId, setSelectedItemId] = useState<number | ''>('');
+  const [selectedItemName, setSelectedItemName] = useState<string>('');
+  const [basket, setBasket] = useState<{item_id: number, quantity: number}[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
 
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
@@ -53,6 +63,19 @@ export default function App() {
   useEffect(() => {
     fetchData();
   }, []);
+
+  useEffect(() => {
+    if (showTransactionModal.show && showTransactionModal.type === 'exit') {
+      if (showTransactionModal.item) {
+        setBasket([{ item_id: showTransactionModal.item.id, quantity: 1 }]);
+      } else {
+        setBasket([]);
+      }
+      setTransactionQty(1);
+      setSelectedItemId('');
+      setSelectedItemName('');
+    }
+  }, [showTransactionModal.show, showTransactionModal.type, showTransactionModal.item]);
 
   const toggleExpand = (name: string) => {
     const newSet = new Set(expandedItems);
@@ -156,19 +179,41 @@ export default function App() {
 
   const handleTransaction = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!showTransactionModal.item) return;
     
-    await fetch('/api/transactions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        item_id: showTransactionModal.item.id,
-        type: showTransactionModal.type,
-        quantity: transactionQty
-      })
-    });
+    if (showTransactionModal.type === 'exit') {
+      // For exits, use the basket
+      if (basket.length === 0) return;
+      
+      await fetch('/api/transactions/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          transactions: basket.map(b => ({ ...b, type: 'exit' })),
+          sector: selectedSector
+        })
+      });
+    } else {
+      // For entries, keep single item for now as per current UI flow
+      const item = showTransactionModal.item || items.find(i => i.id === selectedItemId);
+      if (!item) return;
+      
+      await fetch('/api/transactions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          item_id: item.id,
+          type: 'entry',
+          quantity: transactionQty,
+          sector: null
+        })
+      });
+    }
+
     setShowTransactionModal({ show: false, type: 'entry' });
     setTransactionQty(1);
+    setSelectedSector(SECTORS[0]);
+    setSelectedItemId('');
+    setBasket([]);
     fetchData();
   };
 
@@ -280,7 +325,13 @@ export default function App() {
               onClick={() => setShowAddModal(true)}
               className="bg-[#1C1917] text-white px-5 py-2 rounded-xl font-medium flex items-center gap-2 hover:bg-[#292524] transition-all shadow-sm"
             >
-              <Plus size={20} /> Novo Item
+              <Plus size={20} /> Entrada
+            </button>
+            <button 
+              onClick={() => setShowTransactionModal({ show: true, type: 'exit' })}
+              className="bg-rose-600 text-white px-5 py-2 rounded-xl font-medium flex items-center gap-2 hover:bg-rose-700 transition-all shadow-sm"
+            >
+              <ArrowUpRight size={20} /> Saída
             </button>
           </div>
         </header>
@@ -395,7 +446,9 @@ export default function App() {
                       </div>
                       <div>
                         <p className="font-bold text-sm">{t.item_name}</p>
-                        <p className="text-xs text-[#78716C]">{t.type === 'entry' ? 'Entrada' : 'Saída'} de {t.quantity} unidades</p>
+                        <p className="text-xs text-[#78716C]">
+                          {t.type === 'entry' ? 'Entrada' : `Saída para ${t.sector || '---'}`} de {t.quantity} unidades
+                        </p>
                         <p className="text-[10px] text-[#A8A29E] mt-1">{new Date(t.date).toLocaleString('pt-BR')}</p>
                       </div>
                     </div>
@@ -580,6 +633,7 @@ export default function App() {
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Data</th>
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Item</th>
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Tipo</th>
+                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Setor</th>
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">Quantidade</th>
                   </tr>
                 </thead>
@@ -595,6 +649,9 @@ export default function App() {
                           {t.type === 'entry' ? <ArrowDownLeft size={14} /> : <ArrowUpRight size={14} />}
                           {t.type === 'entry' ? 'Entrada' : 'Saída'}
                         </span>
+                      </td>
+                      <td className="px-6 py-5 text-sm font-medium text-[#78716C]">
+                        {t.sector || '---'}
                       </td>
                       <td className="px-6 py-5 text-right font-bold text-lg">
                         {t.quantity}
@@ -761,41 +818,182 @@ export default function App() {
           <motion.div 
             initial={{ scale: 0.9, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
-            className="bg-white w-full max-w-md rounded-3xl p-8 shadow-2xl"
+            className="bg-white w-full max-w-lg rounded-3xl p-8 shadow-2xl max-h-[90vh] overflow-y-auto"
           >
-            <h3 className="text-2xl font-bold mb-2">
+            <h3 className="text-2xl font-bold mb-6">
               {showTransactionModal.type === 'entry' ? 'Registrar Entrada' : 'Registrar Saída'}
             </h3>
-            <div className="mb-6">
-              <p className="text-[#78716C] font-medium">{showTransactionModal.item?.name}</p>
-              <p className="text-xs font-bold text-emerald-600 mt-1">
-                Disponível em estoque: {showTransactionModal.item?.quantity} unidades
-              </p>
-            </div>
             
             <form onSubmit={handleTransaction} className="space-y-6">
-              <div>
-                <label className="block text-sm font-bold text-[#57534E] mb-2 text-center">Quantidade</label>
-                <div className="flex items-center justify-center gap-6">
-                  <button 
-                    type="button"
-                    onClick={() => setTransactionQty(Math.max(1, transactionQty - 1))}
-                    className="w-12 h-12 rounded-2xl bg-[#F5F5F4] flex items-center justify-center text-2xl font-bold hover:bg-[#E7E5E4]"
-                  >
-                    -
-                  </button>
-                  <span className="text-4xl font-bold w-16 text-center">{transactionQty}</span>
-                  <button 
-                    type="button"
-                    onClick={() => setTransactionQty(transactionQty + 1)}
-                    className="w-12 h-12 rounded-2xl bg-[#F5F5F4] flex items-center justify-center text-2xl font-bold hover:bg-[#E7E5E4]"
-                  >
-                    +
-                  </button>
+              {showTransactionModal.type === 'entry' ? (
+                <>
+                  {showTransactionModal.item ? (
+                    <div className="mb-6">
+                      <p className="text-[#78716C] font-medium">{showTransactionModal.item.name}</p>
+                      <p className="text-xs font-bold text-emerald-600 mt-1">
+                        Disponível em estoque: {showTransactionModal.item.quantity} unidades
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="mb-6">
+                      <label className="block text-sm font-bold text-[#57534E] mb-2">Selecionar Item</label>
+                      <select 
+                        required
+                        className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10"
+                        value={selectedItemId}
+                        onChange={e => setSelectedItemId(Number(e.target.value))}
+                      >
+                        <option value="">Selecione um item...</option>
+                        {items.map(item => (
+                          <option key={item.id} value={item.id}>
+                            {item.name} (Lote: {item.batch_number || 'N/A'}) - {item.quantity} un.
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  <div>
+                    <label className="block text-sm font-bold text-[#57534E] mb-2 text-center">Quantidade</label>
+                    <div className="flex items-center justify-center gap-6">
+                      <button 
+                        type="button"
+                        onClick={() => setTransactionQty(Math.max(1, transactionQty - 1))}
+                        className="w-12 h-12 rounded-2xl bg-[#F5F5F4] flex items-center justify-center text-2xl font-bold hover:bg-[#E7E5E4]"
+                      >
+                        -
+                      </button>
+                      <span className="text-4xl font-bold w-16 text-center">{transactionQty}</span>
+                      <button 
+                        type="button"
+                        onClick={() => setTransactionQty(transactionQty + 1)}
+                        className="w-12 h-12 rounded-2xl bg-[#F5F5F4] flex items-center justify-center text-2xl font-bold hover:bg-[#E7E5E4]"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="space-y-6">
+                  <div>
+                    <label className="block text-sm font-bold text-[#57534E] mb-2">Setor de Destino</label>
+                    <select 
+                      required
+                      className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10"
+                      value={selectedSector}
+                      onChange={e => setSelectedSector(e.target.value)}
+                    >
+                      {SECTORS.map(sector => (
+                        <option key={sector} value={sector}>{sector}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-4">
+                    <label className="block text-sm font-bold text-[#57534E]">Itens para Saída</label>
+                    {basket.map((b, index) => {
+                      const item = items.find(i => i.id === b.item_id);
+                      return (
+                        <div key={index} className="flex items-center gap-4 bg-[#F5F5F4] p-4 rounded-2xl">
+                          <div className="flex-1">
+                            <p className="font-bold text-sm">{item?.name || 'Item não encontrado'}</p>
+                            <p className="text-[10px] text-[#78716C]">Lote: {item?.batch_number || 'N/A'} | Estoque: {item?.quantity || 0}</p>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <button 
+                              type="button"
+                              onClick={() => {
+                                const newBasket = [...basket];
+                                newBasket[index].quantity = Math.max(1, newBasket[index].quantity - 1);
+                                setBasket(newBasket);
+                              }}
+                              className="w-8 h-8 rounded-lg bg-white flex items-center justify-center font-bold hover:bg-gray-100"
+                            >
+                              -
+                            </button>
+                            <span className="font-bold w-6 text-center">{b.quantity}</span>
+                            <button 
+                              type="button"
+                              onClick={() => {
+                                const newBasket = [...basket];
+                                newBasket[index].quantity = Math.min(item?.quantity || 999, newBasket[index].quantity + 1);
+                                setBasket(newBasket);
+                              }}
+                              className="w-8 h-8 rounded-lg bg-white flex items-center justify-center font-bold hover:bg-gray-100"
+                            >
+                              +
+                            </button>
+                            <button 
+                              type="button"
+                              onClick={() => setBasket(basket.filter((_, i) => i !== index))}
+                              className="text-rose-500 hover:text-rose-700 ml-2"
+                            >
+                              <X size={18} />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    <div className="space-y-4">
+                      <div className="flex gap-2">
+                        <div className="flex-1">
+                          <label className="block text-[10px] font-bold text-[#A8A29E] uppercase mb-1 ml-1">1. Escolha o Item</label>
+                          <select 
+                            className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl text-sm focus:ring-2 focus:ring-[#1C1917]/10"
+                            value={selectedItemName}
+                            onChange={e => {
+                              setSelectedItemName(e.target.value);
+                              setSelectedItemId('');
+                            }}
+                          >
+                            <option value="">Selecione um item...</option>
+                            {(Array.from(new Set(items.filter(i => i.quantity > 0).map(i => i.name))) as string[])
+                              .sort((a, b) => a.localeCompare(b))
+                              .map(name => (
+                                <option key={name} value={name}>{name}</option>
+                              ))
+                            }
+                          </select>
+                        </div>
+
+                        {selectedItemName && (
+                          <div className="flex-1">
+                            <label className="block text-[10px] font-bold text-[#A8A29E] uppercase mb-1 ml-1">2. Escolha o Lote</label>
+                            <select 
+                              className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl text-sm focus:ring-2 focus:ring-[#1C1917]/10"
+                              value={selectedItemId}
+                              onChange={e => {
+                                const id = Number(e.target.value);
+                                if (!id) return;
+                                if (basket.some(b => b.item_id === id)) {
+                                  alert('Este lote já está na lista de saída.');
+                                  return;
+                                }
+                                setBasket([...basket, { item_id: id, quantity: 1 }]);
+                                setSelectedItemId('');
+                                setSelectedItemName('');
+                              }}
+                            >
+                              <option value="">Selecione o lote...</option>
+                              {items
+                                .filter(i => i.name === selectedItemName && i.quantity > 0 && !basket.some(b => b.item_id === i.id))
+                                .map(item => (
+                                  <option key={item.id} value={item.id}>
+                                    Lote: {item.batch_number || 'S/N'} ({item.quantity} un.) {item.expiry_date ? `- Venc: ${new Date(item.expiry_date).toLocaleDateString('pt-BR')}` : ''}
+                                  </option>
+                                ))
+                              }
+                            </select>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
                 </div>
-              </div>
+              )}
               
-              <div className="flex gap-3">
+              <div className="flex gap-3 pt-4">
                 <button 
                   type="button"
                   onClick={() => setShowTransactionModal({ show: false, type: 'entry' })}
@@ -805,9 +1003,10 @@ export default function App() {
                 </button>
                 <button 
                   type="submit"
-                  className={`flex-1 px-4 py-3 text-white rounded-xl font-bold transition-all ${showTransactionModal.type === 'entry' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-rose-600 hover:bg-rose-700'}`}
+                  disabled={showTransactionModal.type === 'exit' && basket.length === 0}
+                  className={`flex-1 px-4 py-3 text-white rounded-xl font-bold transition-all disabled:opacity-50 ${showTransactionModal.type === 'entry' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-rose-600 hover:bg-rose-700'}`}
                 >
-                  Confirmar
+                  Confirmar {showTransactionModal.type === 'exit' && basket.length > 0 && `(${basket.length})`}
                 </button>
               </div>
             </form>
