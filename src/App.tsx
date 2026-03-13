@@ -102,6 +102,10 @@ export default function App() {
     initial_quantity: 1,
     batch_number: ''
   });
+  const [categories, setCategories] = useState<string[]>(['Médico Hospitalar', 'Alimentício', 'Expediente', 'Higiene', 'Radiológico']);
+  const [showNewCategoryInput, setShowNewCategoryInput] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  
   const [transactionQty, setTransactionQty] = useState(1);
   const [selectedSector, setSelectedSector] = useState(SECTORS[0]);
   const [selectedItemId, setSelectedItemId] = useState<string>('');
@@ -144,6 +148,10 @@ export default function App() {
     const unsubscribeItems = onSnapshot(qItems, (snapshot) => {
       const itemsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Item));
       setItems(itemsData);
+      
+      // Update categories list from existing items
+      const existingCategories = Array.from(new Set(itemsData.map(i => i.category).filter(Boolean))) as string[];
+      setCategories(prev => Array.from(new Set([...prev, ...existingCategories])));
     });
 
     const qTrans = query(collection(db, 'transactions'), orderBy('date', 'desc'));
@@ -362,6 +370,13 @@ export default function App() {
       sectorData[t.sector!] = (sectorData[t.sector!] || 0) + t.quantity;
     });
 
+    // Group by supplier for value chart
+    const supplierData: Record<string, number> = {};
+    items.forEach(item => {
+      const sup = item.supplier || 'Sem Fornecedor';
+      supplierData[sup] = (supplierData[sup] || 0) + (item.quantity * item.unit_price);
+    });
+
     const totalValue = items.reduce((sum, item) => sum + (item.quantity * item.unit_price), 0);
 
     return {
@@ -370,6 +385,7 @@ export default function App() {
       daily: Object.values(dailyData).sort((a, b) => a.date.localeCompare(b.date)),
       categories: Object.entries(categoryData).map(([name, value]) => ({ name, value })),
       sectors: Object.entries(sectorData).map(([name, value]) => ({ name, value })),
+      suppliers: Object.entries(supplierData).map(([name, value]) => ({ name, value })),
       totalValue
     };
   }, [transactions, items, reportRange]);
@@ -1017,7 +1033,7 @@ export default function App() {
                 </div>
 
                 {/* Exits by Sector */}
-                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
+                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
                   <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
                     <ArrowUpRight size={18} className="text-rose-600" /> Saídas por Setor
                   </h4>
@@ -1032,6 +1048,28 @@ export default function App() {
                           contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
                         />
                         <Bar dataKey="value" name="Quantidade" fill="#1C1917" radius={[0, 8, 8, 0]} barSize={20} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* Value by Supplier */}
+                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
+                  <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
+                    <DollarSign size={18} className="text-amber-600" /> Valor por Fornecedor
+                  </h4>
+                  <div className="h-[300px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={reportData.suppliers} layout="vertical">
+                        <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#F5F5F4" />
+                        <XAxis type="number" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
+                        <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1C1917', fontWeight: 'bold'}} width={100} />
+                        <Tooltip 
+                          cursor={{fill: '#FAFAF9'}}
+                          formatter={(value: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value)}
+                          contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                        />
+                        <Bar dataKey="value" name="Valor Total" fill="#f59e0b" radius={[0, 8, 8, 0]} barSize={20} />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
@@ -1117,17 +1155,60 @@ export default function App() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-bold text-[#57534E] mb-1">Tipo de Item</label>
-                  <select 
-                    className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10"
-                    value={newItem.category}
-                    onChange={e => setNewItem({...newItem, category: e.target.value})}
-                  >
-                    <option value="Médico Hospitalar">Médico Hospitalar</option>
-                    <option value="Alimentício">Alimentício</option>
-                    <option value="Expediente">Expediente</option>
-                    <option value="Higiene">Higiene</option>
-                    <option value="Radiológico">Radiológico</option>
-                  </select>
+                  <div className="flex gap-2">
+                    {showNewCategoryInput ? (
+                      <div className="flex-1 flex gap-2">
+                        <input 
+                          type="text"
+                          className="flex-1 px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10"
+                          placeholder="Nova categoria..."
+                          value={newCategoryName}
+                          onChange={e => setNewCategoryName(e.target.value)}
+                          autoFocus
+                        />
+                        <button 
+                          type="button"
+                          onClick={() => {
+                            if (newCategoryName.trim()) {
+                              setCategories(prev => Array.from(new Set([...prev, newCategoryName.trim()])));
+                              setNewItem({...newItem, category: newCategoryName.trim()});
+                              setNewCategoryName('');
+                              setShowNewCategoryInput(false);
+                            }
+                          }}
+                          className="bg-[#1C1917] text-white p-3 rounded-xl"
+                        >
+                          <Plus size={18} />
+                        </button>
+                        <button 
+                          type="button"
+                          onClick={() => setShowNewCategoryInput(false)}
+                          className="bg-gray-200 text-gray-600 p-3 rounded-xl"
+                        >
+                          <X size={18} />
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <select 
+                          className="flex-1 px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10"
+                          value={newItem.category}
+                          onChange={e => setNewItem({...newItem, category: e.target.value})}
+                        >
+                          {categories.map(cat => (
+                            <option key={cat} value={cat}>{cat}</option>
+                          ))}
+                        </select>
+                        <button 
+                          type="button"
+                          onClick={() => setShowNewCategoryInput(true)}
+                          className="bg-[#F5F5F4] text-[#1C1917] p-3 rounded-xl hover:bg-[#E7E5E4]"
+                        >
+                          <Plus size={18} />
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-[#57534E] mb-1">Fornecedor</label>
@@ -1212,7 +1293,7 @@ export default function App() {
                         required
                         className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10"
                         value={selectedItemId}
-                        onChange={e => setSelectedItemId(Number(e.target.value))}
+                        onChange={e => setSelectedItemId(e.target.value)}
                       >
                         <option value="">Selecione um item...</option>
                         {items.map(item => (
@@ -1335,7 +1416,7 @@ export default function App() {
                               className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl text-sm focus:ring-2 focus:ring-[#1C1917]/10"
                               value={selectedItemId}
                               onChange={e => {
-                                const id = Number(e.target.value);
+                                const id = e.target.value;
                                 if (!id) return;
                                 if (basket.some(b => b.item_id === id)) {
                                   alert('Este lote já está na lista de saída.');
@@ -1343,6 +1424,7 @@ export default function App() {
                                 }
                                 setBasket([...basket, { item_id: id, quantity: 1 }]);
                                 setSelectedItemId('');
+                                // @ts-ignore
                                 setSelectedItemName('');
                               }}
                             >
