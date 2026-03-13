@@ -116,7 +116,8 @@ export default function App() {
             body: JSON.stringify({
               item_id: existingItem.id,
               type: 'entry',
-              quantity: initial_qty
+              quantity: initial_qty,
+              sector: null
             })
           }),
           fetch(`/api/items/${existingItem.id}`, {
@@ -133,8 +134,13 @@ export default function App() {
           })
         ]);
 
-        if (!transRes.ok || !itemRes.ok) {
-          throw new Error('Erro ao atualizar item existente ou registrar transação');
+        if (!transRes.ok) {
+          const errorData = await transRes.json();
+          throw new Error(errorData.error || 'Erro ao registrar transação no item existente');
+        }
+        if (!itemRes.ok) {
+          const errorData = await itemRes.json();
+          throw new Error(errorData.error || 'Erro ao atualizar dados do item existente');
         }
       } else {
         // If new, create item first
@@ -167,12 +173,14 @@ export default function App() {
           body: JSON.stringify({
             item_id: data.id,
             type: 'entry',
-            quantity: initial_qty
+            quantity: initial_qty,
+            sector: null
           })
         });
 
         if (!transRes.ok) {
-          throw new Error('Erro ao registrar transação inicial');
+          const errorData = await transRes.json();
+          throw new Error(errorData.error || 'Erro ao registrar transação inicial');
         }
       }
 
@@ -189,50 +197,68 @@ export default function App() {
         batch_number: ''
       });
       fetchData();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Erro ao salvar item:', error);
-      alert('Ocorreu um erro ao salvar o item. Por favor, tente novamente.');
+      alert(`Erro ao salvar item: ${error.message}`);
     }
   };
 
   const handleTransaction = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (showTransactionModal.type === 'exit') {
-      // For exits, use the basket
-      if (basket.length === 0) return;
-      
-      await fetch('/api/transactions/bulk', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          transactions: basket.map(b => ({ ...b, type: 'exit' })),
-          sector: selectedSector
-        })
-      });
-    } else {
-      // For entries, keep single item for now as per current UI flow
-      const item = showTransactionModal.item || items.find(i => i.id === selectedItemId);
-      if (!item) return;
-      
-      await fetch('/api/transactions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          item_id: item.id,
-          type: 'entry',
-          quantity: transactionQty,
-          sector: null
-        })
-      });
-    }
+    try {
+      if (showTransactionModal.type === 'exit') {
+        // For exits, use the basket
+        if (basket.length === 0) return;
+        
+        const res = await fetch('/api/transactions/bulk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            transactions: basket.map(b => ({ ...b, type: 'exit' })),
+            sector: selectedSector
+          })
+        });
 
-    setShowTransactionModal({ show: false, type: 'entry' });
-    setTransactionQty(1);
-    setSelectedSector(SECTORS[0]);
-    setSelectedItemId('');
-    setBasket([]);
-    fetchData();
+        if (!res.ok) {
+          const errorData = await res.json();
+          throw new Error(errorData.error || 'Erro ao registrar saída em lote');
+        }
+      } else {
+        // For entries, keep single item for now as per current UI flow
+        const item = showTransactionModal.item || items.find(i => i.id === selectedItemId);
+        if (!item) {
+          alert('Por favor, selecione um item.');
+          return;
+        }
+        
+        const res = await fetch('/api/transactions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            item_id: item.id,
+            type: 'entry',
+            quantity: transactionQty,
+            sector: null
+          })
+        });
+
+        if (!res.ok) {
+          const errorData = await res.json();
+          throw new Error(errorData.error || 'Erro ao registrar entrada');
+        }
+      }
+
+      setShowTransactionModal({ show: false, type: 'entry' });
+      setTransactionQty(1);
+      setSelectedSector(SECTORS[0]);
+      setSelectedItemId('');
+      setBasket([]);
+      fetchData();
+    } catch (error: any) {
+      console.error('Erro na transação:', error);
+      alert(`Erro na movimentação: ${error.message}`);
+    }
   };
 
   const isNearExpiry = (dateStr: string | null) => {

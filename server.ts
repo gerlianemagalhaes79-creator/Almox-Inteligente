@@ -32,6 +32,26 @@ db.exec(`
   );
 `);
 
+// Migrations
+try {
+  db.prepare("ALTER TABLE items ADD COLUMN origin TEXT DEFAULT 'extra'").run();
+} catch (e) {}
+try {
+  db.prepare("ALTER TABLE items ADD COLUMN unit_price REAL DEFAULT 0").run();
+} catch (e) {}
+try {
+  db.prepare("ALTER TABLE items ADD COLUMN supplier TEXT").run();
+} catch (e) {}
+try {
+  db.prepare("ALTER TABLE items ADD COLUMN category TEXT").run();
+} catch (e) {}
+try {
+  db.prepare("ALTER TABLE items ADD COLUMN batch_number TEXT").run();
+} catch (e) {}
+try {
+  db.prepare("ALTER TABLE transactions ADD COLUMN sector TEXT").run();
+} catch (e) {}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -40,65 +60,61 @@ async function startServer() {
 
   // API Routes
   app.get("/api/items", (req, res) => {
-    // Migration: ensure columns exist
     try {
-      db.prepare("ALTER TABLE items ADD COLUMN origin TEXT DEFAULT 'extra'").run();
-    } catch (e) {}
-    try {
-      db.prepare("ALTER TABLE items ADD COLUMN unit_price REAL DEFAULT 0").run();
-    } catch (e) {}
-    try {
-      db.prepare("ALTER TABLE items ADD COLUMN supplier TEXT").run();
-    } catch (e) {}
-    try {
-      db.prepare("ALTER TABLE items ADD COLUMN category TEXT").run();
-    } catch (e) {}
-    try {
-      db.prepare("ALTER TABLE items ADD COLUMN batch_number TEXT").run();
-    } catch (e) {}
-    
-    // Migration for transactions
-    try {
-      db.prepare("ALTER TABLE transactions ADD COLUMN sector TEXT").run();
-    } catch (e) {}
-
-    const items = db.prepare("SELECT * FROM items").all();
-    res.json(items);
+      const items = db.prepare("SELECT * FROM items").all();
+      res.json(items);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
   });
 
   app.post("/api/items", (req, res) => {
-    const { name, description, min_quantity, expiry_date, origin, unit_price, supplier, category, batch_number } = req.body;
-    const info = db.prepare(
-      "INSERT INTO items (name, description, min_quantity, expiry_date, origin, unit_price, supplier, category, batch_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    ).run(name, description, min_quantity || 5, expiry_date, origin || 'extra', unit_price || 0, supplier, category, batch_number);
-    res.json({ id: Number(info.lastInsertRowid) });
+    try {
+      const { name, description, min_quantity, expiry_date, origin, unit_price, supplier, category, batch_number } = req.body;
+      if (!name) {
+        return res.status(400).json({ error: "Nome do item é obrigatório" });
+      }
+      const info = db.prepare(
+        "INSERT INTO items (name, description, min_quantity, expiry_date, origin, unit_price, supplier, category, batch_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      ).run(name, description, min_quantity ?? 5, expiry_date, origin ?? 'extra', unit_price ?? 0, supplier, category, batch_number);
+      res.json({ id: Number(info.lastInsertRowid) });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
   });
 
   app.put("/api/items/:id", (req, res) => {
-    const { name, description, min_quantity, expiry_date, origin, unit_price, supplier, category, batch_number } = req.body;
-    db.prepare(
-      "UPDATE items SET name = ?, description = ?, min_quantity = ?, expiry_date = ?, origin = ?, unit_price = ?, supplier = ?, category = ?, batch_number = ? WHERE id = ?"
-    ).run(name, description, min_quantity, expiry_date, origin, unit_price, supplier, category, batch_number, req.params.id);
-    res.json({ success: true });
+    try {
+      const { name, description, min_quantity, expiry_date, origin, unit_price, supplier, category, batch_number } = req.body;
+      db.prepare(
+        "UPDATE items SET name = ?, description = ?, min_quantity = ?, expiry_date = ?, origin = ?, unit_price = ?, supplier = ?, category = ?, batch_number = ? WHERE id = ?"
+      ).run(name, description, min_quantity, expiry_date, origin, unit_price, supplier, category, batch_number, req.params.id);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
   });
 
   app.post("/api/transactions", (req, res) => {
     const { item_id, type, quantity, sector } = req.body;
     
     const dbTransaction = db.transaction(() => {
+      const qty = Number(quantity);
+      const id = Number(item_id);
+
       // Record transaction
       db.prepare("INSERT INTO transactions (item_id, type, quantity, sector) VALUES (?, ?, ?, ?)").run(
-        item_id,
+        id,
         type,
-        quantity,
+        qty,
         sector
       );
 
       // Update item quantity
-      const adjustment = type === 'entry' ? quantity : -quantity;
+      const adjustment = type === 'entry' ? qty : -qty;
       db.prepare("UPDATE items SET quantity = quantity + ? WHERE id = ?").run(
         adjustment,
-        item_id
+        id
       );
     });
 
@@ -116,19 +132,22 @@ async function startServer() {
     const dbTransaction = db.transaction(() => {
       for (const t of transactions) {
         const { item_id, type, quantity } = t;
+        const qty = Number(quantity);
+        const id = Number(item_id);
+
         // Record transaction
         db.prepare("INSERT INTO transactions (item_id, type, quantity, sector) VALUES (?, ?, ?, ?)").run(
-          item_id,
+          id,
           type,
-          quantity,
+          qty,
           sector
         );
 
         // Update item quantity
-        const adjustment = type === 'entry' ? quantity : -quantity;
+        const adjustment = type === 'entry' ? qty : -qty;
         db.prepare("UPDATE items SET quantity = quantity + ? WHERE id = ?").run(
           adjustment,
-          item_id
+          id
         );
       }
     });
