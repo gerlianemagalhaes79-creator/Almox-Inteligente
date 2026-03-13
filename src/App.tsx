@@ -18,10 +18,12 @@ import {
   DollarSign,
   Filter,
   Download,
+  FileText,
   LogIn,
   LogOut
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import * as XLSX from 'xlsx';
 import { 
   collection, 
   onSnapshot, 
@@ -59,7 +61,8 @@ import {
   LineChart,
   Line,
   AreaChart,
-  Area
+  Area,
+  Legend
 } from 'recharts';
 import { format, subDays, isWithinInterval, startOfDay, endOfDay, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -78,6 +81,36 @@ const SECTORS = [
   'CER', 'Setor de Terapias', 'SSVV', 'Recepção', 
   'Higienização', 'Manutenção', 'Almoxarifado'
 ];
+
+const SECTOR_COLORS: Record<string, string> = {
+  'Imagem': '#3b82f6',
+  'Ilha': '#10b981',
+  'Pé Diabético': '#f59e0b',
+  'Direção': '#ef4444',
+  'Setor Pessoal': '#8b5cf6',
+  'CER': '#ec4899',
+  'Setor de Terapias': '#06b6d4',
+  'SSVV': '#f97316',
+  'Recepção': '#14b8a6',
+  'Higienização': '#6366f1',
+  'Manutenção': '#84cc16',
+  'Almoxarifado': '#1c1917',
+};
+
+const CATEGORY_COLORS: Record<string, string> = {
+  'Médico Hospitalar': '#ef4444',
+  'Alimentício': '#f59e0b',
+  'Expediente': '#3b82f6',
+  'Higiene': '#10b981',
+  'Radiológico': '#8b5cf6',
+  'Outros': '#78716c',
+};
+
+const getCategoryColor = (cat: string) => {
+  if (CATEGORY_COLORS[cat]) return CATEGORY_COLORS[cat];
+  const hash = cat.split('').reduce((acc, char) => char.charCodeAt(0) + ((acc << 5) - acc), 0);
+  return `hsl(${Math.abs(hash) % 360}, 70%, 50%)`;
+};
 
 export default function App() {
   const [items, setItems] = useState<Item[]>([]);
@@ -116,6 +149,7 @@ export default function App() {
     start: format(subDays(new Date(), 30), 'yyyy-MM-dd'),
     end: format(new Date(), 'yyyy-MM-dd')
   });
+  const [reportSectorFilter, setReportSectorFilter] = useState<string>('all');
 
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
 
@@ -336,13 +370,46 @@ export default function App() {
     }
   };
 
+  const handleExportExcel = () => {
+    try {
+      // Prepare data for Excel
+      const exportData = reportData.sectorItems.map(item => ({
+        'Item': item.name,
+        'Categoria': item.category,
+        'Fornecedor': item.supplier,
+        'Quantidade': item.quantity,
+        'Valor Total (BRL)': item.value
+      }));
+
+      // Create worksheet
+      const ws = XLSX.utils.json_to_sheet(exportData);
+      
+      // Create workbook
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Relatório de Saídas");
+
+      // Generate filename
+      const dateStr = format(new Date(), 'dd-MM-yyyy');
+      const sectorStr = reportSectorFilter === 'all' ? 'Todos_Setores' : reportSectorFilter.replace(/\s+/g, '_');
+      const fileName = `Relatorio_Estoque_${sectorStr}_${dateStr}.xlsx`;
+
+      // Save file
+      XLSX.writeFile(wb, fileName);
+    } catch (error) {
+      console.error('Erro ao exportar Excel:', error);
+      alert('Ocorreu um erro ao gerar o arquivo Excel.');
+    }
+  };
+
   const reportData = useMemo(() => {
     const start = startOfDay(parseISO(reportRange.start));
     const end = endOfDay(parseISO(reportRange.end));
 
     const filteredTrans = transactions.filter(t => {
       const d = new Date(t.date);
-      return d >= start && d <= end;
+      const inRange = d >= start && d <= end;
+      const matchesSector = reportSectorFilter === 'all' || t.sector === reportSectorFilter;
+      return inRange && matchesSector;
     });
 
     const entries = filteredTrans.filter(t => t.type === 'entry').reduce((sum, t) => sum + t.quantity, 0);
@@ -365,9 +432,33 @@ export default function App() {
     });
 
     // Group by sector for bar chart
-    const sectorData: Record<string, number> = {};
+    const sectorData: Record<string, { quantity: number, value: number }> = {};
     filteredTrans.filter(t => t.type === 'exit' && t.sector).forEach(t => {
-      sectorData[t.sector!] = (sectorData[t.sector!] || 0) + t.quantity;
+      const item = items.find(i => i.id === t.item_id);
+      const value = t.quantity * (item?.unit_price || 0);
+      
+      if (!sectorData[t.sector!]) sectorData[t.sector!] = { quantity: 0, value: 0 };
+      sectorData[t.sector!].quantity += t.quantity;
+      sectorData[t.sector!].value += value;
+    });
+
+    // Detailed items for the selected sector
+    const sectorItems: Record<string, { name: string, quantity: number, value: number, category: string, supplier: string }> = {};
+    filteredTrans.filter(t => t.type === 'exit').forEach(t => {
+      const item = items.find(i => i.id === t.item_id);
+      const value = t.quantity * (item?.unit_price || 0);
+      
+      if (!sectorItems[t.item_name]) {
+        sectorItems[t.item_name] = { 
+          name: t.item_name, 
+          quantity: 0, 
+          value: 0, 
+          category: item?.category || 'Outros',
+          supplier: item?.supplier || 'N/A'
+        };
+      }
+      sectorItems[t.item_name].quantity += t.quantity;
+      sectorItems[t.item_name].value += value;
     });
 
     // Group by supplier for value chart
@@ -384,11 +475,12 @@ export default function App() {
       exits,
       daily: Object.values(dailyData).sort((a, b) => a.date.localeCompare(b.date)),
       categories: Object.entries(categoryData).map(([name, value]) => ({ name, value })),
-      sectors: Object.entries(sectorData).map(([name, value]) => ({ name, value })),
+      sectors: Object.entries(sectorData).map(([name, data]) => ({ name, quantity: data.quantity, value: data.value })),
       suppliers: Object.entries(supplierData).map(([name, value]) => ({ name, value })),
+      sectorItems: Object.values(sectorItems).sort((a, b) => b.value - a.value),
       totalValue
     };
-  }, [transactions, items, reportRange]);
+  }, [transactions, items, reportRange, reportSectorFilter]);
 
   if (loading) {
     return (
@@ -558,6 +650,25 @@ export default function App() {
                       onChange={e => setReportRange({...reportRange, end: e.target.value})}
                     />
                   </div>
+                  <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border border-[#E7E5E4]">
+                    <Filter size={14} className="text-[#A8A29E]" />
+                    <select 
+                      className="text-xs font-bold focus:outline-none bg-transparent"
+                      value={reportSectorFilter}
+                      onChange={e => setReportSectorFilter(e.target.value)}
+                    >
+                      <option value="all">Todos os Setores</option>
+                      {SECTORS.map(s => (
+                        <option key={s} value={s}>{s}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <button 
+                    onClick={handleExportExcel}
+                    className="flex items-center gap-2 bg-emerald-600 text-white px-4 py-1.5 rounded-xl text-xs font-bold hover:bg-emerald-700 transition-all shadow-sm"
+                  >
+                    <Download size={14} /> Exportar Excel
+                  </button>
                 </div>
               )}
             </div>
@@ -1019,14 +1130,16 @@ export default function App() {
                           outerRadius={100}
                           paddingAngle={5}
                           dataKey="value"
+                          label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
                         >
                           {reportData.categories.map((entry, index) => (
-                            <Cell key={`cell-${index}`} fill={['#1C1917', '#78716C', '#A8A29E', '#E7E5E4', '#F5F5F4'][index % 5]} />
+                            <Cell key={`cell-${index}`} fill={getCategoryColor(entry.name)} />
                           ))}
                         </Pie>
                         <Tooltip 
                           contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
                         />
+                        <Legend verticalAlign="bottom" height={36}/>
                       </PieChart>
                     </ResponsiveContainer>
                   </div>
@@ -1035,7 +1148,7 @@ export default function App() {
                 {/* Exits by Sector */}
                 <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
                   <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
-                    <ArrowUpRight size={18} className="text-rose-600" /> Saídas por Setor
+                    <ArrowUpRight size={18} className="text-rose-600" /> Saídas por Setor (Quantidade)
                   </h4>
                   <div className="h-[300px] w-full">
                     <ResponsiveContainer width="100%" height="100%">
@@ -1047,7 +1160,12 @@ export default function App() {
                           cursor={{fill: '#FAFAF9'}}
                           contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
                         />
-                        <Bar dataKey="value" name="Quantidade" fill="#1C1917" radius={[0, 8, 8, 0]} barSize={20} />
+                        <Bar dataKey="quantity" name="Quantidade" radius={[0, 8, 8, 0]} barSize={20}>
+                          {reportData.sectors.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={SECTOR_COLORS[entry.name] || '#1C1917'} />
+                          ))}
+                        </Bar>
+                        <Legend />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
@@ -1070,8 +1188,64 @@ export default function App() {
                           contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
                         />
                         <Bar dataKey="value" name="Valor Total" fill="#f59e0b" radius={[0, 8, 8, 0]} barSize={20} />
+                        <Legend />
                       </BarChart>
                     </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* Detailed Sector Breakdown */}
+                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
+                  <div className="flex justify-between items-center mb-8">
+                    <h4 className="text-lg font-bold flex items-center gap-2">
+                      <History size={18} className="text-[#1C1917]" /> 
+                      Detalhamento: {reportSectorFilter === 'all' ? 'Todos os Setores' : reportSectorFilter}
+                    </h4>
+                    <div className="text-right">
+                      <p className="text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest">Valor Total de Saídas</p>
+                      <p className="text-xl font-black text-rose-600">
+                        {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.sectorItems.reduce((sum, i) => sum + i.value, 0))}
+                      </p>
+                    </div>
+                  </div>
+                  
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="border-b border-[#E7E5E4]">
+                          <th className="pb-4 font-bold text-xs text-[#78716C] uppercase tracking-wider">Item</th>
+                          <th className="pb-4 font-bold text-xs text-[#78716C] uppercase tracking-wider">Categoria</th>
+                          <th className="pb-4 font-bold text-xs text-[#78716C] uppercase tracking-wider">Fornecedor</th>
+                          <th className="pb-4 font-bold text-xs text-[#78716C] uppercase tracking-wider text-center">Quantidade</th>
+                          <th className="pb-4 font-bold text-xs text-[#78716C] uppercase tracking-wider text-right">Valor Total</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#F5F5F4]">
+                        {reportData.sectorItems.map((item, idx) => (
+                          <tr key={idx} className="hover:bg-[#FAFAF9] transition-all">
+                            <td className="py-4 font-bold text-sm">{item.name}</td>
+                            <td className="py-4">
+                              <span 
+                                className="text-[10px] font-bold px-2 py-1 rounded-lg text-white"
+                                style={{ backgroundColor: getCategoryColor(item.category) }}
+                              >
+                                {item.category}
+                              </span>
+                            </td>
+                            <td className="py-4 text-xs text-[#78716C] font-medium">{item.supplier}</td>
+                            <td className="py-4 text-center font-bold">{item.quantity}</td>
+                            <td className="py-4 text-right font-bold text-rose-600">
+                              {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.value)}
+                            </td>
+                          </tr>
+                        ))}
+                        {reportData.sectorItems.length === 0 && (
+                          <tr>
+                            <td colSpan={4} className="py-10 text-center text-[#A8A29E] italic">Nenhuma saída registrada para este filtro.</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               </div>
