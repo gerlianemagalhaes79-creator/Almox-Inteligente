@@ -84,6 +84,7 @@ export default function App() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loginLoading, setLoginLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'inventory' | 'history' | 'reports'>('dashboard');
   const [showAddModal, setShowAddModal] = useState(false);
   const [showTransactionModal, setShowTransactionModal] = useState<{show: boolean, type: 'entry' | 'exit', item?: Item}>({ show: false, type: 'entry' });
@@ -159,10 +160,20 @@ export default function App() {
 
   const handleLogin = async () => {
     const provider = new GoogleAuthProvider();
+    setLoginLoading(true);
     try {
       await signInWithPopup(auth, provider);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Login error:", error);
+      if (error.code === 'auth/unauthorized-domain') {
+        alert("Erro: Domínio não autorizado. Você precisa adicionar o domínio do Vercel nas configurações do Firebase (Authentication > Settings > Authorized Domains).");
+      } else if (error.code === 'auth/popup-blocked') {
+        alert("Erro: O popup de login foi bloqueado pelo seu navegador. Por favor, permita popups para este site.");
+      } else {
+        alert(`Erro ao entrar: ${error.message}`);
+      }
+    } finally {
+      setLoginLoading(false);
     }
   };
 
@@ -386,11 +397,17 @@ export default function App() {
           <p className="text-[#78716C] mb-10 leading-relaxed">Gerencie seu estoque com precisão cirúrgica e relatórios em tempo real.</p>
           <button 
             onClick={handleLogin}
-            className="w-full bg-[#1C1917] text-white py-4 rounded-2xl font-bold flex items-center justify-center gap-3 hover:bg-[#292524] transition-all shadow-xl hover:shadow-2xl active:scale-[0.98]"
+            disabled={loginLoading}
+            className="w-full bg-[#1C1917] text-white py-4 rounded-2xl font-bold flex items-center justify-center gap-3 hover:bg-[#292524] transition-all shadow-xl hover:shadow-2xl active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <LogIn size={20} /> Entrar com Google
+            {loginLoading ? (
+              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+            ) : (
+              <><LogIn size={20} /> Entrar com Google</>
+            )}
           </button>
           <p className="mt-8 text-[10px] text-[#A8A29E] uppercase tracking-widest font-bold">Acesso restrito a funcionários autorizados</p>
+          <p className="mt-2 text-[10px] text-[#A8A29E]">Certifique-se de que os popups estão permitidos no seu navegador.</p>
         </motion.div>
       </div>
     );
