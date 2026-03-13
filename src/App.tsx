@@ -32,6 +32,7 @@ import {
   onSnapshot, 
   addDoc, 
   updateDoc, 
+  setDoc,
   doc, 
   query, 
   orderBy, 
@@ -126,7 +127,7 @@ export default function App() {
   const [showTransactionModal, setShowTransactionModal] = useState<{show: boolean, type: 'entry' | 'exit', item?: Item}>({ show: false, type: 'entry' });
   const [showDetailModal, setShowDetailModal] = useState<{show: boolean, type: 'low_stock' | 'expiry', items: Item[]}>({ show: false, type: 'low_stock', items: [] });
   const [showDeleteModal, setShowDeleteModal] = useState<{show: boolean, transactionId?: string}>({ show: false });
-  const [deletionReason, setDeletionReason] = useState('Teste');
+  const [deletionReason, setDeletionReason] = useState('');
   const [showDeletedHistory, setShowDeletedHistory] = useState(false);
   
   // Form states
@@ -221,8 +222,22 @@ export default function App() {
   };
 
   useEffect(() => {
-    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+    const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
       setUser(user);
+      if (user) {
+        const userRef = doc(db, 'users', user.uid);
+        const role = user.email === 'gerlianemagalhaes79@gmail.com' ? 'admin' : 'user';
+        try {
+          await setDoc(userRef, {
+            email: user.email,
+            displayName: user.displayName,
+            role: role,
+            lastLogin: new Date().toISOString()
+          }, { merge: true });
+        } catch (e) {
+          console.error("Error updating user document:", e);
+        }
+      }
       setLoading(false);
     });
     return () => unsubscribeAuth();
@@ -279,17 +294,18 @@ export default function App() {
   const handleLogout = () => signOut(auth);
 
   const handleDeleteTransaction = async (id: string, reason: string) => {
+    if (!id) return;
     try {
       const transRef = doc(db, 'transactions', id);
       await updateDoc(transRef, {
         deletedAt: new Date().toISOString(),
-        deletionReason: reason
+        deletionReason: reason || 'Sem justificativa'
       });
       setShowDeleteModal({ show: false });
-      setDeletionReason('Teste');
+      setDeletionReason('');
     } catch (error) {
       console.error("Error deleting transaction:", error);
-      alert("Erro ao excluir movimentação.");
+      alert("Erro ao excluir movimentação. Verifique suas permissões.");
     }
   };
 
@@ -1205,7 +1221,10 @@ export default function App() {
                             </button>
                           ) : (
                             <button 
-                              onClick={() => setShowDeleteModal({ show: true, transactionId: t.id })}
+                              onClick={() => {
+                                setDeletionReason('');
+                                setShowDeleteModal({ show: true, transactionId: t.id });
+                              }}
                               className="p-2 text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
                               title="Excluir (Teste)"
                             >
