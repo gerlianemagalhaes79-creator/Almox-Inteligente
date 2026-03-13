@@ -96,85 +96,103 @@ export default function App() {
   const handleAddItem = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    const initial_qty = isNaN(newItem.initial_quantity) ? 0 : newItem.initial_quantity;
-    const min_qty = isNaN(newItem.min_quantity) ? 5 : newItem.min_quantity;
-    const price = isNaN(newItem.unit_price) ? 0 : newItem.unit_price;
+    try {
+      const initial_qty = isNaN(newItem.initial_quantity) ? 0 : newItem.initial_quantity;
+      const min_qty = isNaN(newItem.min_quantity) ? 5 : newItem.min_quantity;
+      const price = isNaN(newItem.unit_price) ? 0 : newItem.unit_price;
 
-    // Check if item already exists with the same name AND batch
-    const existingItem = items.find(i => 
-      i.name.toLowerCase() === newItem.name.toLowerCase() && 
-      (i.batch_number || '').toLowerCase() === (newItem.batch_number || '').toLowerCase()
-    );
+      // Check if item already exists with the same name AND batch
+      const existingItem = items.find(i => 
+        i.name.toLowerCase() === newItem.name.toLowerCase() && 
+        (i.batch_number || '').toLowerCase() === (newItem.batch_number || '').toLowerCase()
+      );
 
-    if (existingItem) {
-      // If exists, record an entry transaction AND update min_quantity if provided
-      await Promise.all([
-        fetch('/api/transactions', {
+      if (existingItem) {
+        // If exists, record an entry transaction AND update min_quantity if provided
+        const [transRes, itemRes] = await Promise.all([
+          fetch('/api/transactions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              item_id: existingItem.id,
+              type: 'entry',
+              quantity: initial_qty
+            })
+          }),
+          fetch(`/api/items/${existingItem.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              ...existingItem,
+              min_quantity: min_qty,
+              expiry_date: newItem.expiry_date || existingItem.expiry_date,
+              unit_price: price || existingItem.unit_price,
+              supplier: newItem.supplier || existingItem.supplier,
+              category: newItem.category || existingItem.category
+            })
+          })
+        ]);
+
+        if (!transRes.ok || !itemRes.ok) {
+          throw new Error('Erro ao atualizar item existente ou registrar transação');
+        }
+      } else {
+        // If new, create item first
+        const res = await fetch('/api/items', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            item_id: existingItem.id,
+            name: newItem.name,
+            min_quantity: min_qty,
+            expiry_date: newItem.expiry_date,
+            origin: newItem.origin,
+            unit_price: price,
+            supplier: newItem.supplier,
+            category: newItem.category,
+            batch_number: newItem.batch_number
+          })
+        });
+
+        if (!res.ok) {
+          const errorData = await res.json();
+          throw new Error(errorData.error || 'Erro ao criar novo item');
+        }
+
+        const data = await res.json();
+        
+        // Then record initial quantity transaction
+        const transRes = await fetch('/api/transactions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            item_id: data.id,
             type: 'entry',
             quantity: initial_qty
           })
-        }),
-        fetch(`/api/items/${existingItem.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ...existingItem,
-            min_quantity: min_qty,
-            // Also update other fields if they were changed in the form
-            expiry_date: newItem.expiry_date || existingItem.expiry_date,
-            unit_price: price || existingItem.unit_price,
-            supplier: newItem.supplier || existingItem.supplier,
-            category: newItem.category || existingItem.category
-          })
-        })
-      ]);
-    } else {
-      // If new, create item first
-      const res = await fetch('/api/items', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: newItem.name,
-          min_quantity: min_qty,
-          expiry_date: newItem.expiry_date,
-          origin: newItem.origin,
-          unit_price: price,
-          supplier: newItem.supplier,
-          category: newItem.category,
-          batch_number: newItem.batch_number
-        })
-      });
-      const data = await res.json();
-      
-      // Then record initial quantity transaction
-      await fetch('/api/transactions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          item_id: data.id,
-          type: 'entry',
-          quantity: initial_qty
-        })
-      });
-    }
+        });
 
-    setShowAddModal(false);
-    setNewItem({ 
-      name: '', 
-      min_quantity: 5, 
-      expiry_date: '', 
-      origin: 'extra', 
-      unit_price: 0,
-      supplier: '',
-      category: 'Expediente',
-      initial_quantity: 1,
-      batch_number: ''
-    });
-    fetchData();
+        if (!transRes.ok) {
+          throw new Error('Erro ao registrar transação inicial');
+        }
+      }
+
+      setShowAddModal(false);
+      setNewItem({ 
+        name: '', 
+        min_quantity: 5, 
+        expiry_date: '', 
+        origin: 'extra', 
+        unit_price: 0,
+        supplier: '',
+        category: 'Expediente',
+        initial_quantity: 1,
+        batch_number: ''
+      });
+      fetchData();
+    } catch (error) {
+      console.error('Erro ao salvar item:', error);
+      alert('Ocorreu um erro ao salvar o item. Por favor, tente novamente.');
+    }
   };
 
   const handleTransaction = async (e: React.FormEvent) => {

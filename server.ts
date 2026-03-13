@@ -71,7 +71,7 @@ async function startServer() {
     const info = db.prepare(
       "INSERT INTO items (name, description, min_quantity, expiry_date, origin, unit_price, supplier, category, batch_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
     ).run(name, description, min_quantity || 5, expiry_date, origin || 'extra', unit_price || 0, supplier, category, batch_number);
-    res.json({ id: info.lastInsertRowid });
+    res.json({ id: Number(info.lastInsertRowid) });
   });
 
   app.put("/api/items/:id", (req, res) => {
