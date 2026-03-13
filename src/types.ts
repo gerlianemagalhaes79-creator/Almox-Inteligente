@@ -1,5 +1,5 @@
 export interface Item {
-  id: number;
+  id: string;
   name: string;
   description: string;
   quantity: number;
@@ -13,8 +13,8 @@ export interface Item {
 }
 
 export interface Transaction {
-  id: number;
-  item_id: number;
+  id: string;
+  item_id: string;
   item_name: string;
   type: 'entry' | 'exit';
   quantity: number;

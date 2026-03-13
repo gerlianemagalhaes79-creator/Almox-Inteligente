@@ -1,0 +1,47 @@
+{
+  "entities": {
+    "Item": {
+      "title": "Item",
+      "description": "Inventory item batch",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Name of the item" },
+        "description": { "type": "string", "description": "Optional description" },
+        "quantity": { "type": "number", "description": "Current quantity in this batch" },
+        "min_quantity": { "type": "number", "description": "Minimum quantity for alerts" },
+        "expiry_date": { "type": "string", "format": "date", "description": "Expiry date" },
+        "origin": { "type": "string", "enum": ["contract", "extra"], "description": "Origin of the item" },
+        "unit_price": { "type": "number", "description": "Unit price" },
+        "supplier": { "type": "string", "description": "Supplier name" },
+        "category": { "type": "string", "description": "Category" },
+        "batch_number": { "type": "string", "description": "Batch number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "quantity", "min_quantity"]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "Inventory movement",
+      "type": "object",
+      "properties": {
+        "item_id": { "type": "string", "description": "ID of the item document" },
+        "item_name": { "type": "string", "description": "Name of the item at time of transaction" },
+        "type": { "type": "string", "enum": ["entry", "exit"], "description": "Type of movement" },
+        "quantity": { "type": "number", "description": "Quantity moved" },
+        "sector": { "type": "string", "description": "Destination sector for exits" },
+        "date": { "type": "string", "format": "date-time", "description": "Transaction date" }
+      },
+      "required": ["item_id", "type", "quantity", "date"]
+    }
+  },
+  "firestore": {
+    "/items": {
+      "schema": "Item",
+      "description": "Collection of inventory items"
+    },
+    "/transactions": {
+      "schema": "Transaction",
+      "description": "Collection of inventory transactions"
+    }
+  }
+}

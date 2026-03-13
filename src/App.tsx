@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Package, 
   ArrowUpRight, 
@@ -11,10 +11,58 @@ import {
   Search,
   Settings,
   ChevronRight,
-  X
+  X,
+  BarChart3,
+  TrendingUp,
+  TrendingDown,
+  DollarSign,
+  Filter,
+  Download,
+  LogIn,
+  LogOut
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { 
+  collection, 
+  onSnapshot, 
+  addDoc, 
+  updateDoc, 
+  doc, 
+  query, 
+  orderBy, 
+  serverTimestamp,
+  runTransaction,
+  where,
+  Timestamp,
+  getDocs
+} from 'firebase/firestore';
+import { 
+  signInWithPopup, 
+  GoogleAuthProvider, 
+  onAuthStateChanged, 
+  signOut,
+  User
+} from 'firebase/auth';
+import { db, auth } from './firebase';
 import { Item, Transaction } from './types';
+import { 
+  BarChart, 
+  Bar, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  ResponsiveContainer, 
+  PieChart, 
+  Pie, 
+  Cell,
+  LineChart,
+  Line,
+  AreaChart,
+  Area
+} from 'recharts';
+import { format, subDays, isWithinInterval, startOfDay, endOfDay, parseISO } from 'date-fns';
+import { ptBR } from 'date-fns/locale';
 
 interface ItemGroup {
   name: string;
@@ -34,7 +82,9 @@ const SECTORS = [
 export default function App() {
   const [items, setItems] = useState<Item[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'inventory' | 'history'>('dashboard');
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'inventory' | 'history' | 'reports'>('dashboard');
   const [showAddModal, setShowAddModal] = useState(false);
   const [showTransactionModal, setShowTransactionModal] = useState<{show: boolean, type: 'entry' | 'exit', item?: Item}>({ show: false, type: 'entry' });
   const [showDetailModal, setShowDetailModal] = useState<{show: boolean, type: 'low_stock' | 'expiry', items: Item[]}>({ show: false, type: 'low_stock', items: [] });
@@ -53,45 +103,70 @@ export default function App() {
   });
   const [transactionQty, setTransactionQty] = useState(1);
   const [selectedSector, setSelectedSector] = useState(SECTORS[0]);
-  const [selectedItemId, setSelectedItemId] = useState<number | ''>('');
+  const [selectedItemId, setSelectedItemId] = useState<string>('');
   const [selectedItemName, setSelectedItemName] = useState<string>('');
-  const [basket, setBasket] = useState<{item_id: number, quantity: number}[]>([]);
+  const [basket, setBasket] = useState<{item_id: string, quantity: number}[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
+  const [reportRange, setReportRange] = useState({
+    start: format(subDays(new Date(), 30), 'yyyy-MM-dd'),
+    end: format(new Date(), 'yyyy-MM-dd')
+  });
 
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
 
+  const toggleExpand = (name: string) => {
+    const newExpanded = new Set(expandedItems);
+    if (newExpanded.has(name)) {
+      newExpanded.delete(name);
+    } else {
+      newExpanded.add(name);
+    }
+    setExpandedItems(newExpanded);
+  };
+
   useEffect(() => {
-    fetchData();
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+      setUser(user);
+      setLoading(false);
+    });
+    return () => unsubscribeAuth();
   }, []);
 
   useEffect(() => {
-    if (showTransactionModal.show && showTransactionModal.type === 'exit') {
-      if (showTransactionModal.item) {
-        setBasket([{ item_id: showTransactionModal.item.id, quantity: 1 }]);
-      } else {
-        setBasket([]);
-      }
-      setTransactionQty(1);
-      setSelectedItemId('');
-      setSelectedItemName('');
+    if (!user) {
+      setItems([]);
+      setTransactions([]);
+      return;
     }
-  }, [showTransactionModal.show, showTransactionModal.type, showTransactionModal.item]);
 
-  const toggleExpand = (name: string) => {
-    const newSet = new Set(expandedItems);
-    if (newSet.has(name)) newSet.delete(name);
-    else newSet.add(name);
-    setExpandedItems(newSet);
+    const qItems = query(collection(db, 'items'), orderBy('name', 'asc'));
+    const unsubscribeItems = onSnapshot(qItems, (snapshot) => {
+      const itemsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Item));
+      setItems(itemsData);
+    });
+
+    const qTrans = query(collection(db, 'transactions'), orderBy('date', 'desc'));
+    const unsubscribeTrans = onSnapshot(qTrans, (snapshot) => {
+      const transData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Transaction));
+      setTransactions(transData);
+    });
+
+    return () => {
+      unsubscribeItems();
+      unsubscribeTrans();
+    };
+  }, [user]);
+
+  const handleLogin = async () => {
+    const provider = new GoogleAuthProvider();
+    try {
+      await signInWithPopup(auth, provider);
+    } catch (error) {
+      console.error("Login error:", error);
+    }
   };
 
-  const fetchData = async () => {
-    const [itemsRes, transRes] = await Promise.all([
-      fetch('/api/items'),
-      fetch('/api/transactions')
-    ]);
-    setItems(await itemsRes.json());
-    setTransactions(await transRes.json());
-  };
+  const handleLogout = () => signOut(auth);
 
   const handleAddItem = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -108,104 +183,52 @@ export default function App() {
       );
 
       if (existingItem) {
-        // If exists, record an entry transaction AND update min_quantity if provided
-        const [transRes, itemRes] = await Promise.all([
-          fetch('/api/transactions', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              item_id: existingItem.id,
-              type: 'entry',
-              quantity: initial_qty,
-              sector: null
-            })
-          }),
-          fetch(`/api/items/${existingItem.id}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              ...existingItem,
-              min_quantity: min_qty,
-              expiry_date: newItem.expiry_date || existingItem.expiry_date,
-              unit_price: price || existingItem.unit_price,
-              supplier: newItem.supplier || existingItem.supplier,
-              category: newItem.category || existingItem.category
-            })
-          })
-        ]);
-
-        if (!transRes.ok) {
-          let msg = 'Erro ao registrar transação';
-          try {
-            const data = await transRes.json();
-            msg = data.error || msg;
-          } catch (e) {
-            msg = `Erro no servidor (${transRes.status})`;
-          }
-          throw new Error(msg);
-        }
-        if (!itemRes.ok) {
-          let msg = 'Erro ao atualizar item';
-          try {
-            const data = await itemRes.json();
-            msg = data.error || msg;
-          } catch (e) {
-            msg = `Erro no servidor (${itemRes.status})`;
-          }
-          throw new Error(msg);
-        }
-      } else {
-        // If new, create item first
-        const res = await fetch('/api/items', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name: newItem.name,
+        await runTransaction(db, async (transaction) => {
+          const itemDoc = doc(db, 'items', existingItem.id);
+          const transCol = collection(db, 'transactions');
+          
+          transaction.update(itemDoc, {
+            quantity: existingItem.quantity + initial_qty,
             min_quantity: min_qty,
-            expiry_date: newItem.expiry_date,
-            origin: newItem.origin,
-            unit_price: price,
-            supplier: newItem.supplier,
-            category: newItem.category,
-            batch_number: newItem.batch_number
-          })
-        });
+            expiry_date: newItem.expiry_date || existingItem.expiry_date,
+            unit_price: price || existingItem.unit_price,
+            supplier: newItem.supplier || existingItem.supplier,
+            category: newItem.category || existingItem.category
+          });
 
-        if (!res.ok) {
-          let msg = 'Erro ao criar novo item';
-          try {
-            const data = await res.json();
-            msg = data.error || msg;
-          } catch (e) {
-            msg = `Erro no servidor (${res.status})`;
-          }
-          throw new Error(msg);
-        }
-
-        const data = await res.json();
-        
-        // Then record initial quantity transaction
-        const transRes = await fetch('/api/transactions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            item_id: data.id,
+          const newTransRef = doc(transCol);
+          transaction.set(newTransRef, {
+            item_id: existingItem.id,
+            item_name: existingItem.name,
             type: 'entry',
             quantity: initial_qty,
-            sector: null
-          })
+            date: new Date().toISOString()
+          });
+        });
+      } else {
+        const itemCol = collection(db, 'items');
+        const transCol = collection(db, 'transactions');
+        
+        const itemRef = await addDoc(itemCol, {
+          name: newItem.name,
+          min_quantity: min_qty,
+          expiry_date: newItem.expiry_date,
+          origin: newItem.origin,
+          unit_price: price,
+          supplier: newItem.supplier,
+          category: newItem.category,
+          batch_number: newItem.batch_number,
+          quantity: initial_qty,
+          createdAt: new Date().toISOString()
         });
 
-        if (!transRes.ok) {
-          let msg = 'Erro ao registrar transação inicial';
-          try {
-            const data = await transRes.json();
-            msg = data.error || msg;
-          } catch (e) {
-            msg = `Erro no servidor (${transRes.status})`;
-          }
-          throw new Error(msg);
-        }
+        await addDoc(transCol, {
+          item_id: itemRef.id,
+          item_name: newItem.name,
+          type: 'entry',
+          quantity: initial_qty,
+          date: new Date().toISOString()
+        });
       }
 
       setShowAddModal(false);
@@ -220,7 +243,6 @@ export default function App() {
         initial_quantity: 1,
         batch_number: ''
       });
-      fetchData();
     } catch (error: any) {
       console.error('Erro ao salvar item:', error);
       alert(`Erro ao salvar item: ${error.message}`);
@@ -232,57 +254,56 @@ export default function App() {
     
     try {
       if (showTransactionModal.type === 'exit') {
-        // For exits, use the basket
         if (basket.length === 0) return;
         
-        const res = await fetch('/api/transactions/bulk', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            transactions: basket.map(b => ({ ...b, type: 'exit' })),
-            sector: selectedSector
-          })
-        });
+        await runTransaction(db, async (transaction) => {
+          for (const b of basket) {
+            const item = items.find(i => i.id === b.item_id);
+            if (!item) continue;
 
-        if (!res.ok) {
-          let msg = 'Erro ao registrar saída';
-          try {
-            const data = await res.json();
-            msg = data.error || msg;
-          } catch (e) {
-            msg = `Erro no servidor (${res.status})`;
+            const itemDoc = doc(db, 'items', item.id);
+            const transCol = collection(db, 'transactions');
+            
+            transaction.update(itemDoc, {
+              quantity: item.quantity - b.quantity
+            });
+
+            const newTransRef = doc(transCol);
+            transaction.set(newTransRef, {
+              item_id: item.id,
+              item_name: item.name,
+              type: 'exit',
+              quantity: b.quantity,
+              sector: selectedSector,
+              date: new Date().toISOString()
+            });
           }
-          throw new Error(msg);
-        }
+        });
       } else {
-        // For entries, keep single item for now as per current UI flow
         const item = showTransactionModal.item || items.find(i => i.id === selectedItemId);
         if (!item) {
           alert('Por favor, selecione um item.');
           return;
         }
         
-        const res = await fetch('/api/transactions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+        await runTransaction(db, async (transaction) => {
+          const itemDoc = doc(db, 'items', item.id);
+          const transCol = collection(db, 'transactions');
+          
+          transaction.update(itemDoc, {
+            quantity: item.quantity + transactionQty
+          });
+
+          const newTransRef = doc(transCol);
+          transaction.set(newTransRef, {
             item_id: item.id,
+            item_name: item.name,
             type: 'entry',
             quantity: transactionQty,
-            sector: null
-          })
+            sector: null,
+            date: new Date().toISOString()
+          });
         });
-
-        if (!res.ok) {
-          let msg = 'Erro ao registrar entrada';
-          try {
-            const data = await res.json();
-            msg = data.error || msg;
-          } catch (e) {
-            msg = `Erro no servidor (${res.status})`;
-          }
-          throw new Error(msg);
-        }
       }
 
       setShowTransactionModal({ show: false, type: 'entry' });
@@ -290,12 +311,90 @@ export default function App() {
       setSelectedSector(SECTORS[0]);
       setSelectedItemId('');
       setBasket([]);
-      fetchData();
     } catch (error: any) {
       console.error('Erro na transação:', error);
       alert(`Erro na movimentação: ${error.message}`);
     }
   };
+
+  const reportData = useMemo(() => {
+    const start = startOfDay(parseISO(reportRange.start));
+    const end = endOfDay(parseISO(reportRange.end));
+
+    const filteredTrans = transactions.filter(t => {
+      const d = new Date(t.date);
+      return d >= start && d <= end;
+    });
+
+    const entries = filteredTrans.filter(t => t.type === 'entry').reduce((sum, t) => sum + t.quantity, 0);
+    const exits = filteredTrans.filter(t => t.type === 'exit').reduce((sum, t) => sum + t.quantity, 0);
+
+    // Group by date for line chart
+    const dailyData: Record<string, { date: string, entries: number, exits: number }> = {};
+    filteredTrans.forEach(t => {
+      const dateKey = format(new Date(t.date), 'dd/MM');
+      if (!dailyData[dateKey]) dailyData[dateKey] = { date: dateKey, entries: 0, exits: 0 };
+      if (t.type === 'entry') dailyData[dateKey].entries += t.quantity;
+      else dailyData[dateKey].exits += t.quantity;
+    });
+
+    // Group by category for pie chart
+    const categoryData: Record<string, number> = {};
+    items.forEach(item => {
+      const cat = item.category || 'Outros';
+      categoryData[cat] = (categoryData[cat] || 0) + item.quantity;
+    });
+
+    // Group by sector for bar chart
+    const sectorData: Record<string, number> = {};
+    filteredTrans.filter(t => t.type === 'exit' && t.sector).forEach(t => {
+      sectorData[t.sector!] = (sectorData[t.sector!] || 0) + t.quantity;
+    });
+
+    const totalValue = items.reduce((sum, item) => sum + (item.quantity * item.unit_price), 0);
+
+    return {
+      entries,
+      exits,
+      daily: Object.values(dailyData).sort((a, b) => a.date.localeCompare(b.date)),
+      categories: Object.entries(categoryData).map(([name, value]) => ({ name, value })),
+      sectors: Object.entries(sectorData).map(([name, value]) => ({ name, value })),
+      totalValue
+    };
+  }, [transactions, items, reportRange]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#F5F5F4] flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#1C1917]"></div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-[#F5F5F4] flex items-center justify-center p-6">
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-white p-12 rounded-[40px] shadow-2xl max-w-md w-full text-center border border-[#E7E5E4]"
+        >
+          <div className="bg-[#1C1917] w-20 h-20 rounded-3xl flex items-center justify-center mx-auto mb-8 shadow-lg">
+            <Package className="text-white w-10 h-10" />
+          </div>
+          <h1 className="text-4xl font-black tracking-tighter mb-4">Almoxarifado Pro</h1>
+          <p className="text-[#78716C] mb-10 leading-relaxed">Gerencie seu estoque com precisão cirúrgica e relatórios em tempo real.</p>
+          <button 
+            onClick={handleLogin}
+            className="w-full bg-[#1C1917] text-white py-4 rounded-2xl font-bold flex items-center justify-center gap-3 hover:bg-[#292524] transition-all shadow-xl hover:shadow-2xl active:scale-[0.98]"
+          >
+            <LogIn size={20} /> Entrar com Google
+          </button>
+          <p className="mt-8 text-[10px] text-[#A8A29E] uppercase tracking-widest font-bold">Acesso restrito a funcionários autorizados</p>
+        </motion.div>
+      </div>
+    );
+  }
 
   const isNearExpiry = (dateStr: string | null) => {
     if (!dateStr) return false;
@@ -367,9 +466,27 @@ export default function App() {
           >
             <History size={20} /> Histórico
           </button>
+          <button 
+            onClick={() => setActiveTab('reports')}
+            className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'reports' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+          >
+            <BarChart3 size={20} /> Relatórios
+          </button>
         </nav>
 
-        <div className="mt-auto pt-6 border-t border-[#E7E5E4]">
+        <div className="mt-auto pt-6 border-t border-[#E7E5E4] space-y-2">
+          <div className="px-4 py-2">
+            <p className="text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Usuário</p>
+            <div className="flex items-center gap-3">
+              <img src={user.photoURL || ''} className="w-8 h-8 rounded-full border border-[#E7E5E4]" alt="" />
+              <div className="overflow-hidden">
+                <p className="text-xs font-bold truncate">{user.displayName}</p>
+                <button onClick={handleLogout} className="text-[10px] text-rose-600 font-bold hover:underline flex items-center gap-1">
+                  <LogOut size={10} /> Sair
+                </button>
+              </div>
+            </div>
+          </div>
           <button className="flex items-center gap-3 px-4 py-3 rounded-xl text-[#57534E] hover:bg-[#FAFAF9] w-full transition-all">
             <Settings size={20} /> Configurações
           </button>
@@ -385,10 +502,32 @@ export default function App() {
               {activeTab === 'inventory' && 'Gerenciamento de Estoque'}
               {activeTab === 'history' && 'Histórico de Movimentações'}
             </h2>
-            <p className="text-[#78716C]">
-              {new Date().toLocaleDateString('pt-BR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
-            </p>
-          </div>
+              {activeTab === 'history' && (
+                <p className="text-[#78716C]">
+                  {new Date().toLocaleDateString('pt-BR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+                </p>
+              )}
+              {activeTab === 'reports' && (
+                <div className="flex items-center gap-4 mt-2">
+                  <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border border-[#E7E5E4]">
+                    <Calendar size={14} className="text-[#A8A29E]" />
+                    <input 
+                      type="date" 
+                      className="text-xs font-bold focus:outline-none"
+                      value={reportRange.start}
+                      onChange={e => setReportRange({...reportRange, start: e.target.value})}
+                    />
+                    <span className="text-[#A8A29E] text-xs">até</span>
+                    <input 
+                      type="date" 
+                      className="text-xs font-bold focus:outline-none"
+                      value={reportRange.end}
+                      onChange={e => setReportRange({...reportRange, end: e.target.value})}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
           
           <div className="flex gap-4">
             <div className="relative">
@@ -746,6 +885,141 @@ export default function App() {
                   <p className="text-[#78716C]">Nenhuma movimentação registrada.</p>
                 </div>
               )}
+            </motion.div>
+          )}
+          {activeTab === 'reports' && (
+            <motion.div 
+              key="reports"
+              initial={{ opacity: 0, scale: 0.98 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.98 }}
+              className="space-y-8"
+            >
+              {/* Report Stats */}
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
+                  <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Entradas no Período</p>
+                  <div className="flex items-center gap-3">
+                    <div className="bg-emerald-100 p-2 rounded-xl text-emerald-600">
+                      <TrendingUp size={20} />
+                    </div>
+                    <h3 className="text-3xl font-black">{reportData.entries}</h3>
+                  </div>
+                </div>
+                <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
+                  <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Saídas no Período</p>
+                  <div className="flex items-center gap-3">
+                    <div className="bg-rose-100 p-2 rounded-xl text-rose-600">
+                      <TrendingDown size={20} />
+                    </div>
+                    <h3 className="text-3xl font-black">{reportData.exits}</h3>
+                  </div>
+                </div>
+                <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
+                  <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Valor Total em Estoque</p>
+                  <div className="flex items-center gap-3">
+                    <div className="bg-amber-100 p-2 rounded-xl text-amber-600">
+                      <DollarSign size={20} />
+                    </div>
+                    <h3 className="text-2xl font-black">
+                      {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.totalValue)}
+                    </h3>
+                  </div>
+                </div>
+                <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
+                  <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Itens Ativos</p>
+                  <div className="flex items-center gap-3">
+                    <div className="bg-blue-100 p-2 rounded-xl text-blue-600">
+                      <Package size={20} />
+                    </div>
+                    <h3 className="text-3xl font-black">{items.length}</h3>
+                  </div>
+                </div>
+              </div>
+
+              {/* Charts Grid */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                {/* Daily Movement */}
+                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
+                  <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
+                    <BarChart3 size={18} className="text-[#1C1917]" /> Movimentação Diária
+                  </h4>
+                  <div className="h-[300px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={reportData.daily}>
+                        <defs>
+                          <linearGradient id="colorEntries" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#10b981" stopOpacity={0.1}/>
+                            <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                          </linearGradient>
+                          <linearGradient id="colorExits" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.1}/>
+                            <stop offset="95%" stopColor="#f43f5e" stopOpacity={0}/>
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F5F5F4" />
+                        <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
+                        <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
+                        <Tooltip 
+                          contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                        />
+                        <Area type="monotone" dataKey="entries" name="Entradas" stroke="#10b981" fillOpacity={1} fill="url(#colorEntries)" strokeWidth={3} />
+                        <Area type="monotone" dataKey="exits" name="Saídas" stroke="#f43f5e" fillOpacity={1} fill="url(#colorExits)" strokeWidth={3} />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* Distribution by Category */}
+                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
+                  <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
+                    <Filter size={18} className="text-[#1C1917]" /> Distribuição por Categoria
+                  </h4>
+                  <div className="h-[300px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={reportData.categories}
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={60}
+                          outerRadius={100}
+                          paddingAngle={5}
+                          dataKey="value"
+                        >
+                          {reportData.categories.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={['#1C1917', '#78716C', '#A8A29E', '#E7E5E4', '#F5F5F4'][index % 5]} />
+                          ))}
+                        </Pie>
+                        <Tooltip 
+                          contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                        />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* Exits by Sector */}
+                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
+                  <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
+                    <ArrowUpRight size={18} className="text-rose-600" /> Saídas por Setor
+                  </h4>
+                  <div className="h-[300px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={reportData.sectors} layout="vertical">
+                        <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#F5F5F4" />
+                        <XAxis type="number" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
+                        <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1C1917', fontWeight: 'bold'}} width={100} />
+                        <Tooltip 
+                          cursor={{fill: '#FAFAF9'}}
+                          contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                        />
+                        <Bar dataKey="value" name="Quantidade" fill="#1C1917" radius={[0, 8, 8, 0]} barSize={20} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              </div>
             </motion.div>
           )}
         </AnimatePresence>
