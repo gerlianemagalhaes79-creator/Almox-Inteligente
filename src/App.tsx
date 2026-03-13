@@ -135,12 +135,24 @@ export default function App() {
         ]);
 
         if (!transRes.ok) {
-          const errorData = await transRes.json();
-          throw new Error(errorData.error || 'Erro ao registrar transação no item existente');
+          let msg = 'Erro ao registrar transação';
+          try {
+            const data = await transRes.json();
+            msg = data.error || msg;
+          } catch (e) {
+            msg = `Erro no servidor (${transRes.status})`;
+          }
+          throw new Error(msg);
         }
         if (!itemRes.ok) {
-          const errorData = await itemRes.json();
-          throw new Error(errorData.error || 'Erro ao atualizar dados do item existente');
+          let msg = 'Erro ao atualizar item';
+          try {
+            const data = await itemRes.json();
+            msg = data.error || msg;
+          } catch (e) {
+            msg = `Erro no servidor (${itemRes.status})`;
+          }
+          throw new Error(msg);
         }
       } else {
         // If new, create item first
@@ -160,8 +172,14 @@ export default function App() {
         });
 
         if (!res.ok) {
-          const errorData = await res.json();
-          throw new Error(errorData.error || 'Erro ao criar novo item');
+          let msg = 'Erro ao criar novo item';
+          try {
+            const data = await res.json();
+            msg = data.error || msg;
+          } catch (e) {
+            msg = `Erro no servidor (${res.status})`;
+          }
+          throw new Error(msg);
         }
 
         const data = await res.json();
@@ -179,8 +197,14 @@ export default function App() {
         });
 
         if (!transRes.ok) {
-          const errorData = await transRes.json();
-          throw new Error(errorData.error || 'Erro ao registrar transação inicial');
+          let msg = 'Erro ao registrar transação inicial';
+          try {
+            const data = await transRes.json();
+            msg = data.error || msg;
+          } catch (e) {
+            msg = `Erro no servidor (${transRes.status})`;
+          }
+          throw new Error(msg);
         }
       }
 
@@ -221,8 +245,14 @@ export default function App() {
         });
 
         if (!res.ok) {
-          const errorData = await res.json();
-          throw new Error(errorData.error || 'Erro ao registrar saída em lote');
+          let msg = 'Erro ao registrar saída';
+          try {
+            const data = await res.json();
+            msg = data.error || msg;
+          } catch (e) {
+            msg = `Erro no servidor (${res.status})`;
+          }
+          throw new Error(msg);
         }
       } else {
         // For entries, keep single item for now as per current UI flow
@@ -244,8 +274,14 @@ export default function App() {
         });
 
         if (!res.ok) {
-          const errorData = await res.json();
-          throw new Error(errorData.error || 'Erro ao registrar entrada');
+          let msg = 'Erro ao registrar entrada';
+          try {
+            const data = await res.json();
+            msg = data.error || msg;
+          } catch (e) {
+            msg = `Erro no servidor (${res.status})`;
+          }
+          throw new Error(msg);
         }
       }
 
