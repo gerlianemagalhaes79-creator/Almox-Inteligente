@@ -23,4 +23,6 @@ export interface Transaction {
   date: string;
   responsible?: string;
   supplier?: string;
+  deletedAt?: string;
+  deletionReason?: string;
 }

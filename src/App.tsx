@@ -22,7 +22,8 @@ import {
   LogIn,
   LogOut,
   Trash2,
-  Save
+  Save,
+  RotateCcw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as XLSX from 'xlsx';
@@ -124,6 +125,9 @@ export default function App() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [showTransactionModal, setShowTransactionModal] = useState<{show: boolean, type: 'entry' | 'exit', item?: Item}>({ show: false, type: 'entry' });
   const [showDetailModal, setShowDetailModal] = useState<{show: boolean, type: 'low_stock' | 'expiry', items: Item[]}>({ show: false, type: 'low_stock', items: [] });
+  const [showDeleteModal, setShowDeleteModal] = useState<{show: boolean, transactionId?: string}>({ show: false });
+  const [deletionReason, setDeletionReason] = useState('Teste');
+  const [showDeletedHistory, setShowDeletedHistory] = useState(false);
   
   // Form states
   const [bulkEntry, setBulkEntry] = useState({
@@ -194,6 +198,18 @@ export default function App() {
 
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
 
+  const uniqueSuppliers = useMemo(() => {
+    const fromItems = items.map(i => i.supplier).filter(Boolean) as string[];
+    const fromTrans = transactions.map(t => t.supplier).filter(Boolean) as string[];
+    return Array.from(new Set([...fromItems, ...fromTrans])).sort();
+  }, [items, transactions]);
+
+  const uniqueResponsibles = useMemo(() => {
+    const fromTrans = transactions.map(t => t.responsible).filter(Boolean) as string[];
+    const fromBulk = bulkEntry.responsible ? [bulkEntry.responsible] : [];
+    return Array.from(new Set([...fromTrans, ...fromBulk])).sort();
+  }, [transactions, bulkEntry.responsible]);
+
   const toggleExpand = (name: string) => {
     const newExpanded = new Set(expandedItems);
     if (newExpanded.has(name)) {
@@ -261,6 +277,34 @@ export default function App() {
   };
 
   const handleLogout = () => signOut(auth);
+
+  const handleDeleteTransaction = async (id: string, reason: string) => {
+    try {
+      const transRef = doc(db, 'transactions', id);
+      await updateDoc(transRef, {
+        deletedAt: new Date().toISOString(),
+        deletionReason: reason
+      });
+      setShowDeleteModal({ show: false });
+      setDeletionReason('Teste');
+    } catch (error) {
+      console.error("Error deleting transaction:", error);
+      alert("Erro ao excluir movimentação.");
+    }
+  };
+
+  const handleRecoverTransaction = async (id: string) => {
+    try {
+      const transRef = doc(db, 'transactions', id);
+      await updateDoc(transRef, {
+        deletedAt: null,
+        deletionReason: null
+      });
+    } catch (error) {
+      console.error("Error recovering transaction:", error);
+      alert("Erro ao recuperar movimentação.");
+    }
+  };
 
   const handleAddItem = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -470,6 +514,7 @@ export default function App() {
     const end = endOfDay(parseISO(reportRange.end));
 
     const filteredTrans = transactions.filter(t => {
+      if (t.deletedAt) return false;
       const d = new Date(t.date);
       const inRange = d >= start && d <= end;
       const matchesSector = reportSectorFilter === 'all' || t.sector === reportSectorFilter;
@@ -1094,51 +1139,92 @@ export default function App() {
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
-              className="bg-white rounded-3xl border border-[#E7E5E4] shadow-sm overflow-hidden"
+              className="space-y-4"
             >
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
-                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Data</th>
-                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Item</th>
-                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Tipo</th>
-                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Setor</th>
-                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Responsável</th>
-                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">Quantidade</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#E7E5E4]">
-                  {transactions.map(t => (
-                    <tr key={t.id} className="hover:bg-[#FAFAF9] transition-all">
-                      <td className="px-6 py-5 text-sm text-[#57534E]">
-                        {new Date(t.date).toLocaleString('pt-BR')}
-                      </td>
-                      <td className="px-6 py-5 font-bold">{t.item_name}</td>
-                      <td className="px-6 py-5">
-                        <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${t.type === 'entry' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
-                          {t.type === 'entry' ? <ArrowDownLeft size={14} /> : <ArrowUpRight size={14} />}
-                          {t.type === 'entry' ? 'Entrada' : 'Saída'}
-                        </span>
-                      </td>
-                      <td className="px-6 py-5 text-sm font-medium text-[#78716C]">
-                        {t.sector || '---'}
-                      </td>
-                      <td className="px-6 py-5 text-sm text-[#78716C]">
-                        {t.responsible || '---'}
-                      </td>
-                      <td className="px-6 py-5 text-right font-bold text-lg">
-                        {t.quantity}
-                      </td>
+              <div className="flex justify-between items-center bg-white p-4 rounded-3xl border border-[#E7E5E4] shadow-sm">
+                <h3 className="text-lg font-bold text-[#1C1917]">Histórico de Movimentações</h3>
+                <button 
+                  onClick={() => setShowDeletedHistory(!showDeletedHistory)}
+                  className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${showDeletedHistory ? 'bg-rose-100 text-rose-700' : 'bg-[#F5F5F4] text-[#78716C] hover:bg-[#E7E5E4]'}`}
+                >
+                  {showDeletedHistory ? <History size={14} /> : <Trash2 size={14} />}
+                  {showDeletedHistory ? 'Ver Histórico Ativo' : 'Ver Excluídos (Testes)'}
+                </button>
+              </div>
+
+              <div className="bg-white rounded-3xl border border-[#E7E5E4] shadow-sm overflow-hidden">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
+                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Data</th>
+                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Item</th>
+                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Tipo</th>
+                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Setor</th>
+                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Responsável</th>
+                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">Qtd</th>
+                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">Ações</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-              {transactions.length === 0 && (
-                <div className="p-20 text-center">
-                  <History className="mx-auto text-[#E7E5E4] mb-4" size={48} />
-                  <p className="text-[#78716C]">Nenhuma movimentação registrada.</p>
-                </div>
-              )}
+                  </thead>
+                  <tbody className="divide-y divide-[#E7E5E4]">
+                    {transactions
+                      .filter(t => showDeletedHistory ? !!t.deletedAt : !t.deletedAt)
+                      .map(t => (
+                      <tr key={t.id} className={`hover:bg-[#FAFAF9] transition-all ${t.deletedAt ? 'opacity-60 grayscale-[0.5]' : ''}`}>
+                        <td className="px-6 py-5 text-sm text-[#57534E]">
+                          {new Date(t.date).toLocaleString('pt-BR')}
+                        </td>
+                        <td className="px-6 py-5">
+                          <div className="font-bold">{t.item_name}</div>
+                          {t.deletionReason && (
+                            <div className="text-[10px] text-rose-500 font-bold mt-1">Motivo: {t.deletionReason}</div>
+                          )}
+                        </td>
+                        <td className="px-6 py-5">
+                          <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${t.type === 'entry' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+                            {t.type === 'entry' ? <ArrowDownLeft size={14} /> : <ArrowUpRight size={14} />}
+                            {t.type === 'entry' ? 'Entrada' : 'Saída'}
+                          </span>
+                        </td>
+                        <td className="px-6 py-5 text-sm font-medium text-[#78716C]">
+                          {t.sector || '---'}
+                        </td>
+                        <td className="px-6 py-5 text-sm text-[#78716C]">
+                          {t.responsible || '---'}
+                        </td>
+                        <td className="px-6 py-5 text-right font-bold text-lg">
+                          {t.quantity}
+                        </td>
+                        <td className="px-6 py-5 text-right">
+                          {t.deletedAt ? (
+                            <button 
+                              onClick={() => handleRecoverTransaction(t.id)}
+                              className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all"
+                              title="Recuperar Movimentação"
+                            >
+                              <RotateCcw size={18} />
+                            </button>
+                          ) : (
+                            <button 
+                              onClick={() => setShowDeleteModal({ show: true, transactionId: t.id })}
+                              className="p-2 text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
+                              title="Excluir (Teste)"
+                            >
+                              <Trash2 size={18} />
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {((showDeletedHistory && transactions.filter(t => !!t.deletedAt).length === 0) || 
+                  (!showDeletedHistory && transactions.filter(t => !t.deletedAt).length === 0)) && (
+                  <div className="p-20 text-center">
+                    <History className="mx-auto text-[#E7E5E4] mb-4" size={48} />
+                    <p className="text-[#78716C]">Nenhuma movimentação encontrada.</p>
+                  </div>
+                )}
+              </div>
             </motion.div>
           )}
           {activeTab === 'reports' && (
@@ -1457,6 +1543,7 @@ export default function App() {
                   <label className="block text-xs font-black text-[#78716C] uppercase tracking-widest mb-2">Fornecedor</label>
                   <input 
                     required
+                    list="supplier-suggestions"
                     type="text" 
                     placeholder="Nome do fornecedor"
                     className="w-full px-4 py-3 bg-white border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
@@ -1520,6 +1607,7 @@ export default function App() {
                   <label className="block text-xs font-black text-[#78716C] uppercase tracking-widest mb-2">Responsável</label>
                   <input 
                     required
+                    list="responsible-suggestions"
                     type="text" 
                     placeholder="Quem está recebendo?"
                     className="w-full px-4 py-3 bg-white border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
@@ -1659,6 +1747,16 @@ export default function App() {
                 <datalist id="item-suggestions">
                   {Array.from(new Set(items.map(i => i.name))).map(name => (
                     <option key={name} value={name} />
+                  ))}
+                </datalist>
+                <datalist id="supplier-suggestions">
+                  {uniqueSuppliers.map(s => (
+                    <option key={s} value={s} />
+                  ))}
+                </datalist>
+                <datalist id="responsible-suggestions">
+                  {uniqueResponsibles.map(r => (
+                    <option key={r} value={r} />
                   ))}
                 </datalist>
               </div>
@@ -1868,6 +1966,7 @@ export default function App() {
                 <label className="block text-sm font-bold text-[#57534E] mb-2">Responsável pela Movimentação</label>
                 <input 
                   required
+                  list="responsible-suggestions"
                   type="text" 
                   placeholder="Nome do responsável"
                   className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10"
@@ -1893,6 +1992,50 @@ export default function App() {
                 </button>
               </div>
             </form>
+          </motion.div>
+        </div>
+      )}
+
+      {showDeleteModal.show && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[60] flex items-center justify-center p-6">
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="bg-white w-full max-w-md rounded-3xl p-8 shadow-2xl"
+          >
+            <h3 className="text-2xl font-bold mb-4 text-rose-600 flex items-center gap-2">
+              <Trash2 size={24} /> Excluir Movimentação
+            </h3>
+            <p className="text-[#78716C] mb-6">
+              Esta ação marcará a movimentação como excluída (ex: teste). Você poderá recuperá-la no histórico de excluídos.
+            </p>
+            
+            <div className="space-y-4">
+              <label className="block text-sm font-bold text-[#57534E]">Justificativa / Motivo</label>
+              <input 
+                type="text"
+                className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-rose-500/20"
+                placeholder="Ex: Lançamento de teste"
+                value={deletionReason}
+                onChange={e => setDeletionReason(e.target.value)}
+                autoFocus
+              />
+            </div>
+
+            <div className="flex gap-3 mt-8">
+              <button 
+                onClick={() => setShowDeleteModal({ show: false })}
+                className="flex-1 px-4 py-3 rounded-xl font-bold text-[#78716C] hover:bg-[#F5F5F4] transition-all"
+              >
+                Cancelar
+              </button>
+              <button 
+                onClick={() => handleDeleteTransaction(showDeleteModal.transactionId!, deletionReason)}
+                className="flex-1 px-4 py-3 bg-rose-600 text-white rounded-xl font-bold hover:bg-rose-700 transition-all"
+              >
+                Confirmar Exclusão
+              </button>
+            </div>
           </motion.div>
         </div>
       )}
