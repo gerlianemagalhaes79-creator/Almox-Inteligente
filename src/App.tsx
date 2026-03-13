@@ -20,7 +20,9 @@ import {
   Download,
   FileText,
   LogIn,
-  LogOut
+  LogOut,
+  Trash2,
+  Save
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as XLSX from 'xlsx';
@@ -124,22 +126,57 @@ export default function App() {
   const [showDetailModal, setShowDetailModal] = useState<{show: boolean, type: 'low_stock' | 'expiry', items: Item[]}>({ show: false, type: 'low_stock', items: [] });
   
   // Form states
-  const [newItem, setNewItem] = useState({ 
-    name: '', 
-    min_quantity: 5, 
-    expiry_date: '', 
-    is_indeterminate_expiry: false,
-    origin: 'extra' as 'contract' | 'extra', 
-    unit_price: 0,
+  const [bulkEntry, setBulkEntry] = useState({
     supplier: '',
     category: 'Expediente',
-    initial_quantity: 1,
-    batch_number: '',
-    responsible: ''
+    responsible: '',
+    origin: 'extra' as 'contract' | 'extra',
+    items: [{
+      id: Math.random().toString(36).substr(2, 9),
+      name: '',
+      initial_quantity: 1,
+      min_quantity: 5,
+      batch_number: '',
+      expiry_date: '',
+      is_indeterminate_expiry: false,
+      unit_price: 0
+    }]
   });
   const [categories, setCategories] = useState<string[]>(['Médico Hospitalar', 'Alimentício', 'Expediente', 'Higiene', 'Radiológico']);
   const [showNewCategoryInput, setShowNewCategoryInput] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
+
+  const addBulkItemRow = () => {
+    setBulkEntry(prev => ({
+      ...prev,
+      items: [...prev.items, {
+        id: Math.random().toString(36).substr(2, 9),
+        name: '',
+        initial_quantity: 1,
+        min_quantity: 5,
+        batch_number: '',
+        expiry_date: '',
+        is_indeterminate_expiry: false,
+        unit_price: 0
+      }]
+    }));
+  };
+
+  const removeBulkItemRow = (id: string) => {
+    if (bulkEntry.items.length > 1) {
+      setBulkEntry(prev => ({
+        ...prev,
+        items: prev.items.filter(item => item.id !== id)
+      }));
+    }
+  };
+
+  const updateBulkItem = (id: string, field: string, value: any) => {
+    setBulkEntry(prev => ({
+      ...prev,
+      items: prev.items.map(item => item.id === id ? { ...item, [field]: value } : item)
+    }));
+  };
   
   const [transactionQty, setTransactionQty] = useState(1);
   const [transactionResponsible, setTransactionResponsible] = useState('');
@@ -229,92 +266,97 @@ export default function App() {
     e.preventDefault();
     
     try {
-      const initial_qty = isNaN(newItem.initial_quantity) ? 0 : newItem.initial_quantity;
-      const min_qty = isNaN(newItem.min_quantity) ? 5 : newItem.min_quantity;
-      const price = isNaN(newItem.unit_price) ? 0 : newItem.unit_price;
+      for (const itemData of bulkEntry.items) {
+        const initial_qty = isNaN(itemData.initial_quantity) ? 0 : itemData.initial_quantity;
+        const min_qty = isNaN(itemData.min_quantity) ? 5 : itemData.min_quantity;
+        const price = isNaN(itemData.unit_price) ? 0 : itemData.unit_price;
 
-      // Check if item already exists with the same name AND batch
-      const existingItem = items.find(i => 
-        i.name.toLowerCase() === newItem.name.toLowerCase() && 
-        (i.batch_number || '').toLowerCase() === (newItem.batch_number || '').toLowerCase()
-      );
+        // Check if item already exists with the same name AND batch
+        const existingItem = items.find(i => 
+          i.name.toLowerCase() === itemData.name.toLowerCase() && 
+          (i.batch_number || '').toLowerCase() === (itemData.batch_number || '').toLowerCase()
+        );
 
-      if (existingItem) {
-        await runTransaction(db, async (transaction) => {
-          const itemDoc = doc(db, 'items', existingItem.id);
+        if (existingItem) {
+          await runTransaction(db, async (transaction) => {
+            const itemDoc = doc(db, 'items', existingItem.id);
+            const transCol = collection(db, 'transactions');
+            
+            const expiryValue = itemData.is_indeterminate_expiry ? 'Indeterminada' : itemData.expiry_date;
+
+            transaction.update(itemDoc, {
+              quantity: existingItem.quantity + initial_qty,
+              min_quantity: min_qty,
+              expiry_date: expiryValue || existingItem.expiry_date,
+              unit_price: price || existingItem.unit_price,
+              supplier: bulkEntry.supplier || existingItem.supplier,
+              category: bulkEntry.category || existingItem.category
+            });
+
+            const newTransRef = doc(transCol);
+            transaction.set(newTransRef, {
+              item_id: existingItem.id,
+              item_name: existingItem.name,
+              type: 'entry',
+              origin: bulkEntry.origin,
+              quantity: initial_qty,
+              date: new Date().toISOString(),
+              responsible: bulkEntry.responsible,
+              supplier: bulkEntry.supplier || existingItem.supplier
+            });
+          });
+        } else {
+          const itemCol = collection(db, 'items');
           const transCol = collection(db, 'transactions');
           
-          const expiryValue = newItem.is_indeterminate_expiry ? 'Indeterminada' : newItem.expiry_date;
+          const expiryValue = itemData.is_indeterminate_expiry ? 'Indeterminada' : itemData.expiry_date;
 
-          transaction.update(itemDoc, {
-            quantity: existingItem.quantity + initial_qty,
+          const itemRef = await addDoc(itemCol, {
+            name: itemData.name,
             min_quantity: min_qty,
-            expiry_date: expiryValue || existingItem.expiry_date,
-            unit_price: price || existingItem.unit_price,
-            supplier: newItem.supplier || existingItem.supplier,
-            category: newItem.category || existingItem.category
+            expiry_date: expiryValue,
+            origin: bulkEntry.origin,
+            unit_price: price,
+            supplier: bulkEntry.supplier,
+            category: bulkEntry.category,
+            batch_number: itemData.batch_number,
+            quantity: initial_qty,
+            createdAt: new Date().toISOString()
           });
 
-          const newTransRef = doc(transCol);
-          transaction.set(newTransRef, {
-            item_id: existingItem.id,
-            item_name: existingItem.name,
+          await addDoc(transCol, {
+            item_id: itemRef.id,
+            item_name: itemData.name,
             type: 'entry',
-            origin: existingItem.origin,
+            origin: bulkEntry.origin,
             quantity: initial_qty,
             date: new Date().toISOString(),
-            responsible: newItem.responsible,
-            supplier: newItem.supplier || existingItem.supplier
+            responsible: bulkEntry.responsible,
+            supplier: bulkEntry.supplier
           });
-        });
-      } else {
-        const itemCol = collection(db, 'items');
-        const transCol = collection(db, 'transactions');
-        
-        const expiryValue = newItem.is_indeterminate_expiry ? 'Indeterminada' : newItem.expiry_date;
-
-        const itemRef = await addDoc(itemCol, {
-          name: newItem.name,
-          min_quantity: min_qty,
-          expiry_date: expiryValue,
-          origin: newItem.origin,
-          unit_price: price,
-          supplier: newItem.supplier,
-          category: newItem.category,
-          batch_number: newItem.batch_number,
-          quantity: initial_qty,
-          createdAt: new Date().toISOString()
-        });
-
-        await addDoc(transCol, {
-          item_id: itemRef.id,
-          item_name: newItem.name,
-          type: 'entry',
-          origin: newItem.origin,
-          quantity: initial_qty,
-          date: new Date().toISOString(),
-          responsible: newItem.responsible,
-          supplier: newItem.supplier
-        });
+        }
       }
 
       setShowAddModal(false);
-      setNewItem({ 
-        name: '', 
-        min_quantity: 5, 
-        expiry_date: '', 
-        is_indeterminate_expiry: false,
-        origin: 'extra', 
-        unit_price: 0,
+      setBulkEntry({ 
         supplier: '',
         category: 'Expediente',
-        initial_quantity: 1,
-        batch_number: '',
-        responsible: ''
+        responsible: '',
+        origin: 'extra',
+        items: [{
+          id: Math.random().toString(36).substr(2, 9),
+          name: '',
+          initial_quantity: 1,
+          min_quantity: 5,
+          batch_number: '',
+          expiry_date: '',
+          is_indeterminate_expiry: false,
+          unit_price: 0
+        }]
       });
     } catch (error: any) {
-      console.error('Erro ao salvar item:', error);
-      alert(`Erro ao salvar item: ${error.message}`);
+      console.error('Erro ao salvar itens:', error);
+      alert(`Erro ao salvar itens: ${error.message}`);
     }
   };
 
@@ -1393,105 +1435,45 @@ export default function App() {
           <motion.div 
             initial={{ scale: 0.9, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
-            className="bg-white w-full max-w-md rounded-3xl p-8 shadow-2xl"
+            className="bg-white w-full max-w-5xl rounded-[40px] p-10 shadow-2xl max-h-[90vh] overflow-y-auto"
           >
-            <h3 className="text-2xl font-bold mb-6">Cadastrar Novo Item</h3>
-            <form onSubmit={handleAddItem} className="space-y-4">
+            <div className="flex justify-between items-center mb-8">
               <div>
-                <label className="block text-sm font-bold text-[#57534E] mb-1">Nome do Item</label>
-                <input 
-                  required
-                  list="item-suggestions"
-                  type="text" 
-                  className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10"
-                  value={newItem.name}
-                  onChange={e => setNewItem({...newItem, name: e.target.value})}
-                  placeholder="Digite o nome do item..."
-                />
-                <datalist id="item-suggestions">
-                  {items.map(item => (
-                    <option key={item.id} value={item.name} />
-                  ))}
-                </datalist>
+                <h3 className="text-3xl font-black text-[#1C1917]">Entrada de Materiais</h3>
+                <p className="text-[#78716C] font-medium">Cadastre múltiplos itens de uma vez</p>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-bold text-[#57534E] mb-1">Quantidade Recebida</label>
+              <button 
+                onClick={() => setShowAddModal(false)}
+                className="p-2 hover:bg-[#F5F5F4] rounded-full transition-colors"
+              >
+                <X size={24} className="text-[#A8A29E]" />
+              </button>
+            </div>
+
+            <form onSubmit={handleAddItem} className="space-y-8">
+              {/* Common Fields Section */}
+              <div className="bg-[#FAFAF9] p-8 rounded-[32px] border border-[#E7E5E4] grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <div className="lg:col-span-1">
+                  <label className="block text-xs font-black text-[#78716C] uppercase tracking-widest mb-2">Fornecedor</label>
                   <input 
                     required
-                    type="number" 
-                    min="1"
-                    className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10"
-                    value={isNaN(newItem.initial_quantity) ? '' : newItem.initial_quantity}
-                    onChange={e => setNewItem({...newItem, initial_quantity: e.target.value === '' ? NaN : parseInt(e.target.value)})}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-bold text-[#57534E] mb-1">Estoque Mínimo (Alerta)</label>
-                  <input 
-                    required
-                    type="number" 
-                    min="0"
-                    className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10"
-                    value={isNaN(newItem.min_quantity) ? '' : newItem.min_quantity}
-                    onChange={e => setNewItem({...newItem, min_quantity: e.target.value === '' ? NaN : parseInt(e.target.value)})}
-                  />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-bold text-[#57534E] mb-1">Lote</label>
-                  <input 
                     type="text" 
-                    placeholder="Nº do Lote"
-                    className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10"
-                    value={newItem.batch_number}
-                    onChange={e => setNewItem({...newItem, batch_number: e.target.value})}
+                    placeholder="Nome do fornecedor"
+                    className="w-full px-4 py-3 bg-white border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
+                    value={bulkEntry.supplier}
+                    onChange={e => setBulkEntry({...bulkEntry, supplier: e.target.value})}
                   />
                 </div>
-                <div>
-                  <label className="block text-sm font-bold text-[#57534E] mb-1">Data de Validade</label>
-                  <div className="flex flex-col gap-2">
-                    <input 
-                      type="date" 
-                      disabled={newItem.is_indeterminate_expiry}
-                      className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 disabled:opacity-50"
-                      value={newItem.expiry_date}
-                      onChange={e => setNewItem({...newItem, expiry_date: e.target.value})}
-                    />
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input 
-                        type="checkbox"
-                        className="w-4 h-4 rounded border-gray-300 text-[#1C1917] focus:ring-[#1C1917]"
-                        checked={newItem.is_indeterminate_expiry}
-                        onChange={e => setNewItem({...newItem, is_indeterminate_expiry: e.target.checked})}
-                      />
-                      <span className="text-xs font-bold text-[#78716C]">Validade Indeterminada</span>
-                    </label>
-                  </div>
-                </div>
-              </div>
-              <div>
-                <label className="block text-sm font-bold text-[#57534E] mb-1">Responsável pela Entrada</label>
-                <input 
-                  required
-                  type="text" 
-                  placeholder="Nome do responsável"
-                  className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10"
-                  value={newItem.responsible}
-                  onChange={e => setNewItem({...newItem, responsible: e.target.value})}
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-bold text-[#57534E] mb-1">Tipo de Item</label>
+                
+                <div className="lg:col-span-1">
+                  <label className="block text-xs font-black text-[#78716C] uppercase tracking-widest mb-2">Tipo de Item (Categoria)</label>
                   <div className="flex gap-2">
                     {showNewCategoryInput ? (
                       <div className="flex-1 flex gap-2">
                         <input 
                           type="text"
-                          className="flex-1 px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10"
-                          placeholder="Nova categoria..."
+                          className="flex-1 px-4 py-3 bg-white border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
+                          placeholder="Nova..."
                           value={newCategoryName}
                           onChange={e => setNewCategoryName(e.target.value)}
                           autoFocus
@@ -1501,7 +1483,7 @@ export default function App() {
                           onClick={() => {
                             if (newCategoryName.trim()) {
                               setCategories(prev => Array.from(new Set([...prev, newCategoryName.trim()])));
-                              setNewItem({...newItem, category: newCategoryName.trim()});
+                              setBulkEntry({...bulkEntry, category: newCategoryName.trim()});
                               setNewCategoryName('');
                               setShowNewCategoryInput(false);
                             }
@@ -1510,20 +1492,13 @@ export default function App() {
                         >
                           <Plus size={18} />
                         </button>
-                        <button 
-                          type="button"
-                          onClick={() => setShowNewCategoryInput(false)}
-                          className="bg-gray-200 text-gray-600 p-3 rounded-xl"
-                        >
-                          <X size={18} />
-                        </button>
                       </div>
                     ) : (
                       <>
                         <select 
-                          className="flex-1 px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10"
-                          value={newItem.category}
-                          onChange={e => setNewItem({...newItem, category: e.target.value})}
+                          className="flex-1 px-4 py-3 bg-white border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
+                          value={bulkEntry.category}
+                          onChange={e => setBulkEntry({...bulkEntry, category: e.target.value})}
                         >
                           {categories.map(cat => (
                             <option key={cat} value={cat}>{cat}</option>
@@ -1532,7 +1507,7 @@ export default function App() {
                         <button 
                           type="button"
                           onClick={() => setShowNewCategoryInput(true)}
-                          className="bg-[#F5F5F4] text-[#1C1917] p-3 rounded-xl hover:bg-[#E7E5E4]"
+                          className="bg-white text-[#1C1917] p-3 rounded-xl border border-[#E7E5E4] hover:bg-[#F5F5F4]"
                         >
                           <Plus size={18} />
                         </button>
@@ -1540,54 +1515,167 @@ export default function App() {
                     )}
                   </div>
                 </div>
-                <div>
-                  <label className="block text-sm font-bold text-[#57534E] mb-1">Fornecedor</label>
+
+                <div className="lg:col-span-1">
+                  <label className="block text-xs font-black text-[#78716C] uppercase tracking-widest mb-2">Responsável</label>
                   <input 
+                    required
                     type="text" 
-                    placeholder="Nome do fornecedor"
-                    className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10"
-                    value={newItem.supplier}
-                    onChange={e => setNewItem({...newItem, supplier: e.target.value})}
+                    placeholder="Quem está recebendo?"
+                    className="w-full px-4 py-3 bg-white border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
+                    value={bulkEntry.responsible}
+                    onChange={e => setBulkEntry({...bulkEntry, responsible: e.target.value})}
                   />
                 </div>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-bold text-[#57534E] mb-1">Origem</label>
+
+                <div className="lg:col-span-1">
+                  <label className="block text-xs font-black text-[#78716C] uppercase tracking-widest mb-2">Origem</label>
                   <select 
-                    className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10"
-                    value={newItem.origin}
-                    onChange={e => setNewItem({...newItem, origin: e.target.value as 'contract' | 'extra'})}
+                    className="w-full px-4 py-3 bg-white border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
+                    value={bulkEntry.origin}
+                    onChange={e => setBulkEntry({...bulkEntry, origin: e.target.value as any})}
                   >
                     <option value="contract">Contrato</option>
                     <option value="extra">Produto Extra</option>
                   </select>
                 </div>
-                <div>
-                  <label className="block text-sm font-bold text-[#57534E] mb-1">Valor Unitário (R$)</label>
-                  <input 
-                    type="number" 
-                    step="0.01"
-                    placeholder="0,00"
-                    className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10"
-                    value={isNaN(newItem.unit_price) ? '' : newItem.unit_price}
-                    onChange={e => setNewItem({...newItem, unit_price: e.target.value === '' ? NaN : parseFloat(e.target.value)})}
-                  />
-                </div>
               </div>
-              <div className="flex gap-3 pt-4">
+
+              {/* Items List Section */}
+              <div className="space-y-4">
+                <div className="flex justify-between items-center">
+                  <h4 className="text-sm font-black text-[#1C1917] uppercase tracking-widest">Lista de Itens</h4>
+                  <button 
+                    type="button"
+                    onClick={addBulkItemRow}
+                    className="text-xs font-bold bg-emerald-50 text-emerald-600 px-4 py-2 rounded-xl border border-emerald-100 flex items-center gap-2 hover:bg-emerald-100 transition-all"
+                  >
+                    <Plus size={14} /> Adicionar Outro Item
+                  </button>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full border-separate border-spacing-y-2">
+                    <thead>
+                      <tr className="text-left">
+                        <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest">Nome do Item</th>
+                        <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-24">Qtd</th>
+                        <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-24">Mín</th>
+                        <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-32">Lote</th>
+                        <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-48">Validade</th>
+                        <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-32">Preço Un.</th>
+                        <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-10"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {bulkEntry.items.map((item, index) => (
+                        <tr key={item.id} className="group">
+                          <td className="px-2">
+                            <input 
+                              required
+                              list="item-suggestions"
+                              type="text"
+                              placeholder="Nome do produto"
+                              className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 text-sm font-bold"
+                              value={item.name}
+                              onChange={e => updateBulkItem(item.id, 'name', e.target.value)}
+                            />
+                          </td>
+                          <td className="px-2">
+                            <input 
+                              required
+                              type="number"
+                              min="1"
+                              className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 text-sm font-bold"
+                              value={isNaN(item.initial_quantity) ? '' : item.initial_quantity}
+                              onChange={e => updateBulkItem(item.id, 'initial_quantity', e.target.value === '' ? NaN : parseInt(e.target.value))}
+                            />
+                          </td>
+                          <td className="px-2">
+                            <input 
+                              required
+                              type="number"
+                              min="0"
+                              className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 text-sm font-bold"
+                              value={isNaN(item.min_quantity) ? '' : item.min_quantity}
+                              onChange={e => updateBulkItem(item.id, 'min_quantity', e.target.value === '' ? NaN : parseInt(e.target.value))}
+                            />
+                          </td>
+                          <td className="px-2">
+                            <input 
+                              type="text"
+                              placeholder="Lote"
+                              className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 text-sm font-bold"
+                              value={item.batch_number}
+                              onChange={e => updateBulkItem(item.id, 'batch_number', e.target.value)}
+                            />
+                          </td>
+                          <td className="px-2">
+                            <div className="flex flex-col gap-1">
+                              <input 
+                                type="date"
+                                disabled={item.is_indeterminate_expiry}
+                                className="w-full px-4 py-2 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 text-xs font-bold disabled:opacity-30"
+                                value={item.expiry_date}
+                                onChange={e => updateBulkItem(item.id, 'expiry_date', e.target.value)}
+                              />
+                              <label className="flex items-center gap-1 cursor-pointer">
+                                <input 
+                                  type="checkbox"
+                                  className="w-3 h-3 rounded border-gray-300 text-[#1C1917]"
+                                  checked={item.is_indeterminate_expiry}
+                                  onChange={e => updateBulkItem(item.id, 'is_indeterminate_expiry', e.target.checked)}
+                                />
+                                <span className="text-[9px] font-bold text-[#78716C] uppercase">Indeterminada</span>
+                              </label>
+                            </div>
+                          </td>
+                          <td className="px-2">
+                            <input 
+                              type="number"
+                              step="0.01"
+                              placeholder="0,00"
+                              className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 text-sm font-bold"
+                              value={isNaN(item.unit_price) ? '' : item.unit_price}
+                              onChange={e => updateBulkItem(item.id, 'unit_price', e.target.value === '' ? NaN : parseFloat(e.target.value))}
+                            />
+                          </td>
+                          <td className="px-2">
+                            {bulkEntry.items.length > 1 && (
+                              <button 
+                                type="button"
+                                onClick={() => removeBulkItemRow(item.id)}
+                                className="p-2 text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
+                              >
+                                <Trash2 size={18} />
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <datalist id="item-suggestions">
+                  {Array.from(new Set(items.map(i => i.name))).map(name => (
+                    <option key={name} value={name} />
+                  ))}
+                </datalist>
+              </div>
+
+              <div className="flex gap-4 pt-6 border-t border-[#E7E5E4]">
                 <button 
                   type="button"
                   onClick={() => setShowAddModal(false)}
-                  className="flex-1 px-4 py-3 rounded-xl font-bold text-[#78716C] hover:bg-[#F5F5F4] transition-all"
+                  className="flex-1 px-6 py-4 rounded-2xl font-bold text-[#78716C] hover:bg-[#F5F5F4] transition-all"
                 >
                   Cancelar
                 </button>
                 <button 
                   type="submit"
-                  className="flex-1 px-4 py-3 bg-[#1C1917] text-white rounded-xl font-bold hover:bg-[#292524] transition-all"
+                  className="flex-[2] px-6 py-4 bg-[#1C1917] text-white rounded-2xl font-bold hover:bg-[#292524] transition-all shadow-lg shadow-[#1C1917]/20 flex items-center justify-center gap-3"
                 >
-                  Salvar
+                  <Save size={20} /> Finalizar Entrada de {bulkEntry.items.length} Itens
                 </button>
               </div>
             </form>
