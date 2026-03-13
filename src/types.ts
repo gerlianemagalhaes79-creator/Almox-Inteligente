@@ -20,4 +20,6 @@ export interface Transaction {
   quantity: number;
   sector?: string;
   date: string;
+  responsible?: string;
+  supplier?: string;
 }

@@ -128,18 +128,21 @@ export default function App() {
     name: '', 
     min_quantity: 5, 
     expiry_date: '', 
+    is_indeterminate_expiry: false,
     origin: 'extra' as 'contract' | 'extra', 
     unit_price: 0,
     supplier: '',
     category: 'Expediente',
     initial_quantity: 1,
-    batch_number: ''
+    batch_number: '',
+    responsible: ''
   });
   const [categories, setCategories] = useState<string[]>(['Médico Hospitalar', 'Alimentício', 'Expediente', 'Higiene', 'Radiológico']);
   const [showNewCategoryInput, setShowNewCategoryInput] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
   
   const [transactionQty, setTransactionQty] = useState(1);
+  const [transactionResponsible, setTransactionResponsible] = useState('');
   const [selectedSector, setSelectedSector] = useState(SECTORS[0]);
   const [selectedItemId, setSelectedItemId] = useState<string>('');
   const [selectedItemName, setSelectedItemName] = useState<string>('');
@@ -240,10 +243,12 @@ export default function App() {
           const itemDoc = doc(db, 'items', existingItem.id);
           const transCol = collection(db, 'transactions');
           
+          const expiryValue = newItem.is_indeterminate_expiry ? 'Indeterminada' : newItem.expiry_date;
+
           transaction.update(itemDoc, {
             quantity: existingItem.quantity + initial_qty,
             min_quantity: min_qty,
-            expiry_date: newItem.expiry_date || existingItem.expiry_date,
+            expiry_date: expiryValue || existingItem.expiry_date,
             unit_price: price || existingItem.unit_price,
             supplier: newItem.supplier || existingItem.supplier,
             category: newItem.category || existingItem.category
@@ -255,17 +260,21 @@ export default function App() {
             item_name: existingItem.name,
             type: 'entry',
             quantity: initial_qty,
-            date: new Date().toISOString()
+            date: new Date().toISOString(),
+            responsible: newItem.responsible,
+            supplier: newItem.supplier || existingItem.supplier
           });
         });
       } else {
         const itemCol = collection(db, 'items');
         const transCol = collection(db, 'transactions');
         
+        const expiryValue = newItem.is_indeterminate_expiry ? 'Indeterminada' : newItem.expiry_date;
+
         const itemRef = await addDoc(itemCol, {
           name: newItem.name,
           min_quantity: min_qty,
-          expiry_date: newItem.expiry_date,
+          expiry_date: expiryValue,
           origin: newItem.origin,
           unit_price: price,
           supplier: newItem.supplier,
@@ -280,7 +289,9 @@ export default function App() {
           item_name: newItem.name,
           type: 'entry',
           quantity: initial_qty,
-          date: new Date().toISOString()
+          date: new Date().toISOString(),
+          responsible: newItem.responsible,
+          supplier: newItem.supplier
         });
       }
 
@@ -289,12 +300,14 @@ export default function App() {
         name: '', 
         min_quantity: 5, 
         expiry_date: '', 
+        is_indeterminate_expiry: false,
         origin: 'extra', 
         unit_price: 0,
         supplier: '',
         category: 'Expediente',
         initial_quantity: 1,
-        batch_number: ''
+        batch_number: '',
+        responsible: ''
       });
     } catch (error: any) {
       console.error('Erro ao salvar item:', error);
@@ -328,7 +341,8 @@ export default function App() {
               type: 'exit',
               quantity: b.quantity,
               sector: selectedSector,
-              date: new Date().toISOString()
+              date: new Date().toISOString(),
+              responsible: transactionResponsible
             });
           }
         });
@@ -354,13 +368,16 @@ export default function App() {
             type: 'entry',
             quantity: transactionQty,
             sector: null,
-            date: new Date().toISOString()
+            date: new Date().toISOString(),
+            responsible: transactionResponsible,
+            supplier: item.supplier
           });
         });
       }
 
       setShowTransactionModal({ show: false, type: 'entry' });
       setTransactionQty(1);
+      setTransactionResponsible('');
       setSelectedSector(SECTORS[0]);
       setSelectedItemId('');
       setBasket([]);
@@ -431,15 +448,19 @@ export default function App() {
       categoryData[cat] = (categoryData[cat] || 0) + item.quantity;
     });
 
-    // Group by sector for bar chart
-    const sectorData: Record<string, { quantity: number, value: number }> = {};
+    // Group by sector for bar chart (stacked by category)
+    const sectorData: Record<string, any> = {};
+    const categoriesInSector: Set<string> = new Set();
+
     filteredTrans.filter(t => t.type === 'exit' && t.sector).forEach(t => {
       const item = items.find(i => i.id === t.item_id);
-      const value = t.quantity * (item?.unit_price || 0);
+      const category = item?.category || 'Outros';
+      categoriesInSector.add(category);
       
-      if (!sectorData[t.sector!]) sectorData[t.sector!] = { quantity: 0, value: 0 };
-      sectorData[t.sector!].quantity += t.quantity;
-      sectorData[t.sector!].value += value;
+      if (!sectorData[t.sector!]) {
+        sectorData[t.sector!] = { name: t.sector };
+      }
+      sectorData[t.sector!][category] = (sectorData[t.sector!][category] || 0) + t.quantity;
     });
 
     // Detailed items for the selected sector
@@ -475,7 +496,8 @@ export default function App() {
       exits,
       daily: Object.values(dailyData).sort((a, b) => a.date.localeCompare(b.date)),
       categories: Object.entries(categoryData).map(([name, value]) => ({ name, value })),
-      sectors: Object.entries(sectorData).map(([name, data]) => ({ name, quantity: data.quantity, value: data.value })),
+      sectors: Object.values(sectorData),
+      categoriesInSector: Array.from(categoriesInSector),
       suppliers: Object.entries(supplierData).map(([name, value]) => ({ name, value })),
       sectorItems: Object.values(sectorItems).sort((a, b) => b.value - a.value),
       totalValue
@@ -522,7 +544,7 @@ export default function App() {
   }
 
   const isNearExpiry = (dateStr: string | null) => {
-    if (!dateStr) return false;
+    if (!dateStr || dateStr === 'Indeterminada') return false;
     const expiry = new Date(dateStr);
     const now = new Date();
     const oneMonthFromNow = new Date();
@@ -812,7 +834,11 @@ export default function App() {
                         <p className="text-xs text-[#78716C]">
                           {t.type === 'entry' ? 'Entrada' : `Saída para ${t.sector || '---'}`} de {t.quantity} unidades
                         </p>
-                        <p className="text-[10px] text-[#A8A29E] mt-1">{new Date(t.date).toLocaleString('pt-BR')}</p>
+                        <div className="flex flex-wrap gap-2 mt-1">
+                          <p className="text-[10px] text-[#A8A29E]">{new Date(t.date).toLocaleString('pt-BR')}</p>
+                          {t.responsible && <p className="text-[10px] text-blue-600 font-bold">Por: {t.responsible}</p>}
+                          {t.supplier && <p className="text-[10px] text-amber-600 font-bold">De: {t.supplier}</p>}
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -932,8 +958,8 @@ export default function App() {
                           <td className="px-6 py-4 text-xs text-[#A8A29E]">---</td>
                           <td className="px-6 py-4">
                             {item.expiry_date ? (
-                              <span className={`text-xs ${isNearExpiry(item.expiry_date) ? 'text-red-600 font-bold' : 'text-[#57534E]'}`}>
-                                {new Date(item.expiry_date).toLocaleDateString('pt-BR')}
+                              <span className={`text-xs ${item.expiry_date === 'Indeterminada' ? 'text-blue-600 font-bold' : isNearExpiry(item.expiry_date) ? 'text-red-600 font-bold' : 'text-[#57534E]'}`}>
+                                {item.expiry_date === 'Indeterminada' ? 'Indeterminada' : new Date(item.expiry_date).toLocaleDateString('pt-BR')}
                               </span>
                             ) : (
                               <span className="text-[#A8A29E] text-xs italic">N/A</span>
@@ -997,6 +1023,7 @@ export default function App() {
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Item</th>
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Tipo</th>
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Setor</th>
+                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Responsável</th>
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">Quantidade</th>
                   </tr>
                 </thead>
@@ -1015,6 +1042,9 @@ export default function App() {
                       </td>
                       <td className="px-6 py-5 text-sm font-medium text-[#78716C]">
                         {t.sector || '---'}
+                      </td>
+                      <td className="px-6 py-5 text-sm text-[#78716C]">
+                        {t.responsible || '---'}
                       </td>
                       <td className="px-6 py-5 text-right font-bold text-lg">
                         {t.quantity}
@@ -1148,7 +1178,7 @@ export default function App() {
                 {/* Exits by Sector */}
                 <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
                   <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
-                    <ArrowUpRight size={18} className="text-rose-600" /> Saídas por Setor (Quantidade)
+                    <ArrowUpRight size={18} className="text-rose-600" /> Saídas por Setor (Quantidade por Tipo)
                   </h4>
                   <div className="h-[300px] w-full">
                     <ResponsiveContainer width="100%" height="100%">
@@ -1160,11 +1190,17 @@ export default function App() {
                           cursor={{fill: '#FAFAF9'}}
                           contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
                         />
-                        <Bar dataKey="quantity" name="Quantidade" radius={[0, 8, 8, 0]} barSize={20}>
-                          {reportData.sectors.map((entry, index) => (
-                            <Cell key={`cell-${index}`} fill={SECTOR_COLORS[entry.name] || '#1C1917'} />
-                          ))}
-                        </Bar>
+                        {reportData.categoriesInSector.map((cat: string) => (
+                          <Bar 
+                            key={cat} 
+                            dataKey={cat} 
+                            name={cat} 
+                            stackId="a" 
+                            fill={getCategoryColor(cat)} 
+                            radius={[0, 0, 0, 0]} 
+                            barSize={20} 
+                          />
+                        ))}
                         <Legend />
                       </BarChart>
                     </ResponsiveContainer>
@@ -1318,13 +1354,36 @@ export default function App() {
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-[#57534E] mb-1">Data de Validade</label>
-                  <input 
-                    type="date" 
-                    className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10"
-                    value={newItem.expiry_date}
-                    onChange={e => setNewItem({...newItem, expiry_date: e.target.value})}
-                  />
+                  <div className="flex flex-col gap-2">
+                    <input 
+                      type="date" 
+                      disabled={newItem.is_indeterminate_expiry}
+                      className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 disabled:opacity-50"
+                      value={newItem.expiry_date}
+                      onChange={e => setNewItem({...newItem, expiry_date: e.target.value})}
+                    />
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input 
+                        type="checkbox"
+                        className="w-4 h-4 rounded border-gray-300 text-[#1C1917] focus:ring-[#1C1917]"
+                        checked={newItem.is_indeterminate_expiry}
+                        onChange={e => setNewItem({...newItem, is_indeterminate_expiry: e.target.checked})}
+                      />
+                      <span className="text-xs font-bold text-[#78716C]">Validade Indeterminada</span>
+                    </label>
+                  </div>
                 </div>
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-[#57534E] mb-1">Responsável pela Entrada</label>
+                <input 
+                  required
+                  type="text" 
+                  placeholder="Nome do responsável"
+                  className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10"
+                  value={newItem.responsible}
+                  onChange={e => setNewItem({...newItem, responsible: e.target.value})}
+                />
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -1619,6 +1678,18 @@ export default function App() {
                   </div>
                 </div>
               )}
+              
+              <div>
+                <label className="block text-sm font-bold text-[#57534E] mb-2">Responsável pela Movimentação</label>
+                <input 
+                  required
+                  type="text" 
+                  placeholder="Nome do responsável"
+                  className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10"
+                  value={transactionResponsible}
+                  onChange={e => setTransactionResponsible(e.target.value)}
+                />
+              </div>
               
               <div className="flex gap-3 pt-4">
                 <button 
