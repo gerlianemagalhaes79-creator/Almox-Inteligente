@@ -153,6 +153,7 @@ export default function App() {
     end: format(new Date(), 'yyyy-MM-dd')
   });
   const [reportSectorFilter, setReportSectorFilter] = useState<string>('all');
+  const [originFilter, setOriginFilter] = useState<'all' | 'contract' | 'extra'>('all');
 
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
 
@@ -259,6 +260,7 @@ export default function App() {
             item_id: existingItem.id,
             item_name: existingItem.name,
             type: 'entry',
+            origin: existingItem.origin,
             quantity: initial_qty,
             date: new Date().toISOString(),
             responsible: newItem.responsible,
@@ -288,6 +290,7 @@ export default function App() {
           item_id: itemRef.id,
           item_name: newItem.name,
           type: 'entry',
+          origin: newItem.origin,
           quantity: initial_qty,
           date: new Date().toISOString(),
           responsible: newItem.responsible,
@@ -339,6 +342,7 @@ export default function App() {
               item_id: item.id,
               item_name: item.name,
               type: 'exit',
+              origin: item.origin,
               quantity: b.quantity,
               sector: selectedSector,
               date: new Date().toISOString(),
@@ -366,6 +370,7 @@ export default function App() {
             item_id: item.id,
             item_name: item.name,
             type: 'entry',
+            origin: item.origin,
             quantity: transactionQty,
             sector: null,
             date: new Date().toISOString(),
@@ -431,6 +436,23 @@ export default function App() {
 
     const entries = filteredTrans.filter(t => t.type === 'entry').reduce((sum, t) => sum + t.quantity, 0);
     const exits = filteredTrans.filter(t => t.type === 'exit').reduce((sum, t) => sum + t.quantity, 0);
+
+    // Extra vs Contract stats
+    const originStats = {
+      extra: { entries: 0, exits: 0, current: 0 },
+      contract: { entries: 0, exits: 0, current: 0 }
+    };
+
+    filteredTrans.forEach(t => {
+      const origin = t.origin || 'contract';
+      if (t.type === 'entry') originStats[origin].entries += t.quantity;
+      else originStats[origin].exits += t.quantity;
+    });
+
+    items.forEach(item => {
+      const origin = item.origin || 'contract';
+      originStats[origin].current += item.quantity;
+    });
 
     // Group by date for line chart
     const dailyData: Record<string, { date: string, entries: number, exits: number }> = {};
@@ -500,7 +522,8 @@ export default function App() {
       categoriesInSector: Array.from(categoriesInSector),
       suppliers: Object.entries(supplierData).map(([name, value]) => ({ name, value })),
       sectorItems: Object.values(sectorItems).sort((a, b) => b.value - a.value),
-      totalValue
+      totalValue,
+      originStats
     };
   }, [transactions, items, reportRange, reportSectorFilter]);
 
@@ -559,10 +582,11 @@ export default function App() {
   const totalVolume = items.reduce((sum, item) => sum + item.quantity, 0);
 
   const filteredItems = items.filter(i => 
-    i.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+    (i.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
     i.supplier?.toLowerCase().includes(searchTerm.toLowerCase()) ||
     i.category?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    i.batch_number?.toLowerCase().includes(searchTerm.toLowerCase())
+    i.batch_number?.toLowerCase().includes(searchTerm.toLowerCase())) &&
+    (originFilter === 'all' || i.origin === originFilter)
   );
 
   const groupedItems = filteredItems.reduce((acc, item) => {
@@ -706,6 +730,20 @@ export default function App() {
                 onChange={(e) => setSearchTerm(e.target.value)}
               />
             </div>
+            {activeTab === 'inventory' && (
+              <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-xl border border-[#E7E5E4]">
+                <Filter size={16} className="text-[#A8A29E]" />
+                <select 
+                  className="text-xs font-bold focus:outline-none bg-transparent"
+                  value={originFilter}
+                  onChange={e => setOriginFilter(e.target.value as any)}
+                >
+                  <option value="all">Todas Origens</option>
+                  <option value="contract">Contrato</option>
+                  <option value="extra">Extra</option>
+                </select>
+              </div>
+            )}
             <button 
               onClick={() => setShowAddModal(true)}
               className="bg-[#1C1917] text-white px-5 py-2 rounded-xl font-medium flex items-center gap-2 hover:bg-[#292524] transition-all shadow-sm"
@@ -1109,6 +1147,24 @@ export default function App() {
                     <h3 className="text-3xl font-black">{items.length}</h3>
                   </div>
                 </div>
+                <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
+                  <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Entradas Extras (Mês)</p>
+                  <div className="flex items-center gap-3">
+                    <div className="bg-purple-100 p-2 rounded-xl text-purple-600">
+                      <Plus size={20} />
+                    </div>
+                    <h3 className="text-3xl font-black">{reportData.originStats.extra.entries}</h3>
+                  </div>
+                </div>
+                <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
+                  <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Saídas Extras (Mês)</p>
+                  <div className="flex items-center gap-3">
+                    <div className="bg-orange-100 p-2 rounded-xl text-orange-600">
+                      <LogOut size={20} />
+                    </div>
+                    <h3 className="text-3xl font-black">{reportData.originStats.extra.exits}</h3>
+                  </div>
+                </div>
               </div>
 
               {/* Charts Grid */}
@@ -1225,6 +1281,47 @@ export default function App() {
                         />
                         <Bar dataKey="value" name="Valor Total" fill="#f59e0b" radius={[0, 8, 8, 0]} barSize={20} />
                         <Legend />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* Extra vs Contract Comparison */}
+                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
+                  <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
+                    <BarChart3 size={18} className="text-purple-600" /> Comparativo: Contrato vs Extra
+                  </h4>
+                  <div className="h-[300px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart 
+                        data={[
+                          { 
+                            name: 'Entradas', 
+                            contrato: reportData.originStats.contract.entries, 
+                            extra: reportData.originStats.extra.entries 
+                          },
+                          { 
+                            name: 'Saídas', 
+                            contrato: reportData.originStats.contract.exits, 
+                            extra: reportData.originStats.extra.exits 
+                          },
+                          { 
+                            name: 'Estoque Atual', 
+                            contrato: reportData.originStats.contract.current, 
+                            extra: reportData.originStats.extra.current 
+                          }
+                        ]}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F5F5F4" />
+                        <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#1C1917', fontWeight: 'bold'}} />
+                        <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
+                        <Tooltip 
+                          cursor={{fill: '#FAFAF9'}}
+                          contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                        />
+                        <Legend />
+                        <Bar dataKey="contrato" name="Contrato" fill="#1C1917" radius={[8, 8, 0, 0]} barSize={40} />
+                        <Bar dataKey="extra" name="Extra" fill="#8b5cf6" radius={[8, 8, 0, 0]} barSize={40} />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>

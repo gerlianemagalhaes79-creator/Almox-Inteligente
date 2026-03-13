@@ -17,6 +17,7 @@ export interface Transaction {
   item_id: string;
   item_name: string;
   type: 'entry' | 'exit';
+  origin: 'contract' | 'extra';
   quantity: number;
   sector?: string;
   date: string;

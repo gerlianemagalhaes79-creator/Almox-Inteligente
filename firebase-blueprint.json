@@ -27,6 +27,7 @@
         "item_id": { "type": "string", "description": "ID of the item document" },
         "item_name": { "type": "string", "description": "Name of the item at time of transaction" },
         "type": { "type": "string", "enum": ["entry", "exit"], "description": "Type of movement" },
+        "origin": { "type": "string", "enum": ["contract", "extra"], "description": "Origin of the item (contract or extra)" },
         "quantity": { "type": "number", "description": "Quantity moved" },
         "sector": { "type": "string", "description": "Destination sector for exits" },
         "date": { "type": "string", "format": "date-time", "description": "Transaction date" }
