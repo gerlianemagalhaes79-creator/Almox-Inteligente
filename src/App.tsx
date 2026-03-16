@@ -185,6 +185,7 @@ export default function App() {
   
   const [transactionQty, setTransactionQty] = useState(1);
   const [exitReason, setExitReason] = useState<'consumo' | 'doacao' | 'vencido'>('consumo');
+  const [expiryReason, setExpiryReason] = useState('');
   const [selectedSector, setSelectedSector] = useState(SECTORS[0]);
   const [selectedItemId, setSelectedItemId] = useState<string>('');
   const [selectedItemName, setSelectedItemName] = useState<string>('');
@@ -492,6 +493,7 @@ export default function App() {
               responsible: user?.displayName || 'Sistema',
               responsibleEmail: user?.email || '',
               exitReason: exitReason,
+              expiryReason: exitReason === 'vencido' ? expiryReason : null,
               batch_number: item.batch_number,
               expiry_date: item.expiry_date
             });
@@ -533,6 +535,7 @@ export default function App() {
       setShowTransactionModal({ show: false, type: 'entry' });
       setTransactionQty(1);
       setExitReason('consumo');
+      setExpiryReason('');
       setSelectedSector(SECTORS[0]);
       setSelectedItemId('');
       setBasket([]);
@@ -1243,7 +1246,10 @@ export default function App() {
                             Lote: {t.batch_number || 'N/A'} | Val: {t.expiry_date ? new Date(t.expiry_date).toLocaleDateString('pt-BR') : 'N/A'}
                           </div>
                           {t.exitReason && t.exitReason !== 'consumo' && (
-                            <div className="text-[10px] text-rose-500 font-bold mt-1 uppercase">Motivo Saída: {t.exitReason}</div>
+                            <div className="text-[10px] text-rose-500 font-bold mt-1 uppercase">
+                              Motivo Saída: {t.exitReason}
+                              {t.expiryReason && <span className="text-[#78716C] lowercase font-normal ml-1">({t.expiryReason})</span>}
+                            </div>
                           )}
                           {t.deletionReason && (
                             <div className="text-[10px] text-rose-500 font-bold mt-1">Exclusão: {t.deletionReason}</div>
@@ -1964,6 +1970,23 @@ export default function App() {
                       </select>
                     )}
                   </div>
+
+                  {exitReason === 'vencido' && (
+                    <motion.div 
+                      initial={{ opacity: 0, y: -10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="space-y-2"
+                    >
+                      <label className="block text-sm font-bold text-[#57534E]">Justificativa do Vencimento</label>
+                      <textarea 
+                        required
+                        placeholder="Explique por que o item venceu no estoque..."
+                        className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm min-h-[100px] resize-none"
+                        value={expiryReason}
+                        onChange={e => setExpiryReason(e.target.value)}
+                      />
+                    </motion.div>
+                  )}
 
                   <div className="space-y-4">
                     <label className="block text-sm font-bold text-[#57534E]">Itens para Saída</label>

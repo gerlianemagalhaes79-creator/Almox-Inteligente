@@ -28,6 +28,7 @@ export interface Transaction {
   deletionReason?: string;
   deletedByEmail?: string;
   exitReason?: 'consumo' | 'doacao' | 'vencido';
+  expiryReason?: string;
   batch_number?: string;
   expiry_date?: string;
 }
