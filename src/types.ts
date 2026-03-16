@@ -22,7 +22,12 @@ export interface Transaction {
   sector?: string;
   date: string;
   responsible?: string;
+  responsibleEmail?: string;
   supplier?: string;
   deletedAt?: string;
   deletionReason?: string;
+  deletedByEmail?: string;
+  exitReason?: 'consumo' | 'doacao' | 'vencido';
+  batch_number?: string;
+  expiry_date?: string;
 }

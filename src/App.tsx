@@ -33,6 +33,7 @@ import {
   addDoc, 
   updateDoc, 
   setDoc,
+  getDoc,
   doc, 
   query, 
   orderBy, 
@@ -134,7 +135,6 @@ export default function App() {
   const [bulkEntry, setBulkEntry] = useState({
     supplier: '',
     category: 'Expediente',
-    responsible: '',
     origin: 'extra' as 'contract' | 'extra',
     items: [{
       id: Math.random().toString(36).substr(2, 9),
@@ -184,7 +184,7 @@ export default function App() {
   };
   
   const [transactionQty, setTransactionQty] = useState(1);
-  const [transactionResponsible, setTransactionResponsible] = useState('');
+  const [exitReason, setExitReason] = useState<'consumo' | 'doacao' | 'vencido'>('consumo');
   const [selectedSector, setSelectedSector] = useState(SECTORS[0]);
   const [selectedItemId, setSelectedItemId] = useState<string>('');
   const [selectedItemName, setSelectedItemName] = useState<string>('');
@@ -204,12 +204,6 @@ export default function App() {
     const fromTrans = transactions.map(t => t.supplier).filter(Boolean) as string[];
     return Array.from(new Set([...fromItems, ...fromTrans])).sort();
   }, [items, transactions]);
-
-  const uniqueResponsibles = useMemo(() => {
-    const fromTrans = transactions.map(t => t.responsible).filter(Boolean) as string[];
-    const fromBulk = bulkEntry.responsible ? [bulkEntry.responsible] : [];
-    return Array.from(new Set([...fromTrans, ...fromBulk])).sort();
-  }, [transactions, bulkEntry.responsible]);
 
   const toggleExpand = (name: string) => {
     const newExpanded = new Set(expandedItems);
@@ -262,7 +256,10 @@ export default function App() {
 
     const qTrans = query(collection(db, 'transactions'), orderBy('date', 'desc'));
     const unsubscribeTrans = onSnapshot(qTrans, (snapshot) => {
-      const transData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Transaction));
+      const fifteenDaysAgo = subDays(new Date(), 15);
+      const transData = snapshot.docs
+        .map(doc => ({ id: doc.id, ...doc.data() } as Transaction))
+        .filter(t => !t.deletedAt || new Date(t.deletedAt) > fifteenDaysAgo);
       setTransactions(transData);
     });
 
@@ -297,10 +294,32 @@ export default function App() {
     if (!id) return;
     try {
       const transRef = doc(db, 'transactions', id);
-      await updateDoc(transRef, {
-        deletedAt: new Date().toISOString(),
-        deletionReason: reason || 'Sem justificativa'
+      const transSnap = await getDoc(transRef);
+      if (!transSnap.exists()) return;
+      const transData = transSnap.data() as Transaction;
+
+      await runTransaction(db, async (transaction) => {
+        const itemRef = doc(db, 'items', transData.item_id);
+        const itemSnap = await transaction.get(itemRef);
+        
+        if (itemSnap.exists()) {
+          const itemData = itemSnap.data() as Item;
+          let newQty = itemData.quantity;
+          if (transData.type === 'entry') {
+            newQty -= transData.quantity;
+          } else {
+            newQty += transData.quantity;
+          }
+          transaction.update(itemRef, { quantity: Math.max(0, newQty) });
+        }
+
+        transaction.update(transRef, {
+          deletedAt: new Date().toISOString(),
+          deletionReason: reason || 'Sem justificativa',
+          deletedByEmail: user?.email
+        });
       });
+
       setShowDeleteModal({ show: false });
       setDeletionReason('');
     } catch (error) {
@@ -312,9 +331,30 @@ export default function App() {
   const handleRecoverTransaction = async (id: string) => {
     try {
       const transRef = doc(db, 'transactions', id);
-      await updateDoc(transRef, {
-        deletedAt: null,
-        deletionReason: null
+      const transSnap = await getDoc(transRef);
+      if (!transSnap.exists()) return;
+      const transData = transSnap.data() as Transaction;
+
+      await runTransaction(db, async (transaction) => {
+        const itemRef = doc(db, 'items', transData.item_id);
+        const itemSnap = await transaction.get(itemRef);
+        
+        if (itemSnap.exists()) {
+          const itemData = itemSnap.data() as Item;
+          let newQty = itemData.quantity;
+          if (transData.type === 'entry') {
+            newQty += transData.quantity;
+          } else {
+            newQty -= transData.quantity;
+          }
+          transaction.update(itemRef, { quantity: Math.max(0, newQty) });
+        }
+
+        transaction.update(transRef, {
+          deletedAt: null,
+          deletionReason: null,
+          deletedByEmail: null
+        });
       });
     } catch (error) {
       console.error("Error recovering transaction:", error);
@@ -361,7 +401,8 @@ export default function App() {
               origin: bulkEntry.origin,
               quantity: initial_qty,
               date: new Date().toISOString(),
-              responsible: bulkEntry.responsible,
+              responsible: user?.displayName || 'Sistema',
+              responsibleEmail: user?.email || '',
               supplier: bulkEntry.supplier || existingItem.supplier
             });
           });
@@ -391,7 +432,8 @@ export default function App() {
             origin: bulkEntry.origin,
             quantity: initial_qty,
             date: new Date().toISOString(),
-            responsible: bulkEntry.responsible,
+            responsible: user?.displayName || 'Sistema',
+            responsibleEmail: user?.email || '',
             supplier: bulkEntry.supplier
           });
         }
@@ -401,7 +443,6 @@ export default function App() {
       setBulkEntry({ 
         supplier: '',
         category: 'Expediente',
-        responsible: '',
         origin: 'extra',
         items: [{
           id: Math.random().toString(36).substr(2, 9),
@@ -448,7 +489,11 @@ export default function App() {
               quantity: b.quantity,
               sector: selectedSector,
               date: new Date().toISOString(),
-              responsible: transactionResponsible
+              responsible: user?.displayName || 'Sistema',
+              responsibleEmail: user?.email || '',
+              exitReason: exitReason,
+              batch_number: item.batch_number,
+              expiry_date: item.expiry_date
             });
           }
         });
@@ -476,7 +521,10 @@ export default function App() {
             quantity: transactionQty,
             sector: null,
             date: new Date().toISOString(),
-            responsible: transactionResponsible,
+            responsible: user?.displayName || 'Sistema',
+            responsibleEmail: user?.email || '',
+            batch_number: item.batch_number,
+            expiry_date: item.expiry_date,
             supplier: item.supplier
           });
         });
@@ -484,7 +532,7 @@ export default function App() {
 
       setShowTransactionModal({ show: false, type: 'entry' });
       setTransactionQty(1);
-      setTransactionResponsible('');
+      setExitReason('consumo');
       setSelectedSector(SECTORS[0]);
       setSelectedItemId('');
       setBasket([]);
@@ -1191,8 +1239,17 @@ export default function App() {
                         </td>
                         <td className="px-6 py-5">
                           <div className="font-bold">{t.item_name}</div>
+                          <div className="text-[10px] text-[#A8A29E]">
+                            Lote: {t.batch_number || 'N/A'} | Val: {t.expiry_date ? new Date(t.expiry_date).toLocaleDateString('pt-BR') : 'N/A'}
+                          </div>
+                          {t.exitReason && t.exitReason !== 'consumo' && (
+                            <div className="text-[10px] text-rose-500 font-bold mt-1 uppercase">Motivo Saída: {t.exitReason}</div>
+                          )}
                           {t.deletionReason && (
-                            <div className="text-[10px] text-rose-500 font-bold mt-1">Motivo: {t.deletionReason}</div>
+                            <div className="text-[10px] text-rose-500 font-bold mt-1">Exclusão: {t.deletionReason}</div>
+                          )}
+                          {t.deletedByEmail && (
+                            <div className="text-[10px] text-rose-400 mt-0.5 italic">Por: {t.deletedByEmail}</div>
                           )}
                         </td>
                         <td className="px-6 py-5">
@@ -1205,7 +1262,8 @@ export default function App() {
                           {t.sector || '---'}
                         </td>
                         <td className="px-6 py-5 text-sm text-[#78716C]">
-                          {t.responsible || '---'}
+                          <div className="font-medium">{t.responsible || '---'}</div>
+                          <div className="text-[10px] opacity-70">{t.responsibleEmail}</div>
                         </td>
                         <td className="px-6 py-5 text-right font-bold text-lg">
                           {t.quantity}
@@ -1623,19 +1681,6 @@ export default function App() {
                 </div>
 
                 <div className="lg:col-span-1">
-                  <label className="block text-xs font-black text-[#78716C] uppercase tracking-widest mb-2">Responsável</label>
-                  <input 
-                    required
-                    list="responsible-suggestions"
-                    type="text" 
-                    placeholder="Quem está recebendo?"
-                    className="w-full px-4 py-3 bg-white border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
-                    value={bulkEntry.responsible}
-                    onChange={e => setBulkEntry({...bulkEntry, responsible: e.target.value})}
-                  />
-                </div>
-
-                <div className="lg:col-span-1">
                   <label className="block text-xs font-black text-[#78716C] uppercase tracking-widest mb-2">Origem</label>
                   <select 
                     className="w-full px-4 py-3 bg-white border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
@@ -1773,11 +1818,6 @@ export default function App() {
                     <option key={s} value={s} />
                   ))}
                 </datalist>
-                <datalist id="responsible-suggestions">
-                  {uniqueResponsibles.map(r => (
-                    <option key={r} value={r} />
-                  ))}
-                </datalist>
               </div>
 
               <div className="flex gap-4 pt-6 border-t border-[#E7E5E4]">
@@ -1863,17 +1903,66 @@ export default function App() {
               ) : (
                 <div className="space-y-6">
                   <div>
-                    <label className="block text-sm font-bold text-[#57534E] mb-2">Setor de Destino</label>
-                    <select 
-                      required
-                      className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10"
-                      value={selectedSector}
-                      onChange={e => setSelectedSector(e.target.value)}
-                    >
-                      {SECTORS.map(sector => (
-                        <option key={sector} value={sector}>{sector}</option>
-                      ))}
-                    </select>
+                    <label className="block text-sm font-bold text-[#57534E] mb-2">Motivo da Saída</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setExitReason('consumo');
+                          setSelectedSector(SECTORS[0]);
+                        }}
+                        className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all ${exitReason === 'consumo' ? 'bg-[#1C1917] text-white border-[#1C1917]' : 'bg-white text-[#78716C] border-[#E7E5E4] hover:bg-[#F5F5F4]'}`}
+                      >
+                        Consumo
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setExitReason('doacao');
+                          setSelectedSector('');
+                        }}
+                        className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all ${exitReason === 'doacao' ? 'bg-[#1C1917] text-white border-[#1C1917]' : 'bg-white text-[#78716C] border-[#E7E5E4] hover:bg-[#F5F5F4]'}`}
+                      >
+                        Doação
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setExitReason('vencido');
+                          setSelectedSector('Descarte');
+                        }}
+                        className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all ${exitReason === 'vencido' ? 'bg-[#1C1917] text-white border-[#1C1917]' : 'bg-white text-[#78716C] border-[#E7E5E4] hover:bg-[#F5F5F4]'}`}
+                      >
+                        Vencido
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-bold text-[#57534E] mb-2">
+                      {exitReason === 'doacao' ? 'Destinatário da Doação' : 'Setor de Destino'}
+                    </label>
+                    {exitReason === 'doacao' ? (
+                      <input 
+                        required
+                        type="text"
+                        placeholder="Digite o destinatário..."
+                        className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
+                        value={selectedSector}
+                        onChange={e => setSelectedSector(e.target.value)}
+                      />
+                    ) : (
+                      <select 
+                        required
+                        className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
+                        value={selectedSector}
+                        onChange={e => setSelectedSector(e.target.value)}
+                      >
+                        {SECTORS.map(sector => (
+                          <option key={sector} value={sector}>{sector}</option>
+                        ))}
+                      </select>
+                    )}
                   </div>
 
                   <div className="space-y-4">
@@ -1980,19 +2069,6 @@ export default function App() {
                   </div>
                 </div>
               )}
-              
-              <div>
-                <label className="block text-sm font-bold text-[#57534E] mb-2">Responsável pela Movimentação</label>
-                <input 
-                  required
-                  list="responsible-suggestions"
-                  type="text" 
-                  placeholder="Nome do responsável"
-                  className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10"
-                  value={transactionResponsible}
-                  onChange={e => setTransactionResponsible(e.target.value)}
-                />
-              </div>
               
               <div className="flex gap-3 pt-4">
                 <button 
