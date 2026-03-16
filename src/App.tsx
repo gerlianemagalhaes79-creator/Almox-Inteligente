@@ -41,7 +41,9 @@ import {
   runTransaction,
   where,
   Timestamp,
-  getDocs
+  getDocs,
+  writeBatch,
+  deleteDoc
 } from 'firebase/firestore';
 import { 
   signInWithPopup, 
@@ -128,6 +130,8 @@ export default function App() {
   const [showTransactionModal, setShowTransactionModal] = useState<{show: boolean, type: 'entry' | 'exit', item?: Item}>({ show: false, type: 'entry' });
   const [showDetailModal, setShowDetailModal] = useState<{show: boolean, type: 'low_stock' | 'expiry', items: Item[]}>({ show: false, type: 'low_stock', items: [] });
   const [showDeleteModal, setShowDeleteModal] = useState<{show: boolean, transactionId?: string}>({ show: false });
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [isCleaning, setIsCleaning] = useState(false);
   const [deletionReason, setDeletionReason] = useState('');
   const [showDeletedHistory, setShowDeletedHistory] = useState(false);
   
@@ -294,24 +298,41 @@ export default function App() {
   const handleDeleteTransaction = async (id: string, reason: string) => {
     if (!id) return;
     try {
-      const transRef = doc(db, 'transactions', id);
-      const transSnap = await getDoc(transRef);
-      if (!transSnap.exists()) return;
-      const transData = transSnap.data() as Transaction;
-
       await runTransaction(db, async (transaction) => {
-        const itemRef = doc(db, 'items', transData.item_id);
-        const itemSnap = await transaction.get(itemRef);
+        const transRef = doc(db, 'transactions', id);
+        const transSnap = await transaction.get(transRef);
         
-        if (itemSnap.exists()) {
-          const itemData = itemSnap.data() as Item;
-          let newQty = itemData.quantity;
-          if (transData.type === 'entry') {
-            newQty -= transData.quantity;
-          } else {
-            newQty += transData.quantity;
+        if (!transSnap.exists()) {
+          throw new Error("Movimentação não encontrada.");
+        }
+        
+        const transData = transSnap.data() as Transaction;
+
+        if (transData.deletedAt) {
+          throw new Error("Esta movimentação já foi excluída.");
+        }
+
+        if (transData.item_id) {
+          const itemRef = doc(db, 'items', transData.item_id);
+          const itemSnap = await transaction.get(itemRef);
+          
+          if (itemSnap.exists()) {
+            const itemData = itemSnap.data() as Item;
+            const qty = Number(transData.quantity) || 0;
+            let currentQty = Number(itemData.quantity) || 0;
+            
+            let newQty;
+            if (transData.type === 'entry') {
+              newQty = currentQty - qty;
+            } else {
+              newQty = currentQty + qty;
+            }
+            
+            transaction.update(itemRef, { 
+              quantity: Math.max(0, newQty),
+              updatedAt: serverTimestamp()
+            });
           }
-          transaction.update(itemRef, { quantity: Math.max(0, newQty) });
         }
 
         transaction.update(transRef, {
@@ -323,32 +344,50 @@ export default function App() {
 
       setShowDeleteModal({ show: false });
       setDeletionReason('');
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error deleting transaction:", error);
-      alert("Erro ao excluir movimentação. Verifique suas permissões.");
+      alert(`Erro ao excluir movimentação: ${error.message}`);
     }
   };
 
   const handleRecoverTransaction = async (id: string) => {
+    if (!id) return;
     try {
-      const transRef = doc(db, 'transactions', id);
-      const transSnap = await getDoc(transRef);
-      if (!transSnap.exists()) return;
-      const transData = transSnap.data() as Transaction;
-
       await runTransaction(db, async (transaction) => {
-        const itemRef = doc(db, 'items', transData.item_id);
-        const itemSnap = await transaction.get(itemRef);
+        const transRef = doc(db, 'transactions', id);
+        const transSnap = await transaction.get(transRef);
         
-        if (itemSnap.exists()) {
-          const itemData = itemSnap.data() as Item;
-          let newQty = itemData.quantity;
-          if (transData.type === 'entry') {
-            newQty += transData.quantity;
-          } else {
-            newQty -= transData.quantity;
+        if (!transSnap.exists()) {
+          throw new Error("Movimentação não encontrada.");
+        }
+        
+        const transData = transSnap.data() as Transaction;
+
+        if (!transData.deletedAt) {
+          throw new Error("Esta movimentação não está excluída.");
+        }
+
+        if (transData.item_id) {
+          const itemRef = doc(db, 'items', transData.item_id);
+          const itemSnap = await transaction.get(itemRef);
+          
+          if (itemSnap.exists()) {
+            const itemData = itemSnap.data() as Item;
+            const qty = Number(transData.quantity) || 0;
+            let currentQty = Number(itemData.quantity) || 0;
+            
+            let newQty;
+            if (transData.type === 'entry') {
+              newQty = currentQty + qty;
+            } else {
+              newQty = currentQty - qty;
+            }
+            
+            transaction.update(itemRef, { 
+              quantity: Math.max(0, newQty),
+              updatedAt: serverTimestamp()
+            });
           }
-          transaction.update(itemRef, { quantity: Math.max(0, newQty) });
         }
 
         transaction.update(transRef, {
@@ -357,9 +396,89 @@ export default function App() {
           deletedByEmail: null
         });
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error recovering transaction:", error);
-      alert("Erro ao recuperar movimentação.");
+      alert(`Erro ao recuperar movimentação: ${error.message}`);
+    }
+  };
+
+  const handleRecoverAllTransactions = async () => {
+    const deletedTrans = transactions.filter(t => !!t.deletedAt);
+    if (deletedTrans.length === 0) return;
+    
+    if (!confirm(`Deseja restaurar todas as ${deletedTrans.length} movimentações excluídas?`)) return;
+
+    try {
+      // We'll process them one by one to ensure stock is updated correctly via transactions
+      for (const t of deletedTrans) {
+        await handleRecoverTransaction(t.id);
+      }
+      alert("Todas as movimentações foram restauradas com sucesso!");
+    } catch (error: any) {
+      console.error("Error recovering all transactions:", error);
+      alert(`Erro ao restaurar movimentações: ${error.message}`);
+    }
+  };
+
+  const handleClearExtraData = async () => {
+    if (!confirm("Deseja apagar TODO o histórico de movimentações e remover permanentemente os produtos 'Extra'? Os produtos de 'Contrato' serão mantidos com saldo zero.")) return;
+    
+    setIsCleaning(true);
+    try {
+      const transSnap = await getDocs(collection(db, 'transactions'));
+      const itemsSnap = await getDocs(collection(db, 'items'));
+      
+      const allDocs: any[] = [];
+      
+      // 1. Delete ALL transactions
+      transSnap.docs.forEach(d => {
+        allDocs.push({ ref: d.ref, type: 'delete' as const });
+      });
+      
+      // 2. Handle items
+      itemsSnap.docs.forEach(d => {
+        const data = d.data();
+        const origin = String(data.origin || '').toLowerCase().trim();
+        
+        // We only keep it if it's explicitly 'contract' or 'contrato'
+        const isContract = origin === 'contract' || origin === 'contrato';
+        
+        if (isContract) {
+          // Keep contract items but reset quantity to zero
+          allDocs.push({ 
+            ref: d.ref, 
+            type: 'update' as const, 
+            data: { quantity: 0, updatedAt: serverTimestamp() } 
+          });
+        } else {
+          // Delete anything else (extra, undefined, test data, etc.)
+          allDocs.push({ ref: d.ref, type: 'delete' as const });
+        }
+      });
+
+      // Process in smaller chunks for safety
+      for (let i = 0; i < allDocs.length; i += 200) {
+        const batch = writeBatch(db);
+        const chunk = allDocs.slice(i, i + 200);
+        
+        chunk.forEach(op => {
+          if (op.type === 'delete') {
+            batch.delete(op.ref);
+          } else if (op.type === 'update' && op.data) {
+            batch.update(op.ref, op.data);
+          }
+        });
+        
+        await batch.commit();
+      }
+      
+      setShowSettingsModal(false);
+      alert("Limpeza concluída com sucesso! Histórico zerado e produtos extras removidos.");
+    } catch (error: any) {
+      console.error("Error clearing data:", error);
+      alert(`Erro ao limpar dados: ${error.message}`);
+    } finally {
+      setIsCleaning(false);
     }
   };
 
@@ -381,17 +500,25 @@ export default function App() {
         if (existingItem) {
           await runTransaction(db, async (transaction) => {
             const itemDoc = doc(db, 'items', existingItem.id);
+            const itemSnap = await transaction.get(itemDoc);
+            
+            if (!itemSnap.exists()) {
+              throw new Error("Item não encontrado durante a atualização.");
+            }
+            
+            const currentItemData = itemSnap.data() as Item;
             const transCol = collection(db, 'transactions');
             
             const expiryValue = itemData.is_indeterminate_expiry ? 'Indeterminada' : itemData.expiry_date;
 
             transaction.update(itemDoc, {
-              quantity: existingItem.quantity + initial_qty,
+              quantity: (Number(currentItemData.quantity) || 0) + initial_qty,
               min_quantity: min_qty,
-              expiry_date: expiryValue || existingItem.expiry_date,
-              unit_price: price || existingItem.unit_price,
-              supplier: bulkEntry.supplier || existingItem.supplier,
-              category: bulkEntry.category || existingItem.category
+              expiry_date: expiryValue || currentItemData.expiry_date,
+              unit_price: price || currentItemData.unit_price,
+              supplier: bulkEntry.supplier || currentItemData.supplier,
+              category: bulkEntry.category || currentItemData.category,
+              updatedAt: serverTimestamp()
             });
 
             const newTransRef = doc(transCol);
@@ -404,7 +531,9 @@ export default function App() {
               date: new Date().toISOString(),
               responsible: user?.displayName || 'Sistema',
               responsibleEmail: user?.email || '',
-              supplier: bulkEntry.supplier || existingItem.supplier
+              supplier: bulkEntry.supplier || currentItemData.supplier,
+              batch_number: itemData.batch_number,
+              expiry_date: expiryValue
             });
           });
         } else {
@@ -471,22 +600,32 @@ export default function App() {
         
         await runTransaction(db, async (transaction) => {
           for (const b of basket) {
-            const item = items.find(i => i.id === b.item_id);
-            if (!item) continue;
+            const itemRef = doc(db, 'items', b.item_id);
+            const itemSnap = await transaction.get(itemRef);
+            
+            if (!itemSnap.exists()) {
+              throw new Error(`Item ${b.item_id} não encontrado.`);
+            }
 
-            const itemDoc = doc(db, 'items', item.id);
+            const currentItemData = itemSnap.data() as Item;
             const transCol = collection(db, 'transactions');
             
-            transaction.update(itemDoc, {
-              quantity: item.quantity - b.quantity
+            const currentQty = Number(currentItemData.quantity) || 0;
+            if (currentQty < b.quantity) {
+              throw new Error(`Estoque insuficiente para o item ${currentItemData.name}. Disponível: ${currentQty}`);
+            }
+
+            transaction.update(itemRef, {
+              quantity: currentQty - b.quantity,
+              updatedAt: serverTimestamp()
             });
 
             const newTransRef = doc(transCol);
             transaction.set(newTransRef, {
-              item_id: item.id,
-              item_name: item.name,
+              item_id: currentItemData.id || b.item_id,
+              item_name: currentItemData.name,
               type: 'exit',
-              origin: item.origin,
+              origin: currentItemData.origin,
               quantity: b.quantity,
               sector: selectedSector,
               date: new Date().toISOString(),
@@ -494,8 +633,8 @@ export default function App() {
               responsibleEmail: user?.email || '',
               exitReason: exitReason,
               expiryReason: exitReason === 'vencido' ? expiryReason : null,
-              batch_number: item.batch_number,
-              expiry_date: item.expiry_date
+              batch_number: currentItemData.batch_number,
+              expiry_date: currentItemData.expiry_date
             });
           }
         });
@@ -508,26 +647,34 @@ export default function App() {
         
         await runTransaction(db, async (transaction) => {
           const itemDoc = doc(db, 'items', item.id);
+          const itemSnap = await transaction.get(itemDoc);
+          
+          if (!itemSnap.exists()) {
+            throw new Error("Item não encontrado.");
+          }
+
+          const currentItemData = itemSnap.data() as Item;
           const transCol = collection(db, 'transactions');
           
           transaction.update(itemDoc, {
-            quantity: item.quantity + transactionQty
+            quantity: (Number(currentItemData.quantity) || 0) + transactionQty,
+            updatedAt: serverTimestamp()
           });
 
           const newTransRef = doc(transCol);
           transaction.set(newTransRef, {
             item_id: item.id,
-            item_name: item.name,
+            item_name: currentItemData.name,
             type: 'entry',
-            origin: item.origin,
+            origin: currentItemData.origin,
             quantity: transactionQty,
             sector: null,
             date: new Date().toISOString(),
             responsible: user?.displayName || 'Sistema',
             responsibleEmail: user?.email || '',
-            batch_number: item.batch_number,
-            expiry_date: item.expiry_date,
-            supplier: item.supplier
+            batch_number: currentItemData.batch_number,
+            expiry_date: currentItemData.expiry_date,
+            supplier: currentItemData.supplier
           });
         });
       }
@@ -720,7 +867,9 @@ export default function App() {
     );
   }
 
-  const isNearExpiry = (dateStr: string | null) => {
+  const isNearExpiry = (item: Item) => {
+    if (item.quantity <= 0) return false;
+    const dateStr = item.expiry_date;
     if (!dateStr || dateStr === 'Indeterminada') return false;
     const expiry = new Date(dateStr);
     const now = new Date();
@@ -729,11 +878,12 @@ export default function App() {
     return expiry <= oneMonthFromNow && expiry >= now;
   };
 
-  const isLowStock = (item: Item) => item.quantity <= item.min_quantity;
+  const isLowStock = (item: Item) => item.quantity > 0 && item.quantity <= item.min_quantity;
 
   const lowStockItems = items.filter(isLowStock);
-  const nearExpiryItems = items.filter(i => isNearExpiry(i.expiry_date));
+  const nearExpiryItems = items.filter(isNearExpiry);
   const totalVolume = items.reduce((sum, item) => sum + item.quantity, 0);
+  const totalInventoryValue = items.reduce((sum, item) => sum + (item.quantity * (item.unit_price || 0)), 0);
 
   const filteredItems = items.filter(i => 
     (i.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
@@ -812,7 +962,10 @@ export default function App() {
               </div>
             </div>
           </div>
-          <button className="flex items-center gap-3 px-4 py-3 rounded-xl text-[#57534E] hover:bg-[#FAFAF9] w-full transition-all">
+          <button 
+            onClick={() => setShowSettingsModal(true)}
+            className="flex items-center gap-3 px-4 py-3 rounded-xl text-[#57534E] hover:bg-[#FAFAF9] w-full transition-all"
+          >
             <Settings size={20} /> Configurações
           </button>
         </div>
@@ -920,48 +1073,63 @@ export default function App() {
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -10 }}
-              className="grid grid-cols-1 md:grid-cols-3 gap-6"
+              className="space-y-6"
             >
               {/* Stats Cards */}
-              <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
-                <div className="flex justify-between items-start mb-4">
-                  <div className="bg-emerald-100 p-3 rounded-2xl text-emerald-600">
-                    <Package size={24} />
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
+                  <div className="flex justify-between items-start mb-4">
+                    <div className="bg-emerald-100 p-3 rounded-2xl text-emerald-600">
+                      <Package size={24} />
+                    </div>
                   </div>
+                  <p className="text-[#78716C] font-medium mb-1">Volume em Estoque</p>
+                  <h3 className="text-4xl font-bold">{totalVolume}</h3>
+                  <p className="text-xs text-[#A8A29E] mt-2 font-bold uppercase tracking-wider">{groupedArray.length} tipos de itens</p>
                 </div>
-                <p className="text-[#78716C] font-medium mb-1">Volume em Estoque</p>
-                <h3 className="text-4xl font-bold">{totalVolume}</h3>
-                <p className="text-xs text-[#A8A29E] mt-2 font-bold uppercase tracking-wider">{groupedArray.length} tipos de itens</p>
-              </div>
 
-              <div 
-                onClick={() => lowStockItems.length > 0 && setShowDetailModal({ show: true, type: 'low_stock', items: lowStockItems })}
-                className={`p-6 rounded-3xl border shadow-sm transition-all cursor-pointer ${lowStockItems.length > 0 ? 'bg-orange-50 border-orange-200 hover:bg-orange-100' : 'bg-white border-[#E7E5E4]'}`}
-              >
-                <div className="flex justify-between items-start mb-4">
-                  <div className={`p-3 rounded-2xl ${lowStockItems.length > 0 ? 'bg-orange-100 text-orange-600' : 'bg-gray-100 text-gray-600'}`}>
-                    <AlertTriangle size={24} />
+                <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
+                  <div className="flex justify-between items-start mb-4">
+                    <div className="bg-blue-100 p-3 rounded-2xl text-blue-600">
+                      <DollarSign size={24} />
+                    </div>
                   </div>
+                  <p className="text-[#78716C] font-medium mb-1">Patrimônio em Estoque</p>
+                  <h3 className="text-4xl font-bold">
+                    {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalInventoryValue)}
+                  </h3>
+                  <p className="text-xs text-[#A8A29E] mt-2 font-bold uppercase tracking-wider">Valor total investido</p>
                 </div>
-                <p className="text-[#78716C] font-medium mb-1">Estoque Baixo</p>
-                <h3 className={`text-4xl font-bold ${lowStockItems.length > 0 ? 'text-orange-600' : ''}`}>{lowStockItems.length}</h3>
-              </div>
 
-              <div 
-                onClick={() => nearExpiryItems.length > 0 && setShowDetailModal({ show: true, type: 'expiry', items: nearExpiryItems })}
-                className={`p-6 rounded-3xl border shadow-sm transition-all cursor-pointer ${nearExpiryItems.length > 0 ? 'bg-red-50 border-red-200 hover:bg-red-100' : 'bg-white border-[#E7E5E4]'}`}
-              >
-                <div className="flex justify-between items-start mb-4">
-                  <div className={`p-3 rounded-2xl ${nearExpiryItems.length > 0 ? 'bg-red-100 text-red-600' : 'bg-gray-100 text-gray-600'}`}>
-                    <Calendar size={24} />
+                <div 
+                  onClick={() => lowStockItems.length > 0 && setShowDetailModal({ show: true, type: 'low_stock', items: lowStockItems })}
+                  className={`p-6 rounded-3xl border shadow-sm transition-all cursor-pointer ${lowStockItems.length > 0 ? 'bg-orange-50 border-orange-200 hover:bg-orange-100' : 'bg-white border-[#E7E5E4]'}`}
+                >
+                  <div className="flex justify-between items-start mb-4">
+                    <div className={`p-3 rounded-2xl ${lowStockItems.length > 0 ? 'bg-orange-100 text-orange-600' : 'bg-gray-100 text-gray-600'}`}>
+                      <AlertTriangle size={24} />
+                    </div>
                   </div>
+                  <p className="text-[#78716C] font-medium mb-1">Estoque Baixo</p>
+                  <h3 className={`text-4xl font-bold ${lowStockItems.length > 0 ? 'text-orange-600' : ''}`}>{lowStockItems.length}</h3>
                 </div>
-                <p className="text-[#78716C] font-medium mb-1">Vencimento Próximo</p>
-                <h3 className={`text-4xl font-bold ${nearExpiryItems.length > 0 ? 'text-red-600' : ''}`}>{nearExpiryItems.length}</h3>
+
+                <div 
+                  onClick={() => nearExpiryItems.length > 0 && setShowDetailModal({ show: true, type: 'expiry', items: nearExpiryItems })}
+                  className={`p-6 rounded-3xl border shadow-sm transition-all cursor-pointer ${nearExpiryItems.length > 0 ? 'bg-red-50 border-red-200 hover:bg-red-100' : 'bg-white border-[#E7E5E4]'}`}
+                >
+                  <div className="flex justify-between items-start mb-4">
+                    <div className={`p-3 rounded-2xl ${nearExpiryItems.length > 0 ? 'bg-red-100 text-red-600' : 'bg-gray-100 text-gray-600'}`}>
+                      <Calendar size={24} />
+                    </div>
+                  </div>
+                  <p className="text-[#78716C] font-medium mb-1">Vencimento Próximo</p>
+                  <h3 className={`text-4xl font-bold ${nearExpiryItems.length > 0 ? 'text-red-600' : ''}`}>{nearExpiryItems.length}</h3>
+                </div>
               </div>
 
               {/* Alerts Section */}
-              <div className="md:col-span-2 space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="bg-white p-8 rounded-3xl border border-[#E7E5E4] shadow-sm">
                   <h4 className="text-xl font-bold mb-6 flex items-center gap-2">
                     <AlertTriangle className="text-orange-500" size={20} /> Alertas Críticos
@@ -1150,7 +1318,7 @@ export default function App() {
                           <td className="px-6 py-4 text-xs text-[#A8A29E]">---</td>
                           <td className="px-6 py-4">
                             {item.expiry_date ? (
-                              <span className={`text-xs ${item.expiry_date === 'Indeterminada' ? 'text-blue-600 font-bold' : isNearExpiry(item.expiry_date) ? 'text-red-600 font-bold' : 'text-[#57534E]'}`}>
+                              <span className={`text-xs ${item.expiry_date === 'Indeterminada' ? 'text-blue-600 font-bold' : isNearExpiry(item) ? 'text-red-600 font-bold' : 'text-[#57534E]'}`}>
                                 {item.expiry_date === 'Indeterminada' ? 'Indeterminada' : new Date(item.expiry_date).toLocaleDateString('pt-BR')}
                               </span>
                             ) : (
@@ -1210,13 +1378,23 @@ export default function App() {
             >
               <div className="flex justify-between items-center bg-white p-4 rounded-3xl border border-[#E7E5E4] shadow-sm">
                 <h3 className="text-lg font-bold text-[#1C1917]">Histórico de Movimentações</h3>
-                <button 
-                  onClick={() => setShowDeletedHistory(!showDeletedHistory)}
-                  className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${showDeletedHistory ? 'bg-rose-100 text-rose-700' : 'bg-[#F5F5F4] text-[#78716C] hover:bg-[#E7E5E4]'}`}
-                >
-                  {showDeletedHistory ? <History size={14} /> : <Trash2 size={14} />}
-                  {showDeletedHistory ? 'Ver Histórico Ativo' : 'Ver Excluídos (Testes)'}
-                </button>
+                <div className="flex gap-2">
+                  {showDeletedHistory && transactions.filter(t => !!t.deletedAt).length > 0 && (
+                    <button 
+                      onClick={handleRecoverAllTransactions}
+                      className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700 transition-all flex items-center gap-2 shadow-sm"
+                    >
+                      <RotateCcw size={14} /> Restaurar Tudo
+                    </button>
+                  )}
+                  <button 
+                    onClick={() => setShowDeletedHistory(!showDeletedHistory)}
+                    className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${showDeletedHistory ? 'bg-rose-100 text-rose-700' : 'bg-[#F5F5F4] text-[#78716C] hover:bg-[#E7E5E4]'}`}
+                  >
+                    {showDeletedHistory ? <History size={14} /> : <Trash2 size={14} />}
+                    {showDeletedHistory ? 'Ver Histórico Ativo' : 'Ver Excluídos (Testes)'}
+                  </button>
+                </div>
               </div>
 
               <div className="bg-white rounded-3xl border border-[#E7E5E4] shadow-sm overflow-hidden">
@@ -2208,6 +2386,68 @@ export default function App() {
                   </button>
                 </div>
               ))}
+            </div>
+          </motion.div>
+        </div>
+      )}
+      {showSettingsModal && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[70] flex items-center justify-center p-6">
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="bg-white w-full max-w-md rounded-[32px] p-8 shadow-2xl"
+          >
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-2xl font-black text-[#1C1917]">Configurações</h3>
+              <button 
+                onClick={() => setShowSettingsModal(false)}
+                className="p-2 hover:bg-[#F5F5F4] rounded-full transition-all"
+              >
+                <X size={24} />
+              </button>
+            </div>
+
+            <div className="space-y-6">
+              <div className="p-6 bg-rose-50 rounded-2xl border border-rose-100">
+                <div className="flex items-center gap-3 mb-3 text-rose-600">
+                  <AlertTriangle size={24} />
+                  <h4 className="font-bold">Zona de Perigo</h4>
+                </div>
+                <p className="text-sm text-rose-700 mb-4 leading-relaxed">
+                  Esta ação apagará **todo o histórico de entradas e saídas** e removerá permanentemente todos os materiais cadastrados como **"Produto Extra"**. Os itens de contrato serão mantidos, mas com estoque zerado.
+                </p>
+                <div className="space-y-3">
+                  <button 
+                    onClick={handleClearExtraData}
+                    disabled={isCleaning}
+                    className={`w-full py-3 bg-rose-600 text-white rounded-xl font-bold transition-all flex items-center justify-center gap-2 ${isCleaning ? 'opacity-50 cursor-not-allowed' : 'hover:bg-rose-700'}`}
+                  >
+                    {isCleaning ? (
+                      <>
+                        <RotateCcw className="animate-spin" size={18} /> Limpando...
+                      </>
+                    ) : (
+                      <>
+                        <Trash2 size={18} /> Limpar Histórico e Extras
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-6 bg-[#FAFAF9] rounded-2xl border border-[#E7E5E4]">
+                <h4 className="font-bold text-[#1C1917] mb-2">Informações do Sistema</h4>
+                <div className="space-y-2 text-sm text-[#78716C]">
+                  <div className="flex justify-between">
+                    <span>Versão</span>
+                    <span className="font-mono">1.2.0</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Total de Itens</span>
+                    <span className="font-bold">{items.length}</span>
+                  </div>
+                </div>
+              </div>
             </div>
           </motion.div>
         </div>
