@@ -26,7 +26,8 @@ import {
   RotateCcw,
   CheckCircle,
   Bell,
-  Users
+  Users,
+  Info
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as XLSX from 'xlsx';
@@ -736,6 +737,18 @@ export default function App() {
       showToast(`Erro ao enviar solicitação: ${error.message}`, "error");
     } finally {
       setIsSubmittingRequest(false);
+    }
+  };
+
+  const handleUpdateObservation = async (requestId: string) => {
+    try {
+      await updateDoc(doc(db, 'requests', requestId), { 
+        adminObservation: adminObservation 
+      });
+      showToast("Observação atualizada com sucesso!", "success");
+    } catch (error: any) {
+      console.error("Error updating observation:", error);
+      showToast(`Erro ao atualizar observação: ${error.message}`, "error");
     }
   };
 
@@ -3534,21 +3547,46 @@ export default function App() {
             )}
 
             {showRequestDetailModal.request.adminObservation && (
-              <div className="mb-8 p-4 bg-blue-50 rounded-2xl border border-blue-100">
-                <p className="text-[10px] font-bold text-blue-600 uppercase tracking-widest mb-1">Observação do Administrador</p>
-                <p className="text-sm text-blue-800 italic">"{showRequestDetailModal.request.adminObservation}"</p>
+              <div className={`mb-8 p-5 rounded-[24px] border-2 ${
+                showRequestDetailModal.request.status === 'RECUSADO' 
+                  ? 'bg-rose-50 border-rose-100 text-rose-900' 
+                  : 'bg-blue-50 border-blue-100 text-blue-900'
+              }`}>
+                <div className="flex items-center gap-2 mb-2">
+                  {showRequestDetailModal.request.status === 'RECUSADO' ? (
+                    <AlertTriangle size={18} className="text-rose-600" />
+                  ) : (
+                    <Info size={18} className="text-blue-600" />
+                  )}
+                  <p className={`text-[10px] font-black uppercase tracking-widest ${
+                    showRequestDetailModal.request.status === 'RECUSADO' ? 'text-rose-600' : 'text-blue-600'
+                  }`}>
+                    {showRequestDetailModal.request.status === 'RECUSADO' ? 'Motivo da Recusa' : 'Observação do Administrador'}
+                  </p>
+                </div>
+                <p className="text-sm font-medium italic">"{showRequestDetailModal.request.adminObservation}"</p>
               </div>
             )}
 
             {(userProfile?.role === 'ADMIN' || user?.email === 'gerlianemagalhaes79@gmail.com') && showRequestDetailModal.request.status !== 'ENTREGUE' && (
               <div className="mb-8">
-                <label className="text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest mb-2 block">
-                  Observação do Administrador (Opcional)
-                </label>
+                <div className="flex justify-between items-center mb-2">
+                  <label className="text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest block">
+                    {showRequestDetailModal.request.status === 'RECUSADO' ? 'Editar Motivo da Recusa' : 'Observação do Administrador (Opcional)'}
+                  </label>
+                  {showRequestDetailModal.request.status !== 'PENDENTE' && (
+                    <button 
+                      onClick={() => handleUpdateObservation(showRequestDetailModal.request!.id)}
+                      className="text-[10px] font-bold text-blue-600 uppercase hover:underline"
+                    >
+                      Salvar Apenas Observação
+                    </button>
+                  )}
+                </div>
                 <textarea
                   value={adminObservation}
                   onChange={(e) => setAdminObservation(e.target.value)}
-                  placeholder="Explique alterações ou adicione informações sobre a entrega..."
+                  placeholder={showRequestDetailModal.request.status === 'RECUSADO' ? "Explique o motivo da recusa..." : "Explique alterações ou adicione informações..."}
                   className="w-full p-4 bg-[#FAFAF9] border border-[#E7E5E4] rounded-2xl text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all min-h-[100px]"
                 />
               </div>
