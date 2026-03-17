@@ -47,7 +47,8 @@ import {
   Timestamp,
   getDocs,
   writeBatch,
-  deleteDoc
+  deleteDoc,
+  deleteField
 } from 'firebase/firestore';
 import { 
   signInWithPopup, 
@@ -143,7 +144,7 @@ export default function App() {
   const [authPassword, setAuthPassword] = useState('');
   const [authName, setAuthName] = useState('');
   const [authSector, setAuthSector] = useState('Administrativo');
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'inventory' | 'history' | 'requests' | 'reports' | 'my-requests' | 'new-request' | 'users'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'inventory' | 'history' | 'requests' | 'reports' | 'my-requests' | 'new-request' | 'users' | 'trash'>('dashboard');
   const [showAddModal, setShowAddModal] = useState(false);
   const [showTransactionModal, setShowTransactionModal] = useState<{show: boolean, type: 'entry' | 'exit', item?: Item}>({ show: false, type: 'entry' });
   const [showDetailModal, setShowDetailModal] = useState<{show: boolean, type: 'low_stock' | 'expiry', items: Item[]}>({ show: false, type: 'low_stock', items: [] });
@@ -737,6 +738,75 @@ export default function App() {
       showToast(`Erro ao enviar solicitação: ${error.message}`, "error");
     } finally {
       setIsSubmittingRequest(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isAdmin) {
+      cleanupOldDeletedData();
+    }
+  }, [isAdmin]);
+
+  const cleanupOldDeletedData = async () => {
+    const threeDaysAgo = subDays(new Date(), 3);
+    
+    try {
+      // Cleanup items
+      const itemsSnap = await getDocs(query(collection(db, 'items')));
+      for (const d of itemsSnap.docs) {
+        const data = d.data();
+        if (data.deletedAt && new Date(data.deletedAt) < threeDaysAgo) {
+          await deleteDoc(doc(db, 'items', d.id));
+        }
+      }
+      
+      // Cleanup requests
+      const requestsSnap = await getDocs(query(collection(db, 'requests')));
+      for (const d of requestsSnap.docs) {
+        const data = d.data();
+        if (data.deletedAt && new Date(data.deletedAt) < threeDaysAgo) {
+          await deleteDoc(doc(db, 'requests', d.id));
+        }
+      }
+
+      // Cleanup transactions
+      const transSnap = await getDocs(query(collection(db, 'transactions')));
+      for (const d of transSnap.docs) {
+        const data = d.data();
+        if (data.deletedAt && new Date(data.deletedAt) < threeDaysAgo) {
+          await deleteDoc(doc(db, 'transactions', d.id));
+        }
+      }
+    } catch (error) {
+      console.error("Error during cleanup:", error);
+    }
+  };
+
+  const handleDeleteItem = async (itemId: string) => {
+    if (!window.confirm("Tem certeza que deseja enviar este item para a lixeira? Ele será excluído definitivamente após 3 dias.")) return;
+    try {
+      await updateDoc(doc(db, 'items', itemId), {
+        deletedAt: new Date().toISOString(),
+        deletedBy: user?.email
+      });
+      showToast("Item enviado para a lixeira.", "success");
+    } catch (error: any) {
+      console.error("Error deleting item:", error);
+      showToast(`Erro ao excluir item: ${error.message}`, "error");
+    }
+  };
+
+  const handleDeleteRequest = async (requestId: string) => {
+    if (!window.confirm("Tem certeza que deseja enviar esta solicitação para a lixeira? Ela será excluída definitivamente após 3 dias.")) return;
+    try {
+      await updateDoc(doc(db, 'requests', requestId), {
+        deletedAt: new Date().toISOString(),
+        deletedBy: user?.email
+      });
+      showToast("Solicitação enviada para a lixeira.", "success");
+    } catch (error: any) {
+      console.error("Error deleting request:", error);
+      showToast(`Erro ao excluir solicitação: ${error.message}`, "error");
     }
   };
 
@@ -1421,11 +1491,12 @@ export default function App() {
   const totalInventoryValue = items.reduce((sum, item) => sum + (item.quantity * (item.unit_price || 0)), 0);
 
   const filteredItems = items.filter(i => 
-    (i.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+    !i.deletedAt && // Exclude deleted items
+    ((i.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
     i.supplier?.toLowerCase().includes(searchTerm.toLowerCase()) ||
     i.category?.toLowerCase().includes(searchTerm.toLowerCase()) ||
     i.batch_number?.toLowerCase().includes(searchTerm.toLowerCase())) &&
-    (originFilter === 'all' || i.origin === originFilter)
+    (originFilter === 'all' || i.origin === originFilter))
   );
 
   const groupedItems = filteredItems.reduce((acc, item) => {
@@ -1483,6 +1554,12 @@ export default function App() {
                 className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'requests' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
               >
                 <FileText size={20} /> Solicitações
+              </button>
+              <button 
+                onClick={() => setActiveTab('trash')}
+                className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'trash' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+              >
+                <Trash2 size={20} /> Lixeira
               </button>
               <button 
                 onClick={() => setActiveTab('reports')}
@@ -1552,6 +1629,7 @@ export default function App() {
               {activeTab === 'inventory' && 'Gerenciamento de Estoque'}
               {activeTab === 'history' && 'Histórico de Movimentações'}
               {activeTab === 'requests' && 'Solicitações de Materiais'}
+              {activeTab === 'trash' && 'Lixeira (Exclusão em 3 dias)'}
               {activeTab === 'my-requests' && 'Minhas Solicitações'}
               {activeTab === 'new-request' && 'Nova Solicitação'}
               {activeTab === 'reports' && 'Relatórios e Análises'}
@@ -2010,6 +2088,15 @@ export default function App() {
                             >
                               <ArrowUpRight size={16} />
                             </button>
+                            {(userProfile?.role === 'ADMIN' || user?.email === 'gerlianemagalhaes79@gmail.com') && (
+                              <button 
+                                onClick={(e) => { e.stopPropagation(); handleDeleteItem(item.id); }}
+                                className="p-1.5 text-rose-400 hover:bg-rose-50 hover:text-rose-600 rounded-lg transition-all"
+                                title="Excluir"
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                            )}
                           </td>
                         </tr>
                       ))}
@@ -2587,6 +2674,182 @@ export default function App() {
             </motion.div>
           )}
 
+          {activeTab === 'trash' && (
+            <motion.div 
+              key="trash"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              className="space-y-8"
+            >
+              {/* Deleted Items */}
+              <div className="space-y-4">
+                <div className="flex items-center gap-2 px-2">
+                  <Package className="text-[#78716C]" size={20} />
+                  <h3 className="font-bold text-[#1C1917]">Itens Excluídos</h3>
+                </div>
+                <div className="bg-white rounded-3xl border border-[#E7E5E4] shadow-sm overflow-hidden">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
+                        <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Item</th>
+                        <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Excluído em</th>
+                        <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Excluído por</th>
+                        <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">Ações</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#E7E5E4]">
+                      {items.filter(i => i.deletedAt).map(item => (
+                        <tr key={item.id} className="hover:bg-[#FAFAF9] transition-all">
+                          <td className="px-6 py-4">
+                            <p className="font-bold text-sm">{item.name}</p>
+                            <p className="text-xs text-[#A8A29E]">Lote: {item.batch_number}</p>
+                          </td>
+                          <td className="px-6 py-4 text-sm text-[#57534E]">
+                            {item.deletedAt && new Date(item.deletedAt).toLocaleString('pt-BR')}
+                          </td>
+                          <td className="px-6 py-4 text-sm text-[#78716C]">
+                            {item.deletedBy || '---'}
+                          </td>
+                          <td className="px-6 py-4 text-right">
+                            <button 
+                              onClick={async () => {
+                                if (window.confirm('Deseja restaurar este item?')) {
+                                  await updateDoc(doc(db, 'items', item.id), { 
+                                    deletedAt: deleteField(),
+                                    deletedBy: deleteField()
+                                  });
+                                  setToast({ show: true, message: 'Item restaurado!', type: 'success' });
+                                }
+                              }}
+                              className="text-emerald-600 font-bold text-xs hover:underline"
+                            >
+                              Restaurar
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {items.filter(i => i.deletedAt).length === 0 && (
+                    <div className="p-12 text-center">
+                      <p className="text-[#A8A29E] text-sm">Nenhum item na lixeira.</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Deleted Requests */}
+              <div className="space-y-4">
+                <div className="flex items-center gap-2 px-2">
+                  <FileText className="text-[#78716C]" size={20} />
+                  <h3 className="font-bold text-[#1C1917]">Solicitações Excluídas</h3>
+                </div>
+                <div className="bg-white rounded-3xl border border-[#E7E5E4] shadow-sm overflow-hidden">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
+                        <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Solicitação</th>
+                        <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Excluído em</th>
+                        <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Excluído por</th>
+                        <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">Ações</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#E7E5E4]">
+                      {requests.filter(r => r.deletedAt).map(req => (
+                        <tr key={req.id} className="hover:bg-[#FAFAF9] transition-all">
+                          <td className="px-6 py-4">
+                            <p className="font-bold text-sm">#{req.id.slice(-5).toUpperCase()}</p>
+                            <p className="text-xs text-[#A8A29E]">{req.sector}</p>
+                          </td>
+                          <td className="px-6 py-4 text-sm text-[#57534E]">
+                            {req.deletedAt && new Date(req.deletedAt).toLocaleString('pt-BR')}
+                          </td>
+                          <td className="px-6 py-4 text-sm text-[#78716C]">
+                            {req.deletedBy || '---'}
+                          </td>
+                          <td className="px-6 py-4 text-right">
+                            <button 
+                              onClick={async () => {
+                                if (window.confirm('Deseja restaurar esta solicitação?')) {
+                                  await updateDoc(doc(db, 'requests', req.id), { 
+                                    deletedAt: deleteField(),
+                                    deletedBy: deleteField()
+                                  });
+                                  setToast({ show: true, message: 'Solicitação restaurada!', type: 'success' });
+                                }
+                              }}
+                              className="text-emerald-600 font-bold text-xs hover:underline"
+                            >
+                              Restaurar
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {requests.filter(r => r.deletedAt).length === 0 && (
+                    <div className="p-12 text-center">
+                      <p className="text-[#A8A29E] text-sm">Nenhuma solicitação na lixeira.</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Deleted Transactions */}
+              <div className="space-y-4">
+                <div className="flex items-center gap-2 px-2">
+                  <History className="text-[#78716C]" size={20} />
+                  <h3 className="font-bold text-[#1C1917]">Movimentações Excluídas</h3>
+                </div>
+                <div className="bg-white rounded-3xl border border-[#E7E5E4] shadow-sm overflow-hidden">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
+                        <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Movimentação</th>
+                        <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Excluído em</th>
+                        <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">Ações</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#E7E5E4]">
+                      {transactions.filter(t => t.deletedAt).map(trans => (
+                        <tr key={trans.id} className="hover:bg-[#FAFAF9] transition-all">
+                          <td className="px-6 py-4">
+                            <p className="font-bold text-sm">{trans.item_name}</p>
+                            <p className="text-xs text-[#A8A29E]">{trans.type === 'entry' ? 'Entrada' : 'Saída'} - {trans.quantity} un.</p>
+                          </td>
+                          <td className="px-6 py-4 text-sm text-[#57534E]">
+                            {trans.deletedAt && new Date(trans.deletedAt).toLocaleString('pt-BR')}
+                          </td>
+                          <td className="px-6 py-4 text-right">
+                            <button 
+                              onClick={async () => {
+                                if (window.confirm('Deseja restaurar esta movimentação?')) {
+                                  await updateDoc(doc(db, 'transactions', trans.id), { 
+                                    deletedAt: deleteField()
+                                  });
+                                  setToast({ show: true, message: 'Movimentação restaurada!', type: 'success' });
+                                }
+                              }}
+                              className="text-emerald-600 font-bold text-xs hover:underline"
+                            >
+                              Restaurar
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {transactions.filter(t => t.deletedAt).length === 0 && (
+                    <div className="p-12 text-center">
+                      <p className="text-[#A8A29E] text-sm">Nenhuma movimentação na lixeira.</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </motion.div>
+          )}
+
           {activeTab === 'requests' && (
             <motion.div 
               key="requests"
@@ -2607,7 +2870,7 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#E7E5E4]">
-                    {requests.map(req => (
+                    {requests.filter(req => !req.deletedAt).map(req => (
                       <tr key={req.id} className="hover:bg-[#FAFAF9] transition-all">
                         <td className="px-6 py-4">
                           <p className="font-bold text-sm">#{req.id.slice(-5).toUpperCase()}</p>
@@ -2635,12 +2898,23 @@ export default function App() {
                           </p>
                         </td>
                         <td className="px-6 py-4 text-right">
-                          <button 
-                            onClick={() => setShowRequestDetailModal({ show: true, request: req })}
-                            className="bg-[#1C1917] text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-[#292524] transition-all"
-                          >
-                            Ver Detalhes
-                          </button>
+                          <div className="flex justify-end items-center gap-2">
+                            <button 
+                              onClick={() => setShowRequestDetailModal({ show: true, request: req })}
+                              className="bg-[#1C1917] text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-[#292524] transition-all"
+                            >
+                              Ver Detalhes
+                            </button>
+                            {(userProfile?.role === 'ADMIN' || user?.email === 'gerlianemagalhaes79@gmail.com') && (
+                              <button 
+                                onClick={() => handleDeleteRequest(req.id)}
+                                className="p-2 text-rose-400 hover:bg-rose-50 hover:text-rose-600 rounded-xl transition-all"
+                                title="Excluir"
+                              >
+                                <Trash2 size={18} />
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -2675,7 +2949,7 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#E7E5E4]">
-                    {requests.filter(r => r.sector === userProfile?.sector).map(req => (
+                    {requests.filter(r => r.sector === userProfile?.sector && !r.deletedAt).map(req => (
                       <tr key={req.id} className="hover:bg-[#FAFAF9] transition-all">
                         <td className="px-6 py-4">
                           <p className="font-bold text-sm">#{req.id.slice(-5).toUpperCase()}</p>
