@@ -23,7 +23,10 @@ import {
   LogOut,
   Trash2,
   Save,
-  RotateCcw
+  RotateCcw,
+  CheckCircle,
+  Bell,
+  Users
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as XLSX from 'xlsx';
@@ -50,10 +53,16 @@ import {
   GoogleAuthProvider, 
   onAuthStateChanged, 
   signOut,
-  User
+  User,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  updateProfile,
+  getAuth
 } from 'firebase/auth';
+import { initializeApp, getApp, getApps } from 'firebase/app';
 import { db, auth } from './firebase';
-import { Item, Transaction } from './types';
+import firebaseConfig from '../firebase-applet-config.json';
+import { Item, Transaction, UserProfile, MaterialRequest, RequestItem, Notification } from './types';
 import { 
   BarChart, 
   Bar, 
@@ -122,18 +131,55 @@ const getCategoryColor = (cat: string) => {
 export default function App() {
   const [items, setItems] = useState<Item[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [requests, setRequests] = useState<MaterialRequest[]>([]);
+  const [allRequestItems, setAllRequestItems] = useState<RequestItem[]>([]);
   const [user, setUser] = useState<User | null>(null);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [loginLoading, setLoginLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'inventory' | 'history' | 'reports'>('dashboard');
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authName, setAuthName] = useState('');
+  const [authSector, setAuthSector] = useState('Administrativo');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'inventory' | 'history' | 'requests' | 'reports' | 'my-requests' | 'new-request' | 'users'>('dashboard');
   const [showAddModal, setShowAddModal] = useState(false);
   const [showTransactionModal, setShowTransactionModal] = useState<{show: boolean, type: 'entry' | 'exit', item?: Item}>({ show: false, type: 'entry' });
   const [showDetailModal, setShowDetailModal] = useState<{show: boolean, type: 'low_stock' | 'expiry', items: Item[]}>({ show: false, type: 'low_stock', items: [] });
   const [showDeleteModal, setShowDeleteModal] = useState<{show: boolean, transactionId?: string}>({ show: false });
   const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [showUserDeleteConfirm, setShowUserDeleteConfirm] = useState<{show: boolean, user?: UserProfile}>({ show: false });
+  const [toast, setToast] = useState<{show: boolean, message: string, type: 'success' | 'error' | 'info'}>({ show: false, message: '', type: 'info' });
+  const [showRequestDetailModal, setShowRequestDetailModal] = useState<{show: boolean, request?: MaterialRequest}>({ show: false });
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [usersList, setUsersList] = useState<UserProfile[]>([]);
   const [isCleaning, setIsCleaning] = useState(false);
   const [deletionReason, setDeletionReason] = useState('');
   const [showDeletedHistory, setShowDeletedHistory] = useState(false);
+  
+  const isAdmin = userProfile?.role === 'ADMIN' || user?.email === 'gerlianemagalhaes79@gmail.com';
+
+  // Request states
+  const [requestBasket, setRequestBasket] = useState<{product_id: string, product_name: string, quantity: number}[]>([]);
+  const [requestObservation, setRequestObservation] = useState('');
+  const [adminObservation, setAdminObservation] = useState('');
+  const [isSubmittingRequest, setIsSubmittingRequest] = useState(false);
+  
+  const createNotification = async (userId: string, title: string, message: string, requestId?: string) => {
+    try {
+      await addDoc(collection(db, 'notifications'), {
+        userId,
+        title,
+        message,
+        date: new Date().toISOString(),
+        read: false,
+        requestId
+      });
+    } catch (error) {
+      console.error("Error creating notification:", error);
+    }
+  };
   
   // Form states
   const [bulkEntry, setBulkEntry] = useState({
@@ -210,6 +256,14 @@ export default function App() {
     return Array.from(new Set([...fromItems, ...fromTrans])).sort();
   }, [items, transactions]);
 
+  useEffect(() => {
+    if (showRequestDetailModal.show && showRequestDetailModal.request) {
+      setAdminObservation(showRequestDetailModal.request.adminObservation || '');
+    } else {
+      setAdminObservation('');
+    }
+  }, [showRequestDetailModal.show, showRequestDetailModal.request]);
+
   const toggleExpand = (name: string) => {
     const newExpanded = new Set(expandedItems);
     if (newExpanded.has(name)) {
@@ -220,22 +274,71 @@ export default function App() {
     setExpandedItems(newExpanded);
   };
 
+  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    setToast({ show: true, message, type });
+    setTimeout(() => setToast({ show: false, message: '', type: 'info' }), 4000);
+  };
+
   useEffect(() => {
     const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
       setUser(user);
       if (user) {
-        const userRef = doc(db, 'users', user.uid);
-        const role = user.email === 'gerlianemagalhaes79@gmail.com' ? 'admin' : 'user';
-        try {
-          await setDoc(userRef, {
-            email: user.email,
-            displayName: user.displayName,
-            role: role,
-            lastLogin: new Date().toISOString()
-          }, { merge: true });
-        } catch (e) {
-          console.error("Error updating user document:", e);
+        const userEmail = user.email?.toLowerCase().trim();
+        if (!userEmail) {
+          await signOut(auth);
+          showToast("Erro: E-mail não encontrado no login do Google.", "error");
+          setLoading(false);
+          return;
         }
+
+        // Always use email as the document ID for consistency
+        const userRef = doc(db, 'users', userEmail);
+        const userSnap = await getDoc(userRef);
+
+        // Special case for the master admin
+        if (!userSnap.exists() && userEmail === 'gerlianemagalhaes79@gmail.com') {
+          await setDoc(userRef, {
+            email: userEmail,
+            name: user.displayName || 'Admin',
+            role: 'ADMIN',
+            sector: 'Almoxarifado',
+            uid: user.uid,
+            lastLogin: new Date().toISOString()
+          });
+        } else if (userSnap.exists()) {
+          // Update existing profile with UID and last login
+          await updateDoc(userRef, { 
+            uid: user.uid,
+            lastLogin: new Date().toISOString() 
+          });
+        } else {
+          // Not pre-registered and not master admin
+          await signOut(auth);
+          showToast("Acesso negado: Seu e-mail não está cadastrado no sistema. Entre em contato com o administrador.", "error");
+          setLoading(false);
+          return;
+        }
+
+        onSnapshot(userRef, (doc) => {
+          if (doc.exists()) {
+            const profile = { id: doc.id, ...doc.data() } as UserProfile;
+            setUserProfile(profile);
+            
+            // Auto-select sector for the user
+            if (profile.sector) {
+              setSelectedSector(profile.sector);
+            }
+
+            // Redirect based on role
+            if (profile.role === 'ADMIN' || userEmail === 'gerlianemagalhaes79@gmail.com') {
+              setActiveTab('dashboard');
+            } else {
+              setActiveTab('my-requests');
+            }
+          }
+        });
+      } else {
+        setUserProfile(null);
       }
       setLoading(false);
     });
@@ -268,13 +371,48 @@ export default function App() {
       setTransactions(transData);
     });
 
+    const qRequests = query(collection(db, 'requests'), orderBy('date', 'desc'));
+    const unsubscribeRequests = onSnapshot(qRequests, (snapshot) => {
+      const requestsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as MaterialRequest));
+      setRequests(requestsData);
+    });
+
+    const qReqItems = query(collection(db, 'request_items'));
+    const unsubscribeReqItems = onSnapshot(qReqItems, (snapshot) => {
+      const itemsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as RequestItem));
+      setAllRequestItems(itemsData);
+    });
+
+    const unsubscribeNotifications = onSnapshot(
+      query(collection(db, 'notifications'), where('userId', '==', user.uid), orderBy('date', 'desc')),
+      (snapshot) => {
+        setNotifications(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Notification)));
+      }
+    );
+
     return () => {
       unsubscribeItems();
       unsubscribeTrans();
+      unsubscribeRequests();
+      unsubscribeReqItems();
+      unsubscribeNotifications();
     };
   }, [user]);
 
-  const handleLogin = async () => {
+  useEffect(() => {
+    if (!user || !userProfile) return;
+    
+    let unsubscribeUsers = () => {};
+    if (user.email === 'gerlianemagalhaes79@gmail.com' || userProfile.role === 'ADMIN') {
+      const qUsers = query(collection(db, 'users'), orderBy('name', 'asc'));
+      unsubscribeUsers = onSnapshot(qUsers, (snapshot) => {
+        setUsersList(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as UserProfile)));
+      });
+    }
+    return () => unsubscribeUsers();
+  }, [user, userProfile]);
+
+  const handleGoogleLogin = async () => {
     const provider = new GoogleAuthProvider();
     setLoginLoading(true);
     try {
@@ -282,12 +420,62 @@ export default function App() {
     } catch (error: any) {
       console.error("Login error:", error);
       if (error.code === 'auth/unauthorized-domain') {
-        alert("Erro: Domínio não autorizado. Você precisa adicionar o domínio do Vercel nas configurações do Firebase (Authentication > Settings > Authorized Domains).");
+        showToast("Erro: Domínio não autorizado. Você precisa adicionar o domínio do Vercel nas configurações do Firebase.", "error");
       } else if (error.code === 'auth/popup-blocked') {
-        alert("Erro: O popup de login foi bloqueado pelo seu navegador. Por favor, permita popups para este site.");
+        showToast("Erro: O popup de login foi bloqueado pelo seu navegador.", "error");
       } else {
-        alert(`Erro ao entrar: ${error.message}`);
+        showToast(`Erro ao entrar: ${error.message}`, "error");
       }
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
+  const handleEmailLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authEmail || !authPassword) {
+      alert("Preencha todos os campos.");
+      return;
+    }
+    setLoginLoading(true);
+    try {
+      await signInWithEmailAndPassword(auth, authEmail, authPassword);
+    } catch (error: any) {
+      console.error("Login error:", error);
+      alert(`Erro ao entrar: ${error.message}`);
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authEmail || !authName || !authSector) {
+      showToast("Preencha todos os campos.", "error");
+      return;
+    }
+    setLoginLoading(true);
+    try {
+      // Just create/update the document in Firestore using email as ID
+      // This allows the user to log in via Google later
+      const userDocId = authEmail.toLowerCase().trim();
+      const role = userDocId === 'gerlianemagalhaes79@gmail.com' ? 'ADMIN' : 'SETOR';
+      
+      await setDoc(doc(db, 'users', userDocId), {
+        email: userDocId,
+        name: authName,
+        role: role,
+        sector: authSector,
+        registeredAt: new Date().toISOString()
+      }, { merge: true });
+      
+      showToast("Usuário pré-cadastrado com sucesso! Agora ele pode entrar usando o Google.", "success");
+      setAuthEmail('');
+      setAuthName('');
+      setIsRegistering(false);
+    } catch (error: any) {
+      console.error("Registration error:", error);
+      showToast(`Erro ao cadastrar: ${error.message}`, "error");
     } finally {
       setLoginLoading(false);
     }
@@ -479,6 +667,290 @@ export default function App() {
       alert(`Erro ao limpar dados: ${error.message}`);
     } finally {
       setIsCleaning(false);
+    }
+  };
+
+  const handleSubmitRequest = async () => {
+    if (requestBasket.length === 0) {
+      showToast("Adicione pelo menos um item à solicitação.", "error");
+      return;
+    }
+    if (!userProfile?.sector) {
+      showToast("Seu setor não está definido. Entre em contato com o administrador.", "error");
+      return;
+    }
+
+    setIsSubmittingRequest(true);
+    try {
+      // Check stock availability for all items in the basket
+      for (const basketItem of requestBasket) {
+        const inventoryItem = groupedArray.find(gi => gi.name === basketItem.product_name);
+        const totalAvailable = inventoryItem?.total_quantity || 0;
+        
+        if (basketItem.quantity > totalAvailable) {
+          showToast(
+            `Quantidade solicitada para "${basketItem.product_name}" (${basketItem.quantity}) é maior que o estoque total disponível (${totalAvailable}). Por favor, entre em contato com o responsável pelo almoxarifado para verificar a disponibilidade.`, 
+            "error"
+          );
+          setIsSubmittingRequest(false);
+          return;
+        }
+      }
+
+      const requestData = {
+        sector: userProfile.sector,
+        date: new Date().toISOString(),
+        status: 'PENDENTE',
+        observation: requestObservation,
+        requesterEmail: user?.email || ''
+      };
+
+      const requestRef = await addDoc(collection(db, 'requests'), requestData);
+
+      const batch = writeBatch(db);
+      requestBasket.forEach(item => {
+        const itemRef = doc(collection(db, 'request_items'));
+        batch.set(itemRef, {
+          request_id: requestRef.id,
+          product_id: item.product_id,
+          product_name: item.product_name,
+          quantity_requested: item.quantity,
+          quantity_approved: item.quantity
+        });
+      });
+
+      await batch.commit();
+
+      // Notify Admin
+      const adminSnap = await getDocs(query(collection(db, 'users'), where('role', '==', 'ADMIN')));
+      adminSnap.forEach(adminDoc => {
+        createNotification(adminDoc.id, 'Nova Solicitação', `O setor ${userProfile.sector} enviou uma nova solicitação.`, requestRef.id);
+      });
+
+      setRequestBasket([]);
+      setRequestObservation('');
+      setActiveTab('my-requests');
+      showToast("Solicitação enviada com sucesso!", "success");
+    } catch (error: any) {
+      console.error("Error submitting request:", error);
+      showToast(`Erro ao enviar solicitação: ${error.message}`, "error");
+    } finally {
+      setIsSubmittingRequest(false);
+    }
+  };
+
+  const handleApproveRequest = async (requestId: string, items: RequestItem[]) => {
+    try {
+      const batch = writeBatch(db);
+      const requestRef = doc(db, 'requests', requestId);
+      batch.update(requestRef, { 
+        status: 'APROVADO',
+        adminObservation: adminObservation 
+      });
+      
+      items.forEach(item => {
+        const itemRef = doc(db, 'request_items', item.id);
+        batch.update(itemRef, { quantity_approved: item.quantity_approved });
+      });
+
+      await batch.commit();
+      
+      const request = requests.find(r => r.id === requestId);
+      if (request) {
+        const userSnap = await getDocs(query(collection(db, 'users'), where('email', '==', request.requesterEmail)));
+        if (!userSnap.empty) {
+          const msg = adminObservation 
+            ? `Sua solicitação #${requestId.slice(-5).toUpperCase()} foi aprovada. Obs: ${adminObservation}`
+            : `Sua solicitação #${requestId.slice(-5).toUpperCase()} foi aprovada.`;
+          await createNotification(userSnap.docs[0].id, 'Solicitação Aprovada', msg, requestId);
+        }
+      }
+
+      showToast("Solicitação aprovada!", "success");
+    } catch (error: any) {
+      console.error("Error approving request:", error);
+      showToast(`Erro ao aprovar: ${error.message}`, "error");
+    }
+  };
+
+  const handleDeliverRequest = async (requestId: string, requestItems: RequestItem[]) => {
+    console.log('Iniciando entrega da solicitação:', requestId, 'Itens:', requestItems);
+    if (!requestItems || requestItems.length === 0) {
+      showToast("Nenhum item encontrado nesta solicitação.", "error");
+      return;
+    }
+
+    try {
+      // 1. Fetch all available batches for the products in this request
+      const productNames = [...new Set(requestItems.map(ri => ri.product_name))];
+      console.log('Buscando lotes para os produtos:', productNames);
+      
+      // Firestore 'in' query is limited to 10-30 items. Let's chunk it.
+      const chunks = [];
+      for (let i = 0; i < productNames.length; i += 10) {
+        chunks.push(productNames.slice(i, i + 10));
+      }
+
+      const availableBatchesByProduct: Record<string, any[]> = {};
+      
+      for (const chunk of chunks) {
+        const itemsSnapshot = await getDocs(query(
+          collection(db, 'items'),
+          where('name', 'in', chunk),
+          where('quantity', '>', 0)
+        ));
+
+        itemsSnapshot.docs.forEach(doc => {
+          const data = doc.data();
+          if (!availableBatchesByProduct[data.name]) {
+            availableBatchesByProduct[data.name] = [];
+          }
+          availableBatchesByProduct[data.name].push({ id: doc.id, ...data });
+        });
+      }
+
+      // Sort batches by expiry date (FIFO-ish)
+      Object.keys(availableBatchesByProduct).forEach(name => {
+        availableBatchesByProduct[name].sort((a, b) => {
+          if (a.expiry_date === 'Indeterminada') return 1;
+          if (b.expiry_date === 'Indeterminada') return -1;
+          return new Date(a.expiry_date).getTime() - new Date(b.expiry_date).getTime();
+        });
+      });
+
+      await runTransaction(db, async (transaction) => {
+        console.log('Iniciando transação do Firestore...');
+        const requestRef = doc(db, 'requests', requestId);
+        const requestSnap = await transaction.get(requestRef);
+        
+        if (!requestSnap.exists()) {
+          throw new Error("Solicitação não encontrada no banco de dados.");
+        }
+
+        const requestData = requestSnap.data() as MaterialRequest;
+        console.log('Dados da solicitação recuperados:', requestData.status);
+        
+        if (requestData.status === 'ENTREGUE') {
+          console.log('Solicitação já está marcada como ENTREGUE.');
+          return;
+        }
+
+        for (const reqItem of requestItems) {
+          console.log(`Processando item: ${reqItem.product_name}, Quantidade: ${reqItem.quantity_approved}`);
+          let remainingToDeduct = reqItem.quantity_approved;
+          const batches = availableBatchesByProduct[reqItem.product_name] || [];
+          
+          let totalAvailableForProduct = batches.reduce((sum, b) => sum + b.quantity, 0);
+          
+          if (totalAvailableForProduct < remainingToDeduct) {
+            throw new Error(`Estoque insuficiente para "${reqItem.product_name}". Solicitado: ${remainingToDeduct}, Disponível total: ${totalAvailableForProduct}.`);
+          }
+
+          for (const batch of batches) {
+            if (remainingToDeduct <= 0) break;
+
+            const batchRef = doc(db, 'items', batch.id);
+            const batchSnap = await transaction.get(batchRef);
+            
+            if (!batchSnap.exists()) {
+              console.warn(`Lote ${batch.id} não existe mais.`);
+              continue;
+            }
+            
+            const currentBatchData = batchSnap.data();
+            const availableInBatch = currentBatchData.quantity;
+
+            if (availableInBatch <= 0) {
+              console.warn(`Lote ${batch.id} está vazio.`);
+              continue;
+            }
+
+            const amountFromThisBatch = Math.min(availableInBatch, remainingToDeduct);
+            console.log(`Deduzindo ${amountFromThisBatch} do lote ${batch.batch_number} (ID: ${batch.id})`);
+            
+            transaction.update(batchRef, {
+              quantity: availableInBatch - amountFromThisBatch,
+              updatedAt: serverTimestamp()
+            });
+
+            const transRef = doc(collection(db, 'transactions'));
+            transaction.set(transRef, {
+              item_id: batch.id,
+              item_name: reqItem.product_name,
+              type: 'exit',
+              origin: currentBatchData.origin,
+              quantity: amountFromThisBatch,
+              sector: requestData.sector,
+              date: new Date().toISOString(),
+              responsible: user?.displayName || user?.email,
+              responsibleEmail: user?.email,
+              exitReason: 'consumo',
+              batch_number: currentBatchData.batch_number,
+              expiry_date: currentBatchData.expiry_date
+            });
+
+            remainingToDeduct -= amountFromThisBatch;
+          }
+
+          if (remainingToDeduct > 0) {
+            throw new Error(`Não foi possível deduzir a quantidade total para "${reqItem.product_name}" devido a alterações simultâneas no estoque.`);
+          }
+        }
+
+        transaction.update(requestRef, { 
+          status: 'ENTREGUE',
+          deliveredAt: new Date().toISOString(),
+          deliveredBy: user?.email,
+          adminObservation: adminObservation || requestData.adminObservation || ''
+        });
+        console.log('Transação concluída com sucesso.');
+      });
+
+      const request = requests.find(r => r.id === requestId);
+      if (request) {
+        const userSnap = await getDocs(query(collection(db, 'users'), where('email', '==', request.requesterEmail)));
+        if (!userSnap.empty) {
+          const msg = adminObservation 
+            ? `Sua solicitação #${requestId.slice(-5).toUpperCase()} foi entregue. Obs: ${adminObservation}`
+            : `Sua solicitação #${requestId.slice(-5).toUpperCase()} foi entregue.`;
+          await createNotification(userSnap.docs[0].id, 'Material Entregue', msg, requestId);
+        }
+      }
+
+      showToast("Entrega confirmada e estoque atualizado!", "success");
+      setShowRequestDetailModal({ show: false });
+    } catch (error: any) {
+      console.error('Erro ao processar entrega:', error);
+      if (error.message.includes('insufficient permissions')) {
+        showToast("Erro de permissão: Você não tem autorização para atualizar o estoque.", "error");
+      } else {
+        showToast(`Erro ao processar entrega: ${error.message}`, "error");
+      }
+    }
+  };
+
+  const handleRejectRequest = async (requestId: string) => {
+    try {
+      await updateDoc(doc(db, 'requests', requestId), { 
+        status: 'RECUSADO',
+        adminObservation: adminObservation
+      });
+      
+      const request = requests.find(r => r.id === requestId);
+      if (request) {
+        const userSnap = await getDocs(query(collection(db, 'users'), where('email', '==', request.requesterEmail)));
+        if (!userSnap.empty) {
+          const msg = adminObservation 
+            ? `Sua solicitação #${requestId.slice(-5).toUpperCase()} foi recusada. Motivo: ${adminObservation}`
+            : `Sua solicitação #${requestId.slice(-5).toUpperCase()} foi recusada.`;
+          await createNotification(userSnap.docs[0].id, 'Solicitação Recusada', msg, requestId);
+        }
+      }
+      
+      showToast("Solicitação recusada.", "success");
+    } catch (error: any) {
+      console.error("Error rejecting request:", error);
+      showToast(`Erro ao recusar: ${error.message}`, "error");
     }
   };
 
@@ -723,15 +1195,39 @@ export default function App() {
     }
   };
 
+  const handleExportInventory = () => {
+    try {
+      const exportData = groupedArray.map(group => ({
+        'Item': group.name,
+        'Categoria': group.category || '---',
+        'Estoque Total': group.total_quantity,
+        'Mínimo': group.min_quantity,
+        'Status': group.total_quantity <= group.min_quantity ? 'BAIXO' : 'OK'
+      }));
+
+      const ws = XLSX.utils.json_to_sheet(exportData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Estoque Atual");
+      const dateStr = format(new Date(), 'dd-MM-yyyy');
+      XLSX.writeFile(wb, `Estoque_Atual_${dateStr}.xlsx`);
+      showToast("Estoque exportado com sucesso!", "success");
+    } catch (error) {
+      console.error('Erro ao exportar estoque:', error);
+      showToast("Erro ao exportar estoque.", "error");
+    }
+  };
+
   const reportData = useMemo(() => {
     const start = startOfDay(parseISO(reportRange.start));
     const end = endOfDay(parseISO(reportRange.end));
+    const isAdmin = userProfile?.role === 'ADMIN' || user?.email === 'gerlianemagalhaes79@gmail.com';
+    const effectiveSectorFilter = isAdmin ? reportSectorFilter : (userProfile?.sector || 'none');
 
     const filteredTrans = transactions.filter(t => {
       if (t.deletedAt) return false;
       const d = new Date(t.date);
       const inRange = d >= start && d <= end;
-      const matchesSector = reportSectorFilter === 'all' || t.sector === reportSectorFilter;
+      const matchesSector = effectiveSectorFilter === 'all' || t.sector === effectiveSectorFilter;
       return inRange && matchesSector;
     });
 
@@ -814,6 +1310,16 @@ export default function App() {
 
     const totalValue = items.reduce((sum, item) => sum + (item.quantity * item.unit_price), 0);
 
+    // Most requested items
+    const mostRequested: Record<string, number> = {};
+    allRequestItems.forEach(ri => {
+      mostRequested[ri.product_name] = (mostRequested[ri.product_name] || 0) + ri.quantity_requested;
+    });
+    const topRequested = Object.entries(mostRequested)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 10);
+
     return {
       entries,
       exits,
@@ -824,9 +1330,10 @@ export default function App() {
       suppliers: Object.entries(supplierData).map(([name, value]) => ({ name, value })),
       sectorItems: Object.values(sectorItems).sort((a, b) => b.value - a.value),
       totalValue,
-      originStats
+      originStats,
+      topRequested
     };
-  }, [transactions, items, reportRange, reportSectorFilter]);
+  }, [transactions, items, reportRange, reportSectorFilter, allRequestItems]);
 
   if (loading) {
     return (
@@ -842,26 +1349,41 @@ export default function App() {
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="bg-white p-12 rounded-[40px] shadow-2xl max-w-md w-full text-center border border-[#E7E5E4]"
+          className="bg-white p-10 rounded-[40px] shadow-2xl max-w-md w-full border border-[#E7E5E4]"
         >
-          <div className="bg-[#1C1917] w-20 h-20 rounded-3xl flex items-center justify-center mx-auto mb-8 shadow-lg">
-            <Package className="text-white w-10 h-10" />
+          <div className="text-center mb-8">
+            <div className="bg-[#1C1917] w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-lg">
+              <Package className="text-white w-8 h-8" />
+            </div>
+            <h1 className="text-3xl font-black tracking-tighter mb-2">Almoxarifado Pro</h1>
+            <p className="text-[#78716C] text-sm font-medium">
+              Entre para gerenciar seu estoque
+            </p>
           </div>
-          <h1 className="text-4xl font-black tracking-tighter mb-4">Almoxarifado Pro</h1>
-          <p className="text-[#78716C] mb-10 leading-relaxed">Gerencie seu estoque com precisão cirúrgica e relatórios em tempo real.</p>
-          <button 
-            onClick={handleLogin}
-            disabled={loginLoading}
-            className="w-full bg-[#1C1917] text-white py-4 rounded-2xl font-bold flex items-center justify-center gap-3 hover:bg-[#292524] transition-all shadow-xl hover:shadow-2xl active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {loginLoading ? (
-              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
-            ) : (
-              <><LogIn size={20} /> Entrar com Google</>
-            )}
-          </button>
-          <p className="mt-8 text-[10px] text-[#A8A29E] uppercase tracking-widest font-bold">Acesso restrito a funcionários autorizados</p>
-          <p className="mt-2 text-[10px] text-[#A8A29E]">Certifique-se de que os popups estão permitidos no seu navegador.</p>
+
+          <div className="space-y-6">
+            <button 
+              onClick={handleGoogleLogin}
+              disabled={loginLoading}
+              className="w-full bg-white border border-[#E7E5E4] text-[#1C1917] py-4 rounded-2xl font-bold flex items-center justify-center gap-3 hover:bg-[#FAFAF9] transition-all shadow-sm active:scale-[0.98] disabled:opacity-50"
+            >
+              {loginLoading ? (
+                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-[#1C1917]"></div>
+              ) : (
+                <>
+                  <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5" alt="Google" />
+                  Entrar com Google
+                </>
+              )}
+            </button>
+            <p className="text-[10px] text-[#A8A29E] text-center font-bold uppercase tracking-widest mt-4">
+              Apenas e-mails autorizados pelo administrador
+            </p>
+          </div>
+
+          <div className="mt-8 text-center">
+            <p className="text-[10px] text-[#A8A29E] uppercase tracking-widest font-bold">Acesso restrito a funcionários autorizados</p>
+          </div>
         </motion.div>
       </div>
     );
@@ -923,30 +1445,67 @@ export default function App() {
         </div>
 
         <nav className="flex flex-col gap-1">
-          <button 
-            onClick={() => setActiveTab('dashboard')}
-            className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'dashboard' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
-          >
-            <LayoutDashboard size={20} /> Dashboard
-          </button>
-          <button 
-            onClick={() => setActiveTab('inventory')}
-            className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'inventory' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
-          >
-            <Package size={20} /> Estoque
-          </button>
-          <button 
-            onClick={() => setActiveTab('history')}
-            className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'history' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
-          >
-            <History size={20} /> Histórico
-          </button>
-          <button 
-            onClick={() => setActiveTab('reports')}
-            className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'reports' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
-          >
-            <BarChart3 size={20} /> Relatórios
-          </button>
+          {(userProfile?.role === 'ADMIN' || user?.email === 'gerlianemagalhaes79@gmail.com') ? (
+            <>
+              <button 
+                onClick={() => setActiveTab('dashboard')}
+                className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'dashboard' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+              >
+                <LayoutDashboard size={20} /> Dashboard
+              </button>
+              <button 
+                onClick={() => setActiveTab('inventory')}
+                className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'inventory' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+              >
+                <Package size={20} /> Estoque
+              </button>
+              <button 
+                onClick={() => setActiveTab('history')}
+                className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'history' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+              >
+                <History size={20} /> Histórico
+              </button>
+              <button 
+                onClick={() => setActiveTab('requests')}
+                className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'requests' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+              >
+                <FileText size={20} /> Solicitações
+              </button>
+              <button 
+                onClick={() => setActiveTab('reports')}
+                className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'reports' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+              >
+                <BarChart3 size={20} /> Relatórios
+              </button>
+              <button 
+                onClick={() => setActiveTab('users')}
+                className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'users' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+              >
+                <Users size={20} /> Usuários
+              </button>
+            </>
+          ) : (
+            <>
+              <button 
+                onClick={() => setActiveTab('new-request')}
+                className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'new-request' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+              >
+                <Plus size={20} /> Nova Solicitação
+              </button>
+              <button 
+                onClick={() => setActiveTab('my-requests')}
+                className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'my-requests' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+              >
+                <FileText size={20} /> Minhas Solicitações
+              </button>
+              <button 
+                onClick={() => setActiveTab('reports')}
+                className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'reports' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+              >
+                <BarChart3 size={20} /> Relatórios
+              </button>
+            </>
+          )}
         </nav>
 
         <div className="mt-auto pt-6 border-t border-[#E7E5E4] space-y-2">
@@ -979,6 +1538,10 @@ export default function App() {
               {activeTab === 'dashboard' && 'Visão Geral'}
               {activeTab === 'inventory' && 'Gerenciamento de Estoque'}
               {activeTab === 'history' && 'Histórico de Movimentações'}
+              {activeTab === 'requests' && 'Solicitações de Materiais'}
+              {activeTab === 'my-requests' && 'Minhas Solicitações'}
+              {activeTab === 'new-request' && 'Nova Solicitação'}
+              {activeTab === 'reports' && 'Relatórios e Análises'}
             </h2>
               {activeTab === 'history' && (
                 <p className="text-[#78716C]">
@@ -1003,19 +1566,21 @@ export default function App() {
                       onChange={e => setReportRange({...reportRange, end: e.target.value})}
                     />
                   </div>
-                  <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border border-[#E7E5E4]">
-                    <Filter size={14} className="text-[#A8A29E]" />
-                    <select 
-                      className="text-xs font-bold focus:outline-none bg-transparent"
-                      value={reportSectorFilter}
-                      onChange={e => setReportSectorFilter(e.target.value)}
-                    >
-                      <option value="all">Todos os Setores</option>
-                      {SECTORS.map(s => (
-                        <option key={s} value={s}>{s}</option>
-                      ))}
-                    </select>
-                  </div>
+                  {(userProfile?.role === 'ADMIN' || user?.email === 'gerlianemagalhaes79@gmail.com') && (
+                    <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border border-[#E7E5E4]">
+                      <Filter size={14} className="text-[#A8A29E]" />
+                      <select 
+                        className="text-xs font-bold focus:outline-none bg-transparent"
+                        value={reportSectorFilter}
+                        onChange={e => setReportSectorFilter(e.target.value)}
+                      >
+                        <option value="all">Todos os Setores</option>
+                        {SECTORS.map(s => (
+                          <option key={s} value={s}>{s}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                   <button 
                     onClick={handleExportExcel}
                     className="flex items-center gap-2 bg-emerald-600 text-white px-4 py-1.5 rounded-xl text-xs font-bold hover:bg-emerald-700 transition-all shadow-sm"
@@ -1026,7 +1591,66 @@ export default function App() {
               )}
             </div>
           
-          <div className="flex gap-4">
+          <div className="flex gap-4 items-center">
+            <div className="relative">
+              <button 
+                onClick={() => setShowNotifications(!showNotifications)}
+                className="p-2 bg-white border border-[#E7E5E4] rounded-xl text-[#57534E] hover:bg-[#FAFAF9] relative transition-all"
+              >
+                <Bell size={20} />
+                {notifications.filter(n => !n.read).length > 0 && (
+                  <span className="absolute -top-1 -right-1 w-5 h-5 bg-rose-600 text-white text-[10px] font-bold rounded-full flex items-center justify-center border-2 border-white">
+                    {notifications.filter(n => !n.read).length}
+                  </span>
+                )}
+              </button>
+              
+              <AnimatePresence>
+                {showNotifications && (
+                  <motion.div 
+                    initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                    className="absolute right-0 mt-2 w-80 bg-white border border-[#E7E5E4] rounded-2xl shadow-2xl z-50 overflow-hidden"
+                  >
+                    <div className="p-4 border-b border-[#E7E5E4] flex justify-between items-center bg-[#FAFAF9]">
+                      <h3 className="font-bold text-sm">Notificações</h3>
+                      <button onClick={() => setShowNotifications(false)} className="text-[#A8A29E] hover:text-[#1C1917]">
+                        <X size={16} />
+                      </button>
+                    </div>
+                    <div className="max-h-96 overflow-y-auto">
+                      {notifications.length === 0 ? (
+                        <div className="p-8 text-center">
+                          <p className="text-xs text-[#A8A29E] font-medium">Nenhuma notificação</p>
+                        </div>
+                      ) : (
+                        notifications.map(n => (
+                          <div 
+                            key={n.id} 
+                            className={`p-4 border-b border-[#F5F5F4] hover:bg-[#FAFAF9] transition-all cursor-pointer ${!n.read ? 'bg-blue-50/30' : ''}`}
+                            onClick={async () => {
+                              await updateDoc(doc(db, 'notifications', n.id), { read: true });
+                              if (n.requestId) {
+                                const req = requests.find(r => r.id === n.requestId);
+                                if (req) {
+                                  setShowRequestDetailModal({ show: true, request: req });
+                                }
+                              }
+                            }}
+                          >
+                            <p className={`text-xs font-bold mb-1 ${!n.read ? 'text-blue-600' : 'text-[#1C1917]'}`}>{n.title}</p>
+                            <p className="text-[11px] text-[#78716C] leading-relaxed mb-2">{n.message}</p>
+                            <p className="text-[10px] text-[#A8A29E] font-medium">{format(new Date(n.date), "dd MMM, HH:mm", { locale: ptBR })}</p>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[#A8A29E]" size={18} />
               <input 
@@ -1038,31 +1662,46 @@ export default function App() {
               />
             </div>
             {activeTab === 'inventory' && (
-              <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-xl border border-[#E7E5E4]">
-                <Filter size={16} className="text-[#A8A29E]" />
-                <select 
-                  className="text-xs font-bold focus:outline-none bg-transparent"
-                  value={originFilter}
-                  onChange={e => setOriginFilter(e.target.value as any)}
-                >
-                  <option value="all">Todas Origens</option>
-                  <option value="contract">Contrato</option>
-                  <option value="extra">Extra</option>
-                </select>
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-xl border border-[#E7E5E4]">
+                  <Filter size={16} className="text-[#A8A29E]" />
+                  <select 
+                    className="text-xs font-bold focus:outline-none bg-transparent"
+                    value={originFilter}
+                    onChange={e => setOriginFilter(e.target.value as any)}
+                  >
+                    <option value="all">Todas Origens</option>
+                    <option value="contract">Contrato</option>
+                    <option value="extra">Extra</option>
+                  </select>
+                </div>
+                {(userProfile?.role === 'ADMIN' || user?.email === 'gerlianemagalhaes79@gmail.com') && (
+                  <button 
+                    onClick={handleExportInventory}
+                    className="p-2 bg-white border border-[#E7E5E4] rounded-xl text-[#57534E] hover:bg-[#FAFAF9] transition-all"
+                    title="Baixar Planilha de Estoque"
+                  >
+                    <Download size={20} />
+                  </button>
+                )}
               </div>
             )}
-            <button 
-              onClick={() => setShowAddModal(true)}
-              className="bg-[#1C1917] text-white px-5 py-2 rounded-xl font-medium flex items-center gap-2 hover:bg-[#292524] transition-all shadow-sm"
-            >
-              <Plus size={20} /> Entrada
-            </button>
-            <button 
-              onClick={() => setShowTransactionModal({ show: true, type: 'exit' })}
-              className="bg-rose-600 text-white px-5 py-2 rounded-xl font-medium flex items-center gap-2 hover:bg-rose-700 transition-all shadow-sm"
-            >
-              <ArrowUpRight size={20} /> Saída
-            </button>
+            {(userProfile?.role === 'ADMIN' || user?.email === 'gerlianemagalhaes79@gmail.com') && (
+              <>
+                <button 
+                  onClick={() => setShowAddModal(true)}
+                  className="bg-[#1C1917] text-white px-5 py-2 rounded-xl font-medium flex items-center gap-2 hover:bg-[#292524] transition-all shadow-sm"
+                >
+                  <Plus size={20} /> Entrada
+                </button>
+                <button 
+                  onClick={() => setShowTransactionModal({ show: true, type: 'exit' })}
+                  className="bg-rose-600 text-white px-5 py-2 rounded-xl font-medium flex items-center gap-2 hover:bg-rose-700 transition-all shadow-sm"
+                >
+                  <ArrowUpRight size={20} /> Saída
+                </button>
+              </>
+            )}
           </div>
         </header>
 
@@ -1088,18 +1727,20 @@ export default function App() {
                   <p className="text-xs text-[#A8A29E] mt-2 font-bold uppercase tracking-wider">{groupedArray.length} tipos de itens</p>
                 </div>
 
-                <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
-                  <div className="flex justify-between items-start mb-4">
-                    <div className="bg-blue-100 p-3 rounded-2xl text-blue-600">
-                      <DollarSign size={24} />
+                {isAdmin && (
+                  <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
+                    <div className="flex justify-between items-start mb-4">
+                      <div className="bg-blue-100 p-3 rounded-2xl text-blue-600">
+                        <DollarSign size={24} />
+                      </div>
                     </div>
+                    <p className="text-[#78716C] font-medium mb-1">Patrimônio em Estoque</p>
+                    <h3 className="text-4xl font-bold">
+                      {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalInventoryValue)}
+                    </h3>
+                    <p className="text-xs text-[#A8A29E] mt-2 font-bold uppercase tracking-wider">Valor total investido</p>
                   </div>
-                  <p className="text-[#78716C] font-medium mb-1">Patrimônio em Estoque</p>
-                  <h3 className="text-4xl font-bold">
-                    {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalInventoryValue)}
-                  </h3>
-                  <p className="text-xs text-[#A8A29E] mt-2 font-bold uppercase tracking-wider">Valor total investido</p>
-                </div>
+                )}
 
                 <div 
                   onClick={() => lowStockItems.length > 0 && setShowDetailModal({ show: true, type: 'low_stock', items: lowStockItems })}
@@ -1220,9 +1861,9 @@ export default function App() {
                 <thead>
                   <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Item / Lote</th>
-                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Tipo / Fornecedor</th>
-                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Origem</th>
-                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Preço Un.</th>
+                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Tipo {isAdmin && '/ Fornecedor'}</th>
+                    {isAdmin && <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Origem</th>}
+                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">{isAdmin ? 'Preço Un.' : '---'}</th>
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Quantidade</th>
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Mínimo</th>
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Validade</th>
@@ -1246,25 +1887,29 @@ export default function App() {
                         </td>
                         <td className="px-6 py-5">
                           <p className="text-sm font-semibold text-[#44403C]">{group.category || '---'}</p>
-                          <p className="text-xs text-[#78716C]">{group.supplier || '---'}</p>
+                          {isAdmin && <p className="text-xs text-[#78716C]">{group.supplier || '---'}</p>}
                         </td>
                         <td className="px-6 py-5">
-                          {(() => {
-                            const origins = new Set(group.batches.map(b => b.origin));
-                            if (origins.size === 1) {
-                              const origin = Array.from(origins)[0];
+                          {isAdmin ? (
+                            (() => {
+                              const origins = new Set(group.batches.map(b => b.origin));
+                              if (origins.size === 1) {
+                                const origin = Array.from(origins)[0];
+                                return (
+                                  <span className={`text-xs font-bold px-2 py-1 rounded-lg ${origin === 'contract' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'}`}>
+                                    {origin === 'contract' ? 'Contrato' : 'Extra'}
+                                  </span>
+                                );
+                              }
                               return (
-                                <span className={`text-xs font-bold px-2 py-1 rounded-lg ${origin === 'contract' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'}`}>
-                                  {origin === 'contract' ? 'Contrato' : 'Extra'}
+                                <span className="text-[10px] font-bold px-2 py-1 rounded-lg bg-gray-100 text-gray-500 uppercase">
+                                  {group.batches.length} Lotes
                                 </span>
                               );
-                            }
-                            return (
-                              <span className="text-[10px] font-bold px-2 py-1 rounded-lg bg-gray-100 text-gray-500 uppercase">
-                                {group.batches.length} Lotes
-                              </span>
-                            );
-                          })()}
+                            })()
+                          ) : (
+                            <span className="text-xs text-[#A8A29E]">---</span>
+                          )}
                         </td>
                         <td className="px-6 py-5 font-medium text-[#57534E]">---</td>
                         <td className="px-6 py-5">
@@ -1297,15 +1942,27 @@ export default function App() {
                             <p className="text-sm font-mono font-bold text-[#57534E]">Lote: {item.batch_number || '---'}</p>
                           </td>
                           <td className="px-6 py-4">
-                            <p className="text-xs text-[#78716C]">{item.supplier || '---'}</p>
+                            {isAdmin ? (
+                              <p className="text-xs text-[#78716C]">{item.supplier || '---'}</p>
+                            ) : (
+                              <p className="text-xs text-[#78716C]">---</p>
+                            )}
                           </td>
                           <td className="px-6 py-4">
-                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${item.origin === 'contract' ? 'bg-blue-50 text-blue-600' : 'bg-purple-50 text-purple-600'}`}>
-                              {item.origin === 'contract' ? 'Contrato' : 'Extra'}
-                            </span>
+                            {isAdmin ? (
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${item.origin === 'contract' ? 'bg-blue-50 text-blue-600' : 'bg-purple-50 text-purple-600'}`}>
+                                {item.origin === 'contract' ? 'Contrato' : 'Extra'}
+                              </span>
+                            ) : (
+                              <span className="text-xs text-[#A8A29E]">---</span>
+                            )}
                           </td>
                           <td className="px-6 py-4 text-sm text-[#57534E]">
-                            {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.unit_price)}
+                            {isAdmin ? (
+                              new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.unit_price)
+                            ) : (
+                              '---'
+                            )}
                           </td>
                           <td className="px-6 py-4">
                             <div className="flex flex-col">
@@ -1498,15 +2155,17 @@ export default function App() {
             >
               {/* Report Stats */}
               <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-                <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
-                  <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Entradas no Período</p>
-                  <div className="flex items-center gap-3">
-                    <div className="bg-emerald-100 p-2 rounded-xl text-emerald-600">
-                      <TrendingUp size={20} />
+                {isAdmin && (
+                  <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
+                    <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Entradas no Período</p>
+                    <div className="flex items-center gap-3">
+                      <div className="bg-emerald-100 p-2 rounded-xl text-emerald-600">
+                        <TrendingUp size={20} />
+                      </div>
+                      <h3 className="text-3xl font-black">{reportData.entries}</h3>
                     </div>
-                    <h3 className="text-3xl font-black">{reportData.entries}</h3>
                   </div>
-                </div>
+                )}
                 <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
                   <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Saídas no Período</p>
                   <div className="flex items-center gap-3">
@@ -1516,44 +2175,30 @@ export default function App() {
                     <h3 className="text-3xl font-black">{reportData.exits}</h3>
                   </div>
                 </div>
-                <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
-                  <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Valor Total em Estoque</p>
-                  <div className="flex items-center gap-3">
-                    <div className="bg-amber-100 p-2 rounded-xl text-amber-600">
-                      <DollarSign size={20} />
+                {isAdmin && (
+                  <>
+                    <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
+                      <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Valor Total em Estoque</p>
+                      <div className="flex items-center gap-3">
+                        <div className="bg-amber-100 p-2 rounded-xl text-amber-600">
+                          <DollarSign size={20} />
+                        </div>
+                        <h3 className="text-2xl font-black">
+                          {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.totalValue)}
+                        </h3>
+                      </div>
                     </div>
-                    <h3 className="text-2xl font-black">
-                      {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.totalValue)}
-                    </h3>
-                  </div>
-                </div>
-                <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
-                  <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Itens Ativos</p>
-                  <div className="flex items-center gap-3">
-                    <div className="bg-blue-100 p-2 rounded-xl text-blue-600">
-                      <Package size={20} />
+                    <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
+                      <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Itens Ativos</p>
+                      <div className="flex items-center gap-3">
+                        <div className="bg-blue-100 p-2 rounded-xl text-blue-600">
+                          <Package size={20} />
+                        </div>
+                        <h3 className="text-3xl font-black">{items.length}</h3>
+                      </div>
                     </div>
-                    <h3 className="text-3xl font-black">{items.length}</h3>
-                  </div>
-                </div>
-                <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
-                  <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Entradas Extras (Mês)</p>
-                  <div className="flex items-center gap-3">
-                    <div className="bg-purple-100 p-2 rounded-xl text-purple-600">
-                      <Plus size={20} />
-                    </div>
-                    <h3 className="text-3xl font-black">{reportData.originStats.extra.entries}</h3>
-                  </div>
-                </div>
-                <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
-                  <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Saídas Extras (Mês)</p>
-                  <div className="flex items-center gap-3">
-                    <div className="bg-orange-100 p-2 rounded-xl text-orange-600">
-                      <LogOut size={20} />
-                    </div>
-                    <h3 className="text-3xl font-black">{reportData.originStats.extra.exits}</h3>
-                  </div>
-                </div>
+                  </>
+                )}
               </div>
 
               {/* Charts Grid */}
@@ -1653,22 +2298,46 @@ export default function App() {
                 </div>
 
                 {/* Value by Supplier */}
-                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
+                {isAdmin && (
+                  <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
+                    <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
+                      <DollarSign size={18} className="text-amber-600" /> Valor por Fornecedor
+                    </h4>
+                    <div className="h-[300px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={reportData.suppliers} layout="vertical">
+                          <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#F5F5F4" />
+                          <XAxis type="number" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
+                          <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1C1917', fontWeight: 'bold'}} width={100} />
+                          <Tooltip 
+                            cursor={{fill: '#FAFAF9'}}
+                            formatter={(value: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value)}
+                            contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                          />
+                          <Bar dataKey="value" name="Valor Total" fill="#f59e0b" radius={[0, 8, 8, 0]} barSize={20} />
+                          <Legend />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                )}
+
+                {/* Top Requested Items */}
+                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
                   <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
-                    <DollarSign size={18} className="text-amber-600" /> Valor por Fornecedor
+                    <Plus size={18} className="text-blue-600" /> Itens Mais Solicitados (Top 10)
                   </h4>
-                  <div className="h-[300px] w-full">
+                  <div className="h-[400px] w-full">
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={reportData.suppliers} layout="vertical">
-                        <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#F5F5F4" />
-                        <XAxis type="number" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
-                        <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1C1917', fontWeight: 'bold'}} width={100} />
+                      <BarChart data={reportData.topRequested}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F5F5F4" />
+                        <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1C1917', fontWeight: 'bold'}} />
+                        <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
                         <Tooltip 
                           cursor={{fill: '#FAFAF9'}}
-                          formatter={(value: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value)}
                           contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
                         />
-                        <Bar dataKey="value" name="Valor Total" fill="#f59e0b" radius={[0, 8, 8, 0]} barSize={20} />
+                        <Bar dataKey="value" name="Qtd Solicitada" fill="#3b82f6" radius={[8, 8, 0, 0]} barSize={40} />
                         <Legend />
                       </BarChart>
                     </ResponsiveContainer>
@@ -1676,45 +2345,47 @@ export default function App() {
                 </div>
 
                 {/* Extra vs Contract Comparison */}
-                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
-                  <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
-                    <BarChart3 size={18} className="text-purple-600" /> Comparativo: Contrato vs Extra
-                  </h4>
-                  <div className="h-[300px] w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart 
-                        data={[
-                          { 
-                            name: 'Entradas', 
-                            contrato: reportData.originStats.contract.entries, 
-                            extra: reportData.originStats.extra.entries 
-                          },
-                          { 
-                            name: 'Saídas', 
-                            contrato: reportData.originStats.contract.exits, 
-                            extra: reportData.originStats.extra.exits 
-                          },
-                          { 
-                            name: 'Estoque Atual', 
-                            contrato: reportData.originStats.contract.current, 
-                            extra: reportData.originStats.extra.current 
-                          }
-                        ]}
-                      >
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F5F5F4" />
-                        <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#1C1917', fontWeight: 'bold'}} />
-                        <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
-                        <Tooltip 
-                          cursor={{fill: '#FAFAF9'}}
-                          contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                        />
-                        <Legend />
-                        <Bar dataKey="contrato" name="Contrato" fill="#1C1917" radius={[8, 8, 0, 0]} barSize={40} />
-                        <Bar dataKey="extra" name="Extra" fill="#8b5cf6" radius={[8, 8, 0, 0]} barSize={40} />
-                      </BarChart>
-                    </ResponsiveContainer>
+                {isAdmin && (
+                  <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
+                    <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
+                      <BarChart3 size={18} className="text-purple-600" /> Comparativo: Contrato vs Extra
+                    </h4>
+                    <div className="h-[300px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart 
+                          data={[
+                            { 
+                              name: 'Entradas', 
+                              contrato: reportData.originStats.contract.entries, 
+                              extra: reportData.originStats.extra.entries 
+                            },
+                            { 
+                              name: 'Saídas', 
+                              contrato: reportData.originStats.contract.exits, 
+                              extra: reportData.originStats.extra.exits 
+                            },
+                            { 
+                              name: 'Estoque Atual', 
+                              contrato: reportData.originStats.contract.current, 
+                              extra: reportData.originStats.extra.current 
+                            }
+                          ]}
+                        >
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F5F5F4" />
+                          <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#1C1917', fontWeight: 'bold'}} />
+                          <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
+                          <Tooltip 
+                            cursor={{fill: '#FAFAF9'}}
+                            contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                          />
+                          <Legend />
+                          <Bar dataKey="contrato" name="Contrato" fill="#1C1917" radius={[8, 8, 0, 0]} barSize={40} />
+                          <Bar dataKey="extra" name="Extra" fill="#8b5cf6" radius={[8, 8, 0, 0]} barSize={40} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                </div>
+                )}
 
                 {/* Detailed Sector Breakdown */}
                 <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
@@ -1723,12 +2394,14 @@ export default function App() {
                       <History size={18} className="text-[#1C1917]" /> 
                       Detalhamento: {reportSectorFilter === 'all' ? 'Todos os Setores' : reportSectorFilter}
                     </h4>
-                    <div className="text-right">
-                      <p className="text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest">Valor Total de Saídas</p>
-                      <p className="text-xl font-black text-rose-600">
-                        {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.sectorItems.reduce((sum, i) => sum + i.value, 0))}
-                      </p>
-                    </div>
+                    {isAdmin && (
+                      <div className="text-right">
+                        <p className="text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest">Valor Total de Saídas</p>
+                        <p className="text-xl font-black text-rose-600">
+                          {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.sectorItems.reduce((sum, i) => sum + i.value, 0))}
+                        </p>
+                      </div>
+                    )}
                   </div>
                   
                   <div className="overflow-x-auto">
@@ -1737,9 +2410,9 @@ export default function App() {
                         <tr className="border-b border-[#E7E5E4]">
                           <th className="pb-4 font-bold text-xs text-[#78716C] uppercase tracking-wider">Item</th>
                           <th className="pb-4 font-bold text-xs text-[#78716C] uppercase tracking-wider">Categoria</th>
-                          <th className="pb-4 font-bold text-xs text-[#78716C] uppercase tracking-wider">Fornecedor</th>
+                          {isAdmin && <th className="pb-4 font-bold text-xs text-[#78716C] uppercase tracking-wider">Fornecedor</th>}
                           <th className="pb-4 font-bold text-xs text-[#78716C] uppercase tracking-wider text-center">Quantidade</th>
-                          <th className="pb-4 font-bold text-xs text-[#78716C] uppercase tracking-wider text-right">Valor Total</th>
+                          {isAdmin && <th className="pb-4 font-bold text-xs text-[#78716C] uppercase tracking-wider text-right">Valor Total</th>}
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-[#F5F5F4]">
@@ -1754,21 +2427,375 @@ export default function App() {
                                 {item.category}
                               </span>
                             </td>
-                            <td className="py-4 text-xs text-[#78716C] font-medium">{item.supplier}</td>
+                            {isAdmin && <td className="py-4 text-xs text-[#78716C] font-medium">{item.supplier}</td>}
                             <td className="py-4 text-center font-bold">{item.quantity}</td>
-                            <td className="py-4 text-right font-bold text-rose-600">
-                              {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.value)}
-                            </td>
+                            {isAdmin && (
+                              <td className="py-4 text-right font-bold text-rose-600">
+                                {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.value)}
+                              </td>
+                            )}
                           </tr>
                         ))}
                         {reportData.sectorItems.length === 0 && (
                           <tr>
-                            <td colSpan={4} className="py-10 text-center text-[#A8A29E] italic">Nenhuma saída registrada para este filtro.</td>
+                            <td colSpan={isAdmin ? 5 : 3} className="py-10 text-center text-[#A8A29E] italic">Nenhuma saída registrada para este filtro.</td>
                           </tr>
                         )}
                       </tbody>
                     </table>
                   </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {activeTab === 'users' && (userProfile?.role === 'ADMIN' || user?.email === 'gerlianemagalhaes79@gmail.com') && (
+            <motion.div 
+              key="users"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              className="space-y-8"
+            >
+              <div className="flex justify-between items-center">
+                <h3 className="text-2xl font-black">Gerenciamento de Usuários</h3>
+                <button 
+                  onClick={() => setIsRegistering(true)}
+                  className="bg-[#1C1917] text-white px-6 py-3 rounded-2xl font-bold flex items-center gap-2 hover:bg-[#292524] transition-all shadow-lg"
+                >
+                  <Plus size={20} /> Novo Usuário
+                </button>
+              </div>
+
+              {isRegistering && (
+                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm max-w-2xl">
+                  <div className="flex justify-between items-center mb-6">
+                    <h4 className="text-lg font-bold">Cadastrar Novo Usuário</h4>
+                    <button onClick={() => setIsRegistering(false)} className="text-[#A8A29E] hover:text-[#1C1917]">
+                      <X size={20} />
+                    </button>
+                  </div>
+                  <form onSubmit={handleRegister} className="space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1.5 ml-1">Nome Completo</label>
+                        <input 
+                          type="text" 
+                          required
+                          className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
+                          placeholder="Nome do funcionário"
+                          value={authName}
+                          onChange={e => setAuthName(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1.5 ml-1">Setor</label>
+                        <select 
+                          required
+                          className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
+                          value={authSector}
+                          onChange={e => setAuthSector(e.target.value)}
+                        >
+                          {SECTORS.map(sector => (
+                            <option key={sector} value={sector}>{sector}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="md:col-span-2">
+                        <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1.5 ml-1">E-mail</label>
+                        <input 
+                          type="email" 
+                          required
+                          className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
+                          placeholder="email@empresa.com"
+                          value={authEmail}
+                          onChange={e => setAuthEmail(e.target.value)}
+                        />
+                      </div>
+                    </div>
+                    <button 
+                      type="submit"
+                      disabled={loginLoading}
+                      className="w-full bg-[#1C1917] text-white py-4 rounded-2xl font-bold flex items-center justify-center gap-3 hover:bg-[#292524] transition-all shadow-xl active:scale-[0.98] disabled:opacity-50 mt-4"
+                    >
+                      {loginLoading ? (
+                        <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+                      ) : (
+                        <><Save size={20} /> Salvar Usuário</>
+                      )}
+                    </button>
+                  </form>
+                </div>
+              )}
+
+              <div className="bg-white rounded-3xl border border-[#E7E5E4] shadow-sm overflow-hidden">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
+                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Nome</th>
+                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">E-mail</th>
+                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Setor</th>
+                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Papel</th>
+                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#E7E5E4]">
+                    {usersList.map(u => (
+                      <tr key={u.id} className="hover:bg-[#FAFAF9] transition-all">
+                        <td className="px-6 py-4 font-bold text-sm">{u.name}</td>
+                        <td className="px-6 py-4 text-sm text-[#78716C]">{u.email}</td>
+                        <td className="px-6 py-4">
+                          <span className="text-xs font-bold px-2 py-1 rounded-lg" style={{ backgroundColor: `${SECTOR_COLORS[u.sector || ''] || '#000000'}20`, color: SECTOR_COLORS[u.sector || ''] || '#000000' }}>
+                            {u.sector}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className={`text-[10px] font-black px-2 py-1 rounded-full uppercase tracking-widest ${u.role === 'ADMIN' ? 'bg-purple-100 text-purple-600' : 'bg-gray-100 text-gray-600'}`}>
+                            {u.role}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 text-right">
+                          {u.email !== 'gerlianemagalhaes79@gmail.com' && (
+                            <button 
+                              onClick={() => setShowUserDeleteConfirm({ show: true, user: u })}
+                              className="text-rose-600 hover:bg-rose-50 p-2 rounded-lg transition-all"
+                            >
+                              <Trash2 size={18} />
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </motion.div>
+          )}
+
+          {activeTab === 'requests' && (
+            <motion.div 
+              key="requests"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              className="space-y-6"
+            >
+              <div className="bg-white rounded-3xl border border-[#E7E5E4] shadow-sm overflow-hidden">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
+                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Nº / Data</th>
+                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Setor</th>
+                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Status</th>
+                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Itens</th>
+                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#E7E5E4]">
+                    {requests.map(req => (
+                      <tr key={req.id} className="hover:bg-[#FAFAF9] transition-all">
+                        <td className="px-6 py-4">
+                          <p className="font-bold text-sm">#{req.id.slice(-5).toUpperCase()}</p>
+                          <p className="text-xs text-[#A8A29E]">{new Date(req.date).toLocaleDateString('pt-BR')}</p>
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className="text-sm font-bold px-2 py-1 rounded-lg" style={{ backgroundColor: `${SECTOR_COLORS[req.sector]}20`, color: SECTOR_COLORS[req.sector] }}>
+                            {req.sector}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className={`text-[10px] font-black px-2 py-1 rounded-full uppercase tracking-widest ${
+                            req.status === 'PENDENTE' ? 'bg-amber-100 text-amber-600' :
+                            req.status === 'APROVADO' ? 'bg-blue-100 text-blue-600' :
+                            req.status === 'ENTREGUE' ? 'bg-emerald-100 text-emerald-600' :
+                            req.status === 'RECUSADO' ? 'bg-rose-100 text-rose-600' :
+                            'bg-gray-100 text-gray-600'
+                          }`}>
+                            {req.status}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4">
+                          <p className="text-xs font-bold text-[#57534E]">
+                            {allRequestItems.filter(ri => ri.request_id === req.id).length} itens solicitados
+                          </p>
+                        </td>
+                        <td className="px-6 py-4 text-right">
+                          <button 
+                            onClick={() => setShowRequestDetailModal({ show: true, request: req })}
+                            className="bg-[#1C1917] text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-[#292524] transition-all"
+                          >
+                            Ver Detalhes
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {requests.length === 0 && (
+                  <div className="p-20 text-center">
+                    <FileText className="mx-auto text-[#E7E5E4] mb-4" size={48} />
+                    <p className="text-[#78716C]">Nenhuma solicitação encontrada.</p>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          )}
+
+          {activeTab === 'my-requests' && (
+            <motion.div 
+              key="my-requests"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              className="space-y-6"
+            >
+              <div className="bg-white rounded-3xl border border-[#E7E5E4] shadow-sm overflow-hidden">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
+                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Nº / Data</th>
+                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Status</th>
+                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Itens</th>
+                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#E7E5E4]">
+                    {requests.filter(r => r.sector === userProfile?.sector).map(req => (
+                      <tr key={req.id} className="hover:bg-[#FAFAF9] transition-all">
+                        <td className="px-6 py-4">
+                          <p className="font-bold text-sm">#{req.id.slice(-5).toUpperCase()}</p>
+                          <p className="text-xs text-[#A8A29E]">{new Date(req.date).toLocaleDateString('pt-BR')}</p>
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className={`text-[10px] font-black px-2 py-1 rounded-full uppercase tracking-widest ${
+                            req.status === 'PENDENTE' ? 'bg-amber-100 text-amber-600' :
+                            req.status === 'APROVADO' ? 'bg-blue-100 text-blue-600' :
+                            req.status === 'ENTREGUE' ? 'bg-emerald-100 text-emerald-600' :
+                            req.status === 'RECUSADO' ? 'bg-rose-100 text-rose-600' :
+                            'bg-gray-100 text-gray-600'
+                          }`}>
+                            {req.status}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4">
+                          <p className="text-xs font-bold text-[#57534E]">
+                            {allRequestItems.filter(ri => ri.request_id === req.id).length} itens
+                          </p>
+                        </td>
+                        <td className="px-6 py-4 text-right">
+                          <button 
+                            onClick={() => setShowRequestDetailModal({ show: true, request: req })}
+                            className="bg-[#1C1917] text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-[#292524] transition-all"
+                          >
+                            Ver Detalhes
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {requests.filter(r => r.sector === userProfile?.sector).length === 0 && (
+                  <div className="p-20 text-center">
+                    <FileText className="mx-auto text-[#E7E5E4] mb-4" size={48} />
+                    <p className="text-[#78716C]">Você ainda não fez nenhuma solicitação.</p>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          )}
+
+          {activeTab === 'new-request' && (
+            <motion.div 
+              key="new-request"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="max-w-2xl mx-auto space-y-8"
+            >
+              <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
+                <h3 className="text-2xl font-black mb-6">Nova Solicitação</h3>
+                <div className="space-y-6">
+                  <div>
+                    <label className="block text-xs font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Setor Solicitante</label>
+                    <input 
+                      type="text" 
+                      value={userProfile?.sector || ''} 
+                      disabled 
+                      className="w-full px-4 py-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-2xl font-bold text-[#78716C]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Adicionar Item</label>
+                    <div className="flex gap-2">
+                      <select 
+                        className="flex-1 px-4 py-3 bg-white border border-[#E7E5E4] rounded-2xl focus:outline-none focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
+                        onChange={(e) => {
+                          const item = items.find(i => i.id === e.target.value);
+                          if (item) {
+                            const existing = requestBasket.find(bi => bi.product_id === item.id);
+                            if (existing) {
+                              setRequestBasket(requestBasket.map(bi => bi.product_id === item.id ? { ...bi, quantity: bi.quantity + 1 } : bi));
+                            } else {
+                              setRequestBasket([...requestBasket, { product_id: item.id, product_name: item.name, quantity: 1 }]);
+                            }
+                            e.target.value = '';
+                          }
+                        }}
+                      >
+                        <option value="">Selecione um item...</option>
+                        {groupedArray.map(group => (
+                          <option key={group.name} value={group.batches[0].id}>{group.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {requestBasket.length > 0 && (
+                    <div className="space-y-3">
+                      <label className="block text-xs font-bold text-[#A8A29E] uppercase tracking-widest">Itens na Cesta</label>
+                      {requestBasket.map(item => (
+                        <div key={item.product_id} className="flex items-center justify-between p-4 bg-[#FAFAF9] rounded-2xl border border-[#E7E5E4]">
+                          <p className="font-bold text-sm">{item.product_name}</p>
+                          <div className="flex items-center gap-4">
+                            <input 
+                              type="number" 
+                              min="1"
+                              value={item.quantity}
+                              onChange={(e) => setRequestBasket(requestBasket.map(bi => bi.product_id === item.product_id ? { ...bi, quantity: parseInt(e.target.value) || 1 } : bi))}
+                              className="w-20 px-3 py-1 bg-white border border-[#E7E5E4] rounded-lg text-center font-bold text-sm"
+                            />
+                            <button 
+                              onClick={() => setRequestBasket(requestBasket.filter(bi => bi.product_id !== item.product_id))}
+                              className="text-rose-600 hover:bg-rose-50 p-2 rounded-lg transition-all"
+                            >
+                              <Trash2 size={18} />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-xs font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Observação (Opcional)</label>
+                    <textarea 
+                      value={requestObservation}
+                      onChange={(e) => setRequestObservation(e.target.value)}
+                      placeholder="Alguma observação importante?"
+                      className="w-full px-4 py-3 bg-white border border-[#E7E5E4] rounded-2xl focus:outline-none focus:ring-2 focus:ring-[#1C1917]/10 font-medium min-h-[100px]"
+                    />
+                  </div>
+
+                  <button 
+                    onClick={handleSubmitRequest}
+                    disabled={isSubmittingRequest || requestBasket.length === 0}
+                    className="w-full py-4 bg-[#1C1917] text-white rounded-2xl font-bold hover:bg-[#292524] transition-all shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  >
+                    {isSubmittingRequest ? 'Enviando...' : <><Save size={20} /> Enviar Solicitação</>}
+                  </button>
                 </div>
               </div>
             </motion.div>
@@ -2408,32 +3435,34 @@ export default function App() {
             </div>
 
             <div className="space-y-6">
-              <div className="p-6 bg-rose-50 rounded-2xl border border-rose-100">
-                <div className="flex items-center gap-3 mb-3 text-rose-600">
-                  <AlertTriangle size={24} />
-                  <h4 className="font-bold">Zona de Perigo</h4>
+              {isAdmin && (
+                <div className="p-6 bg-rose-50 rounded-2xl border border-rose-100">
+                  <div className="flex items-center gap-3 mb-3 text-rose-600">
+                    <AlertTriangle size={24} />
+                    <h4 className="font-bold">Zona de Perigo</h4>
+                  </div>
+                  <p className="text-sm text-rose-700 mb-4 leading-relaxed">
+                    Esta ação apagará **todo o histórico de entradas e saídas** e removerá permanentemente todos os materiais cadastrados como **"Produto Extra"**. Os itens de contrato serão mantidos, mas com estoque zerado.
+                  </p>
+                  <div className="space-y-3">
+                    <button 
+                      onClick={handleClearExtraData}
+                      disabled={isCleaning}
+                      className={`w-full py-3 bg-rose-600 text-white rounded-xl font-bold transition-all flex items-center justify-center gap-2 ${isCleaning ? 'opacity-50 cursor-not-allowed' : 'hover:bg-rose-700'}`}
+                    >
+                      {isCleaning ? (
+                        <>
+                          <RotateCcw className="animate-spin" size={18} /> Limpando...
+                        </>
+                      ) : (
+                        <>
+                          <Trash2 size={18} /> Limpar Histórico e Extras
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
-                <p className="text-sm text-rose-700 mb-4 leading-relaxed">
-                  Esta ação apagará **todo o histórico de entradas e saídas** e removerá permanentemente todos os materiais cadastrados como **"Produto Extra"**. Os itens de contrato serão mantidos, mas com estoque zerado.
-                </p>
-                <div className="space-y-3">
-                  <button 
-                    onClick={handleClearExtraData}
-                    disabled={isCleaning}
-                    className={`w-full py-3 bg-rose-600 text-white rounded-xl font-bold transition-all flex items-center justify-center gap-2 ${isCleaning ? 'opacity-50 cursor-not-allowed' : 'hover:bg-rose-700'}`}
-                  >
-                    {isCleaning ? (
-                      <>
-                        <RotateCcw className="animate-spin" size={18} /> Limpando...
-                      </>
-                    ) : (
-                      <>
-                        <Trash2 size={18} /> Limpar Histórico e Extras
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
+              )}
 
               <div className="p-6 bg-[#FAFAF9] rounded-2xl border border-[#E7E5E4]">
                 <h4 className="font-bold text-[#1C1917] mb-2">Informações do Sistema</h4>
@@ -2446,12 +3475,234 @@ export default function App() {
                     <span>Total de Itens</span>
                     <span className="font-bold">{items.length}</span>
                   </div>
+                  <div className="pt-2 border-t border-[#E7E5E4] mt-2">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-[#A8A29E] mb-1">Suporte e Desenvolvimento</p>
+                    <p className="font-bold text-[#1C1917]">gerlianemagalhaes79@gmail.com</p>
+                  </div>
                 </div>
               </div>
             </div>
           </motion.div>
         </div>
       )}
+
+      {showRequestDetailModal.show && showRequestDetailModal.request && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[80] flex items-center justify-center p-6">
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="bg-white w-full max-w-3xl rounded-[32px] p-8 shadow-2xl max-h-[90vh] overflow-y-auto"
+          >
+            <div className="flex justify-between items-center mb-6">
+              <div>
+                <h3 className="text-2xl font-black text-[#1C1917]">Detalhes da Solicitação</h3>
+                <p className="text-sm text-[#78716C] font-bold">#{showRequestDetailModal.request.id.slice(-5).toUpperCase()} - {new Date(showRequestDetailModal.request.date).toLocaleDateString('pt-BR')}</p>
+              </div>
+              <button 
+                onClick={() => setShowRequestDetailModal({ show: false })}
+                className="p-2 hover:bg-[#F5F5F4] rounded-full transition-all"
+              >
+                <X size={24} />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-6 mb-8">
+              <div className="p-4 bg-[#FAFAF9] rounded-2xl border border-[#E7E5E4]">
+                <p className="text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest mb-1">Solicitante</p>
+                <p className="font-bold text-[#1C1917]">{showRequestDetailModal.request.sector}</p>
+                <p className="text-xs text-[#78716C]">{showRequestDetailModal.request.requesterEmail}</p>
+              </div>
+              <div className="p-4 bg-[#FAFAF9] rounded-2xl border border-[#E7E5E4]">
+                <p className="text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest mb-1">Status Atual</p>
+                <span className={`text-[10px] font-black px-2 py-1 rounded-full uppercase tracking-widest ${
+                  showRequestDetailModal.request.status === 'PENDENTE' ? 'bg-amber-100 text-amber-600' :
+                  showRequestDetailModal.request.status === 'APROVADO' ? 'bg-blue-100 text-blue-600' :
+                  showRequestDetailModal.request.status === 'ENTREGUE' ? 'bg-emerald-100 text-emerald-600' :
+                  showRequestDetailModal.request.status === 'RECUSADO' ? 'bg-rose-100 text-rose-600' :
+                  'bg-gray-100 text-gray-600'
+                }`}>
+                  {showRequestDetailModal.request.status}
+                </span>
+              </div>
+            </div>
+
+            {showRequestDetailModal.request.observation && (
+              <div className="mb-4 p-4 bg-amber-50 rounded-2xl border border-amber-100">
+                <p className="text-[10px] font-bold text-amber-600 uppercase tracking-widest mb-1">Observação do Solicitante</p>
+                <p className="text-sm text-amber-800 italic">"{showRequestDetailModal.request.observation}"</p>
+              </div>
+            )}
+
+            {showRequestDetailModal.request.adminObservation && (
+              <div className="mb-8 p-4 bg-blue-50 rounded-2xl border border-blue-100">
+                <p className="text-[10px] font-bold text-blue-600 uppercase tracking-widest mb-1">Observação do Administrador</p>
+                <p className="text-sm text-blue-800 italic">"{showRequestDetailModal.request.adminObservation}"</p>
+              </div>
+            )}
+
+            {(userProfile?.role === 'ADMIN' || user?.email === 'gerlianemagalhaes79@gmail.com') && showRequestDetailModal.request.status !== 'ENTREGUE' && (
+              <div className="mb-8">
+                <label className="text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest mb-2 block">
+                  Observação do Administrador (Opcional)
+                </label>
+                <textarea
+                  value={adminObservation}
+                  onChange={(e) => setAdminObservation(e.target.value)}
+                  placeholder="Explique alterações ou adicione informações sobre a entrega..."
+                  className="w-full p-4 bg-[#FAFAF9] border border-[#E7E5E4] rounded-2xl text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all min-h-[100px]"
+                />
+              </div>
+            )}
+
+            <div className="space-y-4 mb-8">
+              <h4 className="font-bold text-[#1C1917] flex items-center gap-2">
+                <Package size={18} /> Itens Solicitados
+              </h4>
+              <div className="bg-white rounded-2xl border border-[#E7E5E4] overflow-hidden">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
+                      <th className="px-4 py-3 font-bold text-xs text-[#78716C]">Item</th>
+                      <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Solicitado</th>
+                      <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Aprovado</th>
+                      <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Estoque</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#E7E5E4]">
+                    {allRequestItems.filter(ri => ri.request_id === showRequestDetailModal.request?.id).map(item => {
+                      const totalStock = groupedArray.find(g => g.name === item.product_name)?.total_quantity || 0;
+                      return (
+                        <tr key={item.id}>
+                          <td className="px-4 py-3 text-sm font-bold">{item.product_name}</td>
+                          <td className="px-4 py-3 text-sm font-bold text-center">{item.quantity_requested}</td>
+                          <td className="px-4 py-3 text-center">
+                            {(userProfile?.role === 'ADMIN' || user?.email === 'gerlianemagalhaes79@gmail.com') && showRequestDetailModal.request?.status === 'PENDENTE' ? (
+                              <input 
+                                type="number" 
+                                min="0"
+                                max={totalStock}
+                                value={item.quantity_approved}
+                                onChange={(e) => {
+                                  const val = parseInt(e.target.value) || 0;
+                                  setAllRequestItems(allRequestItems.map(ri => ri.id === item.id ? { ...ri, quantity_approved: val } : ri));
+                                }}
+                                className="w-16 px-2 py-1 bg-[#F5F5F4] border border-[#E7E5E4] rounded text-center font-bold text-xs"
+                              />
+                            ) : (
+                              <span className="text-sm font-bold">{item.quantity_approved}</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            <span className={`text-xs font-bold ${ totalStock < item.quantity_requested ? 'text-rose-600' : 'text-emerald-600'}`}>
+                              {totalStock}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {(userProfile?.role === 'ADMIN' || user?.email === 'gerlianemagalhaes79@gmail.com') && (
+              <div className="flex gap-3">
+                {showRequestDetailModal.request.status === 'PENDENTE' && (
+                  <>
+                    <button 
+                      onClick={() => handleRejectRequest(showRequestDetailModal.request!.id)}
+                      className="flex-1 py-3 bg-rose-100 text-rose-600 rounded-xl font-bold hover:bg-rose-200 transition-all"
+                    >
+                      Recusar
+                    </button>
+                    <button 
+                      onClick={() => handleApproveRequest(showRequestDetailModal.request!.id, allRequestItems.filter(ri => ri.request_id === showRequestDetailModal.request?.id))}
+                      className="flex-1 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all"
+                    >
+                      Aprovar Solicitação
+                    </button>
+                  </>
+                )}
+                {showRequestDetailModal.request.status === 'APROVADO' && (
+                  <button 
+                    onClick={() => handleDeliverRequest(showRequestDetailModal.request!.id, allRequestItems.filter(ri => ri.request_id === showRequestDetailModal.request?.id))}
+                    className="w-full py-4 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 transition-all flex items-center justify-center gap-2"
+                  >
+                    <CheckCircle size={20} /> Confirmar Entrega e Baixar Estoque
+                  </button>
+                )}
+              </div>
+            )}
+          </motion.div>
+        </div>
+      )}
+
+      {/* Toast Notification */}
+      <AnimatePresence>
+        {toast.show && (
+          <motion.div 
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 50 }}
+            className={`fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-3 min-w-[300px] ${
+              toast.type === 'success' ? 'bg-emerald-600 text-white' :
+              toast.type === 'error' ? 'bg-rose-600 text-white' :
+              'bg-[#1C1917] text-white'
+            }`}
+          >
+            {toast.type === 'success' && <CheckCircle size={20} />}
+            {toast.type === 'error' && <AlertTriangle size={20} />}
+            <p className="font-bold text-sm">{toast.message}</p>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* User Delete Confirmation Modal */}
+      <AnimatePresence>
+        {showUserDeleteConfirm.show && (
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[60] flex items-center justify-center p-6">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white w-full max-w-md rounded-[32px] p-8 shadow-2xl text-center"
+            >
+              <div className="w-16 h-16 bg-rose-100 text-rose-600 rounded-2xl flex items-center justify-center mx-auto mb-6">
+                <Trash2 size={32} />
+              </div>
+              <h3 className="text-xl font-black mb-2">Excluir Usuário?</h3>
+              <p className="text-[#78716C] mb-8">
+                Tem certeza que deseja excluir o acesso de <strong>{showUserDeleteConfirm.user?.name}</strong>? 
+                Esta ação removerá o perfil do sistema.
+              </p>
+              <div className="flex gap-3">
+                <button 
+                  onClick={() => setShowUserDeleteConfirm({ show: false })}
+                  className="flex-1 py-3 bg-[#F5F5F4] text-[#57534E] rounded-xl font-bold hover:bg-[#E7E5E4] transition-all"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  onClick={async () => {
+                    if (showUserDeleteConfirm.user) {
+                      try {
+                        await deleteDoc(doc(db, 'users', showUserDeleteConfirm.user.id));
+                        showToast("Usuário excluído com sucesso!", "success");
+                      } catch (error: any) {
+                        showToast(`Erro ao excluir: ${error.message}`, "error");
+                      }
+                      setShowUserDeleteConfirm({ show: false });
+                    }
+                  }}
+                  className="flex-1 py-3 bg-rose-600 text-white rounded-xl font-bold hover:bg-rose-700 transition-all"
+                >
+                  Sim, Excluir
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

@@ -1,3 +1,40 @@
+export interface UserProfile {
+  id: string;
+  name: string;
+  email: string;
+  role: 'ADMIN' | 'SETOR';
+  sector?: string;
+}
+
+export interface MaterialRequest {
+  id: string;
+  sector: string;
+  date: string;
+  status: 'PENDENTE' | 'APROVADO' | 'SEPARADO' | 'ENTREGUE' | 'RECUSADO';
+  observation?: string;
+  adminObservation?: string;
+  requesterEmail: string;
+}
+
+export interface RequestItem {
+  id: string;
+  request_id: string;
+  product_id: string;
+  product_name: string;
+  quantity_requested: number;
+  quantity_approved: number;
+}
+
+export interface Notification {
+  id: string;
+  userId: string;
+  title: string;
+  message: string;
+  date: string;
+  read: boolean;
+  requestId?: string;
+}
+
 export interface Item {
   id: string;
   name: string;

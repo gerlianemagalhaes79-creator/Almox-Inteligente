@@ -8,41 +8,71 @@ service cloud.firestore {
     
     function isAdmin() {
       return isAuthenticated() &&
-        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+        (get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.role == 'ADMIN' ||
           (request.auth.token.email == "gerlianemagalhaes79@gmail.com" && request.auth.token.email_verified == true));
     }
 
-    function isValidItem(data) {
-      return data.keys().hasAll(['name', 'quantity', 'min_quantity']) &&
-             data.name is string && data.name.size() > 0 && data.name.size() < 200 &&
-             data.quantity is number &&
-             data.min_quantity is number;
+    function isSetor() {
+      return isAuthenticated() && get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.role == 'SETOR';
     }
 
-    function isValidTransaction(data) {
-      return data.keys().hasAll(['item_id', 'type', 'quantity', 'date']) &&
-             data.item_id is string &&
-             data.type in ['entry', 'exit'] &&
-             data.quantity is number && data.quantity > 0 &&
-             data.date is string;
+    function isValidRequest(data) {
+      return data.keys().hasAll(['sector', 'date', 'status', 'requesterEmail']) &&
+             data.sector is string && data.sector.size() < 100 &&
+             data.requesterEmail is string && data.requesterEmail.size() < 150 &&
+             data.status in ['PENDENTE', 'APROVADO', 'SEPARADO', 'ENTREGUE', 'RECUSADO'] &&
+             (!('observation' in data) || (data.observation is string && data.observation.size() < 500));
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll(['userId', 'title', 'message', 'date', 'read']) &&
+             data.userId is string &&
+             data.title is string && data.title.size() < 100 &&
+             data.message is string && data.message.size() < 500 &&
+             data.date is string &&
+             data.read is bool;
     }
 
     match /items/{itemId} {
       allow read: if isAuthenticated();
-      allow create, update: if isAuthenticated() && isValidItem(request.resource.data);
-      allow delete: if isAdmin();
+      allow create, update, delete: if isAdmin();
     }
 
     match /transactions/{transactionId} {
       allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && isValidTransaction(request.resource.data);
-      allow update: if isAuthenticated();
+      allow create: if isAuthenticated() && 
+                    request.resource.data.keys().hasAll(['item_id', 'item_name', 'type', 'quantity', 'date']) &&
+                    request.resource.data.quantity is number && request.resource.data.quantity > 0;
+      allow update, delete: if isAdmin();
+    }
+
+    match /requests/{requestId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidRequest(request.resource.data);
+      allow update: if isAdmin() || (isAuthenticated() && resource.data.requesterEmail == request.auth.token.email && resource.data.status == 'PENDENTE');
       allow delete: if isAdmin();
     }
 
-    match /users/{userId} {
-      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
-      allow write: if isAdmin();
+    match /request_items/{itemId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
+    match /users/{email} {
+      allow read: if isAuthenticated();
+      allow create: if isAdmin() || (isAuthenticated() && request.auth.token.email == email);
+      allow update: if isAdmin() || (isAuthenticated() && request.auth.token.email == email && 
+                    request.resource.data.role == resource.data.role);
+      allow delete: if isAdmin();
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isAdmin();
+      allow update: if isAuthenticated() && resource.data.userId == request.auth.uid && 
+                    request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+      allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
     }
   }
 }

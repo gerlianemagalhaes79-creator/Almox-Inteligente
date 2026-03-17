@@ -1,5 +1,43 @@
 {
   "entities": {
+    "User": {
+      "title": "User",
+      "description": "System user profile",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["ADMIN", "SETOR"] },
+        "sector": { "type": "string", "description": "Sector name for SETOR users" }
+      },
+      "required": ["email", "role"]
+    },
+    "Request": {
+      "title": "Request",
+      "description": "Material request from a sector",
+      "type": "object",
+      "properties": {
+        "sector": { "type": "string" },
+        "date": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["PENDENTE", "APROVADO", "SEPARADO", "ENTREGUE", "RECUSADO"] },
+        "observation": { "type": "string" },
+        "requesterEmail": { "type": "string" }
+      },
+      "required": ["sector", "date", "status"]
+    },
+    "RequestItem": {
+      "title": "RequestItem",
+      "description": "Item within a material request",
+      "type": "object",
+      "properties": {
+        "request_id": { "type": "string" },
+        "product_id": { "type": "string" },
+        "product_name": { "type": "string" },
+        "quantity_requested": { "type": "number" },
+        "quantity_approved": { "type": "number" }
+      },
+      "required": ["request_id", "product_id", "quantity_requested"]
+    },
     "Item": {
       "title": "Item",
       "description": "Inventory item batch",
@@ -33,9 +71,35 @@
         "date": { "type": "string", "format": "date-time", "description": "Transaction date" }
       },
       "required": ["item_id", "type", "quantity", "date"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "System notification for users",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "date": { "type": "string", "format": "date-time" },
+        "read": { "type": "boolean" },
+        "requestId": { "type": "string" }
+      },
+      "required": ["userId", "title", "message", "date", "read"]
     }
   },
   "firestore": {
+    "/users": {
+      "schema": "User",
+      "description": "Collection of system users"
+    },
+    "/requests": {
+      "schema": "Request",
+      "description": "Collection of material requests"
+    },
+    "/request_items": {
+      "schema": "RequestItem",
+      "description": "Collection of items in requests"
+    },
     "/items": {
       "schema": "Item",
       "description": "Collection of inventory items"
@@ -43,6 +107,10 @@
     "/transactions": {
       "schema": "Transaction",
       "description": "Collection of inventory transactions"
+    },
+    "/notifications": {
+      "schema": "Notification",
+      "description": "Collection of system notifications"
     }
   }
 }
