@@ -63,10 +63,13 @@ service cloud.firestore {
 
     match /users/{email} {
       allow read: if isAuthenticated();
-      allow create: if isAdmin() || (isAuthenticated() && request.auth.token.email == email);
-      allow update: if isAdmin() || (isAuthenticated() && request.auth.token.email == email && 
-                    request.resource.data.role == resource.data.role);
-      allow delete: if isAdmin();
+      allow create: if (isAdmin() && email != 'gerlianemagalhaes79@gmail.com') || 
+                    (isAuthenticated() && request.auth.token.email == email && email == 'gerlianemagalhaes79@gmail.com');
+      allow update: if (isAdmin() && email != 'gerlianemagalhaes79@gmail.com') || 
+                    (isAuthenticated() && request.auth.token.email == email && 
+                    request.resource.data.role == resource.data.role &&
+                    email != 'gerlianemagalhaes79@gmail.com');
+      allow delete: if isAdmin() && email != 'gerlianemagalhaes79@gmail.com';
     }
 
     match /notifications/{notificationId} {

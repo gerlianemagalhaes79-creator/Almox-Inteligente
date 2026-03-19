@@ -28,7 +28,8 @@ import {
   Bell,
   Users,
   Info,
-  Printer
+  Printer,
+  Edit2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as XLSX from 'xlsx';
@@ -98,12 +99,13 @@ interface ItemGroup {
 }
 
 const SECTORS = [
-  'Imagem', 'Ilha', 'Pé Diabético', 'Direção', 'Setor Pessoal', 
+  'Administrativo', 'Imagem', 'Ilha', 'Pé Diabético', 'Direção', 'Setor Pessoal', 
   'CER', 'Setor de Terapias', 'SSVV', 'Recepção', 
-  'Higienização', 'Manutenção', 'Almoxarifado'
+  'Higienização', 'Manutenção', 'Almoxarifado', 'Regulação'
 ];
 
 const SECTOR_COLORS: Record<string, string> = {
+  'Administrativo': '#64748b',
   'Imagem': '#3b82f6',
   'Ilha': '#10b981',
   'Pé Diabético': '#f59e0b',
@@ -116,6 +118,7 @@ const SECTOR_COLORS: Record<string, string> = {
   'Higienização': '#6366f1',
   'Manutenção': '#84cc16',
   'Almoxarifado': '#1c1917',
+  'Regulação': '#f43f5e',
 };
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -148,7 +151,7 @@ export default function App() {
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authName, setAuthName] = useState('');
-  const [authSector, setAuthSector] = useState('Administrativo');
+  const [authSector, setAuthSector] = useState(SECTORS[0]);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'inventory' | 'history' | 'requests' | 'reports' | 'my-requests' | 'new-request' | 'users' | 'trash'>('dashboard');
   const [showAddModal, setShowAddModal] = useState(false);
   const [showTransactionModal, setShowTransactionModal] = useState<{show: boolean, type: 'entry' | 'exit', item?: Item}>({ show: false, type: 'entry' });
@@ -157,6 +160,9 @@ export default function App() {
   const [showDeleteModal, setShowDeleteModal] = useState<{show: boolean, transactionId?: string}>({ show: false });
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showUserDeleteConfirm, setShowUserDeleteConfirm] = useState<{show: boolean, user?: UserProfile}>({ show: false });
+  const [showUserEditModal, setShowUserEditModal] = useState<{show: boolean, user?: UserProfile}>({ show: false });
+  const [editUserSector, setEditUserSector] = useState('');
+  const [editUserRole, setEditUserRole] = useState<'ADMIN' | 'SETOR'>('SETOR');
   const [toast, setToast] = useState<{show: boolean, message: string, type: 'success' | 'error' | 'info'}>({ show: false, message: '', type: 'info' });
   const [showRequestDetailModal, setShowRequestDetailModal] = useState<{show: boolean, request?: MaterialRequest}>({ show: false });
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -264,16 +270,20 @@ export default function App() {
       ...prev,
       items: prev.items.map(item => {
         if (item.id === id) {
-          const updatedItem = { ...item, [field]: value };
+          let processedValue = value;
+          if (field === 'name' && typeof value === 'string') {
+            processedValue = value.toUpperCase();
+          }
+          const updatedItem = { ...item, [field]: processedValue };
           
           // Auto-fill min_quantity if name is changed and we have a calculated rate
-          if (field === 'name' && value) {
-            const weeklyRate = weeklyExitRates[value] || 0;
+          if (field === 'name' && processedValue) {
+            const weeklyRate = weeklyExitRates[processedValue] || 0;
             if (weeklyRate > 0) {
               updatedItem.min_quantity = Math.ceil(weeklyRate * 5);
             } else {
               // Try to find if the item exists but has no history yet, use its current min_quantity
-              const existingItem = items.find(i => i.name === value);
+              const existingItem = items.find(i => i.name === processedValue);
               if (existingItem) {
                 updatedItem.min_quantity = existingItem.min_quantity;
               }
@@ -529,12 +539,16 @@ export default function App() {
       showToast("Preencha todos os campos.", "error");
       return;
     }
+    const userDocId = authEmail.toLowerCase().trim();
+    if (userDocId === 'gerlianemagalhaes79@gmail.com') {
+      showToast("Este e-mail é o administrador mestre e não pode ser alterado.", "error");
+      return;
+    }
     setLoginLoading(true);
     try {
       // Just create/update the document in Firestore using email as ID
       // This allows the user to log in via Google later
-      const userDocId = authEmail.toLowerCase().trim();
-      const role = userDocId === 'gerlianemagalhaes79@gmail.com' ? 'ADMIN' : 'SETOR';
+      const role = 'SETOR';
       
       await setDoc(doc(db, 'users', userDocId), {
         email: userDocId,
@@ -557,6 +571,29 @@ export default function App() {
   };
 
   const handleLogout = () => signOut(auth);
+
+  const handleUpdateUser = async () => {
+    if (!showUserEditModal.user) return;
+    if (showUserEditModal.user.email === 'gerlianemagalhaes79@gmail.com') {
+      showToast("Este usuário é o administrador mestre e não pode ser editado.", "error");
+      setShowUserEditModal({ show: false });
+      return;
+    }
+    setLoginLoading(true);
+    try {
+      await updateDoc(doc(db, 'users', showUserEditModal.user.id), {
+        sector: editUserSector,
+        role: editUserRole
+      });
+      showToast("Usuário atualizado com sucesso!", "success");
+      setShowUserEditModal({ show: false });
+    } catch (error: any) {
+      console.error("Error updating user:", error);
+      showToast(`Erro ao atualizar: ${error.message}`, "error");
+    } finally {
+      setLoginLoading(false);
+    }
+  };
 
   const handleDeleteTransaction = async (id: string, reason: string) => {
     if (!id) return;
@@ -1094,74 +1131,80 @@ export default function App() {
           return;
         }
 
+        // 1. ALL READS FIRST
+        const batchesToRead: { batchId: string, amountFromThisBatch: number }[] = [];
+        
         for (const reqItem of requestItems) {
-          console.log(`Processando item: ${reqItem.product_name}, Quantidade: ${reqItem.quantity_approved}`);
+          console.log(`Calculando deduções para item: ${reqItem.product_name}`);
           let remainingToDeduct = reqItem.quantity_approved;
-          const batches = availableBatchesByProduct[reqItem.product_name] || [];
+          const productBatches = availableBatchesByProduct[reqItem.product_name] || [];
           
-          let totalAvailableForProduct = batches.reduce((sum, b) => sum + b.quantity, 0);
-          
+          let totalAvailableForProduct = productBatches.reduce((sum, b) => sum + b.quantity, 0);
           if (totalAvailableForProduct < remainingToDeduct) {
             throw new Error(`Estoque insuficiente para "${reqItem.product_name}". Solicitado: ${remainingToDeduct}, Disponível total: ${totalAvailableForProduct}.`);
           }
 
-          for (const batch of batches) {
+          for (const batch of productBatches) {
             if (remainingToDeduct <= 0) break;
-
-            const batchRef = doc(db, 'items', batch.id);
-            const batchSnap = await transaction.get(batchRef);
-            
-            if (!batchSnap.exists()) {
-              console.warn(`Lote ${batch.id} não existe mais.`);
-              continue;
-            }
-            
-            const currentBatchData = batchSnap.data();
-            const availableInBatch = currentBatchData.quantity;
-
-            if (availableInBatch <= 0) {
-              console.warn(`Lote ${batch.id} está vazio.`);
-              continue;
-            }
-
-            const amountFromThisBatch = Math.min(availableInBatch, remainingToDeduct);
-            console.log(`Deduzindo ${amountFromThisBatch} do lote ${batch.batch_number} (ID: ${batch.id})`);
-            
-            transaction.update(batchRef, {
-              quantity: availableInBatch - amountFromThisBatch,
-              updatedAt: serverTimestamp()
-            });
-
-            const transRef = doc(collection(db, 'transactions'));
-            transaction.set(transRef, {
-              item_id: batch.id,
-              item_name: reqItem.product_name,
-              type: 'exit',
-              origin: currentBatchData.origin,
-              quantity: amountFromThisBatch,
-              sector: requestData.sector,
-              date: new Date().toISOString(),
-              responsible: user?.displayName || user?.email,
-              responsibleEmail: user?.email,
-              exitReason: 'consumo',
-              batch_number: currentBatchData.batch_number,
-              expiry_date: currentBatchData.expiry_date
-            });
-
+            const amountFromThisBatch = Math.min(batch.quantity, remainingToDeduct);
+            batchesToRead.push({ batchId: batch.id, amountFromThisBatch });
             remainingToDeduct -= amountFromThisBatch;
           }
-
+          
           if (remainingToDeduct > 0) {
-            throw new Error(`Não foi possível deduzir a quantidade total para "${reqItem.product_name}" devido a alterações simultâneas no estoque.`);
+            throw new Error(`Não foi possível alocar lotes suficientes para "${reqItem.product_name}".`);
           }
         }
 
+        // Fetch all batch snapshots in parallel (ALL READS)
+        const batchSnaps = await Promise.all(
+          batchesToRead.map(b => transaction.get(doc(db, 'items', b.batchId)))
+        );
+
+        // 2. ALL WRITES SECOND
         transaction.update(requestRef, { 
           status: 'ENTREGUE',
           deliveredAt: new Date().toISOString(),
           deliveredBy: user?.email,
           adminObservation: adminObservation || requestData.adminObservation || ''
         });
+
+        batchSnaps.forEach((batchSnap, index) => {
+          if (!batchSnap.exists()) {
+            throw new Error(`Lote ${batchesToRead[index].batchId} não encontrado durante a transação.`);
+          }
+          
+          const currentBatchData = batchSnap.data();
+          const amountFromThisBatch = batchesToRead[index].amountFromThisBatch;
+          const batchRef = doc(db, 'items', batchSnap.id);
+
+          if (currentBatchData.quantity < amountFromThisBatch) {
+            throw new Error(`Estoque do lote ${currentBatchData.batch_number} mudou durante a transação.`);
+          }
+
+          transaction.update(batchRef, {
+            quantity: currentBatchData.quantity - amountFromThisBatch,
+            updatedAt: serverTimestamp()
+          });
+
+          const transRef = doc(collection(db, 'transactions'));
+          transaction.set(transRef, {
+            item_id: batchSnap.id,
+            item_name: currentBatchData.name,
+            type: 'exit',
+            origin: currentBatchData.origin,
+            quantity: amountFromThisBatch,
+            sector: requestData.sector,
+            date: new Date().toISOString(),
+            responsible: user?.displayName || user?.email,
+            responsibleEmail: user?.email,
+            exitReason: 'consumo',
+            batch_number: currentBatchData.batch_number,
+            expiry_date: currentBatchData.expiry_date,
+            request_id: requestId
+          });
+        });
+
         console.log('Transação concluída com sucesso.');
       });
 
@@ -1504,7 +1547,8 @@ export default function App() {
       return inRange && matchesSector;
     });
 
-    const entries = filteredTrans.filter(t => t.type === 'entry').reduce((sum, t) => sum + t.quantity, 0);
+    // For non-admins, entries should be 0 as they only receive/exit
+    const entries = isAdmin ? filteredTrans.filter(t => t.type === 'entry').reduce((sum, t) => sum + t.quantity, 0) : 0;
     const exits = filteredTrans.filter(t => t.type === 'exit').reduce((sum, t) => sum + t.quantity, 0);
 
     // Extra vs Contract stats
@@ -1519,10 +1563,12 @@ export default function App() {
       else originStats[origin].exits += t.quantity;
     });
 
-    items.forEach(item => {
-      const origin = item.origin || 'contract';
-      originStats[origin].current += item.quantity;
-    });
+    if (isAdmin) {
+      items.forEach(item => {
+        const origin = item.origin || 'contract';
+        originStats[origin].current += item.quantity;
+      });
+    }
 
     // Group by date for line chart
     const dailyData: Record<string, { date: string, entries: number, exits: number }> = {};
@@ -1535,10 +1581,19 @@ export default function App() {
 
     // Group by category for pie chart
     const categoryData: Record<string, number> = {};
-    items.forEach(item => {
-      const cat = item.category || 'Outros';
-      categoryData[cat] = (categoryData[cat] || 0) + item.quantity;
-    });
+    if (isAdmin) {
+      items.forEach(item => {
+        const cat = item.category || 'Outros';
+        categoryData[cat] = (categoryData[cat] || 0) + item.quantity;
+      });
+    } else {
+      // For non-admins, show categories of items they received in the period
+      filteredTrans.filter(t => t.type === 'exit').forEach(t => {
+        const item = items.find(i => i.id === t.item_id);
+        const cat = item?.category || 'Outros';
+        categoryData[cat] = (categoryData[cat] || 0) + t.quantity;
+      });
+    }
 
     // Group by sector for bar chart (stacked by category)
     const sectorData: Record<string, any> = {};
@@ -1576,12 +1631,16 @@ export default function App() {
 
     // Group by supplier for value chart
     const supplierData: Record<string, number> = {};
-    items.forEach(item => {
-      const sup = item.supplier || 'Sem Fornecedor';
-      supplierData[sup] = (supplierData[sup] || 0) + (item.quantity * item.unit_price);
-    });
+    if (isAdmin) {
+      items.forEach(item => {
+        const sup = item.supplier || 'Sem Fornecedor';
+        supplierData[sup] = (supplierData[sup] || 0) + (item.quantity * item.unit_price);
+      });
+    }
 
-    const totalValue = items.reduce((sum, item) => sum + (item.quantity * item.unit_price), 0);
+    const totalValue = isAdmin 
+      ? items.reduce((sum, item) => sum + (item.quantity * item.unit_price), 0)
+      : Object.values(sectorItems).reduce((sum, item) => sum + item.value, 0);
 
     // Most requested items
     const mostRequested: Record<string, number> = {};
@@ -2534,34 +2593,33 @@ export default function App() {
               className="space-y-8"
             >
               {/* Print Requests Section */}
-              <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-                  <div className="flex items-center gap-4">
-                    <div className="bg-[#1C1917] p-3 rounded-2xl text-white">
-                      <Printer size={24} />
-                    </div>
-                    <div>
-                      <h3 className="text-xl font-black text-[#1C1917]">Impressão de Solicitações</h3>
-                      <p className="text-[#78716C] text-sm font-medium">Imprima as solicitações aprovadas por data</p>
-                    </div>
+              <div className="bg-white rounded-[32px] border border-[#E7E5E4] p-8 shadow-sm space-y-6">
+                <div className="flex items-center gap-4">
+                  <div className="bg-emerald-50 p-4 rounded-2xl text-emerald-600">
+                    <Printer size={28} />
                   </div>
-                  <div className="flex flex-col sm:flex-row items-center gap-4">
-                    <div className="w-full sm:w-auto">
-                      <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1 ml-1">Data das Solicitações</label>
-                      <input 
-                        type="date" 
-                        value={printDate}
-                        onChange={(e) => setPrintDate(e.target.value)}
-                        className="w-full sm:w-48 px-4 py-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
-                      />
-                    </div>
-                    <button 
-                      onClick={handlePrintRequests}
-                      className="w-full sm:w-auto mt-4 sm:mt-0 bg-[#1C1917] text-white px-8 py-3 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-[#292524] transition-all shadow-lg"
-                    >
-                      <Printer size={18} /> Imprimir Aprovadas
-                    </button>
+                  <div>
+                    <h3 className="text-xl font-black text-[#1C1917]">Relatório de Solicitações Aprovadas</h3>
+                    <p className="text-[#78716C] text-sm font-medium">Selecione uma data para imprimir todas as solicitações aceitas</p>
                   </div>
+                </div>
+                
+                <div className="flex flex-col md:flex-row items-end gap-4 bg-[#FAFAF9] p-6 rounded-3xl border border-[#E7E5E4]">
+                  <div className="flex-1 w-full space-y-2">
+                    <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest ml-1">Data das Solicitações</label>
+                    <input 
+                      type="date" 
+                      value={printDate}
+                      onChange={(e) => setPrintDate(e.target.value)}
+                      className="w-full px-4 py-4 bg-white border border-[#E7E5E4] rounded-2xl focus:ring-2 focus:ring-emerald-500/20 font-bold text-sm transition-all"
+                    />
+                  </div>
+                  <button 
+                    onClick={handlePrintRequests}
+                    className="w-full md:w-auto bg-emerald-600 text-white px-10 py-4 rounded-2xl font-black text-sm flex items-center justify-center gap-3 hover:bg-emerald-700 transition-all shadow-xl shadow-emerald-600/20"
+                  >
+                    <Printer size={20} /> GERAR RELATÓRIO
+                  </button>
                 </div>
               </div>
 
@@ -2587,29 +2645,29 @@ export default function App() {
                     <h3 className="text-3xl font-black">{reportData.exits}</h3>
                   </div>
                 </div>
+                <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
+                  <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">
+                    {isAdmin ? 'Valor Total em Estoque' : 'Valor Total Recebido'}
+                  </p>
+                  <div className="flex items-center gap-3">
+                    <div className="bg-amber-100 p-2 rounded-xl text-amber-600">
+                      <DollarSign size={20} />
+                    </div>
+                    <h3 className="text-2xl font-black">
+                      {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.totalValue)}
+                    </h3>
+                  </div>
+                </div>
                 {isAdmin && (
-                  <>
-                    <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
-                      <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Valor Total em Estoque</p>
-                      <div className="flex items-center gap-3">
-                        <div className="bg-amber-100 p-2 rounded-xl text-amber-600">
-                          <DollarSign size={20} />
-                        </div>
-                        <h3 className="text-2xl font-black">
-                          {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.totalValue)}
-                        </h3>
+                  <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
+                    <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Itens Ativos</p>
+                    <div className="flex items-center gap-3">
+                      <div className="bg-blue-100 p-2 rounded-xl text-blue-600">
+                        <Package size={20} />
                       </div>
+                      <h3 className="text-3xl font-black">{items.length}</h3>
                     </div>
-                    <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
-                      <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Itens Ativos</p>
-                      <div className="flex items-center gap-3">
-                        <div className="bg-blue-100 p-2 rounded-xl text-blue-600">
-                          <Package size={20} />
-                        </div>
-                        <h3 className="text-3xl font-black">{items.length}</h3>
-                      </div>
-                    </div>
-                  </>
+                  </div>
                 )}
               </div>
 
@@ -2639,7 +2697,7 @@ export default function App() {
                         <Tooltip 
                           contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
                         />
-                        <Area type="monotone" dataKey="entries" name="Entradas" stroke="#10b981" fillOpacity={1} fill="url(#colorEntries)" strokeWidth={3} />
+                        {isAdmin && <Area type="monotone" dataKey="entries" name="Entradas" stroke="#10b981" fillOpacity={1} fill="url(#colorEntries)" strokeWidth={3} />}
                         <Area type="monotone" dataKey="exits" name="Saídas" stroke="#f43f5e" fillOpacity={1} fill="url(#colorExits)" strokeWidth={3} />
                       </AreaChart>
                     </ResponsiveContainer>
@@ -2713,36 +2771,38 @@ export default function App() {
                 </div>
 
                 {/* Exits by Sector */}
-                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
-                  <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
-                    <ArrowUpRight size={18} className="text-rose-600" /> Saídas por Setor (Quantidade por Tipo)
-                  </h4>
-                  <div className="h-[300px] w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={reportData.sectors} layout="vertical">
-                        <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#F5F5F4" />
-                        <XAxis type="number" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
-                        <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1C1917', fontWeight: 'bold'}} width={100} />
-                        <Tooltip 
-                          cursor={{fill: '#FAFAF9'}}
-                          contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                        />
-                        {reportData.categoriesInSector.map((cat: string) => (
-                          <Bar 
-                            key={cat} 
-                            dataKey={cat} 
-                            name={cat} 
-                            stackId="a" 
-                            fill={getCategoryColor(cat)} 
-                            radius={[0, 0, 0, 0]} 
-                            barSize={20} 
+                {isAdmin && (
+                  <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
+                    <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
+                      <ArrowUpRight size={18} className="text-rose-600" /> Saídas por Setor (Quantidade por Tipo)
+                    </h4>
+                    <div className="h-[300px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={reportData.sectors} layout="vertical">
+                          <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#F5F5F4" />
+                          <XAxis type="number" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
+                          <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1C1917', fontWeight: 'bold'}} width={100} />
+                          <Tooltip 
+                            cursor={{fill: '#FAFAF9'}}
+                            contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
                           />
-                        ))}
-                        <Legend />
-                      </BarChart>
-                    </ResponsiveContainer>
+                          {reportData.categoriesInSector.map((cat: string) => (
+                            <Bar 
+                              key={cat} 
+                              dataKey={cat} 
+                              name={cat} 
+                              stackId="a" 
+                              fill={getCategoryColor(cat)} 
+                              radius={[0, 0, 0, 0]} 
+                              barSize={20} 
+                            />
+                          ))}
+                          <Legend />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                </div>
+                )}
 
                 {/* Value by Supplier */}
                 {isAdmin && (
@@ -3004,14 +3064,29 @@ export default function App() {
                           </span>
                         </td>
                         <td className="px-6 py-4 text-right">
-                          {u.email !== 'gerlianemagalhaes79@gmail.com' && (
-                            <button 
-                              onClick={() => setShowUserDeleteConfirm({ show: true, user: u })}
-                              className="text-rose-600 hover:bg-rose-50 p-2 rounded-lg transition-all"
-                            >
-                              <Trash2 size={18} />
-                            </button>
-                          )}
+                          <div className="flex justify-end items-center gap-2">
+                            {u.email !== 'gerlianemagalhaes79@gmail.com' && (
+                              <>
+                                <button 
+                                  onClick={() => {
+                                    setEditUserSector(u.sector || SECTORS[0]);
+                                    setEditUserRole(u.role);
+                                    setShowUserEditModal({ show: true, user: u });
+                                  }}
+                                  className="text-emerald-600 hover:bg-emerald-50 p-2 rounded-lg transition-all"
+                                  title="Editar Usuário"
+                                >
+                                  <Edit2 size={18} />
+                                </button>
+                                <button 
+                                  onClick={() => setShowUserDeleteConfirm({ show: true, user: u })}
+                                  className="text-rose-600 hover:bg-rose-50 p-2 rounded-lg transition-all"
+                                >
+                                  <Trash2 size={18} />
+                                </button>
+                              </>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -3246,6 +3321,84 @@ export default function App() {
                         </td>
                         <td className="px-6 py-4 text-right">
                           <div className="flex justify-end items-center gap-2">
+                            {req.status === 'APROVADO' && (
+                              <button 
+                                onClick={() => {
+                                  const items = allRequestItems.filter(ri => ri.request_id === req.id);
+                                  const printWindow = window.open('', '_blank');
+                                  if (!printWindow) return;
+
+                                  const content = `
+                                    <html>
+                                      <head>
+                                        <title>Solicitação #${req.id.slice(-5).toUpperCase()}</title>
+                                        <style>
+                                          body { font-family: sans-serif; padding: 40px; }
+                                          .header { border-bottom: 2px solid #000; padding-bottom: 20px; margin-bottom: 20px; }
+                                          .title { font-size: 24px; font-weight: bold; }
+                                          .info { margin-bottom: 20px; }
+                                          table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+                                          th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+                                          th { background-color: #f2f2f2; }
+                                          .footer { margin-top: 40px; font-size: 12px; color: #666; }
+                                          .justification { margin-top: 20px; padding: 15px; background: #f9f9f9; border-left: 4px solid #ddd; }
+                                        </style>
+                                      </head>
+                                      <body>
+                                        <div class="header">
+                                          <div class="title">SOLICITAÇÃO DE MATERIAL #${req.id.slice(-5).toUpperCase()}</div>
+                                          <div>Data: ${new Date(req.date).toLocaleDateString('pt-BR')}</div>
+                                        </div>
+                                        <div class="info">
+                                          <p><strong>Setor:</strong> ${req.sector}</p>
+                                          <p><strong>Solicitante:</strong> ${req.requesterEmail}</p>
+                                          <p><strong>Status:</strong> ${req.status}</p>
+                                        </div>
+                                        <table>
+                                          <thead>
+                                            <tr>
+                                              <th>Item</th>
+                                              <th>Qtd. Solicitada</th>
+                                              <th>Qtd. Aprovada</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            ${items.map(item => `
+                                              <tr>
+                                                <td>${item.product_name}</td>
+                                                <td>${item.quantity_requested}</td>
+                                                <td>${item.quantity_approved || item.quantity_requested}</td>
+                                              </tr>
+                                            `).join('')}
+                                          </tbody>
+                                        </table>
+                                        ${req.adminObservation ? `
+                                          <div class="justification">
+                                            <strong>Justificativa/Observação:</strong><br/>
+                                            ${req.adminObservation}
+                                          </div>
+                                        ` : ''}
+                                        <div class="footer">
+                                          Gerado em: ${new Date().toLocaleString('pt-BR')}
+                                        </div>
+                                        <script>
+                                          window.onload = () => {
+                                            window.print();
+                                            // window.close();
+                                          };
+                                        </script>
+                                      </body>
+                                    </html>
+                                  `;
+                                  printWindow.document.write(content);
+                                  printWindow.document.close();
+                                }}
+                                className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-xl transition-all"
+                                title="Imprimir Solicitação"
+                              >
+                                <Printer size={18} />
+                              </button>
+                            )}
                             <button 
                               onClick={() => setShowRequestDetailModal({ show: true, request: req })}
                               className="bg-[#1C1917] text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-[#292524] transition-all"
@@ -3470,7 +3623,7 @@ export default function App() {
                     placeholder="Nome do fornecedor"
                     className="w-full px-4 py-3 bg-white border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
                     value={bulkEntry.supplier}
-                    onChange={e => setBulkEntry({...bulkEntry, supplier: e.target.value})}
+                    onChange={e => setBulkEntry({...bulkEntry, supplier: e.target.value.toUpperCase()})}
                   />
                 </div>
                 
@@ -4336,6 +4489,76 @@ export default function App() {
             {toast.type === 'error' && <AlertTriangle size={20} />}
             <p className="font-bold text-sm">{toast.message}</p>
           </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* User Edit Modal */}
+      <AnimatePresence>
+        {showUserEditModal.show && showUserEditModal.user && (
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[60] flex items-center justify-center p-6">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white w-full max-w-md rounded-[32px] p-8 shadow-2xl"
+            >
+              <div className="flex justify-between items-center mb-6">
+                <h3 className="text-xl font-black">Editar Usuário</h3>
+                <button onClick={() => setShowUserEditModal({ show: false })} className="p-2 hover:bg-[#F5F5F4] rounded-full transition-all">
+                  <X size={20} />
+                </button>
+              </div>
+
+              <div className="space-y-4 mb-8">
+                <div>
+                  <p className="text-xs font-bold text-[#A8A29E] uppercase tracking-widest mb-1 ml-1">Usuário</p>
+                  <p className="font-bold text-[#1C1917]">{showUserEditModal.user.name}</p>
+                  <p className="text-sm text-[#78716C]">{showUserEditModal.user.email}</p>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1.5 ml-1">Setor</label>
+                  <select 
+                    className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
+                    value={editUserSector}
+                    onChange={e => setEditUserSector(e.target.value)}
+                  >
+                    {SECTORS.map(s => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1.5 ml-1">Papel</label>
+                  <select 
+                    className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
+                    value={editUserRole}
+                    onChange={e => setEditUserRole(e.target.value as 'ADMIN' | 'SETOR')}
+                  >
+                    <option value="SETOR">Setor (Padrão)</option>
+                    <option value="ADMIN">Administrador</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex gap-3">
+                <button 
+                  onClick={() => setShowUserEditModal({ show: false })}
+                  className="flex-1 py-3 bg-[#F5F5F4] text-[#57534E] rounded-xl font-bold hover:bg-[#E7E5E4] transition-all"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  onClick={handleUpdateUser}
+                  disabled={loginLoading}
+                  className="flex-1 py-3 bg-[#1C1917] text-white rounded-xl font-bold hover:bg-[#292524] transition-all disabled:opacity-50"
+                >
+                  {loginLoading ? 'Salvando...' : 'Salvar Alterações'}
+                </button>
+              </div>
+            </motion.div>
+          </div>
         )}
       </AnimatePresence>
 
