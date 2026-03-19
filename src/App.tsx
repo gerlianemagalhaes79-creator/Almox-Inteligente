@@ -27,7 +27,8 @@ import {
   CheckCircle,
   Bell,
   Users,
-  Info
+  Info,
+  Printer
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as XLSX from 'xlsx';
@@ -92,6 +93,8 @@ interface ItemGroup {
   category: string | null;
   supplier: string | null;
   batches: Item[];
+  weeklyExitRate: number;
+  durationWeeks: number | 'infinite';
 }
 
 const SECTORS = [
@@ -121,6 +124,8 @@ const CATEGORY_COLORS: Record<string, string> = {
   'Expediente': '#3b82f6',
   'Higiene': '#10b981',
   'Radiológico': '#8b5cf6',
+  'Saneante': '#06b6d4',
+  'Copa & Cozinha': '#f97316',
   'Outros': '#78716c',
 };
 
@@ -147,6 +152,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'inventory' | 'history' | 'requests' | 'reports' | 'my-requests' | 'new-request' | 'users' | 'trash'>('dashboard');
   const [showAddModal, setShowAddModal] = useState(false);
   const [showTransactionModal, setShowTransactionModal] = useState<{show: boolean, type: 'entry' | 'exit', item?: Item}>({ show: false, type: 'entry' });
+  const [transactionMinStock, setTransactionMinStock] = useState<number>(NaN);
   const [showDetailModal, setShowDetailModal] = useState<{show: boolean, type: 'low_stock' | 'expiry', items: Item[]}>({ show: false, type: 'low_stock', items: [] });
   const [showDeleteModal, setShowDeleteModal] = useState<{show: boolean, transactionId?: string}>({ show: false });
   const [showSettingsModal, setShowSettingsModal] = useState(false);
@@ -159,8 +165,33 @@ export default function App() {
   const [isCleaning, setIsCleaning] = useState(false);
   const [deletionReason, setDeletionReason] = useState('');
   const [showDeletedHistory, setShowDeletedHistory] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState('all');
+  const [inventorySort, setInventorySort] = useState<'name_asc' | 'name_desc' | 'duration_asc' | 'duration_desc'>('name_asc');
   
-  const isAdmin = userProfile?.role === 'ADMIN' || user?.email === 'gerlianemagalhaes79@gmail.com';
+  const isAdmin = userProfile?.role === 'ADMIN' || 
+                  user?.email === 'gerlianemagalhaes79@gmail.com' || 
+                  user?.email === 'poli.almoxarifado@gmail.com' || 
+                  userProfile?.sector === 'Almoxarifado';
+
+  const weeklyExitRates = useMemo(() => {
+    const sixtyDaysAgo = new Date();
+    sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 60);
+    
+    const rates: Record<string, number> = {};
+    
+    transactions.forEach(t => {
+      if (t.type === 'exit' && !t.deletedAt && new Date(t.date) >= sixtyDaysAgo) {
+        rates[t.item_name] = (rates[t.item_name] || 0) + t.quantity;
+      }
+    });
+    
+    // Convert to weekly average (60 days is approx 8.57 weeks)
+    Object.keys(rates).forEach(name => {
+      rates[name] = rates[name] / (60 / 7);
+    });
+    
+    return rates;
+  }, [transactions]);
 
   // Request states
   const [requestBasket, setRequestBasket] = useState<{product_id: string, product_name: string, quantity: number}[]>([]);
@@ -192,14 +223,14 @@ export default function App() {
       id: Math.random().toString(36).substr(2, 9),
       name: '',
       initial_quantity: 1,
-      min_quantity: 5,
+      min_quantity: NaN,
       batch_number: '',
       expiry_date: '',
       is_indeterminate_expiry: false,
       unit_price: 0
     }]
   });
-  const [categories, setCategories] = useState<string[]>(['Médico Hospitalar', 'Alimentício', 'Expediente', 'Higiene', 'Radiológico']);
+  const [categories, setCategories] = useState<string[]>(['Médico Hospitalar', 'Alimentício', 'Expediente', 'Higiene', 'Radiológico', 'Saneante', 'Copa & Cozinha']);
   const [showNewCategoryInput, setShowNewCategoryInput] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
 
@@ -210,7 +241,7 @@ export default function App() {
         id: Math.random().toString(36).substr(2, 9),
         name: '',
         initial_quantity: 1,
-        min_quantity: 5,
+        min_quantity: NaN,
         batch_number: '',
         expiry_date: '',
         is_indeterminate_expiry: false,
@@ -231,7 +262,28 @@ export default function App() {
   const updateBulkItem = (id: string, field: string, value: any) => {
     setBulkEntry(prev => ({
       ...prev,
-      items: prev.items.map(item => item.id === id ? { ...item, [field]: value } : item)
+      items: prev.items.map(item => {
+        if (item.id === id) {
+          const updatedItem = { ...item, [field]: value };
+          
+          // Auto-fill min_quantity if name is changed and we have a calculated rate
+          if (field === 'name' && value) {
+            const weeklyRate = weeklyExitRates[value] || 0;
+            if (weeklyRate > 0) {
+              updatedItem.min_quantity = Math.ceil(weeklyRate * 5);
+            } else {
+              // Try to find if the item exists but has no history yet, use its current min_quantity
+              const existingItem = items.find(i => i.name === value);
+              if (existingItem) {
+                updatedItem.min_quantity = existingItem.min_quantity;
+              }
+            }
+          }
+          
+          return updatedItem;
+        }
+        return item;
+      })
     }));
   };
   
@@ -247,6 +299,7 @@ export default function App() {
     start: format(subDays(new Date(), 30), 'yyyy-MM-dd'),
     end: format(new Date(), 'yyyy-MM-dd')
   });
+  const [printDate, setPrintDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [reportSectorFilter, setReportSectorFilter] = useState<string>('all');
   const [originFilter, setOriginFilter] = useState<'all' | 'contract' | 'extra'>('all');
 
@@ -297,11 +350,11 @@ export default function App() {
         const userRef = doc(db, 'users', userEmail);
         const userSnap = await getDoc(userRef);
 
-        // Special case for the master admin
-        if (!userSnap.exists() && userEmail === 'gerlianemagalhaes79@gmail.com') {
+        // Special case for the master admins
+        if (!userSnap.exists() && (userEmail === 'gerlianemagalhaes79@gmail.com' || userEmail === 'poli.almoxarifado@gmail.com')) {
           await setDoc(userRef, {
             email: userEmail,
-            name: user.displayName || 'Admin',
+            name: user.displayName || (userEmail === 'gerlianemagalhaes79@gmail.com' ? 'Admin' : 'Poli Almoxarifado'),
             role: 'ADMIN',
             sector: 'Almoxarifado',
             uid: user.uid,
@@ -332,7 +385,7 @@ export default function App() {
             }
 
             // Redirect based on role
-            if (profile.role === 'ADMIN' || userEmail === 'gerlianemagalhaes79@gmail.com') {
+            if (profile.role === 'ADMIN' || userEmail === 'gerlianemagalhaes79@gmail.com' || profile.sector === 'Almoxarifado') {
               setActiveTab('dashboard');
             } else {
               setActiveTab('my-requests');
@@ -405,7 +458,27 @@ export default function App() {
     if (!user || !userProfile) return;
     
     let unsubscribeUsers = () => {};
-    if (user.email === 'gerlianemagalhaes79@gmail.com' || userProfile.role === 'ADMIN') {
+    if (user.email === 'gerlianemagalhaes79@gmail.com' || userProfile.role === 'ADMIN' || userProfile.sector === 'Almoxarifado') {
+      // Ensure master admins are in the database so they appear in the list
+      const masterAdmins = [
+        { email: 'gerlianemagalhaes79@gmail.com', name: 'Admin' },
+        { email: 'poli.almoxarifado@gmail.com', name: 'Poli Almoxarifado' }
+      ];
+
+      masterAdmins.forEach(async (admin) => {
+        const adminRef = doc(db, 'users', admin.email);
+        const adminSnap = await getDoc(adminRef);
+        if (!adminSnap.exists()) {
+          await setDoc(adminRef, {
+            email: admin.email,
+            name: admin.name,
+            role: 'ADMIN',
+            sector: 'Almoxarifado',
+            lastLogin: null
+          });
+        }
+      });
+
       const qUsers = query(collection(db, 'users'), orderBy('name', 'asc'));
       unsubscribeUsers = onSnapshot(qUsers, (snapshot) => {
         setUsersList(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as UserProfile)));
@@ -723,11 +796,28 @@ export default function App() {
 
       await batch.commit();
 
-      // Notify Admin
-      const adminSnap = await getDocs(query(collection(db, 'users'), where('role', '==', 'ADMIN')));
-      adminSnap.forEach(adminDoc => {
-        createNotification(adminDoc.id, 'Nova Solicitação', `O setor ${userProfile.sector} enviou uma nova solicitação.`, requestRef.id);
-      });
+      // Notify Admins and Almoxarifado
+      const adminQuery = query(collection(db, 'users'), where('role', '==', 'ADMIN'));
+      const almoxarifadoQuery = query(collection(db, 'users'), where('sector', '==', 'Almoxarifado'));
+      
+      const [adminSnap, almoxSnap] = await Promise.all([
+        getDocs(adminQuery),
+        getDocs(almoxarifadoQuery)
+      ]);
+
+      const notifiedEmails = new Set<string>();
+      
+      const processSnap = (snap: any) => {
+        snap.forEach((adminDoc: any) => {
+          if (!notifiedEmails.has(adminDoc.id)) {
+            createNotification(adminDoc.id, 'Nova Solicitação', `O setor ${userProfile.sector} enviou uma nova solicitação.`, requestRef.id);
+            notifiedEmails.add(adminDoc.id);
+          }
+        });
+      };
+
+      processSnap(adminSnap);
+      processSnap(almoxSnap);
 
       setRequestBasket([]);
       setRequestObservation('');
@@ -794,6 +884,92 @@ export default function App() {
       console.error("Error deleting item:", error);
       showToast(`Erro ao excluir item: ${error.message}`, "error");
     }
+  };
+
+  const handlePrintRequests = () => {
+    const filteredRequests = requests.filter(req => 
+      !req.deletedAt && 
+      req.status === 'APROVADO' && 
+      req.date.split('T')[0] === printDate
+    );
+
+    if (filteredRequests.length === 0) {
+      showToast("Nenhuma solicitação aprovada encontrada para esta data.", "info");
+      return;
+    }
+
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      showToast("Por favor, permita popups para imprimir.", "error");
+      return;
+    }
+
+    const content = `
+      <html>
+        <head>
+          <title>Solicitações Aprovadas - ${new Date(printDate + 'T12:00:00').toLocaleDateString('pt-BR')}</title>
+          <style>
+            body { font-family: sans-serif; padding: 20px; color: #1C1917; }
+            h1 { text-align: center; border-bottom: 2px solid #1C1917; padding-bottom: 10px; font-size: 20px; }
+            .request-card { border: 1px solid #E7E5E4; border-radius: 12px; padding: 15px; margin-bottom: 20px; page-break-inside: avoid; }
+            .request-header { display: flex; justify-content: space-between; margin-bottom: 10px; font-weight: bold; border-bottom: 1px solid #F5F5F4; padding-bottom: 5px; font-size: 14px; }
+            .items-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+            .items-table th, .items-table td { border: 1px solid #E7E5E4; padding: 8px; text-align: left; font-size: 12px; }
+            .items-table th { background-color: #FAFAF9; }
+            .justification { margin-top: 10px; font-style: italic; font-size: 12px; color: #57534E; background: #FAFAF9; padding: 8px; border-radius: 8px; border-left: 3px solid #E7E5E4; }
+            .footer { margin-top: 40px; text-align: center; font-size: 10px; color: #A8A29E; }
+            @media print {
+              .no-print { display: none; }
+            }
+          </style>
+        </head>
+        <body>
+          <h1>Solicitações Aprovadas - ${new Date(printDate + 'T12:00:00').toLocaleDateString('pt-BR')}</h1>
+          ${filteredRequests.map(req => {
+            const items = allRequestItems.filter(ri => ri.request_id === req.id);
+            return `
+              <div class="request-card">
+                <div class="request-header">
+                  <span>Solicitação: #${req.id.slice(-5).toUpperCase()}</span>
+                  <span>Setor: ${req.sector}</span>
+                </div>
+                <div style="font-size: 11px; margin-bottom: 10px; color: #78716C;">Solicitante: ${req.requesterEmail}</div>
+                <table class="items-table">
+                  <thead>
+                    <tr>
+                      <th>Produto</th>
+                      <th style="width: 80px; text-align: center;">Qtd Solicitada</th>
+                      <th style="width: 80px; text-align: center;">Qtd Aprovada</th>
+                      <th style="width: 100px; text-align: center;">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${items.map(item => `
+                      <tr>
+                        <td>${item.product_name}</td>
+                        <td style="text-align: center;">${item.quantity_requested}</td>
+                        <td style="text-align: center;">${item.quantity_approved !== undefined ? item.quantity_approved : item.quantity_requested}</td>
+                        <td style="text-align: center;">${item.quantity_approved !== undefined && item.quantity_approved !== item.quantity_requested ? 'Alterado' : 'Original'}</td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>
+                ${req.adminObservation ? `<div class="justification"><strong>Justificativa:</strong> ${req.adminObservation}</div>` : ''}
+              </div>
+            `;
+          }).join('')}
+          <div class="footer">Gerado em ${new Date().toLocaleString('pt-BR')}</div>
+          <script>
+            window.onload = () => {
+              window.print();
+            };
+          </script>
+        </body>
+      </html>
+    `;
+
+    printWindow.document.write(content);
+    printWindow.document.close();
   };
 
   const handleDeleteRequest = async (requestId: string) => {
@@ -1043,7 +1219,12 @@ export default function App() {
     try {
       for (const itemData of bulkEntry.items) {
         const initial_qty = isNaN(itemData.initial_quantity) ? 0 : itemData.initial_quantity;
-        const min_qty = isNaN(itemData.min_quantity) ? 5 : itemData.min_quantity;
+        
+        // Dynamic min stock calculation (5 weeks coverage)
+        const weeklyRate = weeklyExitRates[itemData.name] || 0;
+        const calculatedMin = weeklyRate > 0 ? Math.ceil(weeklyRate * 5) : 5;
+        const min_qty = isNaN(itemData.min_quantity) ? calculatedMin : itemData.min_quantity;
+        
         const price = isNaN(itemData.unit_price) ? 0 : itemData.unit_price;
 
         // Check if item already exists with the same name AND batch
@@ -1133,7 +1314,7 @@ export default function App() {
           id: Math.random().toString(36).substr(2, 9),
           name: '',
           initial_quantity: 1,
-          min_quantity: 5,
+          min_quantity: NaN,
           batch_number: '',
           expiry_date: '',
           is_indeterminate_expiry: false,
@@ -1199,6 +1380,10 @@ export default function App() {
           alert('Por favor, selecione um item.');
           return;
         }
+
+        const weeklyRate = weeklyExitRates[item.name] || 0;
+        const calculatedMin = weeklyRate > 0 ? Math.ceil(weeklyRate * 5) : item.min_quantity;
+        const finalMinStock = isNaN(transactionMinStock) ? calculatedMin : transactionMinStock;
         
         await runTransaction(db, async (transaction) => {
           const itemDoc = doc(db, 'items', item.id);
@@ -1213,6 +1398,7 @@ export default function App() {
           
           transaction.update(itemDoc, {
             quantity: (Number(currentItemData.quantity) || 0) + transactionQty,
+            min_quantity: finalMinStock,
             updatedAt: serverTimestamp()
           });
 
@@ -1235,6 +1421,7 @@ export default function App() {
       }
 
       setShowTransactionModal({ show: false, type: 'entry' });
+      setTransactionMinStock(NaN);
       setTransactionQty(1);
       setExitReason('consumo');
       setExpiryReason('');
@@ -1303,7 +1490,10 @@ export default function App() {
   const reportData = useMemo(() => {
     const start = startOfDay(parseISO(reportRange.start));
     const end = endOfDay(parseISO(reportRange.end));
-    const isAdmin = userProfile?.role === 'ADMIN' || user?.email === 'gerlianemagalhaes79@gmail.com';
+    const isAdmin = userProfile?.role === 'ADMIN' || 
+                    user?.email === 'gerlianemagalhaes79@gmail.com' || 
+                    user?.email === 'poli.almoxarifado@gmail.com' || 
+                    userProfile?.sector === 'Almoxarifado';
     const effectiveSectorFilter = isAdmin ? reportSectorFilter : (userProfile?.sector || 'none');
 
     const filteredTrans = transactions.filter(t => {
@@ -1403,6 +1593,19 @@ export default function App() {
       .sort((a, b) => b.value - a.value)
       .slice(0, 10);
 
+    // Exits by reason
+    const exitsByReason: Record<string, number> = {
+      'consumo': 0,
+      'doacao': 0,
+      'vencido': 0
+    };
+    filteredTrans.filter(t => t.type === 'exit').forEach(t => {
+      const reason = t.exitReason || 'consumo';
+      if (exitsByReason[reason] !== undefined) {
+        exitsByReason[reason] += t.quantity;
+      }
+    });
+
     return {
       entries,
       exits,
@@ -1414,7 +1617,8 @@ export default function App() {
       sectorItems: Object.values(sectorItems).sort((a, b) => b.value - a.value),
       totalValue,
       originStats,
-      topRequested
+      topRequested,
+      exitsByReason
     };
   }, [transactions, items, reportRange, reportSectorFilter, allRequestItems]);
 
@@ -1483,7 +1687,13 @@ export default function App() {
     return expiry <= oneMonthFromNow && expiry >= now;
   };
 
-  const isLowStock = (item: Item) => item.quantity > 0 && item.quantity <= item.min_quantity;
+  const isLowStock = (item: Item) => {
+    if (item.quantity <= 0) return false;
+    const weeklyRate = weeklyExitRates[item.name] || 0;
+    const dynamicMin = Math.ceil(weeklyRate * 5);
+    const min = weeklyRate > 0 ? dynamicMin : item.min_quantity;
+    return item.quantity <= min;
+  };
 
   const lowStockItems = items.filter(isLowStock);
   const nearExpiryItems = items.filter(isNearExpiry);
@@ -1496,26 +1706,54 @@ export default function App() {
     i.supplier?.toLowerCase().includes(searchTerm.toLowerCase()) ||
     i.category?.toLowerCase().includes(searchTerm.toLowerCase()) ||
     i.batch_number?.toLowerCase().includes(searchTerm.toLowerCase())) &&
-    (originFilter === 'all' || i.origin === originFilter))
+    (originFilter === 'all' || i.origin === originFilter) &&
+    (categoryFilter === 'all' || i.category === categoryFilter))
   );
 
   const groupedItems = filteredItems.reduce((acc, item) => {
     if (!acc[item.name]) {
+      const weeklyExitRate = weeklyExitRates[item.name] || 0;
+      
       acc[item.name] = {
         name: item.name,
         total_quantity: 0,
-        min_quantity: item.min_quantity,
+        min_quantity: weeklyExitRate > 0 ? Math.ceil(weeklyExitRate * 5) : item.min_quantity,
         category: item.category,
         supplier: item.supplier,
-        batches: []
+        batches: [],
+        weeklyExitRate: weeklyExitRate,
+        durationWeeks: 0
       };
     }
     acc[item.name].total_quantity += item.quantity;
     acc[item.name].batches.push(item);
+    
+    // Update duration
+    if (acc[item.name].weeklyExitRate > 0) {
+      acc[item.name].durationWeeks = acc[item.name].total_quantity / acc[item.name].weeklyExitRate;
+    } else {
+      acc[item.name].durationWeeks = 'infinite';
+    }
+    
     return acc;
   }, {} as Record<string, ItemGroup>);
 
-  const groupedArray: ItemGroup[] = Object.values(groupedItems);
+  const groupedArray: ItemGroup[] = (Object.values(groupedItems) as ItemGroup[])
+    .sort((a, b) => {
+      if (inventorySort === 'name_asc') {
+        return a.name.localeCompare(b.name);
+      } else if (inventorySort === 'name_desc') {
+        return b.name.localeCompare(a.name);
+      } else if (inventorySort === 'duration_asc') {
+        const durA = a.durationWeeks === 'infinite' ? Number.MAX_SAFE_INTEGER : a.durationWeeks;
+        const durB = b.durationWeeks === 'infinite' ? Number.MAX_SAFE_INTEGER : b.durationWeeks;
+        return durA - durB;
+      } else {
+        const durA = a.durationWeeks === 'infinite' ? Number.MAX_SAFE_INTEGER : a.durationWeeks;
+        const durB = b.durationWeeks === 'infinite' ? Number.MAX_SAFE_INTEGER : b.durationWeeks;
+        return durB - durA;
+      }
+    });
 
   return (
     <div className="min-h-screen bg-[#F5F5F4] text-[#1C1917] font-sans">
@@ -1529,7 +1767,7 @@ export default function App() {
         </div>
 
         <nav className="flex flex-col gap-1">
-          {(userProfile?.role === 'ADMIN' || user?.email === 'gerlianemagalhaes79@gmail.com') ? (
+          {isAdmin ? (
             <>
               <button 
                 onClick={() => setActiveTab('dashboard')}
@@ -1657,7 +1895,7 @@ export default function App() {
                       onChange={e => setReportRange({...reportRange, end: e.target.value})}
                     />
                   </div>
-                  {(userProfile?.role === 'ADMIN' || user?.email === 'gerlianemagalhaes79@gmail.com') && (
+                  {(isAdmin) && (
                     <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border border-[#E7E5E4]">
                       <Filter size={14} className="text-[#A8A29E]" />
                       <select 
@@ -1758,6 +1996,32 @@ export default function App() {
                   <Filter size={16} className="text-[#A8A29E]" />
                   <select 
                     className="text-xs font-bold focus:outline-none bg-transparent"
+                    value={categoryFilter}
+                    onChange={e => setCategoryFilter(e.target.value)}
+                  >
+                    <option value="all">Todos os Tipos</option>
+                    {Object.keys(CATEGORY_COLORS).map(cat => (
+                      <option key={cat} value={cat}>{cat}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-xl border border-[#E7E5E4]">
+                  <TrendingUp size={16} className="text-[#A8A29E]" />
+                  <select 
+                    className="text-xs font-bold focus:outline-none bg-transparent"
+                    value={inventorySort}
+                    onChange={e => setInventorySort(e.target.value as any)}
+                  >
+                    <option value="name_asc">A-Z (Nome)</option>
+                    <option value="name_desc">Z-A (Nome)</option>
+                    <option value="duration_asc">Duração (Menor-Maior)</option>
+                    <option value="duration_desc">Duração (Maior-Menor)</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-xl border border-[#E7E5E4]">
+                  <Filter size={16} className="text-[#A8A29E]" />
+                  <select 
+                    className="text-xs font-bold focus:outline-none bg-transparent"
                     value={originFilter}
                     onChange={e => setOriginFilter(e.target.value as any)}
                   >
@@ -1766,7 +2030,7 @@ export default function App() {
                     <option value="extra">Extra</option>
                   </select>
                 </div>
-                {(userProfile?.role === 'ADMIN' || user?.email === 'gerlianemagalhaes79@gmail.com') && (
+                {isAdmin && (
                   <button 
                     onClick={handleExportInventory}
                     className="p-2 bg-white border border-[#E7E5E4] rounded-xl text-[#57534E] hover:bg-[#FAFAF9] transition-all"
@@ -1777,7 +2041,7 @@ export default function App() {
                 )}
               </div>
             )}
-            {(userProfile?.role === 'ADMIN' || user?.email === 'gerlianemagalhaes79@gmail.com') && (
+            {isAdmin && (
               <>
                 <button 
                   onClick={() => setShowAddModal(true)}
@@ -1957,6 +2221,7 @@ export default function App() {
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">{isAdmin ? 'Preço Un.' : '---'}</th>
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Quantidade</th>
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Mínimo</th>
+                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Duração</th>
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Validade</th>
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">Ações</th>
                   </tr>
@@ -2011,9 +2276,24 @@ export default function App() {
                             <span className="text-[9px] font-bold text-[#A8A29E] uppercase tracking-tighter">Total Geral</span>
                           </div>
                         </td>
-                        <td className="px-6 py-5 text-[#57534E] font-medium">{group.min_quantity}</td>
+                        <td className="px-6 py-5 text-[#57534E] font-medium">
+                          <div className="flex flex-col">
+                            <span>{group.min_quantity}</span>
+                            <span className="text-[10px] text-[#A8A29E]">({group.weeklyExitRate.toFixed(1)}/sem)</span>
+                          </div>
+                        </td>
                         <td className="px-6 py-5">
-                          <p className="text-xs text-[#A8A29E]">Ver lotes abaixo</p>
+                          <div className={`flex flex-col items-center justify-center p-2 rounded-xl border ${
+                            group.durationWeeks === 'infinite' ? 'bg-blue-50 border-blue-100 text-blue-600' :
+                            group.durationWeeks <= 1 ? 'bg-red-50 border-red-100 text-red-600' :
+                            group.durationWeeks <= 5 ? 'bg-orange-50 border-orange-100 text-orange-600' :
+                            'bg-emerald-50 border-emerald-100 text-emerald-600'
+                          }`}>
+                            <span className="text-sm font-black">
+                              {group.durationWeeks === 'infinite' ? '∞' : `${group.durationWeeks.toFixed(1)}`}
+                            </span>
+                            <span className="text-[9px] font-bold uppercase tracking-tighter">Semanas</span>
+                          </div>
                         </td>
                         <td className="px-6 py-5 text-right">
                           <div className="flex flex-col items-end gap-1">
@@ -2088,7 +2368,7 @@ export default function App() {
                             >
                               <ArrowUpRight size={16} />
                             </button>
-                            {(userProfile?.role === 'ADMIN' || user?.email === 'gerlianemagalhaes79@gmail.com') && (
+                            {isAdmin && (
                               <button 
                                 onClick={(e) => { e.stopPropagation(); handleDeleteItem(item.id); }}
                                 className="p-1.5 text-rose-400 hover:bg-rose-50 hover:text-rose-600 rounded-lg transition-all"
@@ -2253,6 +2533,38 @@ export default function App() {
               exit={{ opacity: 0, scale: 0.98 }}
               className="space-y-8"
             >
+              {/* Print Requests Section */}
+              <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+                  <div className="flex items-center gap-4">
+                    <div className="bg-[#1C1917] p-3 rounded-2xl text-white">
+                      <Printer size={24} />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-black text-[#1C1917]">Impressão de Solicitações</h3>
+                      <p className="text-[#78716C] text-sm font-medium">Imprima as solicitações aprovadas por data</p>
+                    </div>
+                  </div>
+                  <div className="flex flex-col sm:flex-row items-center gap-4">
+                    <div className="w-full sm:w-auto">
+                      <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1 ml-1">Data das Solicitações</label>
+                      <input 
+                        type="date" 
+                        value={printDate}
+                        onChange={(e) => setPrintDate(e.target.value)}
+                        className="w-full sm:w-48 px-4 py-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
+                      />
+                    </div>
+                    <button 
+                      onClick={handlePrintRequests}
+                      className="w-full sm:w-auto mt-4 sm:mt-0 bg-[#1C1917] text-white px-8 py-3 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-[#292524] transition-all shadow-lg"
+                    >
+                      <Printer size={18} /> Imprimir Aprovadas
+                    </button>
+                  </div>
+                </div>
+              </div>
+
               {/* Report Stats */}
               <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                 {isAdmin && (
@@ -2355,6 +2667,41 @@ export default function App() {
                           {reportData.categories.map((entry, index) => (
                             <Cell key={`cell-${index}`} fill={getCategoryColor(entry.name)} />
                           ))}
+                        </Pie>
+                        <Tooltip 
+                          contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                        />
+                        <Legend verticalAlign="bottom" height={36}/>
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* Exits by Reason */}
+                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
+                  <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
+                    <TrendingDown size={18} className="text-rose-600" /> Saídas por Motivo
+                  </h4>
+                  <div className="h-[300px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={[
+                            { name: 'Consumo', value: reportData.exitsByReason.consumo },
+                            { name: 'Doação', value: reportData.exitsByReason.doacao },
+                            { name: 'Vencimento', value: reportData.exitsByReason.vencido }
+                          ]}
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={60}
+                          outerRadius={100}
+                          paddingAngle={5}
+                          dataKey="value"
+                          label={({ name, value }) => `${name}: ${value}`}
+                        >
+                          <Cell fill="#3b82f6" />
+                          <Cell fill="#f59e0b" />
+                          <Cell fill="#ef4444" />
                         </Pie>
                         <Tooltip 
                           contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
@@ -2549,7 +2896,7 @@ export default function App() {
             </motion.div>
           )}
 
-          {activeTab === 'users' && (userProfile?.role === 'ADMIN' || user?.email === 'gerlianemagalhaes79@gmail.com') && (
+          {activeTab === 'users' && isAdmin && (
             <motion.div 
               key="users"
               initial={{ opacity: 0, x: 20 }}
@@ -2905,7 +3252,7 @@ export default function App() {
                             >
                               Ver Detalhes
                             </button>
-                            {(userProfile?.role === 'ADMIN' || user?.email === 'gerlianemagalhaes79@gmail.com') && (
+                            {isAdmin && (
                               <button 
                                 onClick={() => handleDeleteRequest(req.id)}
                                 className="p-2 text-rose-400 hover:bg-rose-50 hover:text-rose-600 rounded-xl transition-all"
@@ -3397,6 +3744,29 @@ export default function App() {
                       </button>
                     </div>
                   </div>
+
+                  <div>
+                    <label className="block text-sm font-bold text-[#57534E] mb-2">Estoque Mínimo (5 Semanas)</label>
+                    <input 
+                      type="number"
+                      placeholder="Calculando..."
+                      className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
+                      value={isNaN(transactionMinStock) ? (
+                        (() => {
+                          const item = showTransactionModal.item || items.find(i => i.id === selectedItemId);
+                          if (item) {
+                            const weeklyRate = weeklyExitRates[item.name] || 0;
+                            return weeklyRate > 0 ? Math.ceil(weeklyRate * 5) : item.min_quantity;
+                          }
+                          return '';
+                        })()
+                      ) : transactionMinStock}
+                      onChange={e => setTransactionMinStock(parseInt(e.target.value))}
+                    />
+                    <p className="text-[10px] text-[#A8A29E] mt-1 font-medium italic">
+                      Deixe em branco para usar o cálculo automático do sistema.
+                    </p>
+                  </div>
                 </>
               ) : (
                 <div className="space-y-6">
@@ -3842,7 +4212,7 @@ export default function App() {
               </div>
             )}
 
-            {(userProfile?.role === 'ADMIN' || user?.email === 'gerlianemagalhaes79@gmail.com') && showRequestDetailModal.request.status !== 'ENTREGUE' && (
+            {isAdmin && showRequestDetailModal.request.status !== 'ENTREGUE' && (
               <div className="mb-8">
                 <div className="flex justify-between items-center mb-2">
                   <label className="text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest block">
@@ -3888,7 +4258,7 @@ export default function App() {
                           <td className="px-4 py-3 text-sm font-bold">{item.product_name}</td>
                           <td className="px-4 py-3 text-sm font-bold text-center">{item.quantity_requested}</td>
                           <td className="px-4 py-3 text-center">
-                            {(userProfile?.role === 'ADMIN' || user?.email === 'gerlianemagalhaes79@gmail.com') && showRequestDetailModal.request?.status === 'PENDENTE' ? (
+                            {isAdmin && showRequestDetailModal.request?.status === 'PENDENTE' ? (
                               <input 
                                 type="number" 
                                 min="0"
@@ -3917,7 +4287,7 @@ export default function App() {
               </div>
             </div>
 
-            {(userProfile?.role === 'ADMIN' || user?.email === 'gerlianemagalhaes79@gmail.com') && (
+            {isAdmin && (
               <div className="flex gap-3">
                 {showRequestDetailModal.request.status === 'PENDENTE' && (
                   <>

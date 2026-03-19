@@ -7,9 +7,11 @@ service cloud.firestore {
     }
     
     function isAdmin() {
+      let userDoc = get(/databases/$(database)/documents/users/$(request.auth.token.email)).data;
       return isAuthenticated() &&
-        (get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.role == 'ADMIN' ||
-          (request.auth.token.email == "gerlianemagalhaes79@gmail.com" && request.auth.token.email_verified == true));
+        (userDoc.role == 'ADMIN' ||
+          userDoc.sector == 'Almoxarifado' ||
+          ((request.auth.token.email == "gerlianemagalhaes79@gmail.com" || request.auth.token.email == "poli.almoxarifado@gmail.com") && request.auth.token.email_verified == true));
     }
 
     function isSetor() {
