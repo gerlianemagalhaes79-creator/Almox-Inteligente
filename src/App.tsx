@@ -175,8 +175,8 @@ export default function App() {
   const [inventorySort, setInventorySort] = useState<'name_asc' | 'name_desc' | 'duration_asc' | 'duration_desc'>('name_asc');
   
   const isAdmin = userProfile?.role === 'ADMIN' || 
-                  user?.email === 'gerlianemagalhaes79@gmail.com' || 
-                  user?.email === 'poli.almoxarifado@gmail.com' || 
+                  user?.email?.toLowerCase() === 'gerlianemagalhaes79@gmail.com' || 
+                  user?.email?.toLowerCase() === 'poli.almoxarifado@gmail.com' || 
                   userProfile?.sector === 'Almoxarifado';
 
   const weeklyExitRates = useMemo(() => {
@@ -395,7 +395,7 @@ export default function App() {
             }
 
             // Redirect based on role
-            if (profile.role === 'ADMIN' || userEmail === 'gerlianemagalhaes79@gmail.com' || profile.sector === 'Almoxarifado') {
+            if (profile.role === 'ADMIN' || userEmail === 'gerlianemagalhaes79@gmail.com' || userEmail === 'poli.almoxarifado@gmail.com' || profile.sector === 'Almoxarifado') {
               setActiveTab('dashboard');
             } else {
               setActiveTab('my-requests');
@@ -465,35 +465,51 @@ export default function App() {
   }, [user]);
 
   useEffect(() => {
-    if (!user || !userProfile) return;
+    if (!user) {
+      setUsersList([]);
+      return;
+    }
     
-    let unsubscribeUsers = () => {};
-    if (user.email === 'gerlianemagalhaes79@gmail.com' || userProfile.role === 'ADMIN' || userProfile.sector === 'Almoxarifado') {
-      // Ensure master admins are in the database so they appear in the list
-      const masterAdmins = [
-        { email: 'gerlianemagalhaes79@gmail.com', name: 'Admin' },
-        { email: 'poli.almoxarifado@gmail.com', name: 'Poli Almoxarifado' }
-      ];
+    const userEmail = user.email?.toLowerCase();
+    const isMasterAdmin = userEmail === 'gerlianemagalhaes79@gmail.com' || userEmail === 'poli.almoxarifado@gmail.com';
+    const isAlmoxarifado = userProfile?.sector === 'Almoxarifado';
+    const isRoleAdmin = userProfile?.role === 'ADMIN';
 
-      masterAdmins.forEach(async (admin) => {
-        const adminRef = doc(db, 'users', admin.email);
-        const adminSnap = await getDoc(adminRef);
-        if (!adminSnap.exists()) {
-          await setDoc(adminRef, {
-            email: admin.email,
-            name: admin.name,
-            role: 'ADMIN',
-            sector: 'Almoxarifado',
-            lastLogin: null
-          });
-        }
-      });
+    let unsubscribeUsers = () => {};
+    
+    if (isMasterAdmin || isRoleAdmin || isAlmoxarifado) {
+      // Ensure master admins are in the database so they appear in the list
+      if (isMasterAdmin) {
+        const masterAdmins = [
+          { email: 'gerlianemagalhaes79@gmail.com', name: 'Admin' },
+          { email: 'poli.almoxarifado@gmail.com', name: 'Poli Almoxarifado' }
+        ];
+
+        masterAdmins.forEach(async (admin) => {
+          const adminRef = doc(db, 'users', admin.email);
+          const adminSnap = await getDoc(adminRef);
+          if (!adminSnap.exists()) {
+            await setDoc(adminRef, {
+              email: admin.email,
+              name: admin.name,
+              role: 'ADMIN',
+              sector: 'Almoxarifado',
+              lastLogin: null
+            });
+          }
+        });
+      }
 
       const qUsers = query(collection(db, 'users'), orderBy('name', 'asc'));
       unsubscribeUsers = onSnapshot(qUsers, (snapshot) => {
         setUsersList(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as UserProfile)));
+      }, (error) => {
+        console.error("Error fetching users:", error);
       });
+    } else {
+      setUsersList([]);
     }
+    
     return () => unsubscribeUsers();
   }, [user, userProfile]);
 
@@ -1534,8 +1550,8 @@ export default function App() {
     const start = startOfDay(parseISO(reportRange.start));
     const end = endOfDay(parseISO(reportRange.end));
     const isAdmin = userProfile?.role === 'ADMIN' || 
-                    user?.email === 'gerlianemagalhaes79@gmail.com' || 
-                    user?.email === 'poli.almoxarifado@gmail.com' || 
+                    user?.email?.toLowerCase() === 'gerlianemagalhaes79@gmail.com' || 
+                    user?.email?.toLowerCase() === 'poli.almoxarifado@gmail.com' || 
                     userProfile?.sector === 'Almoxarifado';
     const effectiveSectorFilter = isAdmin ? reportSectorFilter : (userProfile?.sector || 'none');
 
