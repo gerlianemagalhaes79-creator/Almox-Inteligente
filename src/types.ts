@@ -15,6 +15,7 @@ export interface MaterialRequest {
   adminObservation?: string;
   requesterEmail: string;
   deletedAt?: string;
+  deletedBy?: string;
 }
 
 export interface RequestItem {
@@ -49,6 +50,7 @@ export interface Item {
   category: string | null;
   batch_number: string | null;
   deletedAt?: string;
+  deletedBy?: string;
 }
 
 export interface Transaction {

@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import * as React from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { 
   Package, 
   ArrowUpRight, 
@@ -28,8 +29,7 @@ import {
   Bell,
   Users,
   Info,
-  Printer,
-  Edit2
+  Printer
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as XLSX from 'xlsx';
@@ -63,7 +63,7 @@ import {
   updateProfile,
   getAuth
 } from 'firebase/auth';
-import { initializeApp, getApp, getApps } from 'firebase/app';
+import { initializeApp } from 'firebase/app';
 import { db, auth } from './firebase';
 import firebaseConfig from '../firebase-applet-config.json';
 import { Item, Transaction, UserProfile, MaterialRequest, RequestItem, Notification } from './types';
@@ -99,13 +99,12 @@ interface ItemGroup {
 }
 
 const SECTORS = [
-  'Administrativo', 'Imagem', 'Ilha', 'Pé Diabético', 'Direção', 'Setor Pessoal', 
+  'Imagem', 'Ilha', 'Pé Diabético', 'Direção', 'Setor Pessoal', 
   'CER', 'Setor de Terapias', 'SSVV', 'Recepção', 
-  'Higienização', 'Manutenção', 'Almoxarifado', 'Regulação'
+  'Higienização', 'Manutenção', 'Almoxarifado'
 ];
 
 const SECTOR_COLORS: Record<string, string> = {
-  'Administrativo': '#64748b',
   'Imagem': '#3b82f6',
   'Ilha': '#10b981',
   'Pé Diabético': '#f59e0b',
@@ -118,7 +117,6 @@ const SECTOR_COLORS: Record<string, string> = {
   'Higienização': '#6366f1',
   'Manutenção': '#84cc16',
   'Almoxarifado': '#1c1917',
-  'Regulação': '#f43f5e',
 };
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -138,6 +136,112 @@ const getCategoryColor = (cat: string) => {
   return `hsl(${Math.abs(hash) % 360}, 70%, 50%)`;
 };
 
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId: string | undefined;
+    email: string | null | undefined;
+    emailVerified: boolean | undefined;
+    isAnonymous: boolean | undefined;
+    tenantId: string | null | undefined;
+    providerInfo: {
+      providerId: string;
+      displayName: string | null;
+      email: string | null;
+      photoUrl: string | null;
+    }[];
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData.map(provider => ({
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        email: provider.email,
+        photoUrl: provider.photoURL
+      })) || []
+    },
+    operationType,
+    path
+  }
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
+interface ErrorBoundaryProps {
+  children: React.ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: any;
+}
+
+export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: any, errorInfo: any) {
+    handleFirestoreError(error, OperationType.WRITE, 'client_crash');
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-rose-50 flex items-center justify-center p-6">
+          <div className="bg-white p-8 rounded-3xl shadow-xl max-w-md w-full border border-rose-100">
+            <div className="w-16 h-16 bg-rose-100 text-rose-600 rounded-2xl flex items-center justify-center mx-auto mb-6">
+              <AlertTriangle size={32} />
+            </div>
+            <h2 className="text-2xl font-black text-center mb-4">Algo deu errado</h2>
+            <p className="text-[#78716C] text-center mb-6">
+              Ocorreu um erro inesperado. Por favor, recarregue a página ou entre em contato com o suporte.
+            </p>
+            <div className="bg-rose-50 p-4 rounded-xl mb-6 overflow-auto max-h-40">
+              <code className="text-xs text-rose-700">
+                {this.state.error?.message || "Erro desconhecido"}
+              </code>
+            </div>
+            <button 
+              onClick={() => window.location.reload()}
+              className="w-full py-4 bg-rose-600 text-white rounded-2xl font-bold hover:bg-rose-700 transition-all"
+            >
+              Recarregar Página
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
 export default function App() {
   const [items, setItems] = useState<Item[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -151,7 +255,7 @@ export default function App() {
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authName, setAuthName] = useState('');
-  const [authSector, setAuthSector] = useState(SECTORS[0]);
+  const [authSector, setAuthSector] = useState('Administrativo');
   const [activeTab, setActiveTab] = useState<'dashboard' | 'inventory' | 'history' | 'requests' | 'reports' | 'my-requests' | 'new-request' | 'users' | 'trash'>('dashboard');
   const [showAddModal, setShowAddModal] = useState(false);
   const [showTransactionModal, setShowTransactionModal] = useState<{show: boolean, type: 'entry' | 'exit', item?: Item}>({ show: false, type: 'entry' });
@@ -160,9 +264,6 @@ export default function App() {
   const [showDeleteModal, setShowDeleteModal] = useState<{show: boolean, transactionId?: string}>({ show: false });
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showUserDeleteConfirm, setShowUserDeleteConfirm] = useState<{show: boolean, user?: UserProfile}>({ show: false });
-  const [showUserEditModal, setShowUserEditModal] = useState<{show: boolean, user?: UserProfile}>({ show: false });
-  const [editUserSector, setEditUserSector] = useState('');
-  const [editUserRole, setEditUserRole] = useState<'ADMIN' | 'SETOR'>('SETOR');
   const [toast, setToast] = useState<{show: boolean, message: string, type: 'success' | 'error' | 'info'}>({ show: false, message: '', type: 'info' });
   const [showRequestDetailModal, setShowRequestDetailModal] = useState<{show: boolean, request?: MaterialRequest}>({ show: false });
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -175,8 +276,8 @@ export default function App() {
   const [inventorySort, setInventorySort] = useState<'name_asc' | 'name_desc' | 'duration_asc' | 'duration_desc'>('name_asc');
   
   const isAdmin = userProfile?.role === 'ADMIN' || 
-                  user?.email?.toLowerCase() === 'gerlianemagalhaes79@gmail.com' || 
-                  user?.email?.toLowerCase() === 'poli.almoxarifado@gmail.com' || 
+                  user?.email === 'gerlianemagalhaes79@gmail.com' || 
+                  user?.email === 'poli.almoxarifado@gmail.com' || 
                   userProfile?.sector === 'Almoxarifado';
 
   const weeklyExitRates = useMemo(() => {
@@ -346,66 +447,74 @@ export default function App() {
 
   useEffect(() => {
     const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
-      setUser(user);
-      if (user) {
-        const userEmail = user.email?.toLowerCase().trim();
-        if (!userEmail) {
-          await signOut(auth);
-          showToast("Erro: E-mail não encontrado no login do Google.", "error");
-          setLoading(false);
-          return;
-        }
+      try {
+        setUser(user);
+        if (user) {
+          const userEmail = user.email?.toLowerCase().trim();
+          if (!userEmail) {
+            await signOut(auth);
+            showToast("Erro: E-mail não encontrado no login do Google.", "error");
+            setLoading(false);
+            return;
+          }
 
-        // Always use email as the document ID for consistency
-        const userRef = doc(db, 'users', userEmail);
-        const userSnap = await getDoc(userRef);
+          // Always use email as the document ID for consistency
+          const userRef = doc(db, 'users', userEmail);
+          const userSnap = await getDoc(userRef);
 
-        // Special case for the master admins
-        if (!userSnap.exists() && (userEmail === 'gerlianemagalhaes79@gmail.com' || userEmail === 'poli.almoxarifado@gmail.com')) {
-          await setDoc(userRef, {
-            email: userEmail,
-            name: user.displayName || (userEmail === 'gerlianemagalhaes79@gmail.com' ? 'Admin' : 'Poli Almoxarifado'),
-            role: 'ADMIN',
-            sector: 'Almoxarifado',
-            uid: user.uid,
-            lastLogin: new Date().toISOString()
-          });
-        } else if (userSnap.exists()) {
-          // Update existing profile with UID and last login
-          await updateDoc(userRef, { 
-            uid: user.uid,
-            lastLogin: new Date().toISOString() 
+          // Special case for the master admins
+          if (!userSnap.exists() && (userEmail === 'gerlianemagalhaes79@gmail.com' || userEmail === 'poli.almoxarifado@gmail.com')) {
+            await setDoc(userRef, {
+              email: userEmail,
+              name: user.displayName || (userEmail === 'gerlianemagalhaes79@gmail.com' ? 'Admin' : 'Poli Almoxarifado'),
+              role: 'ADMIN',
+              sector: 'Almoxarifado',
+              uid: user.uid,
+              lastLogin: new Date().toISOString()
+            });
+          } else if (userSnap.exists()) {
+            // Update existing profile with UID and last login
+            await updateDoc(userRef, { 
+              uid: user.uid,
+              lastLogin: new Date().toISOString() 
+            });
+          } else {
+            // Not pre-registered and not master admin
+            await signOut(auth);
+            showToast("Acesso negado: Seu e-mail não está cadastrado no sistema. Entre em contato com o administrador.", "error");
+            setLoading(false);
+            return;
+          }
+
+          onSnapshot(userRef, (doc) => {
+            if (doc.exists()) {
+              const profile = { id: doc.id, ...doc.data() } as UserProfile;
+              setUserProfile(profile);
+              
+              // Auto-select sector for the user
+              if (profile.sector) {
+                setSelectedSector(profile.sector);
+              }
+
+              // Redirect based on role
+              if (profile.role === 'ADMIN' || userEmail === 'gerlianemagalhaes79@gmail.com' || profile.sector === 'Almoxarifado') {
+                setActiveTab('dashboard');
+              } else {
+                setActiveTab('my-requests');
+              }
+            }
+          }, (error) => {
+            handleFirestoreError(error, OperationType.GET, `users/${userEmail}`);
           });
         } else {
-          // Not pre-registered and not master admin
-          await signOut(auth);
-          showToast("Acesso negado: Seu e-mail não está cadastrado no sistema. Entre em contato com o administrador.", "error");
-          setLoading(false);
-          return;
+          setUserProfile(null);
         }
-
-        onSnapshot(userRef, (doc) => {
-          if (doc.exists()) {
-            const profile = { id: doc.id, ...doc.data() } as UserProfile;
-            setUserProfile(profile);
-            
-            // Auto-select sector for the user
-            if (profile.sector) {
-              setSelectedSector(profile.sector);
-            }
-
-            // Redirect based on role
-            if (profile.role === 'ADMIN' || userEmail === 'gerlianemagalhaes79@gmail.com' || userEmail === 'poli.almoxarifado@gmail.com' || profile.sector === 'Almoxarifado') {
-              setActiveTab('dashboard');
-            } else {
-              setActiveTab('my-requests');
-            }
-          }
-        });
-      } else {
-        setUserProfile(null);
+      } catch (error: any) {
+        console.error("Auth state change error:", error);
+        showToast(`Erro na autenticação: ${error.message}`, "error");
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     });
     return () => unsubscribeAuth();
   }, []);
@@ -425,6 +534,8 @@ export default function App() {
       // Update categories list from existing items
       const existingCategories = Array.from(new Set(itemsData.map(i => i.category).filter(Boolean))) as string[];
       setCategories(prev => Array.from(new Set([...prev, ...existingCategories])));
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'items');
     });
 
     const qTrans = query(collection(db, 'transactions'), orderBy('date', 'desc'));
@@ -434,24 +545,32 @@ export default function App() {
         .map(doc => ({ id: doc.id, ...doc.data() } as Transaction))
         .filter(t => !t.deletedAt || new Date(t.deletedAt) > fifteenDaysAgo);
       setTransactions(transData);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'transactions');
     });
 
     const qRequests = query(collection(db, 'requests'), orderBy('date', 'desc'));
     const unsubscribeRequests = onSnapshot(qRequests, (snapshot) => {
       const requestsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as MaterialRequest));
       setRequests(requestsData);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'requests');
     });
 
     const qReqItems = query(collection(db, 'request_items'));
     const unsubscribeReqItems = onSnapshot(qReqItems, (snapshot) => {
       const itemsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as RequestItem));
       setAllRequestItems(itemsData);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'request_items');
     });
 
     const unsubscribeNotifications = onSnapshot(
       query(collection(db, 'notifications'), where('userId', '==', user.uid), orderBy('date', 'desc')),
       (snapshot) => {
         setNotifications(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Notification)));
+      }, (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'notifications');
       }
     );
 
@@ -465,51 +584,37 @@ export default function App() {
   }, [user]);
 
   useEffect(() => {
-    if (!user) {
-      setUsersList([]);
-      return;
-    }
+    if (!user || !userProfile) return;
     
-    const userEmail = user.email?.toLowerCase();
-    const isMasterAdmin = userEmail === 'gerlianemagalhaes79@gmail.com' || userEmail === 'poli.almoxarifado@gmail.com';
-    const isAlmoxarifado = userProfile?.sector === 'Almoxarifado';
-    const isRoleAdmin = userProfile?.role === 'ADMIN';
-
     let unsubscribeUsers = () => {};
-    
-    if (isMasterAdmin || isRoleAdmin || isAlmoxarifado) {
+    if (user.email === 'gerlianemagalhaes79@gmail.com' || userProfile.role === 'ADMIN' || userProfile.sector === 'Almoxarifado') {
       // Ensure master admins are in the database so they appear in the list
-      if (isMasterAdmin) {
-        const masterAdmins = [
-          { email: 'gerlianemagalhaes79@gmail.com', name: 'Admin' },
-          { email: 'poli.almoxarifado@gmail.com', name: 'Poli Almoxarifado' }
-        ];
+      const masterAdmins = [
+        { email: 'gerlianemagalhaes79@gmail.com', name: 'Admin' },
+        { email: 'poli.almoxarifado@gmail.com', name: 'Poli Almoxarifado' }
+      ];
 
-        masterAdmins.forEach(async (admin) => {
-          const adminRef = doc(db, 'users', admin.email);
-          const adminSnap = await getDoc(adminRef);
-          if (!adminSnap.exists()) {
-            await setDoc(adminRef, {
-              email: admin.email,
-              name: admin.name,
-              role: 'ADMIN',
-              sector: 'Almoxarifado',
-              lastLogin: null
-            });
-          }
-        });
-      }
+      masterAdmins.forEach(async (admin) => {
+        const adminRef = doc(db, 'users', admin.email);
+        const adminSnap = await getDoc(adminRef);
+        if (!adminSnap.exists()) {
+          await setDoc(adminRef, {
+            email: admin.email,
+            name: admin.name,
+            role: 'ADMIN',
+            sector: 'Almoxarifado',
+            lastLogin: null
+          });
+        }
+      });
 
       const qUsers = query(collection(db, 'users'), orderBy('name', 'asc'));
       unsubscribeUsers = onSnapshot(qUsers, (snapshot) => {
         setUsersList(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as UserProfile)));
       }, (error) => {
-        console.error("Error fetching users:", error);
+        handleFirestoreError(error, OperationType.LIST, 'users');
       });
-    } else {
-      setUsersList([]);
     }
-    
     return () => unsubscribeUsers();
   }, [user, userProfile]);
 
@@ -555,16 +660,12 @@ export default function App() {
       showToast("Preencha todos os campos.", "error");
       return;
     }
-    const userDocId = authEmail.toLowerCase().trim();
-    if (userDocId === 'gerlianemagalhaes79@gmail.com') {
-      showToast("Este e-mail é o administrador mestre e não pode ser alterado.", "error");
-      return;
-    }
     setLoginLoading(true);
     try {
       // Just create/update the document in Firestore using email as ID
       // This allows the user to log in via Google later
-      const role = 'SETOR';
+      const userDocId = authEmail.toLowerCase().trim();
+      const role = userDocId === 'gerlianemagalhaes79@gmail.com' ? 'ADMIN' : 'SETOR';
       
       await setDoc(doc(db, 'users', userDocId), {
         email: userDocId,
@@ -579,7 +680,7 @@ export default function App() {
       setAuthName('');
       setIsRegistering(false);
     } catch (error: any) {
-      console.error("Registration error:", error);
+      handleFirestoreError(error, OperationType.WRITE, 'users');
       showToast(`Erro ao cadastrar: ${error.message}`, "error");
     } finally {
       setLoginLoading(false);
@@ -587,29 +688,6 @@ export default function App() {
   };
 
   const handleLogout = () => signOut(auth);
-
-  const handleUpdateUser = async () => {
-    if (!showUserEditModal.user) return;
-    if (showUserEditModal.user.email === 'gerlianemagalhaes79@gmail.com') {
-      showToast("Este usuário é o administrador mestre e não pode ser editado.", "error");
-      setShowUserEditModal({ show: false });
-      return;
-    }
-    setLoginLoading(true);
-    try {
-      await updateDoc(doc(db, 'users', showUserEditModal.user.id), {
-        sector: editUserSector,
-        role: editUserRole
-      });
-      showToast("Usuário atualizado com sucesso!", "success");
-      setShowUserEditModal({ show: false });
-    } catch (error: any) {
-      console.error("Error updating user:", error);
-      showToast(`Erro ao atualizar: ${error.message}`, "error");
-    } finally {
-      setLoginLoading(false);
-    }
-  };
 
   const handleDeleteTransaction = async (id: string, reason: string) => {
     if (!id) return;
@@ -877,7 +955,7 @@ export default function App() {
       setActiveTab('my-requests');
       showToast("Solicitação enviada com sucesso!", "success");
     } catch (error: any) {
-      console.error("Error submitting request:", error);
+      handleFirestoreError(error, OperationType.WRITE, 'requests');
       showToast(`Erro ao enviar solicitação: ${error.message}`, "error");
     } finally {
       setIsSubmittingRequest(false);
@@ -934,7 +1012,7 @@ export default function App() {
       });
       showToast("Item enviado para a lixeira.", "success");
     } catch (error: any) {
-      console.error("Error deleting item:", error);
+      handleFirestoreError(error, OperationType.UPDATE, `items/${itemId}`);
       showToast(`Erro ao excluir item: ${error.message}`, "error");
     }
   };
@@ -1034,7 +1112,7 @@ export default function App() {
       });
       showToast("Solicitação enviada para a lixeira.", "success");
     } catch (error: any) {
-      console.error("Error deleting request:", error);
+      handleFirestoreError(error, OperationType.UPDATE, `requests/${requestId}`);
       showToast(`Erro ao excluir solicitação: ${error.message}`, "error");
     }
   };
@@ -1080,7 +1158,7 @@ export default function App() {
 
       showToast("Solicitação aprovada!", "success");
     } catch (error: any) {
-      console.error("Error approving request:", error);
+      handleFirestoreError(error, OperationType.UPDATE, `requests/${requestId}`);
       showToast(`Erro ao aprovar: ${error.message}`, "error");
     }
   };
@@ -1147,80 +1225,74 @@ export default function App() {
           return;
         }
 
-        // 1. ALL READS FIRST
-        const batchesToRead: { batchId: string, amountFromThisBatch: number }[] = [];
-        
         for (const reqItem of requestItems) {
-          console.log(`Calculando deduções para item: ${reqItem.product_name}`);
+          console.log(`Processando item: ${reqItem.product_name}, Quantidade: ${reqItem.quantity_approved}`);
           let remainingToDeduct = reqItem.quantity_approved;
-          const productBatches = availableBatchesByProduct[reqItem.product_name] || [];
+          const batches = availableBatchesByProduct[reqItem.product_name] || [];
           
-          let totalAvailableForProduct = productBatches.reduce((sum, b) => sum + b.quantity, 0);
+          let totalAvailableForProduct = batches.reduce((sum, b) => sum + b.quantity, 0);
+          
           if (totalAvailableForProduct < remainingToDeduct) {
             throw new Error(`Estoque insuficiente para "${reqItem.product_name}". Solicitado: ${remainingToDeduct}, Disponível total: ${totalAvailableForProduct}.`);
           }
 
-          for (const batch of productBatches) {
+          for (const batch of batches) {
             if (remainingToDeduct <= 0) break;
-            const amountFromThisBatch = Math.min(batch.quantity, remainingToDeduct);
-            batchesToRead.push({ batchId: batch.id, amountFromThisBatch });
+
+            const batchRef = doc(db, 'items', batch.id);
+            const batchSnap = await transaction.get(batchRef);
+            
+            if (!batchSnap.exists()) {
+              console.warn(`Lote ${batch.id} não existe mais.`);
+              continue;
+            }
+            
+            const currentBatchData = batchSnap.data();
+            const availableInBatch = currentBatchData.quantity;
+
+            if (availableInBatch <= 0) {
+              console.warn(`Lote ${batch.id} está vazio.`);
+              continue;
+            }
+
+            const amountFromThisBatch = Math.min(availableInBatch, remainingToDeduct);
+            console.log(`Deduzindo ${amountFromThisBatch} do lote ${batch.batch_number} (ID: ${batch.id})`);
+            
+            transaction.update(batchRef, {
+              quantity: availableInBatch - amountFromThisBatch,
+              updatedAt: serverTimestamp()
+            });
+
+            const transRef = doc(collection(db, 'transactions'));
+            transaction.set(transRef, {
+              item_id: batch.id,
+              item_name: reqItem.product_name,
+              type: 'exit',
+              origin: currentBatchData.origin,
+              quantity: amountFromThisBatch,
+              sector: requestData.sector,
+              date: new Date().toISOString(),
+              responsible: user?.displayName || user?.email,
+              responsibleEmail: user?.email,
+              exitReason: 'consumo',
+              batch_number: currentBatchData.batch_number,
+              expiry_date: currentBatchData.expiry_date
+            });
+
             remainingToDeduct -= amountFromThisBatch;
           }
-          
+
           if (remainingToDeduct > 0) {
-            throw new Error(`Não foi possível alocar lotes suficientes para "${reqItem.product_name}".`);
+            throw new Error(`Não foi possível deduzir a quantidade total para "${reqItem.product_name}" devido a alterações simultâneas no estoque.`);
           }
         }
 
-        // Fetch all batch snapshots in parallel (ALL READS)
-        const batchSnaps = await Promise.all(
-          batchesToRead.map(b => transaction.get(doc(db, 'items', b.batchId)))
-        );
-
-        // 2. ALL WRITES SECOND
         transaction.update(requestRef, { 
           status: 'ENTREGUE',
           deliveredAt: new Date().toISOString(),
           deliveredBy: user?.email,
           adminObservation: adminObservation || requestData.adminObservation || ''
         });
-
-        batchSnaps.forEach((batchSnap, index) => {
-          if (!batchSnap.exists()) {
-            throw new Error(`Lote ${batchesToRead[index].batchId} não encontrado durante a transação.`);
-          }
-          
-          const currentBatchData = batchSnap.data();
-          const amountFromThisBatch = batchesToRead[index].amountFromThisBatch;
-          const batchRef = doc(db, 'items', batchSnap.id);
-
-          if (currentBatchData.quantity < amountFromThisBatch) {
-            throw new Error(`Estoque do lote ${currentBatchData.batch_number} mudou durante a transação.`);
-          }
-
-          transaction.update(batchRef, {
-            quantity: currentBatchData.quantity - amountFromThisBatch,
-            updatedAt: serverTimestamp()
-          });
-
-          const transRef = doc(collection(db, 'transactions'));
-          transaction.set(transRef, {
-            item_id: batchSnap.id,
-            item_name: currentBatchData.name,
-            type: 'exit',
-            origin: currentBatchData.origin,
-            quantity: amountFromThisBatch,
-            sector: requestData.sector,
-            date: new Date().toISOString(),
-            responsible: user?.displayName || user?.email,
-            responsibleEmail: user?.email,
-            exitReason: 'consumo',
-            batch_number: currentBatchData.batch_number,
-            expiry_date: currentBatchData.expiry_date,
-            request_id: requestId
-          });
-        });
-
         console.log('Transação concluída com sucesso.');
       });
 
@@ -1238,7 +1310,7 @@ export default function App() {
       showToast("Entrega confirmada e estoque atualizado!", "success");
       setShowRequestDetailModal({ show: false });
     } catch (error: any) {
-      console.error('Erro ao processar entrega:', error);
+      handleFirestoreError(error, OperationType.WRITE, `requests/${requestId}/delivery`);
       if (error.message.includes('insufficient permissions')) {
         showToast("Erro de permissão: Você não tem autorização para atualizar o estoque.", "error");
       } else {
@@ -1267,7 +1339,7 @@ export default function App() {
       
       showToast("Solicitação recusada.", "success");
     } catch (error: any) {
-      console.error("Error rejecting request:", error);
+      handleFirestoreError(error, OperationType.UPDATE, `requests/${requestId}`);
       showToast(`Erro ao recusar: ${error.message}`, "error");
     }
   };
@@ -1550,8 +1622,8 @@ export default function App() {
     const start = startOfDay(parseISO(reportRange.start));
     const end = endOfDay(parseISO(reportRange.end));
     const isAdmin = userProfile?.role === 'ADMIN' || 
-                    user?.email?.toLowerCase() === 'gerlianemagalhaes79@gmail.com' || 
-                    user?.email?.toLowerCase() === 'poli.almoxarifado@gmail.com' || 
+                    user?.email === 'gerlianemagalhaes79@gmail.com' || 
+                    user?.email === 'poli.almoxarifado@gmail.com' || 
                     userProfile?.sector === 'Almoxarifado';
     const effectiveSectorFilter = isAdmin ? reportSectorFilter : (userProfile?.sector || 'none');
 
@@ -1563,8 +1635,7 @@ export default function App() {
       return inRange && matchesSector;
     });
 
-    // For non-admins, entries should be 0 as they only receive/exit
-    const entries = isAdmin ? filteredTrans.filter(t => t.type === 'entry').reduce((sum, t) => sum + t.quantity, 0) : 0;
+    const entries = filteredTrans.filter(t => t.type === 'entry').reduce((sum, t) => sum + t.quantity, 0);
     const exits = filteredTrans.filter(t => t.type === 'exit').reduce((sum, t) => sum + t.quantity, 0);
 
     // Extra vs Contract stats
@@ -1579,12 +1650,10 @@ export default function App() {
       else originStats[origin].exits += t.quantity;
     });
 
-    if (isAdmin) {
-      items.forEach(item => {
-        const origin = item.origin || 'contract';
-        originStats[origin].current += item.quantity;
-      });
-    }
+    items.forEach(item => {
+      const origin = item.origin || 'contract';
+      originStats[origin].current += item.quantity;
+    });
 
     // Group by date for line chart
     const dailyData: Record<string, { date: string, entries: number, exits: number }> = {};
@@ -1597,19 +1666,10 @@ export default function App() {
 
     // Group by category for pie chart
     const categoryData: Record<string, number> = {};
-    if (isAdmin) {
-      items.forEach(item => {
-        const cat = item.category || 'Outros';
-        categoryData[cat] = (categoryData[cat] || 0) + item.quantity;
-      });
-    } else {
-      // For non-admins, show categories of items they received in the period
-      filteredTrans.filter(t => t.type === 'exit').forEach(t => {
-        const item = items.find(i => i.id === t.item_id);
-        const cat = item?.category || 'Outros';
-        categoryData[cat] = (categoryData[cat] || 0) + t.quantity;
-      });
-    }
+    items.forEach(item => {
+      const cat = item.category || 'Outros';
+      categoryData[cat] = (categoryData[cat] || 0) + item.quantity;
+    });
 
     // Group by sector for bar chart (stacked by category)
     const sectorData: Record<string, any> = {};
@@ -1647,20 +1707,25 @@ export default function App() {
 
     // Group by supplier for value chart
     const supplierData: Record<string, number> = {};
-    if (isAdmin) {
-      items.forEach(item => {
-        const sup = item.supplier || 'Sem Fornecedor';
-        supplierData[sup] = (supplierData[sup] || 0) + (item.quantity * item.unit_price);
-      });
-    }
+    items.forEach(item => {
+      const sup = item.supplier || 'Sem Fornecedor';
+      supplierData[sup] = (supplierData[sup] || 0) + (item.quantity * item.unit_price);
+    });
 
-    const totalValue = isAdmin 
-      ? items.reduce((sum, item) => sum + (item.quantity * item.unit_price), 0)
-      : Object.values(sectorItems).reduce((sum, item) => sum + item.value, 0);
+    const totalValue = items.reduce((sum, item) => sum + (item.quantity * item.unit_price), 0);
 
     // Most requested items
     const mostRequested: Record<string, number> = {};
     allRequestItems.forEach(ri => {
+      const request = requests.find(r => r.id === ri.request_id);
+      if (!request) return;
+      
+      // If not admin, only count items from their own sector
+      if (!isAdmin && request.sector !== userProfile?.sector) return;
+      
+      // If admin and sector filter is active, filter by that sector
+      if (isAdmin && reportSectorFilter !== 'all' && request.sector !== reportSectorFilter) return;
+
       mostRequested[ri.product_name] = (mostRequested[ri.product_name] || 0) + ri.quantity_requested;
     });
     const topRequested = Object.entries(mostRequested)
@@ -1695,7 +1760,7 @@ export default function App() {
       topRequested,
       exitsByReason
     };
-  }, [transactions, items, reportRange, reportSectorFilter, allRequestItems]);
+  }, [transactions, items, reportRange, reportSectorFilter, allRequestItems, requests, userProfile, isAdmin]);
 
   if (loading) {
     return (
@@ -2608,36 +2673,39 @@ export default function App() {
               exit={{ opacity: 0, scale: 0.98 }}
               className="space-y-8"
             >
-              {/* Print Requests Section */}
-              <div className="bg-white rounded-[32px] border border-[#E7E5E4] p-8 shadow-sm space-y-6">
-                <div className="flex items-center gap-4">
-                  <div className="bg-emerald-50 p-4 rounded-2xl text-emerald-600">
-                    <Printer size={28} />
-                  </div>
-                  <div>
-                    <h3 className="text-xl font-black text-[#1C1917]">Relatório de Solicitações Aprovadas</h3>
-                    <p className="text-[#78716C] text-sm font-medium">Selecione uma data para imprimir todas as solicitações aceitas</p>
+              {/* Print Requests Section - Only for Admin */}
+              {isAdmin && (
+                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+                    <div className="flex items-center gap-4">
+                      <div className="bg-[#1C1917] p-3 rounded-2xl text-white">
+                        <Printer size={24} />
+                      </div>
+                      <div>
+                        <h3 className="text-xl font-black text-[#1C1917]">Impressão de Solicitações</h3>
+                        <p className="text-[#78716C] text-sm font-medium">Imprima as solicitações aprovadas por data</p>
+                      </div>
+                    </div>
+                    <div className="flex flex-col sm:flex-row items-center gap-4">
+                      <div className="w-full sm:w-auto">
+                        <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1 ml-1">Data das Solicitações</label>
+                        <input 
+                          type="date" 
+                          value={printDate}
+                          onChange={(e) => setPrintDate(e.target.value)}
+                          className="w-full sm:w-48 px-4 py-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
+                        />
+                      </div>
+                      <button 
+                        onClick={handlePrintRequests}
+                        className="w-full sm:w-auto mt-4 sm:mt-0 bg-[#1C1917] text-white px-8 py-3 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-[#292524] transition-all shadow-lg"
+                      >
+                        <Printer size={18} /> Imprimir Aprovadas
+                      </button>
+                    </div>
                   </div>
                 </div>
-                
-                <div className="flex flex-col md:flex-row items-end gap-4 bg-[#FAFAF9] p-6 rounded-3xl border border-[#E7E5E4]">
-                  <div className="flex-1 w-full space-y-2">
-                    <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest ml-1">Data das Solicitações</label>
-                    <input 
-                      type="date" 
-                      value={printDate}
-                      onChange={(e) => setPrintDate(e.target.value)}
-                      className="w-full px-4 py-4 bg-white border border-[#E7E5E4] rounded-2xl focus:ring-2 focus:ring-emerald-500/20 font-bold text-sm transition-all"
-                    />
-                  </div>
-                  <button 
-                    onClick={handlePrintRequests}
-                    className="w-full md:w-auto bg-emerald-600 text-white px-10 py-4 rounded-2xl font-black text-sm flex items-center justify-center gap-3 hover:bg-emerald-700 transition-all shadow-xl shadow-emerald-600/20"
-                  >
-                    <Printer size={20} /> GERAR RELATÓRIO
-                  </button>
-                </div>
-              </div>
+              )}
 
               {/* Report Stats */}
               <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
@@ -2652,38 +2720,40 @@ export default function App() {
                     </div>
                   </div>
                 )}
-                <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
-                  <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Saídas no Período</p>
-                  <div className="flex items-center gap-3">
-                    <div className="bg-rose-100 p-2 rounded-xl text-rose-600">
-                      <TrendingDown size={20} />
-                    </div>
-                    <h3 className="text-3xl font-black">{reportData.exits}</h3>
-                  </div>
-                </div>
-                <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
-                  <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">
-                    {isAdmin ? 'Valor Total em Estoque' : 'Valor Total Recebido'}
-                  </p>
-                  <div className="flex items-center gap-3">
-                    <div className="bg-amber-100 p-2 rounded-xl text-amber-600">
-                      <DollarSign size={20} />
-                    </div>
-                    <h3 className="text-2xl font-black">
-                      {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.totalValue)}
-                    </h3>
-                  </div>
-                </div>
                 {isAdmin && (
                   <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
-                    <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Itens Ativos</p>
+                    <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Saídas no Período</p>
                     <div className="flex items-center gap-3">
-                      <div className="bg-blue-100 p-2 rounded-xl text-blue-600">
-                        <Package size={20} />
+                      <div className="bg-rose-100 p-2 rounded-xl text-rose-600">
+                        <TrendingDown size={20} />
                       </div>
-                      <h3 className="text-3xl font-black">{items.length}</h3>
+                      <h3 className="text-3xl font-black">{reportData.exits}</h3>
                     </div>
                   </div>
+                )}
+                {isAdmin && (
+                  <>
+                    <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
+                      <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Valor Total em Estoque</p>
+                      <div className="flex items-center gap-3">
+                        <div className="bg-amber-100 p-2 rounded-xl text-amber-600">
+                          <DollarSign size={20} />
+                        </div>
+                        <h3 className="text-2xl font-black">
+                          {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.totalValue)}
+                        </h3>
+                      </div>
+                    </div>
+                    <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
+                      <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Itens Ativos</p>
+                      <div className="flex items-center gap-3">
+                        <div className="bg-blue-100 p-2 rounded-xl text-blue-600">
+                          <Package size={20} />
+                        </div>
+                        <h3 className="text-3xl font-black">{items.length}</h3>
+                      </div>
+                    </div>
+                  </>
                 )}
               </div>
 
@@ -2713,7 +2783,7 @@ export default function App() {
                         <Tooltip 
                           contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
                         />
-                        {isAdmin && <Area type="monotone" dataKey="entries" name="Entradas" stroke="#10b981" fillOpacity={1} fill="url(#colorEntries)" strokeWidth={3} />}
+                        <Area type="monotone" dataKey="entries" name="Entradas" stroke="#10b981" fillOpacity={1} fill="url(#colorEntries)" strokeWidth={3} />
                         <Area type="monotone" dataKey="exits" name="Saídas" stroke="#f43f5e" fillOpacity={1} fill="url(#colorExits)" strokeWidth={3} />
                       </AreaChart>
                     </ResponsiveContainer>
@@ -2751,42 +2821,44 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Exits by Reason */}
-                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
-                  <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
-                    <TrendingDown size={18} className="text-rose-600" /> Saídas por Motivo
-                  </h4>
-                  <div className="h-[300px] w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie
-                          data={[
-                            { name: 'Consumo', value: reportData.exitsByReason.consumo },
-                            { name: 'Doação', value: reportData.exitsByReason.doacao },
-                            { name: 'Vencimento', value: reportData.exitsByReason.vencido }
-                          ]}
-                          cx="50%"
-                          cy="50%"
-                          innerRadius={60}
-                          outerRadius={100}
-                          paddingAngle={5}
-                          dataKey="value"
-                          label={({ name, value }) => `${name}: ${value}`}
-                        >
-                          <Cell fill="#3b82f6" />
-                          <Cell fill="#f59e0b" />
-                          <Cell fill="#ef4444" />
-                        </Pie>
-                        <Tooltip 
-                          contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                        />
-                        <Legend verticalAlign="bottom" height={36}/>
-                      </PieChart>
-                    </ResponsiveContainer>
+                {/* Exits by Reason - Only for Admin */}
+                {isAdmin && (
+                  <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
+                    <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
+                      <TrendingDown size={18} className="text-rose-600" /> Saídas por Motivo
+                    </h4>
+                    <div className="h-[300px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie
+                            data={[
+                              { name: 'Consumo', value: reportData.exitsByReason.consumo },
+                              { name: 'Doação', value: reportData.exitsByReason.doacao },
+                              { name: 'Vencimento', value: reportData.exitsByReason.vencido }
+                            ]}
+                            cx="50%"
+                            cy="50%"
+                            innerRadius={60}
+                            outerRadius={100}
+                            paddingAngle={5}
+                            dataKey="value"
+                            label={({ name, value }) => `${name}: ${value}`}
+                          >
+                            <Cell fill="#3b82f6" />
+                            <Cell fill="#f59e0b" />
+                            <Cell fill="#ef4444" />
+                          </Pie>
+                          <Tooltip 
+                            contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                          />
+                          <Legend verticalAlign="bottom" height={36}/>
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                </div>
+                )}
 
-                {/* Exits by Sector */}
+                {/* Exits by Sector - Only for Admin */}
                 {isAdmin && (
                   <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
                     <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
@@ -2910,8 +2982,9 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Detailed Sector Breakdown */}
-                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
+                {/* Detailed Sector Breakdown - Only for Admin */}
+                {isAdmin && (
+                  <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
                   <div className="flex justify-between items-center mb-8">
                     <h4 className="text-lg font-bold flex items-center gap-2">
                       <History size={18} className="text-[#1C1917]" /> 
@@ -2968,6 +3041,7 @@ export default function App() {
                     </table>
                   </div>
                 </div>
+                )}
               </div>
             </motion.div>
           )}
@@ -3080,29 +3154,14 @@ export default function App() {
                           </span>
                         </td>
                         <td className="px-6 py-4 text-right">
-                          <div className="flex justify-end items-center gap-2">
-                            {u.email !== 'gerlianemagalhaes79@gmail.com' && (
-                              <>
-                                <button 
-                                  onClick={() => {
-                                    setEditUserSector(u.sector || SECTORS[0]);
-                                    setEditUserRole(u.role);
-                                    setShowUserEditModal({ show: true, user: u });
-                                  }}
-                                  className="text-emerald-600 hover:bg-emerald-50 p-2 rounded-lg transition-all"
-                                  title="Editar Usuário"
-                                >
-                                  <Edit2 size={18} />
-                                </button>
-                                <button 
-                                  onClick={() => setShowUserDeleteConfirm({ show: true, user: u })}
-                                  className="text-rose-600 hover:bg-rose-50 p-2 rounded-lg transition-all"
-                                >
-                                  <Trash2 size={18} />
-                                </button>
-                              </>
-                            )}
-                          </div>
+                          {u.email !== 'gerlianemagalhaes79@gmail.com' && (
+                            <button 
+                              onClick={() => setShowUserDeleteConfirm({ show: true, user: u })}
+                              className="text-rose-600 hover:bg-rose-50 p-2 rounded-lg transition-all"
+                            >
+                              <Trash2 size={18} />
+                            </button>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -3337,84 +3396,6 @@ export default function App() {
                         </td>
                         <td className="px-6 py-4 text-right">
                           <div className="flex justify-end items-center gap-2">
-                            {req.status === 'APROVADO' && (
-                              <button 
-                                onClick={() => {
-                                  const items = allRequestItems.filter(ri => ri.request_id === req.id);
-                                  const printWindow = window.open('', '_blank');
-                                  if (!printWindow) return;
-
-                                  const content = `
-                                    <html>
-                                      <head>
-                                        <title>Solicitação #${req.id.slice(-5).toUpperCase()}</title>
-                                        <style>
-                                          body { font-family: sans-serif; padding: 40px; }
-                                          .header { border-bottom: 2px solid #000; padding-bottom: 20px; margin-bottom: 20px; }
-                                          .title { font-size: 24px; font-weight: bold; }
-                                          .info { margin-bottom: 20px; }
-                                          table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-                                          th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
-                                          th { background-color: #f2f2f2; }
-                                          .footer { margin-top: 40px; font-size: 12px; color: #666; }
-                                          .justification { margin-top: 20px; padding: 15px; background: #f9f9f9; border-left: 4px solid #ddd; }
-                                        </style>
-                                      </head>
-                                      <body>
-                                        <div class="header">
-                                          <div class="title">SOLICITAÇÃO DE MATERIAL #${req.id.slice(-5).toUpperCase()}</div>
-                                          <div>Data: ${new Date(req.date).toLocaleDateString('pt-BR')}</div>
-                                        </div>
-                                        <div class="info">
-                                          <p><strong>Setor:</strong> ${req.sector}</p>
-                                          <p><strong>Solicitante:</strong> ${req.requesterEmail}</p>
-                                          <p><strong>Status:</strong> ${req.status}</p>
-                                        </div>
-                                        <table>
-                                          <thead>
-                                            <tr>
-                                              <th>Item</th>
-                                              <th>Qtd. Solicitada</th>
-                                              <th>Qtd. Aprovada</th>
-                                            </tr>
-                                          </thead>
-                                          <tbody>
-                                            ${items.map(item => `
-                                              <tr>
-                                                <td>${item.product_name}</td>
-                                                <td>${item.quantity_requested}</td>
-                                                <td>${item.quantity_approved || item.quantity_requested}</td>
-                                              </tr>
-                                            `).join('')}
-                                          </tbody>
-                                        </table>
-                                        ${req.adminObservation ? `
-                                          <div class="justification">
-                                            <strong>Justificativa/Observação:</strong><br/>
-                                            ${req.adminObservation}
-                                          </div>
-                                        ` : ''}
-                                        <div class="footer">
-                                          Gerado em: ${new Date().toLocaleString('pt-BR')}
-                                        </div>
-                                        <script>
-                                          window.onload = () => {
-                                            window.print();
-                                            // window.close();
-                                          };
-                                        </script>
-                                      </body>
-                                    </html>
-                                  `;
-                                  printWindow.document.write(content);
-                                  printWindow.document.close();
-                                }}
-                                className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-xl transition-all"
-                                title="Imprimir Solicitação"
-                              >
-                                <Printer size={18} />
-                              </button>
-                            )}
                             <button 
                               onClick={() => setShowRequestDetailModal({ show: true, request: req })}
                               className="bg-[#1C1917] text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-[#292524] transition-all"
@@ -4416,7 +4397,7 @@ export default function App() {
                       <th className="px-4 py-3 font-bold text-xs text-[#78716C]">Item</th>
                       <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Solicitado</th>
                       <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Aprovado</th>
-                      <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Estoque</th>
+                      {isAdmin && <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Estoque</th>}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#E7E5E4]">
@@ -4443,11 +4424,13 @@ export default function App() {
                               <span className="text-sm font-bold">{item.quantity_approved}</span>
                             )}
                           </td>
-                          <td className="px-4 py-3 text-center">
-                            <span className={`text-xs font-bold ${ totalStock < item.quantity_requested ? 'text-rose-600' : 'text-emerald-600'}`}>
-                              {totalStock}
-                            </span>
-                          </td>
+                          {isAdmin && (
+                            <td className="px-4 py-3 text-center">
+                              <span className={`text-xs font-bold ${ totalStock < item.quantity_requested ? 'text-rose-600' : 'text-emerald-600'}`}>
+                                {totalStock}
+                              </span>
+                            </td>
+                          )}
                         </tr>
                       );
                     })}
@@ -4505,76 +4488,6 @@ export default function App() {
             {toast.type === 'error' && <AlertTriangle size={20} />}
             <p className="font-bold text-sm">{toast.message}</p>
           </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* User Edit Modal */}
-      <AnimatePresence>
-        {showUserEditModal.show && showUserEditModal.user && (
-          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[60] flex items-center justify-center p-6">
-            <motion.div 
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-white w-full max-w-md rounded-[32px] p-8 shadow-2xl"
-            >
-              <div className="flex justify-between items-center mb-6">
-                <h3 className="text-xl font-black">Editar Usuário</h3>
-                <button onClick={() => setShowUserEditModal({ show: false })} className="p-2 hover:bg-[#F5F5F4] rounded-full transition-all">
-                  <X size={20} />
-                </button>
-              </div>
-
-              <div className="space-y-4 mb-8">
-                <div>
-                  <p className="text-xs font-bold text-[#A8A29E] uppercase tracking-widest mb-1 ml-1">Usuário</p>
-                  <p className="font-bold text-[#1C1917]">{showUserEditModal.user.name}</p>
-                  <p className="text-sm text-[#78716C]">{showUserEditModal.user.email}</p>
-                </div>
-
-                <div>
-                  <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1.5 ml-1">Setor</label>
-                  <select 
-                    className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
-                    value={editUserSector}
-                    onChange={e => setEditUserSector(e.target.value)}
-                  >
-                    {SECTORS.map(s => (
-                      <option key={s} value={s}>{s}</option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1.5 ml-1">Papel</label>
-                  <select 
-                    className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
-                    value={editUserRole}
-                    onChange={e => setEditUserRole(e.target.value as 'ADMIN' | 'SETOR')}
-                  >
-                    <option value="SETOR">Setor (Padrão)</option>
-                    <option value="ADMIN">Administrador</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="flex gap-3">
-                <button 
-                  onClick={() => setShowUserEditModal({ show: false })}
-                  className="flex-1 py-3 bg-[#F5F5F4] text-[#57534E] rounded-xl font-bold hover:bg-[#E7E5E4] transition-all"
-                >
-                  Cancelar
-                </button>
-                <button 
-                  onClick={handleUpdateUser}
-                  disabled={loginLoading}
-                  className="flex-1 py-3 bg-[#1C1917] text-white rounded-xl font-bold hover:bg-[#292524] transition-all disabled:opacity-50"
-                >
-                  {loginLoading ? 'Salvando...' : 'Salvar Alterações'}
-                </button>
-              </div>
-            </motion.div>
-          </div>
         )}
       </AnimatePresence>
 

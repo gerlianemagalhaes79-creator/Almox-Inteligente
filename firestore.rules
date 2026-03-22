@@ -7,11 +7,11 @@ service cloud.firestore {
     }
     
     function isAdmin() {
-      let userDoc = get(/databases/$(database)/documents/users/$(request.auth.token.email)).data;
-      return isAuthenticated() &&
-        (userDoc.role == 'ADMIN' ||
-          userDoc.sector == 'Almoxarifado' ||
-          ((request.auth.token.email == "gerlianemagalhaes79@gmail.com" || request.auth.token.email == "poli.almoxarifado@gmail.com") && request.auth.token.email_verified == true));
+      let userDocPath = /databases/$(database)/documents/users/$(request.auth.token.email);
+      return isAuthenticated() && (
+        (exists(userDocPath) && (get(userDocPath).data.role == 'ADMIN' || get(userDocPath).data.sector == 'Almoxarifado')) ||
+        ((request.auth.token.email == "gerlianemagalhaes79@gmail.com" || request.auth.token.email == "poli.almoxarifado@gmail.com") && request.auth.token.email_verified == true)
+      );
     }
 
     function isSetor() {
@@ -63,13 +63,10 @@ service cloud.firestore {
 
     match /users/{email} {
       allow read: if isAuthenticated();
-      allow create: if (isAdmin() && email != 'gerlianemagalhaes79@gmail.com') || 
-                    (isAuthenticated() && request.auth.token.email == email && email == 'gerlianemagalhaes79@gmail.com');
-      allow update: if (isAdmin() && email != 'gerlianemagalhaes79@gmail.com') || 
-                    (isAuthenticated() && request.auth.token.email == email && 
-                    request.resource.data.role == resource.data.role &&
-                    email != 'gerlianemagalhaes79@gmail.com');
-      allow delete: if isAdmin() && email != 'gerlianemagalhaes79@gmail.com';
+      allow create: if isAdmin() || (isAuthenticated() && request.auth.token.email == email);
+      allow update: if isAdmin() || (isAuthenticated() && request.auth.token.email == email && 
+                    request.resource.data.role == resource.data.role);
+      allow delete: if isAdmin();
     }
 
     match /notifications/{notificationId} {
