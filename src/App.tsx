@@ -412,7 +412,10 @@ export default function App() {
     start: format(subDays(new Date(), 30), 'yyyy-MM-dd'),
     end: format(new Date(), 'yyyy-MM-dd')
   });
-  const [printDate, setPrintDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [printRange, setPrintRange] = useState({
+    start: format(new Date(), 'yyyy-MM-dd'),
+    end: format(new Date(), 'yyyy-MM-dd')
+  });
   const [reportSectorFilter, setReportSectorFilter] = useState<string>('all');
   const [originFilter, setOriginFilter] = useState<'all' | 'contract' | 'extra'>('all');
 
@@ -1020,14 +1023,14 @@ export default function App() {
   };
 
   const handlePrintRequests = () => {
-    const filteredRequests = requests.filter(req => 
-      !req.deletedAt && 
-      req.status === 'APROVADO' && 
-      req.date.split('T')[0] === printDate
-    );
+    const filteredRequests = requests.filter(req => {
+      if (req.deletedAt || req.status !== 'APROVADO') return false;
+      const reqDate = req.date.split('T')[0];
+      return reqDate >= printRange.start && reqDate <= printRange.end;
+    });
 
     if (filteredRequests.length === 0) {
-      showToast("Nenhuma solicitação aprovada encontrada para esta data.", "info");
+      showToast("Nenhuma solicitação aprovada encontrada para este período.", "info");
       return;
     }
 
@@ -1037,10 +1040,14 @@ export default function App() {
       return;
     }
 
+    const startDateStr = new Date(printRange.start + 'T12:00:00').toLocaleDateString('pt-BR');
+    const endDateStr = new Date(printRange.end + 'T12:00:00').toLocaleDateString('pt-BR');
+    const periodStr = printRange.start === printRange.end ? startDateStr : `${startDateStr} a ${endDateStr}`;
+
     const content = `
       <html>
         <head>
-          <title>Solicitações Aprovadas - ${new Date(printDate + 'T12:00:00').toLocaleDateString('pt-BR')}</title>
+          <title>Solicitações Aprovadas - ${periodStr}</title>
           <style>
             body { font-family: sans-serif; padding: 20px; color: #1C1917; }
             h1 { text-align: center; border-bottom: 2px solid #1C1917; padding-bottom: 10px; font-size: 20px; }
@@ -1057,7 +1064,7 @@ export default function App() {
           </style>
         </head>
         <body>
-          <h1>Solicitações Aprovadas - ${new Date(printDate + 'T12:00:00').toLocaleDateString('pt-BR')}</h1>
+          <h1>Solicitações Aprovadas - ${periodStr}</h1>
           ${filteredRequests.map(req => {
             const items = allRequestItems.filter(ri => ri.request_id === req.id);
             return `
@@ -2754,14 +2761,26 @@ export default function App() {
                       </div>
                     </div>
                     <div className="flex flex-col sm:flex-row items-center gap-4">
-                      <div className="w-full sm:w-auto">
-                        <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1 ml-1">Data das Solicitações</label>
-                        <input 
-                          type="date" 
-                          value={printDate}
-                          onChange={(e) => setPrintDate(e.target.value)}
-                          className="w-full sm:w-48 px-4 py-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
-                        />
+                      <div className="w-full sm:w-auto flex items-center gap-2">
+                        <div>
+                          <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1 ml-1">Início</label>
+                          <input 
+                            type="date" 
+                            value={printRange.start}
+                            onChange={(e) => setPrintRange({...printRange, start: e.target.value})}
+                            className="w-full sm:w-40 px-4 py-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
+                          />
+                        </div>
+                        <div className="mt-4 text-[#A8A29E] font-bold">até</div>
+                        <div>
+                          <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1 ml-1">Fim</label>
+                          <input 
+                            type="date" 
+                            value={printRange.end}
+                            onChange={(e) => setPrintRange({...printRange, end: e.target.value})}
+                            className="w-full sm:w-40 px-4 py-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
+                          />
+                        </div>
                       </div>
                       <button 
                         onClick={handlePrintRequests}
