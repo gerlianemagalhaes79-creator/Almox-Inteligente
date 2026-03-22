@@ -33,6 +33,8 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as XLSX from 'xlsx';
+import { jsPDF } from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import { 
   collection, 
   onSnapshot, 
@@ -1618,6 +1620,67 @@ export default function App() {
     }
   };
 
+  const handleExportRequestsPDF = () => {
+    try {
+      const doc = new jsPDF();
+      
+      // Add title
+      doc.setFontSize(18);
+      doc.setTextColor(28, 25, 23); // #1C1917
+      doc.text('Relatório de Solicitações de Materiais', 14, 22);
+      
+      doc.setFontSize(11);
+      doc.setTextColor(120, 113, 108); // #78716C
+      doc.text(`Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 14, 30);
+      
+      // Determine which requests to export based on current tab
+      let requestsToExport = [];
+      if (activeTab === 'requests') {
+        requestsToExport = requests.filter(req => !req.deletedAt);
+      } else if (activeTab === 'my-requests') {
+        requestsToExport = requests.filter(r => r.sector === userProfile?.sector && !r.deletedAt);
+      } else {
+        requestsToExport = requests.filter(req => !req.deletedAt);
+      }
+      
+      // Sort by date descending
+      requestsToExport.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+      // Prepare data for table
+      const tableData = requestsToExport.map(req => [
+        `#${req.id.slice(-5).toUpperCase()}`,
+        format(new Date(req.date), 'dd/MM/yyyy'),
+        req.sector,
+        req.status,
+        allRequestItems.filter(ri => ri.request_id === req.id).length.toString()
+      ]);
+      
+      // Generate table
+      autoTable(doc, {
+        startY: 40,
+        head: [['Nº', 'Data', 'Setor', 'Status', 'Itens']],
+        body: tableData,
+        theme: 'striped',
+        headStyles: { fillColor: [28, 25, 23], halign: 'center' }, // #1C1917
+        columnStyles: {
+          0: { halign: 'center' },
+          1: { halign: 'center' },
+          3: { halign: 'center' },
+          4: { halign: 'center' }
+        },
+        styles: { fontSize: 9, cellPadding: 3 }
+      });
+      
+      // Save PDF
+      const fileName = `Solicitacoes_${format(new Date(), 'dd-MM-yyyy')}.pdf`;
+      doc.save(fileName);
+      showToast("PDF exportado com sucesso!", "success");
+    } catch (error) {
+      console.error('Erro ao exportar PDF:', error);
+      showToast("Erro ao exportar PDF.", "error");
+    }
+  };
+
   const reportData = useMemo(() => {
     const start = startOfDay(parseISO(reportRange.start));
     const end = endOfDay(parseISO(reportRange.end));
@@ -1966,12 +2029,6 @@ export default function App() {
               >
                 <FileText size={20} /> Minhas Solicitações
               </button>
-              <button 
-                onClick={() => setActiveTab('reports')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'reports' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
-              >
-                <BarChart3 size={20} /> Relatórios
-              </button>
             </>
           )}
         </nav>
@@ -2055,6 +2112,16 @@ export default function App() {
                     className="flex items-center gap-2 bg-emerald-600 text-white px-4 py-1.5 rounded-xl text-xs font-bold hover:bg-emerald-700 transition-all shadow-sm"
                   >
                     <Download size={14} /> Exportar Excel
+                  </button>
+                </div>
+              )}
+              {(activeTab === 'requests' || activeTab === 'my-requests') && (
+                <div className="flex items-center gap-4 mt-2">
+                  <button 
+                    onClick={handleExportRequestsPDF}
+                    className="flex items-center gap-2 bg-rose-600 text-white px-4 py-1.5 rounded-xl text-xs font-bold hover:bg-rose-700 transition-all shadow-sm"
+                  >
+                    <Download size={14} /> Exportar PDF
                   </button>
                 </div>
               )}
