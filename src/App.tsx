@@ -1577,13 +1577,30 @@ export default function App() {
   const handleExportExcel = () => {
     try {
       // Prepare data for Excel
-      const exportData = reportData.sectorItems.map(item => ({
-        'Item': item.name,
-        'Categoria': item.category,
-        'Fornecedor': item.supplier,
-        'Quantidade': item.quantity,
-        'Valor Total (BRL)': item.value
-      }));
+      const exportData: any[] = [];
+      reportData.consumptionReport.forEach(item => {
+        // Main item row
+        exportData.push({
+          'Item': item.name,
+          'Categoria': item.category,
+          'Fornecedor': item.supplier,
+          'Quantidade Total': item.totalQuantity,
+          'Valor Total (BRL)': item.totalValue,
+          'Destino': 'TOTAL'
+        });
+        
+        // Sector breakdown rows
+        Object.entries(item.sectors).forEach(([sector, qty]) => {
+          exportData.push({
+            'Item': `   ↳ ${item.name}`,
+            'Categoria': item.category,
+            'Fornecedor': item.supplier,
+            'Quantidade Total': qty,
+            'Valor Total (BRL)': '',
+            'Destino': sector
+          });
+        });
+      });
 
       // Create worksheet
       const ws = XLSX.utils.json_to_sheet(exportData);
@@ -1688,6 +1705,80 @@ export default function App() {
     }
   };
 
+  const handleExportConsumptionPDF = () => {
+    try {
+      const doc = new jsPDF();
+      
+      // Add title
+      doc.setFontSize(18);
+      doc.setTextColor(28, 25, 23); // #1C1917
+      doc.text('Relatório de Consumo de Materiais', 14, 22);
+      
+      doc.setFontSize(11);
+      doc.setTextColor(120, 113, 108); // #78716C
+      const sectorText = reportSectorFilter === 'all' ? 'Todos os Setores' : reportSectorFilter;
+      doc.text(`Período: ${format(parseISO(reportRange.start), 'dd/MM/yyyy')} até ${format(parseISO(reportRange.end), 'dd/MM/yyyy')}`, 14, 30);
+      doc.text(`Setor: ${sectorText}`, 14, 36);
+      doc.text(`Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 14, 42);
+      
+      // Prepare data for table
+      const tableData: any[] = [];
+      reportData.consumptionReport.forEach(item => {
+        // Add main item row
+        tableData.push([
+          { content: item.name, styles: { fontStyle: 'bold' } },
+          item.category,
+          item.supplier,
+          { content: item.totalQuantity.toString(), styles: { halign: 'center', fontStyle: 'bold' } },
+          { content: new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.totalValue), styles: { halign: 'right', fontStyle: 'bold' } }
+        ]);
+        
+        // Add breakdown rows if more than one sector or if it's "Todos os Setores"
+        const sectorEntries = Object.entries(item.sectors);
+        if (sectorEntries.length > 0) {
+          sectorEntries.forEach(([sector, qty]) => {
+            tableData.push([
+              { content: `   ↳ ${sector}`, colSpan: 3, styles: { fontSize: 8, textColor: [120, 113, 108] } },
+              { content: qty.toString(), styles: { halign: 'center', fontSize: 8, textColor: [120, 113, 108] } },
+              ''
+            ]);
+          });
+        }
+      });
+      
+      // Generate table
+      autoTable(doc, {
+        startY: 50,
+        head: [['Item', 'Categoria', 'Fornecedor', 'Quantidade', 'Valor Total']],
+        body: tableData,
+        theme: 'striped',
+        headStyles: { fillColor: [28, 25, 23], halign: 'center' }, // #1C1917
+        styles: { fontSize: 9, cellPadding: 3 },
+        didParseCell: function(data) {
+          if (data.section === 'body' && data.column.index === 4 && data.cell.text[0] === '') {
+            // Skip borders for empty value cells in breakdown rows
+          }
+        }
+      });
+      
+      // Add total value at the end
+      const finalY = (doc as any).lastAutoTable.finalY || 50;
+      const totalValue = reportData.consumptionReport.reduce((sum, i) => sum + i.totalValue, 0);
+      doc.setFontSize(12);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(225, 29, 72); // rose-600
+      doc.text(`Valor Total de Saídas: ${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalValue)}`, 14, finalY + 10);
+
+      // Save PDF
+      const fileName = `Relatorio_Consumo_${format(new Date(), 'dd-MM-yyyy')}.pdf`;
+      doc.save(fileName);
+      showToast("Relatório de consumo exportado com sucesso!", "success");
+    } catch (error) {
+      console.error('Erro ao exportar PDF de consumo:', error);
+      showToast("Erro ao exportar PDF de consumo.", "error");
+    }
+  };
+
   const reportData = useMemo(() => {
     const start = startOfDay(parseISO(reportRange.start));
     const end = endOfDay(parseISO(reportRange.end));
@@ -1756,23 +1847,34 @@ export default function App() {
       sectorData[t.sector!][category] = (sectorData[t.sector!][category] || 0) + t.quantity;
     });
 
-    // Detailed items for the selected sector
-    const sectorItems: Record<string, { name: string, quantity: number, value: number, category: string, supplier: string }> = {};
+    // Consumption report with sector breakdown
+    const consumptionReport: Record<string, { 
+      name: string, 
+      totalQuantity: number, 
+      totalValue: number, 
+      category: string, 
+      supplier: string,
+      sectors: Record<string, number>
+    }> = {};
+
     filteredTrans.filter(t => t.type === 'exit').forEach(t => {
       const item = items.find(i => i.id === t.item_id);
       const value = t.quantity * (item?.unit_price || 0);
+      const sector = t.sector || 'Não Informado';
       
-      if (!sectorItems[t.item_name]) {
-        sectorItems[t.item_name] = { 
+      if (!consumptionReport[t.item_name]) {
+        consumptionReport[t.item_name] = { 
           name: t.item_name, 
-          quantity: 0, 
-          value: 0, 
+          totalQuantity: 0, 
+          totalValue: 0, 
           category: item?.category || 'Outros',
-          supplier: item?.supplier || 'N/A'
+          supplier: item?.supplier || 'N/A',
+          sectors: {}
         };
       }
-      sectorItems[t.item_name].quantity += t.quantity;
-      sectorItems[t.item_name].value += value;
+      consumptionReport[t.item_name].totalQuantity += t.quantity;
+      consumptionReport[t.item_name].totalValue += value;
+      consumptionReport[t.item_name].sectors[sector] = (consumptionReport[t.item_name].sectors[sector] || 0) + t.quantity;
     });
 
     // Group by supplier for value chart
@@ -1824,7 +1926,7 @@ export default function App() {
       sectors: Object.values(sectorData),
       categoriesInSector: Array.from(categoriesInSector),
       suppliers: Object.entries(supplierData).map(([name, value]) => ({ name, value })),
-      sectorItems: Object.values(sectorItems).sort((a, b) => b.value - a.value),
+      consumptionReport: Object.values(consumptionReport).sort((a, b) => b.totalValue - a.totalValue),
       totalValue,
       originStats,
       topRequested,
@@ -3071,26 +3173,37 @@ export default function App() {
                 {/* Detailed Sector Breakdown - Only for Admin */}
                 {isAdmin && (
                   <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
-                  <div className="flex justify-between items-center mb-8">
-                    <h4 className="text-lg font-bold flex items-center gap-2">
-                      <History size={18} className="text-[#1C1917]" /> 
-                      Detalhamento: {reportSectorFilter === 'all' ? 'Todos os Setores' : reportSectorFilter}
-                    </h4>
-                    {isAdmin && (
+                  <div className="flex justify-between items-start mb-8">
+                    <div>
+                      <h4 className="text-lg font-bold flex items-center gap-2 mb-1">
+                        <History size={18} className="text-[#1C1917]" /> 
+                        Relatório de Consumo por Item e Setor
+                      </h4>
+                      <p className="text-xs text-[#78716C] font-medium">
+                        {reportSectorFilter === 'all' ? 'Todos os Setores' : `Setor: ${reportSectorFilter}`} • {format(parseISO(reportRange.start), 'dd/MM/yyyy')} a {format(parseISO(reportRange.end), 'dd/MM/yyyy')}
+                      </p>
+                    </div>
+                    <div className="flex flex-col items-end gap-3">
                       <div className="text-right">
                         <p className="text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest">Valor Total de Saídas</p>
                         <p className="text-xl font-black text-rose-600">
-                          {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.sectorItems.reduce((sum, i) => sum + i.value, 0))}
+                          {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.consumptionReport.reduce((sum, i) => sum + i.totalValue, 0))}
                         </p>
                       </div>
-                    )}
+                      <button 
+                        onClick={handleExportConsumptionPDF}
+                        className="flex items-center gap-2 bg-[#1C1917] text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-[#292524] transition-all shadow-sm"
+                      >
+                        <Download size={14} /> Exportar PDF de Consumo
+                      </button>
+                    </div>
                   </div>
                   
                   <div className="overflow-x-auto">
                     <table className="w-full text-left border-collapse">
                       <thead>
                         <tr className="border-b border-[#E7E5E4]">
-                          <th className="pb-4 font-bold text-xs text-[#78716C] uppercase tracking-wider">Item</th>
+                          <th className="pb-4 font-bold text-xs text-[#78716C] uppercase tracking-wider">Item / Destino</th>
                           <th className="pb-4 font-bold text-xs text-[#78716C] uppercase tracking-wider">Categoria</th>
                           {isAdmin && <th className="pb-4 font-bold text-xs text-[#78716C] uppercase tracking-wider">Fornecedor</th>}
                           <th className="pb-4 font-bold text-xs text-[#78716C] uppercase tracking-wider text-center">Quantidade</th>
@@ -3098,29 +3211,47 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-[#F5F5F4]">
-                        {reportData.sectorItems.map((item, idx) => (
-                          <tr key={idx} className="hover:bg-[#FAFAF9] transition-all">
-                            <td className="py-4 font-bold text-sm">{item.name}</td>
-                            <td className="py-4">
-                              <span 
-                                className="text-[10px] font-bold px-2 py-1 rounded-lg text-white"
-                                style={{ backgroundColor: getCategoryColor(item.category) }}
-                              >
-                                {item.category}
-                              </span>
-                            </td>
-                            {isAdmin && <td className="py-4 text-xs text-[#78716C] font-medium">{item.supplier}</td>}
-                            <td className="py-4 text-center font-bold">{item.quantity}</td>
-                            {isAdmin && (
-                              <td className="py-4 text-right font-bold text-rose-600">
-                                {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.value)}
+                        {reportData.consumptionReport.map((item, idx) => (
+                          <React.Fragment key={idx}>
+                            <tr className="bg-[#FAFAF9]/50">
+                              <td className="py-4 font-black text-sm text-[#1C1917]">{item.name}</td>
+                              <td className="py-4">
+                                <span 
+                                  className="text-[10px] font-bold px-2 py-1 rounded-lg text-white"
+                                  style={{ backgroundColor: getCategoryColor(item.category) }}
+                                >
+                                  {item.category}
+                                </span>
                               </td>
-                            )}
-                          </tr>
+                              {isAdmin && <td className="py-4 text-xs text-[#78716C] font-medium">{item.supplier}</td>}
+                              <td className="py-4 text-center">
+                                <span className="bg-[#1C1917] text-white px-3 py-1 rounded-lg font-black text-sm">
+                                  {item.totalQuantity}
+                                </span>
+                              </td>
+                              {isAdmin && (
+                                <td className="py-4 text-right font-black text-rose-600">
+                                  {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.totalValue)}
+                                </td>
+                              )}
+                            </tr>
+                            {/* Sector Breakdown Rows */}
+                            {Object.entries(item.sectors).map(([sector, qty], sIdx) => (
+                              <tr key={`${idx}-${sIdx}`} className="border-l-4 border-[#E7E5E4] hover:bg-[#FAFAF9] transition-all">
+                                <td className="py-2 pl-8 text-xs font-bold text-[#78716C] flex items-center gap-2">
+                                  <div className="w-1.5 h-1.5 rounded-full bg-[#A8A29E]" />
+                                  {sector}
+                                </td>
+                                <td colSpan={isAdmin ? 2 : 1}></td>
+                                <td className="py-2 text-center text-xs font-black text-[#57534E]">{qty}</td>
+                                {isAdmin && <td></td>}
+                              </tr>
+                            ))}
+                          </React.Fragment>
                         ))}
-                        {reportData.sectorItems.length === 0 && (
+                        {reportData.consumptionReport.length === 0 && (
                           <tr>
-                            <td colSpan={isAdmin ? 5 : 3} className="py-10 text-center text-[#A8A29E] italic">Nenhuma saída registrada para este filtro.</td>
+                            <td colSpan={isAdmin ? 5 : 3} className="py-10 text-center text-[#A8A29E] italic">Nenhuma saída registrada para este período.</td>
                           </tr>
                         )}
                       </tbody>
