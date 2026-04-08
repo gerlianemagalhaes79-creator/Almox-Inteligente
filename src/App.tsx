@@ -13,6 +13,8 @@ import {
   Settings,
   ChevronRight,
   X,
+  Check,
+  Edit2,
   BarChart3,
   TrendingUp,
   TrendingDown,
@@ -420,6 +422,7 @@ export default function App() {
   const [originFilter, setOriginFilter] = useState<'all' | 'contract' | 'extra'>('all');
 
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
+  const [editingPrice, setEditingPrice] = useState<{ id: string, price: number } | null>(null);
 
   const uniqueSuppliers = useMemo(() => {
     const fromItems = items.map(i => i.supplier).filter(Boolean) as string[];
@@ -443,6 +446,20 @@ export default function App() {
       newExpanded.add(name);
     }
     setExpandedItems(newExpanded);
+  };
+
+  const handleUpdatePrice = async () => {
+    if (!editingPrice) return;
+    try {
+      await updateDoc(doc(db, 'items', editingPrice.id), {
+        unit_price: editingPrice.price
+      });
+      showToast("Preço unitário atualizado com sucesso!", "success");
+      setEditingPrice(null);
+    } catch (error: any) {
+      handleFirestoreError(error, OperationType.UPDATE, `items/${editingPrice.id}`);
+      showToast(`Erro ao atualizar preço: ${error.message}`, "error");
+    }
   };
 
   const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
@@ -2646,7 +2663,43 @@ export default function App() {
                           </td>
                           <td className="px-6 py-4 text-sm text-[#57534E]">
                             {isAdmin ? (
-                              new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.unit_price)
+                              editingPrice?.id === item.id ? (
+                                <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                                  <input 
+                                    type="number" 
+                                    step="0.01"
+                                    value={editingPrice.price}
+                                    onChange={(e) => setEditingPrice({ ...editingPrice, price: parseFloat(e.target.value) || 0 })}
+                                    className="w-24 px-2 py-1 bg-[#F5F5F4] border border-[#E7E5E4] rounded-lg focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-xs"
+                                    autoFocus
+                                  />
+                                  <button 
+                                    onClick={handleUpdatePrice}
+                                    className="p-1 text-emerald-600 hover:bg-emerald-50 rounded-md"
+                                    title="Salvar"
+                                  >
+                                    <Check size={14} />
+                                  </button>
+                                  <button 
+                                    onClick={() => setEditingPrice(null)}
+                                    className="p-1 text-rose-600 hover:bg-rose-50 rounded-md"
+                                    title="Cancelar"
+                                  >
+                                    <X size={14} />
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-2 group">
+                                  <span>{new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.unit_price)}</span>
+                                  <button 
+                                    onClick={(e) => { e.stopPropagation(); setEditingPrice({ id: item.id, price: item.unit_price }); }}
+                                    className="opacity-0 group-hover:opacity-100 p-1 text-[#A8A29E] hover:text-[#1C1917] transition-all"
+                                    title="Editar Preço"
+                                  >
+                                    <Edit2 size={12} />
+                                  </button>
+                                </div>
+                              )
                             ) : (
                               '---'
                             )}
