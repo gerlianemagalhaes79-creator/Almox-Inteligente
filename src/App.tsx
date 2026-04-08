@@ -2031,6 +2031,7 @@ export default function App() {
 
   const filteredItems = items.filter(i => 
     !i.deletedAt && // Exclude deleted items
+    i.quantity > 0 && // Only active items (with stock)
     ((i.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
     i.supplier?.toLowerCase().includes(searchTerm.toLowerCase()) ||
     i.category?.toLowerCase().includes(searchTerm.toLowerCase()) ||
