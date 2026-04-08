@@ -1661,6 +1661,61 @@ export default function App() {
     }
   };
 
+  const handleExportInventoryPDF = () => {
+    try {
+      const doc = new jsPDF();
+      
+      // Add title
+      doc.setFontSize(18);
+      doc.setTextColor(28, 25, 23); // #1C1917
+      doc.text('Relatório de Estoque Atual', 14, 22);
+      
+      doc.setFontSize(11);
+      doc.setTextColor(120, 113, 108); // #78716C
+      doc.text(`Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 14, 30);
+      
+      // Prepare data for table
+      const tableData = groupedArray.map(group => [
+        group.name,
+        group.category || '---',
+        group.total_quantity.toString(),
+        group.min_quantity.toString(),
+        group.total_quantity <= group.min_quantity ? 'BAIXO' : 'OK'
+      ]);
+      
+      // Generate table
+      autoTable(doc, {
+        startY: 40,
+        head: [['Item', 'Categoria', 'Estoque', 'Mínimo', 'Status']],
+        body: tableData,
+        theme: 'striped',
+        headStyles: { fillColor: [28, 25, 23], halign: 'center' }, // #1C1917
+        columnStyles: {
+          2: { halign: 'center' },
+          3: { halign: 'center' },
+          4: { halign: 'center' }
+        },
+        styles: { fontSize: 9, cellPadding: 3 },
+        didParseCell: function(data) {
+          if (data.section === 'body' && data.column.index === 4) {
+            if (data.cell.text[0] === 'BAIXO') {
+              data.cell.styles.textColor = [225, 29, 72]; // rose-600
+              data.cell.styles.fontStyle = 'bold';
+            }
+          }
+        }
+      });
+      
+      // Save PDF
+      const dateStr = format(new Date(), 'dd-MM-yyyy');
+      doc.save(`Estoque_Atual_${dateStr}.pdf`);
+      showToast("PDF de estoque exportado com sucesso!", "success");
+    } catch (error) {
+      console.error('Erro ao exportar PDF de estoque:', error);
+      showToast("Erro ao exportar PDF de estoque.", "error");
+    }
+  };
+
   const handleExportRequestsPDF = () => {
     try {
       const doc = new jsPDF();
@@ -2365,13 +2420,22 @@ export default function App() {
                   </select>
                 </div>
                 {isAdmin && (
-                  <button 
-                    onClick={handleExportInventory}
-                    className="p-2 bg-white border border-[#E7E5E4] rounded-xl text-[#57534E] hover:bg-[#FAFAF9] transition-all"
-                    title="Baixar Planilha de Estoque"
-                  >
-                    <Download size={20} />
-                  </button>
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={handleExportInventory}
+                      className="p-2 bg-white border border-[#E7E5E4] rounded-xl text-[#57534E] hover:bg-[#FAFAF9] transition-all"
+                      title="Baixar Planilha Excel"
+                    >
+                      <Download size={20} />
+                    </button>
+                    <button 
+                      onClick={handleExportInventoryPDF}
+                      className="p-2 bg-white border border-[#E7E5E4] rounded-xl text-rose-600 hover:bg-rose-50 transition-all"
+                      title="Baixar Relatório PDF"
+                    >
+                      <Printer size={20} />
+                    </button>
+                  </div>
                 )}
               </div>
             )}
