@@ -2081,10 +2081,11 @@ export default function App() {
     const dateStr = item.expiry_date;
     if (!dateStr || dateStr === 'Indeterminada') return false;
     const expiry = new Date(dateStr);
-    const now = new Date();
     const oneMonthFromNow = new Date();
+    const now = new Date();
     oneMonthFromNow.setMonth(now.getMonth() + 1);
-    return expiry <= oneMonthFromNow && expiry >= now;
+    // Include items that are already expired or expiring within a month
+    return expiry <= oneMonthFromNow;
   };
 
   const isLowStock = (item: Item) => {
@@ -2567,25 +2568,31 @@ export default function App() {
                         </button>
                       </div>
                     ))}
-                    {nearExpiryItems.map(item => (
-                      <div key={`exp-${item.id}`} className="flex items-center justify-between p-4 bg-red-50 rounded-2xl border border-red-100">
-                        <div className="flex items-center gap-4">
-                          <div className="w-10 h-10 bg-red-200 rounded-full flex items-center justify-center text-red-700">
-                            <Calendar size={20} />
+                    {nearExpiryItems.map(item => {
+                      const isExpired = new Date(item.expiry_date!) < new Date();
+                      return (
+                        <div key={`exp-${item.id}`} className={`flex items-center justify-between p-4 rounded-2xl border ${isExpired ? 'bg-red-100 border-red-200' : 'bg-red-50 border-red-100'}`}>
+                          <div className="flex items-center gap-4">
+                            <div className={`w-10 h-10 rounded-full flex items-center justify-center ${isExpired ? 'bg-red-600 text-white' : 'bg-red-200 text-red-700'}`}>
+                              <Calendar size={20} />
+                            </div>
+                            <div>
+                              <p className="font-bold">{item.name}</p>
+                              <p className={`text-sm font-bold ${isExpired ? 'text-red-700' : 'text-red-700'}`}>
+                                {isExpired ? 'VENCIDO EM: ' : 'Vence em: '}
+                                {new Date(item.expiry_date!).toLocaleDateString('pt-BR')}
+                              </p>
+                            </div>
                           </div>
-                          <div>
-                            <p className="font-bold">{item.name}</p>
-                            <p className="text-sm text-red-700">Vence em: {new Date(item.expiry_date!).toLocaleDateString('pt-BR')}</p>
-                          </div>
+                          <button 
+                            onClick={() => setShowTransactionModal({ show: true, type: 'exit', item })}
+                            className="bg-red-600 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-red-700 transition-all"
+                          >
+                            Retirar
+                          </button>
                         </div>
-                        <button 
-                          onClick={() => setShowTransactionModal({ show: true, type: 'exit', item })}
-                          className="bg-red-600 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-red-700 transition-all"
-                        >
-                          Retirar
-                        </button>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               </div>
