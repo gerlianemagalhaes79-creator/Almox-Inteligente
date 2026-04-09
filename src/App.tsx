@@ -107,7 +107,8 @@ const SECTORS = [
   'Imagem', 'Ilha', 'Pé Diabético', 'Direção', 'Setor Pessoal', 
   'CER', 'Setor de Terapias', 'SSVV', 'Recepção', 
   'Higienização', 'Manutenção', 'Almoxarifado',
-  'Telefonia', 'Marcação', 'Entrega de Exames', 'Regulação'
+  'Telefonia', 'Marcação', 'Entrega de Exames', 'Regulação',
+  'Farmácia', 'CME', 'Envase', 'SESMT', 'Ouvidoria', 'Copa', 'Escritório da Qualidade', 'TI'
 ];
 
 const SECTOR_COLORS: Record<string, string> = {
@@ -127,6 +128,14 @@ const SECTOR_COLORS: Record<string, string> = {
   'Marcação': '#a855f7',
   'Entrega de Exames': '#f43f5e',
   'Regulação': '#fb923c',
+  'Farmácia': '#059669',
+  'CME': '#7c3aed',
+  'Envase': '#db2777',
+  'SESMT': '#ea580c',
+  'Ouvidoria': '#2563eb',
+  'Copa': '#84cc16',
+  'Escritório da Qualidade': '#4b5563',
+  'TI': '#1e293b',
 };
 
 const CATEGORY_COLORS: Record<string, string> = {
