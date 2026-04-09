@@ -424,6 +424,7 @@ export default function App() {
 
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
   const [editingPrice, setEditingPrice] = useState<{ id: string, price: number } | null>(null);
+  const [editingQuantity, setEditingQuantity] = useState<{ id: string, quantity: number } | null>(null);
 
   const uniqueSuppliers = useMemo(() => {
     const fromItems = items.map(i => i.supplier).filter(Boolean) as string[];
@@ -460,6 +461,20 @@ export default function App() {
     } catch (error: any) {
       handleFirestoreError(error, OperationType.UPDATE, `items/${editingPrice.id}`);
       showToast(`Erro ao atualizar preço: ${error.message}`, "error");
+    }
+  };
+
+  const handleUpdateQuantity = async () => {
+    if (!editingQuantity) return;
+    try {
+      await updateDoc(doc(db, 'items', editingQuantity.id), {
+        quantity: editingQuantity.quantity
+      });
+      showToast("Quantidade atualizada com sucesso!", "success");
+      setEditingQuantity(null);
+    } catch (error: any) {
+      handleFirestoreError(error, OperationType.UPDATE, `items/${editingQuantity.id}`);
+      showToast(`Erro ao atualizar quantidade: ${error.message}`, "error");
     }
   };
 
@@ -2771,12 +2786,57 @@ export default function App() {
                             )}
                           </td>
                           <td className="px-6 py-4">
-                            <div className="flex flex-col">
-                              <span className={`text-lg font-bold ${item.quantity <= (item.min_quantity || 0) ? 'text-orange-600' : 'text-[#1C1917]'}`}>
-                                {item.quantity}
-                              </span>
-                              <span className="text-[9px] font-bold text-[#A8A29E] uppercase tracking-tighter">Neste Lote</span>
-                            </div>
+                            {isAdmin ? (
+                              editingQuantity?.id === item.id ? (
+                                <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                                  <input 
+                                    type="number" 
+                                    min="0"
+                                    value={editingQuantity.quantity}
+                                    onChange={(e) => setEditingQuantity({ ...editingQuantity, quantity: parseInt(e.target.value) || 0 })}
+                                    className="w-20 px-2 py-1 bg-[#F5F5F4] border border-[#E7E5E4] rounded-lg focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
+                                    autoFocus
+                                  />
+                                  <button 
+                                    onClick={handleUpdateQuantity}
+                                    className="p-1 text-emerald-600 hover:bg-emerald-50 rounded-md"
+                                    title="Salvar"
+                                  >
+                                    <Check size={14} />
+                                  </button>
+                                  <button 
+                                    onClick={() => setEditingQuantity(null)}
+                                    className="p-1 text-rose-600 hover:bg-rose-50 rounded-md"
+                                    title="Cancelar"
+                                  >
+                                    <X size={14} />
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="flex flex-col group">
+                                  <div className="flex items-center gap-2">
+                                    <span className={`text-lg font-bold ${item.quantity <= (item.min_quantity || 0) ? 'text-orange-600' : 'text-[#1C1917]'}`}>
+                                      {item.quantity}
+                                    </span>
+                                    <button 
+                                      onClick={(e) => { e.stopPropagation(); setEditingQuantity({ id: item.id, quantity: item.quantity }); }}
+                                      className="opacity-0 group-hover:opacity-100 p-1 text-[#A8A29E] hover:text-[#1C1917] transition-all"
+                                      title="Editar Quantidade"
+                                    >
+                                      <Edit2 size={12} />
+                                    </button>
+                                  </div>
+                                  <span className="text-[9px] font-bold text-[#A8A29E] uppercase tracking-tighter">Neste Lote</span>
+                                </div>
+                              )
+                            ) : (
+                              <div className="flex flex-col">
+                                <span className={`text-lg font-bold ${item.quantity <= (item.min_quantity || 0) ? 'text-orange-600' : 'text-[#1C1917]'}`}>
+                                  {item.quantity}
+                                </span>
+                                <span className="text-[9px] font-bold text-[#A8A29E] uppercase tracking-tighter">Neste Lote</span>
+                              </div>
+                            )}
                           </td>
                           <td className="px-6 py-4 text-xs text-[#A8A29E]">---</td>
                           <td className="px-6 py-4">
