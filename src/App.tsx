@@ -105,7 +105,8 @@ interface ItemGroup {
 const SECTORS = [
   'Imagem', 'Ilha', 'Pé Diabético', 'Direção', 'Setor Pessoal', 
   'CER', 'Setor de Terapias', 'SSVV', 'Recepção', 
-  'Higienização', 'Manutenção', 'Almoxarifado'
+  'Higienização', 'Manutenção', 'Almoxarifado',
+  'Telefonia', 'Marcação', 'Entrega de Exames', 'Regulação'
 ];
 
 const SECTOR_COLORS: Record<string, string> = {
@@ -121,6 +122,10 @@ const SECTOR_COLORS: Record<string, string> = {
   'Higienização': '#6366f1',
   'Manutenção': '#84cc16',
   'Almoxarifado': '#1c1917',
+  'Telefonia': '#d946ef',
+  'Marcação': '#a855f7',
+  'Entrega de Exames': '#f43f5e',
+  'Regulação': '#fb923c',
 };
 
 const CATEGORY_COLORS: Record<string, string> = {
