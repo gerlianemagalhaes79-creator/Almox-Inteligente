@@ -266,7 +266,7 @@ export default function App() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [showTransactionModal, setShowTransactionModal] = useState<{show: boolean, type: 'entry' | 'exit', item?: Item}>({ show: false, type: 'entry' });
   const [transactionMinStock, setTransactionMinStock] = useState<number>(NaN);
-  const [showDetailModal, setShowDetailModal] = useState<{show: boolean, type: 'low_stock' | 'expiry', items: Item[]}>({ show: false, type: 'low_stock', items: [] });
+  const [showDetailModal, setShowDetailModal] = useState<{show: boolean, type: 'low_stock' | 'expiry', items: (Item | ItemGroup)[]}>({ show: false, type: 'low_stock', items: [] });
   const [showDeleteModal, setShowDeleteModal] = useState<{show: boolean, transactionId?: string}>({ show: false });
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showUserDeleteConfirm, setShowUserDeleteConfirm] = useState<{show: boolean, user?: UserProfile}>({ show: false });
@@ -2089,19 +2089,6 @@ export default function App() {
     return expiry <= oneMonthFromNow;
   };
 
-  const isLowStock = (item: Item) => {
-    if (item.quantity <= 0) return false;
-    const weeklyRate = weeklyExitRates[item.name] || 0;
-    const dynamicMin = Math.ceil(weeklyRate * 5);
-    const min = weeklyRate > 0 ? dynamicMin : item.min_quantity;
-    return item.quantity <= min;
-  };
-
-  const lowStockItems = items.filter(isLowStock);
-  const nearExpiryItems = items.filter(isNearExpiry);
-  const totalVolume = items.reduce((sum, item) => sum + item.quantity, 0);
-  const totalInventoryValue = items.reduce((sum, item) => sum + (item.quantity * (item.unit_price || 0)), 0);
-
   const filteredItems = items.filter(i => 
     !i.deletedAt && // Exclude deleted items
     i.quantity > 0 && // Only active items (with stock)
@@ -2113,7 +2100,7 @@ export default function App() {
     (categoryFilter === 'all' || i.category === categoryFilter))
   );
 
-  const groupedItems = filteredItems.reduce((acc, item) => {
+  const groupedItems = items.filter(i => !i.deletedAt && i.quantity > 0).reduce((acc, item) => {
     if (!acc[item.name]) {
       const weeklyExitRate = weeklyExitRates[item.name] || 0;
       
@@ -2141,7 +2128,26 @@ export default function App() {
     return acc;
   }, {} as Record<string, ItemGroup>);
 
+  const lowStockItems = Object.values(groupedItems).filter(group => 
+    group.total_quantity <= group.min_quantity
+  );
+
+  const nearExpiryItems = items.filter(isNearExpiry);
+  const totalVolume = items.reduce((sum, item) => sum + item.quantity, 0);
+  const totalInventoryValue = items.reduce((sum, item) => sum + (item.quantity * (item.unit_price || 0)), 0);
+
   const groupedArray: ItemGroup[] = (Object.values(groupedItems) as ItemGroup[])
+    .filter(group => {
+      // Apply search and filters to the grouped items for the inventory list
+      const matchesSearch = group.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                           group.supplier?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                           group.category?.toLowerCase().includes(searchTerm.toLowerCase());
+      
+      const matchesOrigin = originFilter === 'all' || group.batches.some(b => b.origin === originFilter);
+      const matchesCategory = categoryFilter === 'all' || group.category === categoryFilter;
+      
+      return matchesSearch && matchesOrigin && matchesCategory;
+    })
     .sort((a, b) => {
       if (inventorySort === 'name_asc') {
         return a.name.localeCompare(b.name);
@@ -2514,7 +2520,7 @@ export default function App() {
                 )}
 
                 <div 
-                  onClick={() => lowStockItems.length > 0 && setShowDetailModal({ show: true, type: 'low_stock', items: lowStockItems })}
+                  onClick={() => lowStockItems.length > 0 && setShowDetailModal({ show: true, type: 'low_stock', items: lowStockItems as any })}
                   className={`p-6 rounded-3xl border shadow-sm transition-all cursor-pointer ${lowStockItems.length > 0 ? 'bg-orange-50 border-orange-200 hover:bg-orange-100' : 'bg-white border-[#E7E5E4]'}`}
                 >
                   <div className="flex justify-between items-start mb-4">
@@ -2550,19 +2556,19 @@ export default function App() {
                     {lowStockItems.length === 0 && nearExpiryItems.length === 0 && (
                       <p className="text-[#A8A29E] italic">Nenhum alerta no momento.</p>
                     )}
-                    {lowStockItems.map(item => (
-                      <div key={`low-${item.id}`} className="flex items-center justify-between p-4 bg-orange-50 rounded-2xl border border-orange-100">
+                    {lowStockItems.map(group => (
+                      <div key={`low-${group.name}`} className="flex items-center justify-between p-4 bg-orange-50 rounded-2xl border border-orange-100">
                         <div className="flex items-center gap-4">
                           <div className="w-10 h-10 bg-orange-200 rounded-full flex items-center justify-center text-orange-700 font-bold">
-                            {item.quantity}
+                            {group.total_quantity}
                           </div>
                           <div>
-                            <p className="font-bold">{item.name}</p>
-                            <p className="text-sm text-orange-700">Estoque abaixo do mínimo ({item.min_quantity})</p>
+                            <p className="font-bold">{group.name}</p>
+                            <p className="text-sm text-orange-700">Estoque total abaixo do mínimo ({group.min_quantity})</p>
                           </div>
                         </div>
                         <button 
-                          onClick={() => setShowTransactionModal({ show: true, type: 'entry', item })}
+                          onClick={() => setShowTransactionModal({ show: true, type: 'entry', item: group.batches[0] })}
                           className="bg-orange-600 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-orange-700 transition-all"
                         >
                           Repor
@@ -4594,36 +4600,46 @@ export default function App() {
             </div>
 
             <div className="space-y-4">
-              {showDetailModal.items.map(item => (
-                <div 
-                  key={`modal-${item.id}`} 
-                  className={`flex items-center justify-between p-5 rounded-2xl border ${showDetailModal.type === 'low_stock' ? 'bg-orange-50 border-orange-100' : 'bg-red-50 border-red-100'}`}
-                >
-                  <div className="flex items-center gap-4">
-                    <div className={`w-12 h-12 rounded-full flex items-center justify-center font-bold ${showDetailModal.type === 'low_stock' ? 'bg-orange-200 text-orange-700' : 'bg-red-200 text-red-700'}`}>
-                      {showDetailModal.type === 'low_stock' ? item.quantity : <Calendar size={20} />}
-                    </div>
-                    <div>
-                      <p className="font-bold text-lg">{item.name}</p>
-                      <p className={`text-sm ${showDetailModal.type === 'low_stock' ? 'text-orange-700' : 'text-red-700'}`}>
-                        {showDetailModal.type === 'low_stock' 
-                          ? `Estoque atual: ${item.quantity} (Mínimo: ${item.min_quantity})` 
-                          : `Vencimento: ${new Date(item.expiry_date!).toLocaleDateString('pt-BR')}`}
-                      </p>
-                      <p className="text-xs text-[#78716C] mt-1">Lote: {item.batch_number || 'N/A'} | Fornecedor: {item.supplier || 'N/A'}</p>
-                    </div>
-                  </div>
-                  <button 
-                    onClick={() => {
-                      setShowDetailModal({ show: false, type: 'low_stock', items: [] });
-                      setShowTransactionModal({ show: true, type: showDetailModal.type === 'low_stock' ? 'entry' : 'exit', item });
-                    }}
-                    className={`px-5 py-2 rounded-xl text-sm font-bold text-white transition-all ${showDetailModal.type === 'low_stock' ? 'bg-orange-600 hover:bg-orange-700' : 'bg-red-600 hover:bg-red-700'}`}
+              {showDetailModal.items.map((item, idx) => {
+                const isGroup = 'total_quantity' in item;
+                const quantity = isGroup ? (item as ItemGroup).total_quantity : (item as Item).quantity;
+                const minQuantity = isGroup ? (item as ItemGroup).min_quantity : (item as Item).min_quantity;
+                const name = item.name;
+                const id = isGroup ? `group-${idx}` : (item as Item).id;
+                
+                return (
+                  <div 
+                    key={`modal-${id}`} 
+                    className={`flex items-center justify-between p-5 rounded-2xl border ${showDetailModal.type === 'low_stock' ? 'bg-orange-50 border-orange-100' : 'bg-red-50 border-red-100'}`}
                   >
-                    {showDetailModal.type === 'low_stock' ? 'Repor' : 'Retirar'}
-                  </button>
-                </div>
-              ))}
+                    <div className="flex items-center gap-4">
+                      <div className={`w-12 h-12 rounded-full flex items-center justify-center font-bold ${showDetailModal.type === 'low_stock' ? 'bg-orange-200 text-orange-700' : 'bg-red-200 text-red-700'}`}>
+                        {showDetailModal.type === 'low_stock' ? quantity : <Calendar size={20} />}
+                      </div>
+                      <div>
+                        <p className="font-bold text-lg">{name}</p>
+                        <p className={`text-sm ${showDetailModal.type === 'low_stock' ? 'text-orange-700' : 'text-red-700'}`}>
+                          {showDetailModal.type === 'low_stock' 
+                            ? `Estoque total: ${quantity} (Mínimo: ${minQuantity})` 
+                            : `Vencimento: ${new Date((item as Item).expiry_date!).toLocaleDateString('pt-BR')}`}
+                        </p>
+                        {!isGroup && <p className="text-xs text-[#78716C] mt-1">Lote: {(item as Item).batch_number || 'N/A'} | Fornecedor: {(item as Item).supplier || 'N/A'}</p>}
+                        {isGroup && <p className="text-xs text-[#78716C] mt-1">{(item as ItemGroup).batches.length} lotes ativos</p>}
+                      </div>
+                    </div>
+                    <button 
+                      onClick={() => {
+                        setShowDetailModal({ show: false, type: 'low_stock', items: [] });
+                        const targetItem = isGroup ? (item as ItemGroup).batches[0] : (item as Item);
+                        setShowTransactionModal({ show: true, type: showDetailModal.type === 'low_stock' ? 'entry' : 'exit', item: targetItem });
+                      }}
+                      className={`px-5 py-2 rounded-xl text-sm font-bold text-white transition-all ${showDetailModal.type === 'low_stock' ? 'bg-orange-600 hover:bg-orange-700' : 'bg-red-600 hover:bg-red-700'}`}
+                    >
+                      {showDetailModal.type === 'low_stock' ? 'Repor' : 'Retirar'}
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           </motion.div>
         </div>
