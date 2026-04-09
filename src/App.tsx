@@ -31,7 +31,8 @@ import {
   Bell,
   Users,
   Info,
-  Printer
+  Printer,
+  Copy
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as XLSX from 'xlsx';
@@ -338,7 +339,7 @@ export default function App() {
   const [bulkEntry, setBulkEntry] = useState({
     supplier: '',
     category: 'Expediente',
-    origin: 'extra' as 'contract' | 'extra',
+    origin: 'extra' as 'contract' | 'extra' | 'donation',
     items: [{
       id: Math.random().toString(36).substr(2, 9),
       name: '',
@@ -375,6 +376,22 @@ export default function App() {
       setBulkEntry(prev => ({
         ...prev,
         items: prev.items.filter(item => item.id !== id)
+      }));
+    }
+  };
+
+  const duplicateBulkItem = (id: string) => {
+    const itemToDuplicate = bulkEntry.items.find(item => item.id === id);
+    if (itemToDuplicate) {
+      setBulkEntry(prev => ({
+        ...prev,
+        items: [...prev.items, {
+          ...itemToDuplicate,
+          id: Math.random().toString(36).substr(2, 9),
+          batch_number: '',
+          initial_quantity: 1,
+          expiry_date: ''
+        }]
       }));
     }
   };
@@ -428,7 +445,7 @@ export default function App() {
     end: format(new Date(), 'yyyy-MM-dd')
   });
   const [reportSectorFilter, setReportSectorFilter] = useState<string>('all');
-  const [originFilter, setOriginFilter] = useState<'all' | 'contract' | 'extra'>('all');
+  const [originFilter, setOriginFilter] = useState<'all' | 'contract' | 'extra' | 'donation'>('all');
 
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
   const [editingPrice, setEditingPrice] = useState<{ id: string, price: number } | null>(null);
@@ -1898,7 +1915,8 @@ export default function App() {
     // Extra vs Contract stats
     const originStats = {
       extra: { entries: 0, exits: 0, current: 0 },
-      contract: { entries: 0, exits: 0, current: 0 }
+      contract: { entries: 0, exits: 0, current: 0 },
+      donation: { entries: 0, exits: 0, current: 0 }
     };
 
     filteredTrans.forEach(t => {
@@ -2448,6 +2466,7 @@ export default function App() {
                     <option value="all">Todas Origens</option>
                     <option value="contract">Contrato</option>
                     <option value="extra">Extra</option>
+                    <option value="donation">Doação</option>
                   </select>
                 </div>
                 {isAdmin && (
@@ -2687,8 +2706,8 @@ export default function App() {
                               if (origins.size === 1) {
                                 const origin = Array.from(origins)[0];
                                 return (
-                                  <span className={`text-xs font-bold px-2 py-1 rounded-lg ${origin === 'contract' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'}`}>
-                                    {origin === 'contract' ? 'Contrato' : 'Extra'}
+                                  <span className={`text-xs font-bold px-2 py-1 rounded-lg ${origin === 'contract' ? 'bg-blue-100 text-blue-700' : origin === 'donation' ? 'bg-emerald-100 text-emerald-700' : 'bg-purple-100 text-purple-700'}`}>
+                                    {origin === 'contract' ? 'Contrato' : origin === 'donation' ? 'Doação' : 'Extra'}
                                   </span>
                                 );
                               }
@@ -2756,8 +2775,8 @@ export default function App() {
                           </td>
                           <td className="px-6 py-4">
                             {isAdmin ? (
-                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${item.origin === 'contract' ? 'bg-blue-50 text-blue-600' : 'bg-purple-50 text-purple-600'}`}>
-                                {item.origin === 'contract' ? 'Contrato' : 'Extra'}
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${item.origin === 'contract' ? 'bg-blue-50 text-blue-600' : item.origin === 'donation' ? 'bg-emerald-50 text-emerald-600' : 'bg-purple-50 text-purple-600'}`}>
+                                {item.origin === 'contract' ? 'Contrato' : item.origin === 'donation' ? 'Doação' : 'Extra'}
                               </span>
                             ) : (
                               <span className="text-xs text-[#A8A29E]">---</span>
@@ -3331,7 +3350,7 @@ export default function App() {
                 {isAdmin && (
                   <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
                     <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
-                      <BarChart3 size={18} className="text-purple-600" /> Comparativo: Contrato vs Extra
+                      <BarChart3 size={18} className="text-purple-600" /> Comparativo: Contrato vs Extra vs Doação
                     </h4>
                     <div className="h-[300px] w-full">
                       <ResponsiveContainer width="100%" height="100%">
@@ -3340,17 +3359,20 @@ export default function App() {
                             { 
                               name: 'Entradas', 
                               contrato: reportData.originStats.contract.entries, 
-                              extra: reportData.originStats.extra.entries 
+                              extra: reportData.originStats.extra.entries,
+                              doacao: reportData.originStats.donation.entries
                             },
                             { 
                               name: 'Saídas', 
                               contrato: reportData.originStats.contract.exits, 
-                              extra: reportData.originStats.extra.exits 
+                              extra: reportData.originStats.extra.exits,
+                              doacao: reportData.originStats.donation.exits
                             },
                             { 
                               name: 'Estoque Atual', 
                               contrato: reportData.originStats.contract.current, 
-                              extra: reportData.originStats.extra.current 
+                              extra: reportData.originStats.extra.current,
+                              doacao: reportData.originStats.donation.current
                             }
                           ]}
                         >
@@ -3362,8 +3384,9 @@ export default function App() {
                             contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
                           />
                           <Legend />
-                          <Bar dataKey="contrato" name="Contrato" fill="#1C1917" radius={[8, 8, 0, 0]} barSize={40} />
-                          <Bar dataKey="extra" name="Extra" fill="#8b5cf6" radius={[8, 8, 0, 0]} barSize={40} />
+                          <Bar dataKey="contrato" name="Contrato" fill="#1C1917" radius={[8, 8, 0, 0]} barSize={30} />
+                          <Bar dataKey="extra" name="Extra" fill="#8b5cf6" radius={[8, 8, 0, 0]} barSize={30} />
+                          <Bar dataKey="doacao" name="Doação" fill="#10b981" radius={[8, 8, 0, 0]} barSize={30} />
                         </BarChart>
                       </ResponsiveContainer>
                     </div>
@@ -4101,6 +4124,7 @@ export default function App() {
                   >
                     <option value="contract">Contrato</option>
                     <option value="extra">Produto Extra</option>
+                    <option value="donation">Doação</option>
                   </select>
                 </div>
               </div>
@@ -4128,7 +4152,7 @@ export default function App() {
                         <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-32">Lote</th>
                         <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-48">Validade</th>
                         <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-32">Preço Un.</th>
-                        <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-10"></th>
+                        <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-20"></th>
                       </tr>
                     </thead>
                     <tbody>
@@ -4205,15 +4229,26 @@ export default function App() {
                             />
                           </td>
                           <td className="px-2">
-                            {bulkEntry.items.length > 1 && (
+                            <div className="flex items-center gap-1">
                               <button 
                                 type="button"
-                                onClick={() => removeBulkItemRow(item.id)}
-                                className="p-2 text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
+                                onClick={() => duplicateBulkItem(item.id)}
+                                className="p-2 text-blue-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
+                                title="Duplicar para outro lote"
                               >
-                                <Trash2 size={18} />
+                                <Copy size={18} />
                               </button>
-                            )}
+                              {bulkEntry.items.length > 1 && (
+                                <button 
+                                  type="button"
+                                  onClick={() => removeBulkItemRow(item.id)}
+                                  className="p-2 text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
+                                  title="Remover"
+                                >
+                                  <Trash2 size={18} />
+                                </button>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       ))}

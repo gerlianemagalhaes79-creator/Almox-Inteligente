@@ -44,7 +44,7 @@ export interface Item {
   quantity: number;
   min_quantity: number;
   expiry_date: string | null;
-  origin: 'contract' | 'extra';
+  origin: 'contract' | 'extra' | 'donation';
   unit_price: number;
   supplier: string | null;
   category: string | null;
@@ -58,7 +58,7 @@ export interface Transaction {
   item_id: string;
   item_name: string;
   type: 'entry' | 'exit';
-  origin: 'contract' | 'extra';
+  origin: 'contract' | 'extra' | 'donation';
   quantity: number;
   sector?: string;
   date: string;
