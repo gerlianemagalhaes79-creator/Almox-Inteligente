@@ -297,7 +297,6 @@ export default function App() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [usersList, setUsersList] = useState<UserProfile[]>([]);
-  const [isCleaning, setIsCleaning] = useState(false);
   const [deletionReason, setDeletionReason] = useState('');
   const [showDeletedHistory, setShowDeletedHistory] = useState(false);
   const [categoryFilter, setCategoryFilter] = useState('all');
@@ -933,68 +932,6 @@ export default function App() {
     } catch (error: any) {
       console.error("Error recovering all transactions:", error);
       alert(`Erro ao restaurar movimentações: ${error.message}`);
-    }
-  };
-
-  const handleClearExtraData = async () => {
-    if (!confirm("Deseja apagar TODO o histórico de movimentações e remover permanentemente os produtos 'Extra'? Os produtos de 'Contrato' serão mantidos com saldo zero.")) return;
-    
-    setIsCleaning(true);
-    try {
-      const transSnap = await getDocs(collection(db, 'transactions'));
-      const itemsSnap = await getDocs(collection(db, 'items'));
-      
-      const allDocs: any[] = [];
-      
-      // 1. Delete ALL transactions
-      transSnap.docs.forEach(d => {
-        allDocs.push({ ref: d.ref, type: 'delete' as const });
-      });
-      
-      // 2. Handle items
-      itemsSnap.docs.forEach(d => {
-        const data = d.data();
-        const origin = String(data.origin || '').toLowerCase().trim();
-        
-        // We only keep it if it's explicitly 'contract' or 'contrato'
-        const isContract = origin === 'contract' || origin === 'contrato';
-        
-        if (isContract) {
-          // Keep contract items but reset quantity to zero
-          allDocs.push({ 
-            ref: d.ref, 
-            type: 'update' as const, 
-            data: { quantity: 0, updatedAt: serverTimestamp() } 
-          });
-        } else {
-          // Delete anything else (extra, undefined, test data, etc.)
-          allDocs.push({ ref: d.ref, type: 'delete' as const });
-        }
-      });
-
-      // Process in smaller chunks for safety
-      for (let i = 0; i < allDocs.length; i += 200) {
-        const batch = writeBatch(db);
-        const chunk = allDocs.slice(i, i + 200);
-        
-        chunk.forEach(op => {
-          if (op.type === 'delete') {
-            batch.delete(op.ref);
-          } else if (op.type === 'update' && op.data) {
-            batch.update(op.ref, op.data);
-          }
-        });
-        
-        await batch.commit();
-      }
-      
-      setShowSettingsModal(false);
-      alert("Limpeza concluída com sucesso! Histórico zerado e produtos extras removidos.");
-    } catch (error: any) {
-      console.error("Error clearing data:", error);
-      alert(`Erro ao limpar dados: ${error.message}`);
-    } finally {
-      setIsCleaning(false);
     }
   };
 
@@ -4863,35 +4800,6 @@ export default function App() {
                   >
                     <RotateCcw size={18} /> Mesclar Fornecedores
                   </button>
-                </div>
-              )}
-
-              {isAdmin && (
-                <div className="p-6 bg-rose-50 rounded-2xl border border-rose-100">
-                  <div className="flex items-center gap-3 mb-3 text-rose-600">
-                    <AlertTriangle size={24} />
-                    <h4 className="font-bold">Zona de Perigo</h4>
-                  </div>
-                  <p className="text-sm text-rose-700 mb-4 leading-relaxed">
-                    Esta ação apagará **todo o histórico de entradas e saídas** e removerá permanentemente todos os materiais cadastrados como **"Produto Extra"**. Os itens de contrato serão mantidos, mas com estoque zerado.
-                  </p>
-                  <div className="space-y-3">
-                    <button 
-                      onClick={handleClearExtraData}
-                      disabled={isCleaning}
-                      className={`w-full py-3 bg-rose-600 text-white rounded-xl font-bold transition-all flex items-center justify-center gap-2 ${isCleaning ? 'opacity-50 cursor-not-allowed' : 'hover:bg-rose-700'}`}
-                    >
-                      {isCleaning ? (
-                        <>
-                          <RotateCcw className="animate-spin" size={18} /> Limpando...
-                        </>
-                      ) : (
-                        <>
-                          <Trash2 size={18} /> Limpar Histórico e Extras
-                        </>
-                      )}
-                    </button>
-                  </div>
                 </div>
               )}
 
