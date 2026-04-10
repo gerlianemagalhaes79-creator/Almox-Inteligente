@@ -287,6 +287,10 @@ export default function App() {
   const [showDetailModal, setShowDetailModal] = useState<{show: boolean, type: 'low_stock' | 'expiry', items: (Item | ItemGroup)[]}>({ show: false, type: 'low_stock', items: [] });
   const [showDeleteModal, setShowDeleteModal] = useState<{show: boolean, transactionId?: string}>({ show: false });
   const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [showMergeSuppliers, setShowMergeSuppliers] = useState(false);
+  const [sourceSupplier, setSourceSupplier] = useState('');
+  const [targetSupplier, setTargetSupplier] = useState('');
+  const [isMerging, setIsMerging] = useState(false);
   const [showUserDeleteConfirm, setShowUserDeleteConfirm] = useState<{show: boolean, user?: UserProfile}>({ show: false });
   const [toast, setToast] = useState<{show: boolean, message: string, type: 'success' | 'error' | 'info'}>({ show: false, message: '', type: 'info' });
   const [showRequestDetailModal, setShowRequestDetailModal] = useState<{show: boolean, request?: MaterialRequest}>({ show: false });
@@ -510,6 +514,51 @@ export default function App() {
     } catch (error: any) {
       handleFirestoreError(error, OperationType.UPDATE, `items/${editingQuantity.id}`);
       showToast(`Erro ao atualizar quantidade: ${error.message}`, "error");
+    }
+  };
+
+  const handleMergeSuppliers = async () => {
+    if (!sourceSupplier || !targetSupplier || sourceSupplier === targetSupplier) {
+      showToast("Selecione fornecedores diferentes para mesclar.", "error");
+      return;
+    }
+
+    setIsMerging(true);
+    try {
+      // Find all items and transactions with the source supplier
+      const itemsToUpdate = items.filter(i => i.supplier === sourceSupplier);
+      const transToUpdate = transactions.filter(t => t.supplier === sourceSupplier);
+      
+      const totalOps = itemsToUpdate.length + transToUpdate.length;
+      
+      if (totalOps === 0) {
+        showToast("Nenhum registro encontrado para o fornecedor de origem.", "info");
+        setIsMerging(false);
+        return;
+      }
+
+      // Process in batches of 400 (Firestore limit is 500)
+      const allDocs = [
+        ...itemsToUpdate.map(i => ({ ref: doc(db, 'items', i.id), data: { supplier: targetSupplier } })),
+        ...transToUpdate.map(t => ({ ref: doc(db, 'transactions', t.id), data: { supplier: targetSupplier } }))
+      ];
+
+      for (let i = 0; i < allDocs.length; i += 400) {
+        const batch = writeBatch(db);
+        const chunk = allDocs.slice(i, i + 400);
+        chunk.forEach(op => batch.update(op.ref, op.data));
+        await batch.commit();
+      }
+
+      showToast(`${totalOps} registros atualizados com sucesso!`, "success");
+      setShowMergeSuppliers(false);
+      setSourceSupplier('');
+      setTargetSupplier('');
+    } catch (error: any) {
+      console.error("Error merging suppliers:", error);
+      showToast(`Erro ao mesclar fornecedores: ${error.message}`, "error");
+    } finally {
+      setIsMerging(false);
     }
   };
 
@@ -4797,6 +4846,27 @@ export default function App() {
 
             <div className="space-y-6">
               {isAdmin && (
+                <div className="p-6 bg-blue-50 rounded-2xl border border-blue-100">
+                  <div className="flex items-center gap-3 mb-3 text-blue-600">
+                    <Users size={24} />
+                    <h4 className="font-bold">Ferramentas de Dados</h4>
+                  </div>
+                  <p className="text-sm text-blue-700 mb-4 leading-relaxed">
+                    Corrija inconsistências unificando fornecedores cadastrados com nomes diferentes.
+                  </p>
+                  <button 
+                    onClick={() => {
+                      setShowSettingsModal(false);
+                      setShowMergeSuppliers(true);
+                    }}
+                    className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all flex items-center justify-center gap-2"
+                  >
+                    <RotateCcw size={18} /> Mesclar Fornecedores
+                  </button>
+                </div>
+              )}
+
+              {isAdmin && (
                 <div className="p-6 bg-rose-50 rounded-2xl border border-rose-100">
                   <div className="flex items-center gap-3 mb-3 text-rose-600">
                     <AlertTriangle size={24} />
@@ -4841,6 +4911,91 @@ export default function App() {
                     <p className="font-bold text-[#1C1917]">gerlianemagalhaes79@gmail.com</p>
                   </div>
                 </div>
+              </div>
+            </div>
+          </motion.div>
+        </div>
+      )}
+      {showMergeSuppliers && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[80] flex items-center justify-center p-6">
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="bg-white w-full max-w-md rounded-[32px] p-8 shadow-2xl"
+          >
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-2xl font-black text-[#1C1917]">Mesclar Fornecedores</h3>
+              <button 
+                onClick={() => setShowMergeSuppliers(false)}
+                className="p-2 hover:bg-[#F5F5F4] rounded-full transition-all"
+              >
+                <X size={24} />
+              </button>
+            </div>
+
+            <div className="space-y-6">
+              <div className="p-4 bg-blue-50 rounded-2xl border border-blue-100 mb-4">
+                <p className="text-xs text-blue-700 font-medium">
+                  Esta ação irá substituir o nome do fornecedor em todos os itens e transações do histórico.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1.5 ml-1">Fornecedor de Origem (Será substituído)</label>
+                <select 
+                  className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
+                  value={sourceSupplier}
+                  onChange={e => setSourceSupplier(e.target.value)}
+                >
+                  <option value="">Selecione o nome incorreto...</option>
+                  {uniqueSuppliers.map(s => (
+                    <option key={`source-${s}`} value={s}>{s}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex justify-center">
+                <div className="bg-[#F5F5F4] p-2 rounded-full">
+                  <ArrowDownLeft className="text-[#A8A29E] rotate-45" size={20} />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1.5 ml-1">Fornecedor de Destino (Nome Correto)</label>
+                <select 
+                  className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
+                  value={targetSupplier}
+                  onChange={e => setTargetSupplier(e.target.value)}
+                >
+                  <option value="">Selecione o nome correto...</option>
+                  {uniqueSuppliers.map(s => (
+                    <option key={`target-${s}`} value={s}>{s}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="pt-4 flex gap-3">
+                <button 
+                  onClick={() => setShowMergeSuppliers(false)}
+                  className="flex-1 py-3 bg-[#F5F5F4] text-[#57534E] rounded-xl font-bold hover:bg-[#E7E5E4] transition-all"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  onClick={handleMergeSuppliers}
+                  disabled={isMerging || !sourceSupplier || !targetSupplier || sourceSupplier === targetSupplier}
+                  className={`flex-1 py-3 bg-blue-600 text-white rounded-xl font-bold transition-all flex items-center justify-center gap-2 ${isMerging || !sourceSupplier || !targetSupplier || sourceSupplier === targetSupplier ? 'opacity-50 cursor-not-allowed' : 'hover:bg-blue-700'}`}
+                >
+                  {isMerging ? (
+                    <>
+                      <RotateCcw className="animate-spin" size={18} /> Processando...
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle size={18} /> Confirmar Mesclagem
+                    </>
+                  )}
+                </button>
               </div>
             </div>
           </motion.div>
