@@ -1949,11 +1949,15 @@ export default function App() {
       else dailyData[dateKey].exits += t.quantity;
     });
 
-    // Group by category for pie chart
+    // Group by category for pie chart (quantity)
     const categoryData: Record<string, number> = {};
+    // Group by category for value chart
+    const categoryValueData: Record<string, number> = {};
+    
     items.forEach(item => {
       const cat = item.category || 'Outros';
       categoryData[cat] = (categoryData[cat] || 0) + item.quantity;
+      categoryValueData[cat] = (categoryValueData[cat] || 0) + (item.quantity * item.unit_price);
     });
 
     // Group by sector for bar chart (stacked by category)
@@ -2046,10 +2050,20 @@ export default function App() {
       entries,
       exits,
       daily: Object.values(dailyData).sort((a, b) => a.date.localeCompare(b.date)),
-      categories: Object.entries(categoryData).map(([name, value]) => ({ name, value })),
+      categories: Object.entries(categoryData)
+        .map(([name, value]) => ({ name, value }))
+        .filter(c => c.value > 0)
+        .sort((a, b) => b.value - a.value),
+      categoryValues: Object.entries(categoryValueData)
+        .map(([name, value]) => ({ name, value }))
+        .filter(c => c.value > 0)
+        .sort((a, b) => b.value - a.value),
       sectors: Object.values(sectorData),
       categoriesInSector: Array.from(categoriesInSector),
-      suppliers: Object.entries(supplierData).map(([name, value]) => ({ name, value })),
+      suppliers: Object.entries(supplierData)
+        .map(([name, value]) => ({ name, value }))
+        .filter(s => s.value > 0)
+        .sort((a, b) => b.value - a.value),
       consumptionReport: Object.values(consumptionReport).sort((a, b) => b.totalValue - a.totalValue),
       totalValue,
       originStats,
@@ -2075,12 +2089,16 @@ export default function App() {
           className="bg-white p-10 rounded-[40px] shadow-2xl max-w-md w-full border border-[#E7E5E4]"
         >
           <div className="text-center mb-8">
-            <div className="bg-[#1C1917] w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-lg">
-              <Package className="text-white w-8 h-8" />
+            <div className="bg-[#1C1917] w-24 h-24 rounded-3xl flex items-center justify-center mx-auto mb-6 shadow-xl overflow-hidden border-4 border-white">
+              <Package className="text-white w-12 h-12" />
             </div>
-            <h1 className="text-3xl font-black tracking-tighter mb-2">Almoxarifado Pro</h1>
-            <p className="text-[#78716C] text-sm font-medium">
-              Entre para gerenciar seu estoque
+            <h1 className="text-3xl font-black tracking-tighter mb-1">Policlínica</h1>
+            <p className="text-[#78716C] text-xs font-bold uppercase tracking-[0.2em] mb-4">
+              Bernardo Félix da Silva
+            </p>
+            <div className="h-px w-12 bg-[#E7E5E4] mx-auto mb-4" />
+            <p className="text-[#A8A29E] text-[10px] font-black uppercase tracking-widest">
+              Almoxarifado Inteligente
             </p>
           </div>
 
@@ -2204,10 +2222,13 @@ export default function App() {
       {/* Sidebar */}
       <aside className="fixed left-0 top-0 h-full w-64 bg-white border-r border-[#E7E5E4] p-6 flex flex-col gap-8 z-10">
         <div className="flex items-center gap-3 px-2">
-          <div className="bg-[#1C1917] p-2 rounded-lg">
+          <div className="bg-[#1C1917] p-2 rounded-lg shadow-md">
             <Package className="text-white w-6 h-6" />
           </div>
-          <h1 className="font-bold text-xl tracking-tight">Almoxarifado</h1>
+          <div className="flex flex-col">
+            <h1 className="font-black text-xl tracking-tighter leading-none">Policlínica</h1>
+            <span className="text-[10px] font-bold text-[#78716C] uppercase tracking-widest">Almoxarifado</span>
+          </div>
         </div>
 
         <nav className="flex flex-col gap-1">
@@ -3210,7 +3231,7 @@ export default function App() {
                 {/* Distribution by Category */}
                 <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
                   <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
-                    <Filter size={18} className="text-[#1C1917]" /> Distribuição por Categoria
+                    <Filter size={18} className="text-[#1C1917]" /> Distribuição por Categoria (Qtd)
                   </h4>
                   <div className="h-[300px] w-full">
                     <ResponsiveContainer width="100%" height="100%">
@@ -3237,6 +3258,35 @@ export default function App() {
                     </ResponsiveContainer>
                   </div>
                 </div>
+
+                {/* Value by Category */}
+                {isAdmin && (
+                  <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
+                    <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
+                      <DollarSign size={18} className="text-emerald-600" /> Valor em Estoque por Categoria
+                    </h4>
+                    <div className="h-[300px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={reportData.categoryValues} layout="vertical">
+                          <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#F5F5F4" />
+                          <XAxis type="number" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
+                          <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1C1917', fontWeight: 'bold'}} width={120} />
+                          <Tooltip 
+                            cursor={{fill: '#FAFAF9'}}
+                            formatter={(value: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value)}
+                            contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                          />
+                          <Bar dataKey="value" name="Valor Total">
+                            {reportData.categoryValues.map((entry, index) => (
+                              <Cell key={`cell-${index}`} fill={getCategoryColor(entry.name)} />
+                            ))}
+                          </Bar>
+                          <Legend />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                )}
 
                 {/* Exits by Reason - Only for Admin */}
                 {isAdmin && (
@@ -3315,12 +3365,19 @@ export default function App() {
                     <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
                       <DollarSign size={18} className="text-amber-600" /> Valor por Fornecedor
                     </h4>
-                    <div className="h-[300px] w-full">
+                    <div className="h-[400px] w-full">
                       <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={reportData.suppliers} layout="vertical">
+                        <BarChart data={reportData.suppliers} layout="vertical" margin={{ left: 20, right: 30 }}>
                           <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#F5F5F4" />
                           <XAxis type="number" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
-                          <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1C1917', fontWeight: 'bold'}} width={100} />
+                          <YAxis 
+                            dataKey="name" 
+                            type="category" 
+                            axisLine={false} 
+                            tickLine={false} 
+                            tick={{fontSize: 10, fill: '#1C1917', fontWeight: 'bold'}} 
+                            width={150}
+                          />
                           <Tooltip 
                             cursor={{fill: '#FAFAF9'}}
                             formatter={(value: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value)}

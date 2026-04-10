@@ -1,5 +1,5 @@
 {
-  "name": "Almoxarifado Inteligente",
-  "description": "Sistema de gestão de estoque com alertas de nível baixo e validade próxima.",
+  "name": "Policlínica - Almoxarifado",
+  "description": "Sistema de gestão de estoque da Policlínica Bernardo Félix da Silva.",
   "requestFramePermissions": []
 }
