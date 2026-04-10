@@ -150,6 +150,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   'EPI': '#ec4899',
   'Gráfica': '#fbbf24',
   'Informática': '#6366f1',
+  'Limpeza': '#059669',
   'Outros': '#78716c',
 };
 
@@ -360,7 +361,7 @@ export default function App() {
       unit_price: 0
     }]
   });
-  const [categories, setCategories] = useState<string[]>(['Médico Hospitalar', 'Alimentício', 'Expediente', 'Higiene', 'Radiológico', 'Saneante', 'Copa & Cozinha', 'Papelaria', 'EPI', 'Gráfica', 'Informática']);
+  const [categories, setCategories] = useState<string[]>(['Médico Hospitalar', 'Alimentício', 'Expediente', 'Higiene', 'Radiológico', 'Saneante', 'Copa & Cozinha', 'Papelaria', 'EPI', 'Gráfica', 'Informática', 'Limpeza']);
   const [showNewCategoryInput, setShowNewCategoryInput] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
 
