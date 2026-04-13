@@ -103,6 +103,9 @@ interface ItemGroup {
   durationWeeks: number | 'infinite';
 }
 
+const normalizeString = (str: string | null | undefined) => 
+  (str || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
 const SECTORS = [
   'Imagem', 'Ilha', 'Pé Diabético', 'Direção', 'Setor Pessoal', 
   'CER', 'Setor de Terapias', 'SSVV', 'Recepção', 
@@ -449,6 +452,8 @@ export default function App() {
   const [selectedItemName, setSelectedItemName] = useState<string>('');
   const [basket, setBasket] = useState<{item_id: string, quantity: number}[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
+  const [modalSearchTerm, setModalSearchTerm] = useState('');
+  const [requestSearchTerm, setRequestSearchTerm] = useState('');
   const [reportRange, setReportRange] = useState({
     start: format(subDays(new Date(), 30), 'yyyy-MM-dd'),
     end: format(new Date(), 'yyyy-MM-dd')
@@ -487,6 +492,18 @@ export default function App() {
     }
     setExpandedItems(newExpanded);
   };
+
+  useEffect(() => {
+    if (!showTransactionModal.show) {
+      setModalSearchTerm('');
+    }
+  }, [showTransactionModal.show]);
+
+  useEffect(() => {
+    if (activeTab !== 'new-request') {
+      setRequestSearchTerm('');
+    }
+  }, [activeTab]);
 
   const handleUpdatePrice = async () => {
     if (!editingPrice) return;
@@ -2153,16 +2170,17 @@ export default function App() {
     return expiry <= oneMonthFromNow;
   };
 
-  const filteredItems = items.filter(i => 
-    !i.deletedAt && // Exclude deleted items
+  const filteredItems = items.filter(i => {
+    const normalizedSearch = normalizeString(searchTerm);
+    return !i.deletedAt && // Exclude deleted items
     i.quantity > 0 && // Only active items (with stock)
-    ((i.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    i.supplier?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    i.category?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    i.batch_number?.toLowerCase().includes(searchTerm.toLowerCase())) &&
+    ((normalizeString(i.name).includes(normalizedSearch) || 
+    normalizeString(i.supplier).includes(normalizedSearch) ||
+    normalizeString(i.category).includes(normalizedSearch) ||
+    normalizeString(i.batch_number).includes(normalizedSearch)) &&
     (originFilter === 'all' || i.origin === originFilter) &&
-    (categoryFilter === 'all' || i.category === categoryFilter))
-  );
+    (categoryFilter === 'all' || i.category === categoryFilter));
+  });
 
   const groupedItems = items.filter(i => !i.deletedAt && i.quantity > 0).reduce((acc, item) => {
     if (!acc[item.name]) {
@@ -2203,9 +2221,10 @@ export default function App() {
   const groupedArray: ItemGroup[] = (Object.values(groupedItems) as ItemGroup[])
     .filter(group => {
       // Apply search and filters to the grouped items for the inventory list
-      const matchesSearch = group.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                           group.supplier?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                           group.category?.toLowerCase().includes(searchTerm.toLowerCase());
+      const normalizedSearch = normalizeString(searchTerm);
+      const matchesSearch = normalizeString(group.name).includes(normalizedSearch) ||
+                           normalizeString(group.supplier).includes(normalizedSearch) ||
+                           normalizeString(group.category).includes(normalizedSearch);
       
       const matchesOrigin = originFilter === 'all' || group.batches.some(b => b.origin === originFilter);
       const matchesCategory = categoryFilter === 'all' || group.category === categoryFilter;
@@ -4031,9 +4050,16 @@ export default function App() {
 
                   <div>
                     <label className="block text-xs font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Adicionar Item</label>
-                    <div className="flex gap-2">
+                    <div className="space-y-2">
+                      <input 
+                        type="text" 
+                        placeholder="Pesquisar item para solicitar..."
+                        className="w-full px-4 py-2 bg-white border border-[#E7E5E4] rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-[#1C1917]/10"
+                        value={requestSearchTerm}
+                        onChange={(e) => setRequestSearchTerm(e.target.value)}
+                      />
                       <select 
-                        className="flex-1 px-4 py-3 bg-white border border-[#E7E5E4] rounded-2xl focus:outline-none focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
+                        className="w-full px-4 py-3 bg-white border border-[#E7E5E4] rounded-2xl focus:outline-none focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
                         onChange={(e) => {
                           const item = items.find(i => i.id === e.target.value);
                           if (item) {
@@ -4048,9 +4074,13 @@ export default function App() {
                         }}
                       >
                         <option value="">Selecione um item...</option>
-                        {groupedArray.map(group => (
-                          <option key={group.name} value={group.batches[0].id}>{group.name}</option>
-                        ))}
+                        {Object.values(groupedItems)
+                          .filter(group => normalizeString(group.name).includes(normalizeString(requestSearchTerm)))
+                          .sort((a, b) => a.name.localeCompare(b.name))
+                          .map(group => (
+                            <option key={group.name} value={group.batches[0].id}>{group.name}</option>
+                          ))
+                        }
                       </select>
                     </div>
                   </div>
@@ -4577,25 +4607,35 @@ export default function App() {
                     })}
 
                     <div className="space-y-4">
-                      <div className="flex gap-2">
+                      <div className="flex flex-col gap-4">
                         <div className="flex-1">
                           <label className="block text-[10px] font-bold text-[#A8A29E] uppercase mb-1 ml-1">1. Escolha o Item</label>
-                          <select 
-                            className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl text-sm focus:ring-2 focus:ring-[#1C1917]/10"
-                            value={selectedItemName}
-                            onChange={e => {
-                              setSelectedItemName(e.target.value);
-                              setSelectedItemId('');
-                            }}
-                          >
-                            <option value="">Selecione um item...</option>
-                            {(Array.from(new Set(items.filter(i => i.quantity > 0).map(i => i.name))) as string[])
-                              .sort((a, b) => a.localeCompare(b))
-                              .map(name => (
-                                <option key={name} value={name}>{name}</option>
-                              ))
-                            }
-                          </select>
+                          <div className="space-y-2">
+                            <input 
+                              type="text" 
+                              placeholder="Pesquisar item..."
+                              className="w-full px-4 py-2 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-[#1C1917]/10"
+                              value={modalSearchTerm}
+                              onChange={(e) => setModalSearchTerm(e.target.value)}
+                            />
+                            <select 
+                              className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl text-sm focus:ring-2 focus:ring-[#1C1917]/10"
+                              value={selectedItemName}
+                              onChange={e => {
+                                setSelectedItemName(e.target.value);
+                                setSelectedItemId('');
+                              }}
+                            >
+                              <option value="">Selecione um item...</option>
+                              {(Array.from(new Set(items.filter(i => i.quantity > 0).map(i => i.name))) as string[])
+                                .filter(name => normalizeString(name).includes(normalizeString(modalSearchTerm)))
+                                .sort((a, b) => a.localeCompare(b))
+                                .map(name => (
+                                  <option key={name} value={name}>{name}</option>
+                                ))
+                              }
+                            </select>
+                          </div>
                         </div>
 
                         {selectedItemName && (
