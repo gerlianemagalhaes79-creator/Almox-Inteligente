@@ -382,7 +382,7 @@ export default function App() {
       unit_price: 0
     }]
   });
-  const [categories, setCategories] = useState<string[]>(['Médico Hospitalar', 'Alimentício', 'Expediente', 'Higiene', 'Radiológico', 'Saneante', 'Copa & Cozinha', 'Papelaria', 'EPI', 'Gráfica', 'Informática', 'Limpeza']);
+  const [categories, setCategories] = useState<string[]>(['Médico Hospitalar', 'Alimentício', 'Expediente', 'Higiene', 'Radiológico', 'Saneante', 'Copa & Cozinha', 'Papelaria', 'EPI', 'Gráfica', 'Informática', 'Limpeza', 'Anestésico', 'Medicamentos']);
   const [showNewCategoryInput, setShowNewCategoryInput] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
 
