@@ -2589,6 +2589,28 @@ export default function App() {
               >
                 <FileText size={20} /> Minhas Solicitações
               </button>
+              {userProfile?.sector === 'Farmácia' && (
+                <>
+                  <button 
+                    onClick={() => setActiveTab('dashboard')}
+                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'dashboard' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                  >
+                    <LayoutDashboard size={20} /> Visão Geral
+                  </button>
+                  <button 
+                    onClick={() => setActiveTab('inventory')}
+                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'inventory' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                  >
+                    <Package size={20} /> Meu Estoque
+                  </button>
+                  <button 
+                    onClick={() => setActiveTab('history')}
+                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'history' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                  >
+                    <History size={20} /> Meu Histórico
+                  </button>
+                </>
+              )}
             </>
           )}
         </nav>
@@ -2819,7 +2841,7 @@ export default function App() {
                 )}
               </div>
             )}
-            {isAdmin && (
+            {(isAdmin || userProfile?.sector === 'Farmácia') && (
               <>
                 <button 
                   onClick={() => setShowAddModal(true)}
@@ -2860,7 +2882,7 @@ export default function App() {
                   <p className="text-xs text-[#A8A29E] mt-2 font-bold uppercase tracking-wider">{groupedArray.length} tipos de itens</p>
                 </div>
 
-                {isAdmin && (
+                {(isAdmin || userProfile?.sector === 'Farmácia') && (
                   <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
                     <div className="flex justify-between items-start mb-4">
                       <div className="bg-blue-100 p-3 rounded-2xl text-blue-600">
