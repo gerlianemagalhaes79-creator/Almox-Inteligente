@@ -1511,10 +1511,16 @@ export default function App() {
     
     try {
       for (const itemData of bulkEntry.items) {
+        const trimmedName = itemData.name.trim();
+        if (!trimmedName) {
+          showToast("O nome do produto não pode estar vazio ou conter apenas espaços.", "error");
+          return;
+        }
+
         const initial_qty = isNaN(itemData.initial_quantity) ? 0 : itemData.initial_quantity;
         
         // Dynamic min stock calculation (5 weeks coverage)
-        const weeklyRate = weeklyExitRates[itemData.name] || 0;
+        const weeklyRate = weeklyExitRates[trimmedName] || 0;
         const calculatedMin = weeklyRate > 0 ? Math.ceil(weeklyRate * 5) : 5;
         const min_qty = isNaN(itemData.min_quantity) ? calculatedMin : itemData.min_quantity;
         
@@ -1522,7 +1528,7 @@ export default function App() {
 
         // Check if item already exists with the same name AND batch
         const existingItem = items.find(i => 
-          i.name.toLowerCase() === itemData.name.toLowerCase() && 
+          i.name.toLowerCase() === trimmedName.toLowerCase() && 
           (i.batch_number || '').toLowerCase() === (itemData.batch_number || '').toLowerCase()
         );
 
@@ -1572,7 +1578,7 @@ export default function App() {
           const expiryValue = itemData.is_indeterminate_expiry ? 'Indeterminada' : itemData.expiry_date;
 
           const itemRef = await addDoc(itemCol, {
-            name: itemData.name,
+            name: trimmedName,
             min_quantity: min_qty,
             expiry_date: expiryValue,
             origin: bulkEntry.origin,
@@ -1586,7 +1592,7 @@ export default function App() {
 
           await addDoc(transCol, {
             item_id: itemRef.id,
-            item_name: itemData.name,
+            item_name: trimmedName,
             type: 'entry',
             origin: bulkEntry.origin,
             quantity: initial_qty,
