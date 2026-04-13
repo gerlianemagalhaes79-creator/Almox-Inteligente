@@ -4050,38 +4050,62 @@ export default function App() {
 
                   <div>
                     <label className="block text-xs font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Adicionar Item</label>
-                    <div className="space-y-2">
-                      <input 
-                        type="text" 
-                        placeholder="Pesquisar item para solicitar..."
-                        className="w-full px-4 py-2 bg-white border border-[#E7E5E4] rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-[#1C1917]/10"
-                        value={requestSearchTerm}
-                        onChange={(e) => setRequestSearchTerm(e.target.value)}
-                      />
-                      <select 
-                        className="w-full px-4 py-3 bg-white border border-[#E7E5E4] rounded-2xl focus:outline-none focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
-                        onChange={(e) => {
-                          const item = items.find(i => i.id === e.target.value);
-                          if (item) {
-                            const existing = requestBasket.find(bi => bi.product_id === item.id);
-                            if (existing) {
-                              setRequestBasket(requestBasket.map(bi => bi.product_id === item.id ? { ...bi, quantity: bi.quantity + 1 } : bi));
-                            } else {
-                              setRequestBasket([...requestBasket, { product_id: item.id, product_name: item.name, quantity: 1 }]);
-                            }
-                            e.target.value = '';
+                    <div className="relative">
+                      <div className="relative">
+                        <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-[#A8A29E]" size={18} />
+                        <input 
+                          type="text" 
+                          placeholder="Digite o nome do material..."
+                          className="w-full pl-12 pr-4 py-4 bg-white border border-[#E7E5E4] rounded-2xl focus:outline-none focus:ring-2 focus:ring-[#1C1917]/10 font-bold transition-all"
+                          value={requestSearchTerm}
+                          onChange={(e) => setRequestSearchTerm(e.target.value)}
+                        />
+                      </div>
+
+                      {requestSearchTerm.length >= 2 && (
+                        <motion.div 
+                          initial={{ opacity: 0, y: -10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className="absolute left-0 right-0 top-full mt-2 bg-white border border-[#E7E5E4] rounded-2xl shadow-xl z-50 max-h-60 overflow-y-auto overflow-x-hidden"
+                        >
+                          {Object.values(groupedItems)
+                            .filter(group => normalizeString(group.name).includes(normalizeString(requestSearchTerm)))
+                            .sort((a, b) => a.name.localeCompare(b.name))
+                            .slice(0, 15)
+                            .map(group => (
+                              <button
+                                key={group.name}
+                                type="button"
+                                onClick={() => {
+                                  const item = group.batches[0];
+                                  const existing = requestBasket.find(bi => bi.product_id === item.id);
+                                  if (existing) {
+                                    setRequestBasket(requestBasket.map(bi => bi.product_id === item.id ? { ...bi, quantity: bi.quantity + 1 } : bi));
+                                  } else {
+                                    setRequestBasket([...requestBasket, { product_id: item.id, product_name: item.name, quantity: 1 }]);
+                                  }
+                                  setRequestSearchTerm('');
+                                }}
+                                className="w-full px-6 py-4 text-left hover:bg-[#F5F5F4] transition-all flex items-center justify-between border-b border-[#F5F5F4] last:border-none"
+                              >
+                                <div>
+                                  <p className="font-bold text-[#1C1917]">{group.name}</p>
+                                  <p className="text-[10px] text-[#A8A29E] uppercase font-black tracking-widest">{group.category}</p>
+                                </div>
+                                <div className="flex items-center gap-2 text-emerald-600">
+                                  <Plus size={16} />
+                                  <span className="text-xs font-bold">Adicionar</span>
+                                </div>
+                              </button>
+                            ))
                           }
-                        }}
-                      >
-                        <option value="">Selecione um item...</option>
-                        {Object.values(groupedItems)
-                          .filter(group => normalizeString(group.name).includes(normalizeString(requestSearchTerm)))
-                          .sort((a, b) => a.name.localeCompare(b.name))
-                          .map(group => (
-                            <option key={group.name} value={group.batches[0].id}>{group.name}</option>
-                          ))
-                        }
-                      </select>
+                          {Object.values(groupedItems).filter(group => normalizeString(group.name).includes(normalizeString(requestSearchTerm))).length === 0 && (
+                            <div className="p-8 text-center text-[#78716C]">
+                              <p className="text-sm font-medium">Nenhum material encontrado.</p>
+                            </div>
+                          )}
+                        </motion.div>
+                      )}
                     </div>
                   </div>
 
@@ -4610,31 +4634,47 @@ export default function App() {
                       <div className="flex flex-col gap-4">
                         <div className="flex-1">
                           <label className="block text-[10px] font-bold text-[#A8A29E] uppercase mb-1 ml-1">1. Escolha o Item</label>
-                          <div className="space-y-2">
-                            <input 
-                              type="text" 
-                              placeholder="Pesquisar item..."
-                              className="w-full px-4 py-2 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-[#1C1917]/10"
-                              value={modalSearchTerm}
-                              onChange={(e) => setModalSearchTerm(e.target.value)}
-                            />
-                            <select 
-                              className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl text-sm focus:ring-2 focus:ring-[#1C1917]/10"
-                              value={selectedItemName}
-                              onChange={e => {
-                                setSelectedItemName(e.target.value);
-                                setSelectedItemId('');
-                              }}
-                            >
-                              <option value="">Selecione um item...</option>
-                              {(Array.from(new Set(items.filter(i => i.quantity > 0).map(i => i.name))) as string[])
-                                .filter(name => normalizeString(name).includes(normalizeString(modalSearchTerm)))
-                                .sort((a, b) => a.localeCompare(b))
-                                .map(name => (
-                                  <option key={name} value={name}>{name}</option>
-                                ))
-                              }
-                            </select>
+                          <div className="relative">
+                            <div className="relative">
+                              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[#A8A29E]" size={16} />
+                              <input 
+                                type="text" 
+                                placeholder="Pesquisar item..."
+                                className="w-full pl-10 pr-4 py-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
+                                value={modalSearchTerm}
+                                onChange={(e) => {
+                                  setModalSearchTerm(e.target.value);
+                                  if (selectedItemName) setSelectedItemName('');
+                                }}
+                              />
+                            </div>
+
+                            {modalSearchTerm.length >= 2 && !selectedItemName && (
+                              <motion.div 
+                                initial={{ opacity: 0, y: -5 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                className="absolute left-0 right-0 top-full mt-1 bg-white border border-[#E7E5E4] rounded-xl shadow-lg z-50 max-h-48 overflow-y-auto"
+                              >
+                                {(Array.from(new Set(items.filter(i => i.quantity > 0).map(i => i.name))) as string[])
+                                  .filter(name => normalizeString(name).includes(normalizeString(modalSearchTerm)))
+                                  .sort((a, b) => a.localeCompare(b))
+                                  .map(name => (
+                                    <button
+                                      key={name}
+                                      type="button"
+                                      onClick={() => {
+                                        setSelectedItemName(name);
+                                        setModalSearchTerm(name);
+                                        setSelectedItemId('');
+                                      }}
+                                      className="w-full px-4 py-3 text-left hover:bg-[#F5F5F4] transition-all border-b border-[#F5F5F4] last:border-none"
+                                    >
+                                      <p className="font-bold text-sm text-[#1C1917]">{name}</p>
+                                    </button>
+                                  ))
+                                }
+                              </motion.div>
+                            )}
                           </div>
                         </div>
 
