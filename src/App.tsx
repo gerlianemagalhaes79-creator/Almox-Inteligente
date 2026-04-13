@@ -338,6 +338,7 @@ export default function App() {
   const [requestObservation, setRequestObservation] = useState('');
   const [adminObservation, setAdminObservation] = useState('');
   const [isSubmittingRequest, setIsSubmittingRequest] = useState(false);
+  const [editingRequest, setEditingRequest] = useState<MaterialRequest | null>(null);
   
   const createNotification = async (userId: string, title: string, message: string, requestId?: string) => {
     try {
@@ -1034,19 +1035,32 @@ export default function App() {
 
       const requestData = {
         sector: userProfile.sector,
-        date: new Date().toISOString(),
+        date: editingRequest ? editingRequest.date : new Date().toISOString(),
         status: 'PENDENTE',
         observation: requestObservation,
         requesterEmail: user?.email || ''
       };
 
-      const requestRef = await addDoc(collection(db, 'requests'), requestData);
+      let requestId = '';
+      if (editingRequest) {
+        requestId = editingRequest.id;
+        await updateDoc(doc(db, 'requests', requestId), requestData);
+        
+        // Delete old items
+        const oldItems = await getDocs(query(collection(db, 'request_items'), where('request_id', '==', requestId)));
+        const deleteBatch = writeBatch(db);
+        oldItems.docs.forEach(d => deleteBatch.delete(d.ref));
+        await deleteBatch.commit();
+      } else {
+        const requestRef = await addDoc(collection(db, 'requests'), requestData);
+        requestId = requestRef.id;
+      }
 
       const batch = writeBatch(db);
       requestBasket.forEach(item => {
         const itemRef = doc(collection(db, 'request_items'));
         batch.set(itemRef, {
-          request_id: requestRef.id,
+          request_id: requestId,
           product_id: item.product_id,
           product_name: item.product_name,
           quantity_requested: item.quantity,
@@ -1056,39 +1070,54 @@ export default function App() {
 
       await batch.commit();
 
-      // Notify Admins and Almoxarifado
-      const adminQuery = query(collection(db, 'users'), where('role', '==', 'ADMIN'));
-      const almoxarifadoQuery = query(collection(db, 'users'), where('sector', '==', 'Almoxarifado'));
-      
-      const [adminSnap, almoxSnap] = await Promise.all([
-        getDocs(adminQuery),
-        getDocs(almoxarifadoQuery)
-      ]);
+      if (!editingRequest) {
+        // Notify Admins and Almoxarifado
+        const adminQuery = query(collection(db, 'users'), where('role', '==', 'ADMIN'));
+        const almoxarifadoQuery = query(collection(db, 'users'), where('sector', '==', 'Almoxarifado'));
+        
+        const [adminSnap, almoxSnap] = await Promise.all([
+          getDocs(adminQuery),
+          getDocs(almoxarifadoQuery)
+        ]);
 
-      const notifiedEmails = new Set<string>();
-      
-      const processSnap = (snap: any) => {
-        snap.forEach((adminDoc: any) => {
-          if (!notifiedEmails.has(adminDoc.id)) {
-            createNotification(adminDoc.id, 'Nova Solicitação', `O setor ${userProfile.sector} enviou uma nova solicitação.`, requestRef.id);
-            notifiedEmails.add(adminDoc.id);
-          }
-        });
-      };
+        const notifiedEmails = new Set<string>();
+        
+        const processSnap = (snap: any) => {
+          snap.forEach((adminDoc: any) => {
+            if (!notifiedEmails.has(adminDoc.id)) {
+              createNotification(adminDoc.id, 'Nova Solicitação', `O setor ${userProfile.sector} enviou uma nova solicitação.`, requestId);
+              notifiedEmails.add(adminDoc.id);
+            }
+          });
+        };
 
-      processSnap(adminSnap);
-      processSnap(almoxSnap);
+        processSnap(adminSnap);
+        processSnap(almoxSnap);
+      }
 
+      showToast(editingRequest ? "Solicitação atualizada com sucesso!" : "Solicitação enviada com sucesso!", "success");
       setRequestBasket([]);
       setRequestObservation('');
+      setEditingRequest(null);
       setActiveTab('my-requests');
-      showToast("Solicitação enviada com sucesso!", "success");
     } catch (error: any) {
       handleFirestoreError(error, OperationType.WRITE, 'requests');
       showToast(`Erro ao enviar solicitação: ${error.message}`, "error");
     } finally {
       setIsSubmittingRequest(false);
     }
+  };
+
+  const handleEditRequest = (request: MaterialRequest) => {
+    const items = allRequestItems.filter(ri => ri.request_id === request.id);
+    setRequestBasket(items.map(i => ({
+      product_id: i.product_id,
+      product_name: i.product_name,
+      quantity: i.quantity_requested
+    })));
+    setRequestObservation(request.observation || '');
+    setEditingRequest(request);
+    setActiveTab('new-request');
   };
 
   useEffect(() => {
@@ -2412,6 +2441,7 @@ export default function App() {
               {activeTab === 'trash' && 'Lixeira (Exclusão em 3 dias)'}
               {activeTab === 'my-requests' && 'Minhas Solicitações'}
               {activeTab === 'new-request' && 'Nova Solicitação'}
+              {editingRequest && ' - Editando Solicitação'}
               {activeTab === 'reports' && 'Relatórios e Análises'}
             </h2>
               {activeTab === 'history' && (
@@ -4059,12 +4089,32 @@ export default function App() {
                           </p>
                         </td>
                         <td className="px-6 py-4 text-right">
-                          <button 
-                            onClick={() => setShowRequestDetailModal({ show: true, request: req })}
-                            className="bg-[#1C1917] text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-[#292524] transition-all"
-                          >
-                            Ver Detalhes
-                          </button>
+                          <div className="flex justify-end items-center gap-2">
+                            <button 
+                              onClick={() => setShowRequestDetailModal({ show: true, request: req })}
+                              className="bg-[#1C1917] text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-[#292524] transition-all"
+                            >
+                              Ver Detalhes
+                            </button>
+                            {req.status === 'PENDENTE' && (
+                              <>
+                                <button 
+                                  onClick={() => handleEditRequest(req)}
+                                  className="p-2 text-blue-400 hover:bg-blue-50 hover:text-blue-600 rounded-xl transition-all"
+                                  title="Editar Solicitação"
+                                >
+                                  <Edit2 size={18} />
+                                </button>
+                                <button 
+                                  onClick={() => handleDeleteRequest(req.id)}
+                                  className="p-2 text-rose-400 hover:bg-rose-50 hover:text-rose-600 rounded-xl transition-all"
+                                  title="Excluir Solicitação"
+                                >
+                                  <Trash2 size={18} />
+                                </button>
+                              </>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -4089,7 +4139,24 @@ export default function App() {
               className="max-w-2xl mx-auto space-y-8"
             >
               <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
-                <h3 className="text-2xl font-black mb-6">Nova Solicitação</h3>
+                <div className="flex justify-between items-center mb-6">
+                  <h3 className="text-2xl font-black">
+                    {editingRequest ? 'Editar Solicitação' : 'Nova Solicitação'}
+                  </h3>
+                  {editingRequest && (
+                    <button 
+                      onClick={() => {
+                        setEditingRequest(null);
+                        setRequestBasket([]);
+                        setRequestObservation('');
+                        setActiveTab('my-requests');
+                      }}
+                      className="text-xs font-bold text-rose-600 hover:underline"
+                    >
+                      Cancelar Edição
+                    </button>
+                  )}
+                </div>
                 <div className="space-y-6">
                   <div>
                     <label className="block text-xs font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Setor Solicitante</label>
@@ -4203,7 +4270,7 @@ export default function App() {
                     disabled={isSubmittingRequest || requestBasket.length === 0}
                     className="w-full py-4 bg-[#1C1917] text-white rounded-2xl font-bold hover:bg-[#292524] transition-all shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                   >
-                    {isSubmittingRequest ? 'Enviando...' : <><Save size={20} /> Enviar Solicitação</>}
+                    {isSubmittingRequest ? 'Enviando...' : <><Save size={20} /> {editingRequest ? 'Salvar Alterações' : 'Enviar Solicitação'}</>}
                   </button>
                 </div>
               </div>
@@ -5312,6 +5379,29 @@ export default function App() {
                     <CheckCircle size={20} /> Confirmar Entrega e Baixar Estoque
                   </button>
                 )}
+              </div>
+            )}
+
+            {!isAdmin && showRequestDetailModal.request.status === 'PENDENTE' && showRequestDetailModal.request.requesterEmail === user?.email && (
+              <div className="flex gap-3">
+                <button 
+                  onClick={() => {
+                    setShowRequestDetailModal({ show: false });
+                    handleEditRequest(showRequestDetailModal.request!);
+                  }}
+                  className="flex-1 py-3 bg-blue-100 text-blue-600 rounded-xl font-bold hover:bg-blue-200 transition-all flex items-center justify-center gap-2"
+                >
+                  <Edit2 size={18} /> Editar Solicitação
+                </button>
+                <button 
+                  onClick={() => {
+                    setShowRequestDetailModal({ show: false });
+                    handleDeleteRequest(showRequestDetailModal.request!.id);
+                  }}
+                  className="flex-1 py-3 bg-rose-100 text-rose-600 rounded-xl font-bold hover:bg-rose-200 transition-all flex items-center justify-center gap-2"
+                >
+                  <Trash2 size={18} /> Excluir Solicitação
+                </button>
               </div>
             )}
           </motion.div>
