@@ -154,6 +154,8 @@ const CATEGORY_COLORS: Record<string, string> = {
   'Gráfica': '#fbbf24',
   'Informática': '#6366f1',
   'Limpeza': '#059669',
+  'Anestésico': '#7c3aed',
+  'Medicamentos': '#be123c',
   'Outros': '#78716c',
 };
 
@@ -2486,6 +2488,10 @@ export default function App() {
     .filter(i => !i.deletedAt && (i.location || 'Almoxarifado') === inventoryLocation)
     .reduce((sum, item) => sum + (item.quantity * (item.unit_price || 0)), 0);
 
+  const recentTransactions = transactions
+    .filter(t => (t.location || 'Almoxarifado') === inventoryLocation)
+    .slice(0, 5);
+
   const groupedArray: ItemGroup[] = (Object.values(groupedItems) as ItemGroup[])
     .filter(group => {
       // Apply search and filters to the grouped items for the inventory list
@@ -2986,7 +2992,7 @@ export default function App() {
               <div className="bg-white p-8 rounded-3xl border border-[#E7E5E4] shadow-sm">
                 <h4 className="text-xl font-bold mb-6">Atividade Recente</h4>
                 <div className="space-y-6">
-                  {transactions.slice(0, 5).map(t => (
+                  {recentTransactions.map(t => (
                     <div key={t.id} className="flex gap-4">
                       <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${t.type === 'entry' ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'}`}>
                         {t.type === 'entry' ? <ArrowDownLeft size={18} /> : <ArrowUpRight size={18} />}
@@ -3004,7 +3010,7 @@ export default function App() {
                       </div>
                     </div>
                   ))}
-                  {transactions.length === 0 && <p className="text-[#A8A29E] text-sm italic">Nenhuma movimentação.</p>}
+                  {recentTransactions.length === 0 && <p className="text-[#A8A29E] text-sm italic">Nenhuma movimentação.</p>}
                 </div>
               </div>
             </motion.div>
