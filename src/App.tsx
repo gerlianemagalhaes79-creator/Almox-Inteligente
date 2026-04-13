@@ -307,6 +307,15 @@ export default function App() {
   const [showDeletedHistory, setShowDeletedHistory] = useState(false);
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [inventorySort, setInventorySort] = useState<'name_asc' | 'name_desc' | 'duration_asc' | 'duration_desc'>('name_asc');
+  const [inventoryLocation, setInventoryLocation] = useState<'Almoxarifado' | 'Farmácia'>('Almoxarifado');
+
+  useEffect(() => {
+    if (userProfile?.sector === 'Farmácia') {
+      setInventoryLocation('Farmácia');
+    } else {
+      setInventoryLocation('Almoxarifado');
+    }
+  }, [userProfile?.sector]);
   
   const isAdmin = userProfile?.role === 'ADMIN' || 
                   user?.email === 'gerlianemagalhaes79@gmail.com' || 
@@ -1477,6 +1486,7 @@ export default function App() {
               origin: currentBatchData.origin,
               quantity: amountFromThisBatch,
               sector: requestData.sector,
+              location: 'Almoxarifado',
               date: new Date().toISOString(),
               responsible: user?.displayName || user?.email,
               responsibleEmail: user?.email,
@@ -1484,6 +1494,58 @@ export default function App() {
               batch_number: currentBatchData.batch_number,
               expiry_date: currentBatchData.expiry_date
             });
+
+            // Automatic transfer to Pharmacy stock if sector is 'Farmácia'
+            if (requestData.sector === 'Farmácia') {
+              const pharmacyItemsQuery = query(
+                collection(db, 'items'),
+                where('name', '==', reqItem.product_name),
+                where('batch_number', '==', currentBatchData.batch_number || ''),
+                where('location', '==', 'Farmácia'),
+                where('deletedAt', '==', null)
+              );
+              
+              const pharmacyItemsSnap = await getDocs(pharmacyItemsQuery);
+              
+              if (!pharmacyItemsSnap.empty) {
+                const pharmacyItemDoc = pharmacyItemsSnap.docs[0];
+                transaction.update(pharmacyItemDoc.ref, {
+                  quantity: (pharmacyItemDoc.data().quantity || 0) + amountFromThisBatch,
+                  updatedAt: serverTimestamp()
+                });
+              } else {
+                const newItemRef = doc(collection(db, 'items'));
+                transaction.set(newItemRef, {
+                  name: reqItem.product_name,
+                  description: currentBatchData.description || '',
+                  quantity: amountFromThisBatch,
+                  min_quantity: currentBatchData.min_quantity || 5,
+                  expiry_date: currentBatchData.expiry_date,
+                  origin: currentBatchData.origin,
+                  unit_price: currentBatchData.unit_price,
+                  supplier: currentBatchData.supplier,
+                  category: currentBatchData.category,
+                  batch_number: currentBatchData.batch_number,
+                  location: 'Farmácia',
+                  createdAt: new Date().toISOString()
+                });
+              }
+
+              // Record entry in Pharmacy history
+              const pharmTransRef = doc(collection(db, 'transactions'));
+              transaction.set(pharmTransRef, {
+                item_name: reqItem.product_name,
+                type: 'entry',
+                origin: currentBatchData.origin,
+                quantity: amountFromThisBatch,
+                location: 'Farmácia',
+                date: new Date().toISOString(),
+                responsible: 'Sistema (Solicitação)',
+                batch_number: currentBatchData.batch_number,
+                expiry_date: currentBatchData.expiry_date,
+                supplier: currentBatchData.supplier
+              });
+            }
 
             remainingToDeduct -= amountFromThisBatch;
           }
@@ -1570,10 +1632,11 @@ export default function App() {
         
         const price = isNaN(itemData.unit_price) ? 0 : itemData.unit_price;
 
-        // Check if item already exists with the same name AND batch
+        // Check if item already exists with the same name AND batch AND location
         const existingItem = items.find(i => 
           i.name.toLowerCase() === trimmedName.toLowerCase() && 
-          (i.batch_number || '').toLowerCase() === (itemData.batch_number || '').toLowerCase()
+          (i.batch_number || '').toLowerCase() === (itemData.batch_number || '').toLowerCase() &&
+          (i.location || 'Almoxarifado') === inventoryLocation
         );
 
         if (existingItem) {
@@ -1607,6 +1670,7 @@ export default function App() {
               type: 'entry',
               origin: bulkEntry.origin,
               quantity: initial_qty,
+              location: inventoryLocation,
               date: new Date().toISOString(),
               responsible: user?.displayName || 'Sistema',
               responsibleEmail: user?.email || '',
@@ -1631,6 +1695,7 @@ export default function App() {
             category: bulkEntry.category,
             batch_number: itemData.batch_number,
             quantity: initial_qty,
+            location: inventoryLocation,
             createdAt: new Date().toISOString()
           });
 
@@ -1640,10 +1705,13 @@ export default function App() {
             type: 'entry',
             origin: bulkEntry.origin,
             quantity: initial_qty,
+            location: inventoryLocation,
             date: new Date().toISOString(),
             responsible: user?.displayName || 'Sistema',
             responsibleEmail: user?.email || '',
-            supplier: bulkEntry.supplier
+            supplier: bulkEntry.supplier,
+            batch_number: itemData.batch_number,
+            expiry_date: expiryValue
           });
         }
       }
@@ -1706,7 +1774,8 @@ export default function App() {
               type: 'exit',
               origin: currentItemData.origin,
               quantity: b.quantity,
-              sector: selectedSector,
+              sector: inventoryLocation === 'Farmácia' && exitReason === 'consumo' ? 'Farmácia (Consumo Interno)' : selectedSector,
+              location: inventoryLocation,
               date: new Date().toISOString(),
               responsible: user?.displayName || 'Sistema',
               responsibleEmail: user?.email || '',
@@ -1715,6 +1784,58 @@ export default function App() {
               batch_number: currentItemData.batch_number,
               expiry_date: currentItemData.expiry_date
             });
+
+            // Automatic transfer to Pharmacy stock if sector is 'Farmácia'
+            if (selectedSector === 'Farmácia' && exitReason === 'consumo') {
+              const pharmacyItemsQuery = query(
+                collection(db, 'items'),
+                where('name', '==', currentItemData.name),
+                where('batch_number', '==', currentItemData.batch_number || ''),
+                where('location', '==', 'Farmácia'),
+                where('deletedAt', '==', null)
+              );
+              
+              const pharmacyItemsSnap = await getDocs(pharmacyItemsQuery);
+              
+              if (!pharmacyItemsSnap.empty) {
+                const pharmacyItemDoc = pharmacyItemsSnap.docs[0];
+                transaction.update(pharmacyItemDoc.ref, {
+                  quantity: (pharmacyItemDoc.data().quantity || 0) + b.quantity,
+                  updatedAt: serverTimestamp()
+                });
+              } else {
+                const newItemRef = doc(collection(db, 'items'));
+                transaction.set(newItemRef, {
+                  name: currentItemData.name,
+                  description: currentItemData.description || '',
+                  quantity: b.quantity,
+                  min_quantity: currentItemData.min_quantity || 5,
+                  expiry_date: currentItemData.expiry_date,
+                  origin: currentItemData.origin,
+                  unit_price: currentItemData.unit_price,
+                  supplier: currentItemData.supplier,
+                  category: currentItemData.category,
+                  batch_number: currentItemData.batch_number,
+                  location: 'Farmácia',
+                  createdAt: new Date().toISOString()
+                });
+              }
+
+              // Record entry in Pharmacy history
+              const pharmTransRef = doc(collection(db, 'transactions'));
+              transaction.set(pharmTransRef, {
+                item_name: currentItemData.name,
+                type: 'entry',
+                origin: currentItemData.origin,
+                quantity: b.quantity,
+                location: 'Farmácia',
+                date: new Date().toISOString(),
+                responsible: 'Sistema (Transferência)',
+                batch_number: currentItemData.batch_number,
+                expiry_date: currentItemData.expiry_date,
+                supplier: currentItemData.supplier
+              });
+            }
           }
         });
       } else {
@@ -1753,6 +1874,7 @@ export default function App() {
             origin: currentItemData.origin,
             quantity: transactionQty,
             sector: null,
+            location: inventoryLocation,
             date: new Date().toISOString(),
             responsible: user?.displayName || 'Sistema',
             responsibleEmail: user?.email || '',
@@ -2304,8 +2426,10 @@ export default function App() {
 
   const filteredItems = items.filter(i => {
     const normalizedSearch = normalizeString(searchTerm);
-    return !i.deletedAt && // Exclude deleted items
-    i.quantity > 0 && // Only active items (with stock)
+    const itemLocation = i.location || 'Almoxarifado';
+    return !i.deletedAt && 
+    i.quantity > 0 && 
+    itemLocation === inventoryLocation &&
     ((normalizeString(i.name).includes(normalizedSearch) || 
     normalizeString(i.supplier).includes(normalizedSearch) ||
     normalizeString(i.category).includes(normalizedSearch) ||
@@ -2314,7 +2438,7 @@ export default function App() {
     (categoryFilter === 'all' || i.category === categoryFilter));
   });
 
-  const groupedItems = items.filter(i => !i.deletedAt && i.quantity > 0).reduce((acc, item) => {
+  const groupedItems = items.filter(i => !i.deletedAt && i.quantity > 0 && (i.location || 'Almoxarifado') === inventoryLocation).reduce((acc, item) => {
     if (!acc[item.name]) {
       const weeklyExitRate = weeklyExitRates[item.name] || 0;
       
@@ -2346,9 +2470,13 @@ export default function App() {
     group.total_quantity <= group.min_quantity
   );
 
-  const nearExpiryItems = items.filter(isNearExpiry);
-  const totalVolume = items.reduce((sum, item) => sum + item.quantity, 0);
-  const totalInventoryValue = items.reduce((sum, item) => sum + (item.quantity * (item.unit_price || 0)), 0);
+  const nearExpiryItems = items.filter(i => (i.location || 'Almoxarifado') === inventoryLocation && isNearExpiry(i));
+  const totalVolume = items
+    .filter(i => !i.deletedAt && (i.location || 'Almoxarifado') === inventoryLocation)
+    .reduce((sum, item) => sum + item.quantity, 0);
+  const totalInventoryValue = items
+    .filter(i => !i.deletedAt && (i.location || 'Almoxarifado') === inventoryLocation)
+    .reduce((sum, item) => sum + (item.quantity * (item.unit_price || 0)), 0);
 
   const groupedArray: ItemGroup[] = (Object.values(groupedItems) as ItemGroup[])
     .filter(group => {
@@ -2858,8 +2986,43 @@ export default function App() {
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
-              className="bg-white rounded-3xl border border-[#E7E5E4] shadow-sm overflow-hidden"
+              className="space-y-4"
             >
+              <div className="flex justify-between items-center bg-white p-4 rounded-3xl border border-[#E7E5E4] shadow-sm">
+                {isAdmin ? (
+                  <div className="flex items-center gap-2 bg-[#F5F5F4] p-1 rounded-2xl border border-[#E7E5E4]">
+                    <button 
+                      onClick={() => setInventoryLocation('Almoxarifado')}
+                      className={`px-6 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${inventoryLocation === 'Almoxarifado' ? 'bg-[#1C1917] text-white shadow-md' : 'text-[#78716C] hover:bg-[#E7E5E4]'}`}
+                    >
+                      <Package size={14} /> Almoxarifado Geral
+                    </button>
+                    <button 
+                      onClick={() => setInventoryLocation('Farmácia')}
+                      className={`px-6 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${inventoryLocation === 'Farmácia' ? 'bg-[#1C1917] text-white shadow-md' : 'text-[#78716C] hover:bg-[#E7E5E4]'}`}
+                    >
+                      <Users size={14} /> Estoque Farmácia
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-3 px-4 py-2 bg-[#F5F5F4] rounded-2xl border border-[#E7E5E4]">
+                    <div className="p-2 bg-[#1C1917] text-white rounded-xl">
+                      {inventoryLocation === 'Almoxarifado' ? <Package size={16} /> : <Users size={16} />}
+                    </div>
+                    <p className="text-sm font-bold text-[#1C1917]">
+                      Estoque: {inventoryLocation}
+                    </p>
+                  </div>
+                )}
+                
+                <div className="flex items-center gap-3">
+                  <p className="text-xs font-bold text-[#A8A29E] uppercase tracking-widest">
+                    Visualizando: <span className="text-[#1C1917]">{inventoryLocation}</span>
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-white rounded-3xl border border-[#E7E5E4] shadow-sm overflow-hidden">
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
@@ -3168,6 +3331,7 @@ export default function App() {
                   <p className="text-[#78716C]">Nenhum item encontrado.</p>
                 </div>
               )}
+              </div>
             </motion.div>
           )}
 
@@ -3180,7 +3344,25 @@ export default function App() {
               className="space-y-4"
             >
               <div className="flex justify-between items-center bg-white p-4 rounded-3xl border border-[#E7E5E4] shadow-sm">
-                <h3 className="text-lg font-bold text-[#1C1917]">Histórico de Movimentações</h3>
+                <div className="flex items-center gap-4">
+                  <h3 className="text-lg font-bold text-[#1C1917]">Histórico de Movimentações</h3>
+                  {isAdmin && (
+                    <div className="flex items-center gap-2 bg-[#F5F5F4] p-1 rounded-2xl border border-[#E7E5E4]">
+                      <button 
+                        onClick={() => setInventoryLocation('Almoxarifado')}
+                        className={`px-4 py-1.5 rounded-xl text-[10px] font-bold transition-all ${inventoryLocation === 'Almoxarifado' ? 'bg-[#1C1917] text-white shadow-sm' : 'text-[#78716C] hover:bg-[#E7E5E4]'}`}
+                      >
+                        Almoxarifado
+                      </button>
+                      <button 
+                        onClick={() => setInventoryLocation('Farmácia')}
+                        className={`px-4 py-1.5 rounded-xl text-[10px] font-bold transition-all ${inventoryLocation === 'Farmácia' ? 'bg-[#1C1917] text-white shadow-sm' : 'text-[#78716C] hover:bg-[#E7E5E4]'}`}
+                      >
+                        Farmácia
+                      </button>
+                    </div>
+                  )}
+                </div>
                 <div className="flex gap-2">
                   {showDeletedHistory && transactions.filter(t => !!t.deletedAt).length > 0 && (
                     <button 
@@ -3215,7 +3397,7 @@ export default function App() {
                   </thead>
                   <tbody className="divide-y divide-[#E7E5E4]">
                     {transactions
-                      .filter(t => showDeletedHistory ? !!t.deletedAt : !t.deletedAt)
+                      .filter(t => (showDeletedHistory ? !!t.deletedAt : !t.deletedAt) && (t.location || 'Almoxarifado') === inventoryLocation)
                       .map(t => (
                       <tr key={t.id} className={`hover:bg-[#FAFAF9] transition-all ${t.deletedAt ? 'opacity-60 grayscale-[0.5]' : ''}`}>
                         <td className="px-6 py-5 text-sm text-[#57534E]">
@@ -3281,11 +3463,11 @@ export default function App() {
                     ))}
                   </tbody>
                 </table>
-                {((showDeletedHistory && transactions.filter(t => !!t.deletedAt).length === 0) || 
-                  (!showDeletedHistory && transactions.filter(t => !t.deletedAt).length === 0)) && (
+                {((showDeletedHistory && transactions.filter(t => !!t.deletedAt && (t.location || 'Almoxarifado') === inventoryLocation).length === 0) || 
+                  (!showDeletedHistory && transactions.filter(t => !t.deletedAt && (t.location || 'Almoxarifado') === inventoryLocation).length === 0)) && (
                   <div className="p-20 text-center">
                     <History className="mx-auto text-[#E7E5E4] mb-4" size={48} />
-                    <p className="text-[#78716C]">Nenhuma movimentação encontrada.</p>
+                    <p className="text-[#78716C]">Nenhuma movimentação encontrada para {inventoryLocation}.</p>
                   </div>
                 )}
               </div>
@@ -4757,7 +4939,12 @@ export default function App() {
                     <label className="block text-sm font-bold text-[#57534E] mb-2">
                       {exitReason === 'doacao' ? 'Destinatário da Doação' : 'Setor de Destino'}
                     </label>
-                    {exitReason === 'doacao' ? (
+                    {inventoryLocation === 'Farmácia' && exitReason === 'consumo' ? (
+                      <div className="bg-emerald-50 p-4 rounded-2xl border border-emerald-100">
+                        <p className="text-xs font-bold text-emerald-700 uppercase tracking-widest mb-1">Saída Interna Farmácia</p>
+                        <p className="text-sm text-emerald-600">Esta movimentação será registrada como consumo interno da Farmácia.</p>
+                      </div>
+                    ) : exitReason === 'doacao' ? (
                       <input 
                         required
                         type="text"

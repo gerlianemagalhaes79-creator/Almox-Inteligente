@@ -49,6 +49,7 @@ export interface Item {
   supplier: string | null;
   category: string | null;
   batch_number: string | null;
+  location?: 'Almoxarifado' | 'Farmácia';
   deletedAt?: string;
   deletedBy?: string;
 }
@@ -61,6 +62,7 @@ export interface Transaction {
   origin: 'contract' | 'extra' | 'donation';
   quantity: number;
   sector?: string;
+  location?: 'Almoxarifado' | 'Farmácia';
   date: string;
   responsible?: string;
   responsibleEmail?: string;
