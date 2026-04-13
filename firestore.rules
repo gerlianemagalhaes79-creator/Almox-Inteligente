@@ -14,6 +14,11 @@ service cloud.firestore {
       );
     }
 
+    function isPharmacyUser() {
+      let userDocPath = /databases/$(database)/documents/users/$(request.auth.token.email);
+      return isAuthenticated() && exists(userDocPath) && get(userDocPath).data.sector == 'Farmácia';
+    }
+
     function isSetor() {
       return isAuthenticated() && get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.role == 'SETOR';
     }
@@ -37,7 +42,9 @@ service cloud.firestore {
 
     match /items/{itemId} {
       allow read: if isAuthenticated();
-      allow create, update, delete: if isAdmin();
+      allow create: if isAdmin() || (isPharmacyUser() && request.resource.data.location == 'Farmácia');
+      allow update: if isAdmin() || (isPharmacyUser() && resource.data.location == 'Farmácia' && request.resource.data.location == 'Farmácia');
+      allow delete: if isAdmin();
     }
 
     match /transactions/{transactionId} {

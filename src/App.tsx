@@ -1507,14 +1507,17 @@ export default function App() {
               
               const pharmacyItemsSnap = await getDocs(pharmacyItemsQuery);
               
+              let pharmacyItemId = '';
               if (!pharmacyItemsSnap.empty) {
                 const pharmacyItemDoc = pharmacyItemsSnap.docs[0];
+                pharmacyItemId = pharmacyItemDoc.id;
                 transaction.update(pharmacyItemDoc.ref, {
                   quantity: (pharmacyItemDoc.data().quantity || 0) + amountFromThisBatch,
                   updatedAt: serverTimestamp()
                 });
               } else {
                 const newItemRef = doc(collection(db, 'items'));
+                pharmacyItemId = newItemRef.id;
                 transaction.set(newItemRef, {
                   name: reqItem.product_name,
                   description: currentBatchData.description || '',
@@ -1534,6 +1537,7 @@ export default function App() {
               // Record entry in Pharmacy history
               const pharmTransRef = doc(collection(db, 'transactions'));
               transaction.set(pharmTransRef, {
+                item_id: pharmacyItemId,
                 item_name: reqItem.product_name,
                 type: 'entry',
                 origin: currentBatchData.origin,
@@ -1797,14 +1801,17 @@ export default function App() {
               
               const pharmacyItemsSnap = await getDocs(pharmacyItemsQuery);
               
+              let pharmacyItemId = '';
               if (!pharmacyItemsSnap.empty) {
                 const pharmacyItemDoc = pharmacyItemsSnap.docs[0];
+                pharmacyItemId = pharmacyItemDoc.id;
                 transaction.update(pharmacyItemDoc.ref, {
                   quantity: (pharmacyItemDoc.data().quantity || 0) + b.quantity,
                   updatedAt: serverTimestamp()
                 });
               } else {
                 const newItemRef = doc(collection(db, 'items'));
+                pharmacyItemId = newItemRef.id;
                 transaction.set(newItemRef, {
                   name: currentItemData.name,
                   description: currentItemData.description || '',
@@ -1824,6 +1831,7 @@ export default function App() {
               // Record entry in Pharmacy history
               const pharmTransRef = doc(collection(db, 'transactions'));
               transaction.set(pharmTransRef, {
+                item_id: pharmacyItemId,
                 item_name: currentItemData.name,
                 type: 'entry',
                 origin: currentItemData.origin,
