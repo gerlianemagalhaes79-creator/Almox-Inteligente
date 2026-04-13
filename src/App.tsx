@@ -472,6 +472,7 @@ export default function App() {
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
   const [editingPrice, setEditingPrice] = useState<{ id: string, price: number } | null>(null);
   const [editingQuantity, setEditingQuantity] = useState<{ id: string, quantity: number } | null>(null);
+  const [editingMaterialName, setEditingMaterialName] = useState<{ oldName: string, newName: string } | null>(null);
 
   const uniqueSuppliers = useMemo(() => {
     const fromItems = items.map(i => i.supplier).filter(Boolean) as string[];
@@ -539,6 +540,49 @@ export default function App() {
     } catch (error: any) {
       handleFirestoreError(error, OperationType.UPDATE, `items/${editingQuantity.id}`);
       showToast(`Erro ao atualizar quantidade: ${error.message}`, "error");
+    }
+  };
+
+  const handleUpdateMaterialName = async () => {
+    if (!editingMaterialName || !editingMaterialName.newName.trim()) return;
+    const oldName = editingMaterialName.oldName;
+    const newName = editingMaterialName.newName.trim();
+
+    if (oldName === newName) {
+      setEditingMaterialName(null);
+      return;
+    }
+
+    try {
+      // Find all items and transactions with the old name
+      const itemsToUpdate = items.filter(i => i.name === oldName);
+      const transToUpdate = transactions.filter(t => t.item_name === oldName);
+      
+      const totalOps = itemsToUpdate.length + transToUpdate.length;
+      
+      if (totalOps === 0) {
+        setEditingMaterialName(null);
+        return;
+      }
+
+      // Process in batches of 400
+      const allDocs = [
+        ...itemsToUpdate.map(i => ({ ref: doc(db, 'items', i.id), data: { name: newName } })),
+        ...transToUpdate.map(t => ({ ref: doc(db, 'transactions', t.id), data: { item_name: newName } }))
+      ];
+
+      for (let i = 0; i < allDocs.length; i += 400) {
+        const batch = writeBatch(db);
+        const chunk = allDocs.slice(i, i + 400);
+        chunk.forEach(op => batch.update(op.ref, op.data));
+        await batch.commit();
+      }
+
+      showToast("Nome do material atualizado com sucesso!", "success");
+      setEditingMaterialName(null);
+    } catch (error: any) {
+      console.error("Error updating material name:", error);
+      showToast(`Erro ao atualizar nome: ${error.message}`, "error");
     }
   };
 
@@ -2842,7 +2886,44 @@ export default function App() {
                             <div className={`transition-transform ${expandedItems.has(group.name) ? 'rotate-90' : ''}`}>
                               <ChevronRight size={18} className="text-[#A8A29E]" />
                             </div>
-                            <p className="font-bold text-lg">{group.name}</p>
+                            {isAdmin && editingMaterialName?.oldName === group.name ? (
+                              <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                                <input 
+                                  type="text" 
+                                  value={editingMaterialName.newName}
+                                  onChange={(e) => setEditingMaterialName({ ...editingMaterialName, newName: e.target.value })}
+                                  className="px-3 py-1 bg-white border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-lg"
+                                  autoFocus
+                                />
+                                <button 
+                                  onClick={handleUpdateMaterialName}
+                                  className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-xl"
+                                  title="Salvar"
+                                >
+                                  <Check size={20} />
+                                </button>
+                                <button 
+                                  onClick={() => setEditingMaterialName(null)}
+                                  className="p-2 text-rose-600 hover:bg-rose-50 rounded-xl"
+                                  title="Cancelar"
+                                >
+                                  <X size={20} />
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-2 group/name">
+                                <p className="font-bold text-lg">{group.name}</p>
+                                {isAdmin && (
+                                  <button 
+                                    onClick={(e) => { e.stopPropagation(); setEditingMaterialName({ oldName: group.name, newName: group.name }); }}
+                                    className="opacity-0 group-hover/name:opacity-100 p-1 text-[#A8A29E] hover:text-[#1C1917] transition-all"
+                                    title="Editar Nome do Material"
+                                  >
+                                    <Edit2 size={16} />
+                                  </button>
+                                )}
+                              </div>
+                            )}
                           </div>
                         </td>
                         <td className="px-6 py-5">
@@ -4594,7 +4675,13 @@ export default function App() {
                       >
                         -
                       </button>
-                      <span className="text-4xl font-bold w-16 text-center">{transactionQty}</span>
+                      <input 
+                        type="number"
+                        min="1"
+                        value={transactionQty}
+                        onChange={e => setTransactionQty(Math.max(1, parseInt(e.target.value) || 0))}
+                        className="text-4xl font-bold w-24 text-center bg-transparent border-none focus:ring-0"
+                      />
                       <button 
                         type="button"
                         onClick={() => setTransactionQty(transactionQty + 1)}
@@ -4732,7 +4819,19 @@ export default function App() {
                             >
                               -
                             </button>
-                            <span className="font-bold w-6 text-center">{b.quantity}</span>
+                            <input 
+                              type="number"
+                              min="1"
+                              max={item?.quantity || 999}
+                              value={b.quantity}
+                              onChange={e => {
+                                const val = Math.max(1, Math.min(item?.quantity || 999, parseInt(e.target.value) || 0));
+                                const newBasket = [...basket];
+                                newBasket[index].quantity = val;
+                                setBasket(newBasket);
+                              }}
+                              className="font-bold w-16 text-center bg-transparent border-none focus:ring-0 text-sm"
+                            />
                             <button 
                               type="button"
                               onClick={() => {
