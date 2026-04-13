@@ -291,8 +291,11 @@ export default function App() {
   const [showDeleteModal, setShowDeleteModal] = useState<{show: boolean, transactionId?: string}>({ show: false });
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showMergeSuppliers, setShowMergeSuppliers] = useState(false);
+  const [showMergeItems, setShowMergeItems] = useState(false);
   const [sourceSupplier, setSourceSupplier] = useState('');
   const [targetSupplier, setTargetSupplier] = useState('');
+  const [sourceItemName, setSourceItemName] = useState('');
+  const [targetItemName, setTargetItemName] = useState('');
   const [isMerging, setIsMerging] = useState(false);
   const [showUserDeleteConfirm, setShowUserDeleteConfirm] = useState<{show: boolean, user?: UserProfile}>({ show: false });
   const [toast, setToast] = useState<{show: boolean, message: string, type: 'success' | 'error' | 'info'}>({ show: false, message: '', type: 'info' });
@@ -475,6 +478,11 @@ export default function App() {
     return Array.from(new Set([...fromItems, ...fromTrans])).sort();
   }, [items, transactions]);
 
+  const uniqueItemNames = useMemo(() => {
+    const names = new Set(items.filter(i => !i.deletedAt).map(i => i.name));
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [items]);
+
   useEffect(() => {
     if (showRequestDetailModal.show && showRequestDetailModal.request) {
       setAdminObservation(showRequestDetailModal.request.adminObservation || '');
@@ -573,6 +581,51 @@ export default function App() {
     } catch (error: any) {
       console.error("Error merging suppliers:", error);
       showToast(`Erro ao mesclar fornecedores: ${error.message}`, "error");
+    } finally {
+      setIsMerging(false);
+    }
+  };
+
+  const handleMergeItems = async () => {
+    if (!sourceItemName || !targetItemName || sourceItemName === targetItemName) {
+      showToast("Selecione itens diferentes para mesclar.", "error");
+      return;
+    }
+
+    setIsMerging(true);
+    try {
+      // Find all items and transactions with the source item name
+      const itemsToUpdate = items.filter(i => i.name === sourceItemName);
+      const transToUpdate = transactions.filter(t => t.item_name === sourceItemName);
+      
+      const totalOps = itemsToUpdate.length + transToUpdate.length;
+      
+      if (totalOps === 0) {
+        showToast("Nenhum registro encontrado para o item de origem.", "info");
+        setIsMerging(false);
+        return;
+      }
+
+      // Process in batches of 400 (Firestore limit is 500)
+      const allDocs = [
+        ...itemsToUpdate.map(i => ({ ref: doc(db, 'items', i.id), data: { name: targetItemName } })),
+        ...transToUpdate.map(t => ({ ref: doc(db, 'transactions', t.id), data: { item_name: targetItemName } }))
+      ];
+
+      for (let i = 0; i < allDocs.length; i += 400) {
+        const batch = writeBatch(db);
+        const chunk = allDocs.slice(i, i + 400);
+        chunk.forEach(op => batch.update(op.ref, op.data));
+        await batch.commit();
+      }
+
+      showToast(`${totalOps} registros atualizados com sucesso!`, "success");
+      setShowMergeItems(false);
+      setSourceItemName('');
+      setTargetItemName('');
+    } catch (error: any) {
+      console.error("Error merging items:", error);
+      showToast(`Erro ao mesclar itens: ${error.message}`, "error");
     } finally {
       setIsMerging(false);
     }
@@ -4871,15 +4924,26 @@ export default function App() {
                   <p className="text-sm text-blue-700 mb-4 leading-relaxed">
                     Corrija inconsistências unificando fornecedores cadastrados com nomes diferentes.
                   </p>
-                  <button 
-                    onClick={() => {
-                      setShowSettingsModal(false);
-                      setShowMergeSuppliers(true);
-                    }}
-                    className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all flex items-center justify-center gap-2"
-                  >
-                    <RotateCcw size={18} /> Mesclar Fornecedores
-                  </button>
+                  <div className="grid grid-cols-1 gap-4">
+                    <button 
+                      onClick={() => {
+                        setShowSettingsModal(false);
+                        setShowMergeSuppliers(true);
+                      }}
+                      className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all flex items-center justify-center gap-2"
+                    >
+                      <RotateCcw size={18} /> Mesclar Fornecedores
+                    </button>
+                    <button 
+                      onClick={() => {
+                        setShowSettingsModal(false);
+                        setShowMergeItems(true);
+                      }}
+                      className="w-full py-3 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 transition-all flex items-center justify-center gap-2"
+                    >
+                      <Package size={18} /> Mesclar Itens Duplicados
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -4973,6 +5037,92 @@ export default function App() {
                   onClick={handleMergeSuppliers}
                   disabled={isMerging || !sourceSupplier || !targetSupplier || sourceSupplier === targetSupplier}
                   className={`flex-1 py-3 bg-blue-600 text-white rounded-xl font-bold transition-all flex items-center justify-center gap-2 ${isMerging || !sourceSupplier || !targetSupplier || sourceSupplier === targetSupplier ? 'opacity-50 cursor-not-allowed' : 'hover:bg-blue-700'}`}
+                >
+                  {isMerging ? (
+                    <>
+                      <RotateCcw className="animate-spin" size={18} /> Processando...
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle size={18} /> Confirmar Mesclagem
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {showMergeItems && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[80] flex items-center justify-center p-6">
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="bg-white w-full max-w-md rounded-[32px] p-8 shadow-2xl"
+          >
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-2xl font-black text-[#1C1917]">Mesclar Itens Duplicados</h3>
+              <button 
+                onClick={() => setShowMergeItems(false)}
+                className="p-2 hover:bg-[#F5F5F4] rounded-full transition-all"
+              >
+                <X size={24} />
+              </button>
+            </div>
+
+            <div className="space-y-6">
+              <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100 mb-4">
+                <p className="text-xs text-emerald-700 font-medium">
+                  Esta ação irá unificar dois itens com nomes diferentes. Todos os registros de estoque e histórico serão movidos para o nome correto.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1.5 ml-1">Item de Origem (Nome Incorreto)</label>
+                <select 
+                  className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
+                  value={sourceItemName}
+                  onChange={e => setSourceItemName(e.target.value)}
+                >
+                  <option value="">Selecione o nome duplicado...</option>
+                  {uniqueItemNames.map(name => (
+                    <option key={`source-item-${name}`} value={name}>{name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex justify-center">
+                <div className="bg-[#F5F5F4] p-2 rounded-full">
+                  <ArrowDownLeft className="text-[#A8A29E] rotate-45" size={20} />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1.5 ml-1">Item de Destino (Nome Correto)</label>
+                <select 
+                  className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
+                  value={targetItemName}
+                  onChange={e => setTargetItemName(e.target.value)}
+                >
+                  <option value="">Selecione o nome que deve permanecer...</option>
+                  {uniqueItemNames.map(name => (
+                    <option key={`target-item-${name}`} value={name}>{name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="pt-4 flex gap-3">
+                <button 
+                  onClick={() => setShowMergeItems(false)}
+                  className="flex-1 py-3 bg-[#F5F5F4] text-[#57534E] rounded-xl font-bold hover:bg-[#E7E5E4] transition-all"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  onClick={handleMergeItems}
+                  disabled={isMerging || !sourceItemName || !targetItemName || sourceItemName === targetItemName}
+                  className={`flex-1 py-3 bg-emerald-600 text-white rounded-xl font-bold transition-all flex items-center justify-center gap-2 ${isMerging || !sourceItemName || !targetItemName || sourceItemName === targetItemName ? 'opacity-50 cursor-not-allowed' : 'hover:bg-emerald-700'}`}
                 >
                   {isMerging ? (
                     <>
