@@ -529,10 +529,22 @@ export default function App() {
   const handleUpdatePrice = async () => {
     if (!editingPrice) return;
     try {
-      await updateDoc(doc(db, 'items', editingPrice.id), {
-        unit_price: editingPrice.price
+      const itemToUpdate = items.find(i => i.id === editingPrice.id);
+      if (!itemToUpdate) return;
+
+      // Update all items with the same name to keep prices consistent across batches
+      const itemsWithSameName = items.filter(i => i.name.toLowerCase() === itemToUpdate.name.toLowerCase() && !i.deletedAt);
+      
+      const batch = writeBatch(db);
+      itemsWithSameName.forEach(item => {
+        batch.update(doc(db, 'items', item.id), {
+          unit_price: editingPrice.price,
+          updatedAt: serverTimestamp()
+        });
       });
-      showToast("Preço unitário atualizado com sucesso!", "success");
+      
+      await batch.commit();
+      showToast(`Preço unitário de "${itemToUpdate.name}" atualizado em todos os lotes!`, "success");
       setEditingPrice(null);
     } catch (error: any) {
       handleFirestoreError(error, OperationType.UPDATE, `items/${editingPrice.id}`);
@@ -1636,7 +1648,9 @@ export default function App() {
         const calculatedMin = weeklyRate > 0 ? Math.ceil(weeklyRate * 5) : 5;
         const min_qty = isNaN(itemData.min_quantity) ? calculatedMin : itemData.min_quantity;
         
-        const price = isNaN(itemData.unit_price) ? 0 : itemData.unit_price;
+        // Inherit price from existing batches if not provided
+        const existingPrice = items.find(i => i.name.toLowerCase() === trimmedName.toLowerCase() && (Number(i.unit_price) || 0) > 0)?.unit_price || 0;
+        const price = isNaN(itemData.unit_price) || itemData.unit_price === 0 ? existingPrice : itemData.unit_price;
 
         // Check if item already exists with the same name AND batch AND location
         const existingItem = items.find(i => 
@@ -2178,6 +2192,16 @@ export default function App() {
 
     const entries = filteredTrans.filter(t => t.type === 'entry').reduce((sum, t) => sum + t.quantity, 0);
     const exits = filteredTrans.filter(t => t.type === 'exit').reduce((sum, t) => sum + t.quantity, 0);
+    
+    const entriesValue = filteredTrans.filter(t => t.type === 'entry').reduce((sum, t) => {
+      const item = items.find(i => i.id === t.item_id);
+      return sum + (t.quantity * (Number(item?.unit_price) || 0));
+    }, 0);
+    
+    const exitsValue = filteredTrans.filter(t => t.type === 'exit').reduce((sum, t) => {
+      const item = items.find(i => i.id === t.item_id);
+      return sum + (t.quantity * (Number(item?.unit_price) || 0));
+    }, 0);
 
     // Extra vs Contract stats
     const originStats = {
@@ -2384,6 +2408,8 @@ export default function App() {
     return {
       entries,
       exits,
+      entriesValue,
+      exitsValue,
       daily: Object.values(dailyData).sort((a, b) => a.date.localeCompare(b.date)),
       categories: Object.entries(categoryData)
         .map(([name, value]) => ({ name, value }))
@@ -3492,6 +3518,8 @@ export default function App() {
                       <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Setor</th>
                       <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Responsável</th>
                       <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">Qtd</th>
+                      {isAdmin && <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">Valor Unit.</th>}
+                      {isAdmin && <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">Total</th>}
                       <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">Ações</th>
                     </tr>
                   </thead>
@@ -3537,6 +3565,24 @@ export default function App() {
                         <td className="px-6 py-5 text-right font-bold text-lg">
                           {t.quantity}
                         </td>
+                        {isAdmin && (
+                          <td className="px-6 py-5 text-right text-xs font-medium text-[#78716C]">
+                            {(() => {
+                              const item = items.find(i => i.id === t.item_id);
+                              const price = Number(item?.unit_price) || 0;
+                              return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(price);
+                            })()}
+                          </td>
+                        )}
+                        {isAdmin && (
+                          <td className="px-6 py-5 text-right text-sm font-black text-[#1C1917]">
+                            {(() => {
+                              const item = items.find(i => i.id === t.item_id);
+                              const price = Number(item?.unit_price) || 0;
+                              return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(t.quantity * price);
+                            })()}
+                          </td>
+                        )}
                         <td className="px-6 py-5 text-right">
                           {t.deletedAt ? (
                             <button 
@@ -3632,22 +3678,38 @@ export default function App() {
                 {isAdmin && (
                   <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
                     <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Entradas no Período</p>
-                    <div className="flex items-center gap-3">
-                      <div className="bg-emerald-100 p-2 rounded-xl text-emerald-600">
-                        <TrendingUp size={20} />
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="bg-emerald-100 p-2 rounded-xl text-emerald-600">
+                          <TrendingUp size={20} />
+                        </div>
+                        <h3 className="text-3xl font-black">{reportData.entries}</h3>
                       </div>
-                      <h3 className="text-3xl font-black">{reportData.entries}</h3>
+                      <div className="text-right">
+                        <p className="text-[10px] font-bold text-[#A8A29E] uppercase">Valor Total</p>
+                        <p className="text-sm font-black text-emerald-600">
+                          {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.entriesValue)}
+                        </p>
+                      </div>
                     </div>
                   </div>
                 )}
                 {isAdmin && (
                   <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
                     <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Saídas no Período</p>
-                    <div className="flex items-center gap-3">
-                      <div className="bg-rose-100 p-2 rounded-xl text-rose-600">
-                        <TrendingDown size={20} />
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="bg-rose-100 p-2 rounded-xl text-rose-600">
+                          <TrendingDown size={20} />
+                        </div>
+                        <h3 className="text-3xl font-black">{reportData.exits}</h3>
                       </div>
-                      <h3 className="text-3xl font-black">{reportData.exits}</h3>
+                      <div className="text-right">
+                        <p className="text-[10px] font-bold text-[#A8A29E] uppercase">Valor Total</p>
+                        <p className="text-sm font-black text-rose-600">
+                          {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.exitsValue)}
+                        </p>
+                      </div>
                     </div>
                   </div>
                 )}
