@@ -2683,6 +2683,26 @@ export default function App() {
               {editingRequest && ' - Editando Solicitação'}
               {activeTab === 'reports' && 'Relatórios e Análises'}
             </h2>
+              {activeTab === 'dashboard' && (
+                <div className="flex items-center gap-4 mt-2">
+                  <p className="text-[#78716C]">
+                    {new Date().toLocaleDateString('pt-BR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+                  </p>
+                  {isAdmin && (
+                    <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border border-[#E7E5E4]">
+                      <Package size={14} className="text-[#A8A29E]" />
+                      <select 
+                        className="text-xs font-bold focus:outline-none bg-transparent"
+                        value={inventoryLocation}
+                        onChange={e => setInventoryLocation(e.target.value as 'Almoxarifado' | 'Farmácia')}
+                      >
+                        <option value="Almoxarifado">Almoxarifado</option>
+                        <option value="Farmácia">Farmácia</option>
+                      </select>
+                    </div>
+                  )}
+                </div>
+              )}
               {activeTab === 'history' && (
                 <p className="text-[#78716C]">
                   {new Date().toLocaleDateString('pt-BR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
