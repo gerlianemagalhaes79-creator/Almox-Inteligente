@@ -2192,9 +2192,29 @@ export default function App() {
       else originStats[origin].exits += t.quantity;
     });
 
-    items.forEach(item => {
+    const filteredItems = items.filter(item => {
+      if (item.deletedAt) return false;
+      
+      // If not admin, only see items from their own location
+      if (!isAdmin) {
+        const userLocation = userProfile?.sector === 'Farmácia' ? 'Farmácia' : 'Almoxarifado';
+        return (item.location || 'Almoxarifado') === userLocation;
+      }
+      
+      // If admin, respect the sector filter if it maps to a location
+      if (reportSectorFilter === 'Farmácia') {
+        return item.location === 'Farmácia';
+      } else if (reportSectorFilter === 'Almoxarifado') {
+        return (item.location || 'Almoxarifado') === 'Almoxarifado';
+      }
+      
+      // If 'all' or other sector, show everything for admin
+      return true;
+    });
+
+    filteredItems.forEach(item => {
       const origin = item.origin || 'contract';
-      originStats[origin].current += item.quantity;
+      originStats[origin].current += (Number(item.quantity) || 0);
     });
 
     // Group by date for line chart
@@ -2211,10 +2231,12 @@ export default function App() {
     // Group by category for value chart
     const categoryValueData: Record<string, number> = {};
     
-    items.forEach(item => {
+    filteredItems.forEach(item => {
       const cat = item.category || 'Outros';
-      categoryData[cat] = (categoryData[cat] || 0) + item.quantity;
-      categoryValueData[cat] = (categoryValueData[cat] || 0) + (item.quantity * item.unit_price);
+      const qty = Number(item.quantity) || 0;
+      const price = Number(item.unit_price) || 0;
+      categoryData[cat] = (categoryData[cat] || 0) + qty;
+      categoryValueData[cat] = (categoryValueData[cat] || 0) + (qty * price);
     });
 
     // Group by sector for bar chart (stacked by category)
@@ -2256,7 +2278,8 @@ export default function App() {
 
     filteredTrans.filter(t => t.type === 'exit').forEach(t => {
       const item = items.find(i => i.id === t.item_id);
-      const value = t.quantity * (item?.unit_price || 0);
+      const price = Number(item?.unit_price) || 0;
+      const value = t.quantity * price;
       const sector = t.sector || 'Não Informado';
       
       if (!consumptionReport[t.item_name]) {
@@ -2298,12 +2321,14 @@ export default function App() {
 
     // Group by supplier for value chart
     const supplierData: Record<string, number> = {};
-    items.forEach(item => {
+    filteredItems.forEach(item => {
       const sup = item.supplier || 'Sem Fornecedor';
-      supplierData[sup] = (supplierData[sup] || 0) + (item.quantity * item.unit_price);
+      const qty = Number(item.quantity) || 0;
+      const price = Number(item.unit_price) || 0;
+      supplierData[sup] = (supplierData[sup] || 0) + (qty * price);
     });
 
-    const totalValue = items.reduce((sum, item) => sum + (item.quantity * item.unit_price), 0);
+    const totalValue = filteredItems.reduce((sum, item) => sum + ((Number(item.quantity) || 0) * (Number(item.unit_price) || 0)), 0);
 
     // Most requested items
     const mostRequested: Record<string, number> = {};
@@ -2483,10 +2508,10 @@ export default function App() {
   const nearExpiryItems = items.filter(i => (i.location || 'Almoxarifado') === inventoryLocation && isNearExpiry(i));
   const totalVolume = items
     .filter(i => !i.deletedAt && (i.location || 'Almoxarifado') === inventoryLocation)
-    .reduce((sum, item) => sum + item.quantity, 0);
+    .reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
   const totalInventoryValue = items
     .filter(i => !i.deletedAt && (i.location || 'Almoxarifado') === inventoryLocation)
-    .reduce((sum, item) => sum + (item.quantity * (item.unit_price || 0)), 0);
+    .reduce((sum, item) => sum + ((Number(item.quantity) || 0) * (Number(item.unit_price) || 0)), 0);
 
   const recentTransactions = transactions
     .filter(t => (t.location || 'Almoxarifado') === inventoryLocation)
