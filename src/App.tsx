@@ -2231,7 +2231,26 @@ export default function App() {
     // Group by category for value chart
     const categoryValueData: Record<string, number> = {};
     
-    filteredItems.forEach(item => {
+    const filteredItemsForValue = items.filter(item => {
+      if (item.deletedAt) return false;
+      
+      // If not admin, only see items from their own location
+      if (!isAdmin) {
+        const userLocation = userProfile?.sector === 'Farmácia' ? 'Farmácia' : 'Almoxarifado';
+        return (item.location || 'Almoxarifado') === userLocation;
+      }
+      
+      // If admin, respect the sector filter if it maps to a location
+      if (reportSectorFilter === 'Farmácia') {
+        return item.location === 'Farmácia';
+      } else if (reportSectorFilter === 'Almoxarifado') {
+        return (item.location || 'Almoxarifado') === 'Almoxarifado';
+      }
+      
+      return true;
+    });
+
+    filteredItemsForValue.forEach(item => {
       const cat = item.category || 'Outros';
       const qty = Number(item.quantity) || 0;
       const price = Number(item.unit_price) || 0;
@@ -2321,14 +2340,14 @@ export default function App() {
 
     // Group by supplier for value chart
     const supplierData: Record<string, number> = {};
-    filteredItems.forEach(item => {
+    filteredItemsForValue.forEach(item => {
       const sup = item.supplier || 'Sem Fornecedor';
       const qty = Number(item.quantity) || 0;
       const price = Number(item.unit_price) || 0;
       supplierData[sup] = (supplierData[sup] || 0) + (qty * price);
     });
 
-    const totalValue = filteredItems.reduce((sum, item) => sum + ((Number(item.quantity) || 0) * (Number(item.unit_price) || 0)), 0);
+    const totalValue = filteredItemsForValue.reduce((sum, item) => sum + ((Number(item.quantity) || 0) * (Number(item.unit_price) || 0)), 0);
 
     // Most requested items
     const mostRequested: Record<string, number> = {};
