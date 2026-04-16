@@ -1766,6 +1766,8 @@ export default function App() {
         if (basket.length === 0) return;
         
         await runTransaction(db, async (transaction) => {
+          const processedItems = [];
+          
           for (const b of basket) {
             const itemRef = doc(db, 'items', b.item_id);
             const itemSnap = await transaction.get(itemRef);
@@ -1775,25 +1777,50 @@ export default function App() {
             }
 
             const currentItemData = itemSnap.data() as Item;
-            const transCol = collection(db, 'transactions');
-            
             const currentQty = Number(currentItemData.quantity) || 0;
             if (currentQty < b.quantity) {
               throw new Error(`Estoque insuficiente para o item ${currentItemData.name}. Disponível: ${currentQty}`);
             }
 
+            let pharmacyItemSnap = null;
+            if (selectedSector === 'Farmácia' && exitReason === 'consumo') {
+              const pharmacyItemsQuery = query(
+                collection(db, 'items'),
+                where('name', '==', currentItemData.name),
+                where('batch_number', '==', currentItemData.batch_number || ''),
+                where('location', '==', 'Farmácia'),
+                where('deletedAt', '==', null)
+              );
+              pharmacyItemSnap = await getDocs(pharmacyItemsQuery);
+            }
+
+            processedItems.push({
+              itemRef,
+              currentItemData,
+              quantity: b.quantity,
+              pharmacyItemSnap
+            });
+          }
+
+          const transCol = collection(db, 'transactions');
+          const itemsCol = collection(db, 'items');
+
+          for (const pi of processedItems) {
+            const { itemRef, currentItemData, quantity, pharmacyItemSnap } = pi;
+            const currentQty = Number(currentItemData.quantity) || 0;
+
             transaction.update(itemRef, {
-              quantity: currentQty - b.quantity,
+              quantity: currentQty - quantity,
               updatedAt: serverTimestamp()
             });
 
             const newTransRef = doc(transCol);
             transaction.set(newTransRef, {
-              item_id: currentItemData.id || b.item_id,
+              item_id: currentItemData.id || itemRef.id,
               item_name: currentItemData.name,
               type: 'exit',
               origin: currentItemData.origin,
-              quantity: b.quantity,
+              quantity: quantity,
               sector: inventoryLocation === 'Farmácia' && exitReason === 'consumo' ? 'Farmácia (Consumo Interno)' : selectedSector,
               location: inventoryLocation,
               date: new Date().toISOString(),
@@ -1805,33 +1832,22 @@ export default function App() {
               expiry_date: currentItemData.expiry_date
             });
 
-            // Automatic transfer to Pharmacy stock if sector is 'Farmácia'
-            if (selectedSector === 'Farmácia' && exitReason === 'consumo') {
-              const pharmacyItemsQuery = query(
-                collection(db, 'items'),
-                where('name', '==', currentItemData.name),
-                where('batch_number', '==', currentItemData.batch_number || ''),
-                where('location', '==', 'Farmácia'),
-                where('deletedAt', '==', null)
-              );
-              
-              const pharmacyItemsSnap = await getDocs(pharmacyItemsQuery);
-              
+            if (pharmacyItemSnap) {
               let pharmacyItemId = '';
-              if (!pharmacyItemsSnap.empty) {
-                const pharmacyItemDoc = pharmacyItemsSnap.docs[0];
+              if (!pharmacyItemSnap.empty) {
+                const pharmacyItemDoc = pharmacyItemSnap.docs[0];
                 pharmacyItemId = pharmacyItemDoc.id;
                 transaction.update(pharmacyItemDoc.ref, {
-                  quantity: (pharmacyItemDoc.data().quantity || 0) + b.quantity,
+                  quantity: (pharmacyItemDoc.data().quantity || 0) + quantity,
                   updatedAt: serverTimestamp()
                 });
               } else {
-                const newItemRef = doc(collection(db, 'items'));
+                const newItemRef = doc(itemsCol);
                 pharmacyItemId = newItemRef.id;
                 transaction.set(newItemRef, {
                   name: currentItemData.name,
                   description: currentItemData.description || '',
-                  quantity: b.quantity,
+                  quantity: quantity,
                   min_quantity: currentItemData.min_quantity || 5,
                   expiry_date: currentItemData.expiry_date,
                   origin: currentItemData.origin,
@@ -1844,14 +1860,13 @@ export default function App() {
                 });
               }
 
-              // Record entry in Pharmacy history
-              const pharmTransRef = doc(collection(db, 'transactions'));
+              const pharmTransRef = doc(transCol);
               transaction.set(pharmTransRef, {
                 item_id: pharmacyItemId,
                 item_name: currentItemData.name,
                 type: 'entry',
                 origin: currentItemData.origin,
-                quantity: b.quantity,
+                quantity: quantity,
                 location: 'Farmácia',
                 date: new Date().toISOString(),
                 responsible: 'Sistema (Transferência)',
