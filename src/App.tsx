@@ -515,10 +515,19 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (!showTransactionModal.show) {
+    if (showTransactionModal.show) {
+      if (showTransactionModal.type === 'exit' && showTransactionModal.item) {
+        setBasket([{ item_id: showTransactionModal.item.id, quantity: 1 }]);
+      }
+    } else {
       setModalSearchTerm('');
+      setSelectedItemName('');
+      setSelectedItemId('');
+      if (showTransactionModal.type === 'exit') {
+        setBasket([]);
+      }
     }
-  }, [showTransactionModal.show]);
+  }, [showTransactionModal.show, showTransactionModal.type, showTransactionModal.item]);
 
   useEffect(() => {
     if (activeTab !== 'new-request') {
@@ -5227,6 +5236,7 @@ export default function App() {
                             <div className="relative">
                               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[#A8A29E]" size={16} />
                               <input 
+                                autoFocus
                                 type="text" 
                                 placeholder="Pesquisar item..."
                                 className="w-full pl-10 pr-4 py-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
@@ -5234,6 +5244,14 @@ export default function App() {
                                 onChange={(e) => {
                                   setModalSearchTerm(e.target.value);
                                   if (selectedItemName) setSelectedItemName('');
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' && !modalSearchTerm && basket.length > 0) {
+                                    e.preventDefault();
+                                    // Submit the form
+                                    const form = e.currentTarget.closest('form');
+                                    if (form) form.requestSubmit();
+                                  }
                                 }}
                               />
                             </div>
@@ -5244,21 +5262,42 @@ export default function App() {
                                 animate={{ opacity: 1, y: 0 }}
                                 className="absolute left-0 right-0 top-full mt-1 bg-white border border-[#E7E5E4] rounded-xl shadow-lg z-50 max-h-48 overflow-y-auto"
                               >
-                                {(Array.from(new Set(items.filter(i => i.quantity > 0).map(i => i.name))) as string[])
-                                  .filter(name => normalizeString(name).includes(normalizeString(modalSearchTerm)))
-                                  .sort((a, b) => a.localeCompare(b))
-                                  .map(name => (
+                                {(items.filter(i => i.quantity > 0) as Item[])
+                                  .filter(item => {
+                                    const combined = `${item.name} ${item.batch_number || ''}`;
+                                    return normalizeString(combined).includes(normalizeString(modalSearchTerm));
+                                  })
+                                  .sort((a, b) => a.name.localeCompare(b.name))
+                                  .slice(0, 10)
+                                  .map(item => (
                                     <button
-                                      key={name}
+                                      key={item.id}
                                       type="button"
                                       onClick={() => {
-                                        setSelectedItemName(name);
-                                        setModalSearchTerm(name);
-                                        setSelectedItemId('');
+                                        if (basket.some(b => b.item_id === item.id)) {
+                                          showToast('Este lote já está na lista de saída.', 'error');
+                                          return;
+                                        }
+                                        setBasket([...basket, { item_id: item.id, quantity: 1 }]);
+                                        setModalSearchTerm('');
+                                        setSelectedItemName('');
                                       }}
-                                      className="w-full px-4 py-3 text-left hover:bg-[#F5F5F4] transition-all border-b border-[#F5F5F4] last:border-none"
+                                      className="w-full px-4 py-3 text-left hover:bg-[#F5F5F4] transition-all border-b border-[#F5F5F4] last:border-none flex justify-between items-center"
                                     >
-                                      <p className="font-bold text-sm text-[#1C1917]">{name}</p>
+                                      <div>
+                                        <p className="font-bold text-sm text-[#1C1917]">{item.name}</p>
+                                        <p className="text-[10px] text-[#78716C] font-mono">Lote: {item.batch_number || '---'}</p>
+                                      </div>
+                                      <div className="flex flex-col items-end">
+                                        <span className="text-[10px] font-black text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded uppercase">
+                                          {item.quantity} un.
+                                        </span>
+                                        {item.expiry_date && (
+                                          <span className={`text-[8px] font-bold ${isNearExpiry(item) ? 'text-rose-600' : 'text-[#A8A29E]'}`}>
+                                            {item.expiry_date === 'Indeterminada' ? 'Indeterminada' : new Date(item.expiry_date).toLocaleDateString('pt-BR')}
+                                          </span>
+                                        )}
+                                      </div>
                                     </button>
                                   ))
                                 }
@@ -5282,8 +5321,8 @@ export default function App() {
                                 }
                                 setBasket([...basket, { item_id: id, quantity: 1 }]);
                                 setSelectedItemId('');
-                                // @ts-ignore
                                 setSelectedItemName('');
+                                setModalSearchTerm('');
                               }}
                             >
                               <option value="">Selecione o lote...</option>
