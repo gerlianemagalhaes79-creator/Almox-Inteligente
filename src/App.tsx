@@ -2789,7 +2789,8 @@ export default function App() {
               <img src={user.photoURL || ''} className="w-8 h-8 rounded-full border border-[#E7E5E4]" alt="" />
               <div className="overflow-hidden">
                 <p className="text-xs font-bold truncate">{user.displayName}</p>
-                <button onClick={handleLogout} className="text-[10px] text-rose-600 font-bold hover:underline flex items-center gap-1">
+                <p className="text-[10px] text-[#A8A29E] font-medium truncate uppercase">{userProfile?.sector || 'Sem Setor'}</p>
+                <button onClick={handleLogout} className="text-[10px] text-rose-600 font-bold hover:underline flex items-center gap-1 mt-1">
                   <LogOut size={10} /> Sair
                 </button>
               </div>
@@ -2814,8 +2815,8 @@ export default function App() {
               {activeTab === 'history' && 'Histórico de Movimentações'}
               {activeTab === 'requests' && 'Solicitações de Materiais'}
               {activeTab === 'trash' && 'Lixeira (Exclusão em 3 dias)'}
-              {activeTab === 'my-requests' && 'Minhas Solicitações'}
-              {activeTab === 'new-request' && 'Nova Solicitação'}
+              {activeTab === 'my-requests' && `Minhas Solicitações - ${userProfile?.sector || ''}`}
+              {activeTab === 'new-request' && `Nova Solicitação - ${userProfile?.sector || ''}`}
               {editingRequest && ' - Editando Solicitação'}
               {activeTab === 'reports' && 'Relatórios e Análises'}
             </h2>
@@ -5825,10 +5826,10 @@ export default function App() {
             </div>
 
             <div className="grid grid-cols-2 gap-6 mb-8">
-              <div className="p-4 bg-[#FAFAF9] rounded-2xl border border-[#E7E5E4]">
-                <p className="text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest mb-1">Solicitante</p>
-                <p className="font-bold text-[#1C1917]">{showRequestDetailModal.request.sector}</p>
-                <p className="text-xs text-[#78716C]">{showRequestDetailModal.request.requesterEmail}</p>
+              <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100">
+                <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest mb-1">SETOR SOLICITANTE</p>
+                <p className="text-lg font-black text-emerald-900">{showRequestDetailModal.request.sector}</p>
+                <p className="text-xs text-emerald-700/70 font-medium">{showRequestDetailModal.request.requesterEmail}</p>
               </div>
               <div className="p-4 bg-[#FAFAF9] rounded-2xl border border-[#E7E5E4]">
                 <p className="text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest mb-1">Status Atual</p>
@@ -5906,9 +5907,9 @@ export default function App() {
                   <thead>
                     <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
                       <th className="px-4 py-3 font-bold text-xs text-[#78716C]">Item</th>
-                      <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Solicitado</th>
-                      <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Aprovado</th>
-                      {isAdmin && <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Estoque</th>}
+                      <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Qtd. Solicitada</th>
+                      <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Qtd. a Liberar</th>
+                      {isAdmin && <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Saldo em Estoque</th>}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#E7E5E4]">
