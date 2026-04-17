@@ -2138,102 +2138,111 @@ export default function App() {
       const doc = new jsPDF();
       const pageWidth = doc.internal.pageSize.width;
       
-      // Header Banner
-      doc.setFillColor(28, 25, 23); // #1C1917
-      doc.rect(0, 0, pageWidth, 40, 'F');
+      // Minimalist Header (No heavy boxes)
+      // Simulated Logo / Icon (Simple and clean)
+      doc.setDrawColor(225, 29, 72); // rose-600 color for medical accent
+      doc.setLineWidth(1.5);
+      doc.line(14, 15, 24, 15); // Horizontal line of a plus
+      doc.line(19, 10, 19, 20); // Vertical line of a plus
       
-      // Title
-      doc.setFontSize(22);
-      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(16);
+      doc.setTextColor(28, 25, 23); // dark stone
       doc.setFont('helvetica', 'bold');
-      doc.text('Relatório de Consumo', 14, 25);
+      doc.text('POLICLÍNICA', 28, 17);
       
-      // Subtitle / Date
-      doc.setFontSize(10);
+      doc.setFontSize(8);
       doc.setFont('helvetica', 'normal');
-      doc.setTextColor(168, 162, 158); // #A8A29E
-      doc.text(`Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 14, 33);
+      doc.setTextColor(120, 113, 108);
+      doc.text('GESTÃO DE ALMOXARIFADO E FARMÁCIA', 28, 22);
+
+      doc.setDrawColor(231, 229, 228); // light border
+      doc.setLineWidth(0.5);
+      doc.line(14, 28, pageWidth - 14, 28);
       
-      // Info Box
-      doc.setFillColor(245, 245, 244); // #F5F5F4
-      doc.roundedRect(14, 45, pageWidth - 28, 25, 3, 3, 'F');
+      // Title and Date
+      doc.setFontSize(14);
+      doc.setTextColor(28, 25, 23);
+      doc.setFont('helvetica', 'bold');
+      doc.text('Relatório de Consumo por Setor', 14, 40);
       
       doc.setFontSize(9);
-      doc.setTextColor(120, 113, 108); // #78716C
-      doc.setFont('helvetica', 'bold');
-      doc.text('PERÍODO:', 20, 55);
-      doc.text('SETOR:', 20, 62);
-      
       doc.setFont('helvetica', 'normal');
-      doc.setTextColor(28, 25, 23); // #1C1917
-      doc.text(`${format(parseISO(reportRange.start), 'dd/MM/yyyy')} até ${format(parseISO(reportRange.end), 'dd/MM/yyyy')}`, 45, 55);
-      doc.text(reportSectorFilter === 'all' ? 'Todos os Setores' : reportSectorFilter, 45, 62);
-
-      // Summary Stats on the right of the info box
-      const totalValue = reportData.consumptionReport.reduce((sum, i) => sum + i.totalValue, 0);
-      doc.setFont('helvetica', 'bold');
       doc.setTextColor(120, 113, 108);
-      doc.text('TOTAL EM SAÍDAS:', pageWidth - 80, 58);
-      doc.setFontSize(12);
-      doc.setTextColor(225, 29, 72); // rose-600
-      doc.text(new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalValue), pageWidth - 80, 64);
+      doc.text(`Período: ${format(parseISO(reportRange.start), 'dd/MM/yyyy')} a ${format(parseISO(reportRange.end), 'dd/MM/yyyy')}`, 14, 46);
+      doc.text(`Emitido em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 14, 51);
       
-      // Prepare data for table
+      // Summary Box (Minimalist)
+      const totalValue = reportData.consumptionReport.reduce((sum, i) => sum + i.totalValue, 0);
+      doc.setFillColor(250, 250, 249); // stone-50
+      doc.roundedRect(pageWidth - 85, 35, 71, 18, 2, 2, 'F');
+      doc.setFontSize(8);
+      doc.setTextColor(120, 113, 108);
+      doc.text('VALOR TOTAL CONSUMIDO', pageWidth - 80, 42);
+      doc.setFontSize(11);
+      doc.setTextColor(28, 25, 23);
+      doc.setFont('helvetica', 'bold');
+      doc.text(new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalValue), pageWidth - 80, 49);
+
+      // Table Data
       const tableData: any[] = [];
       reportData.consumptionBySector.forEach(sectorGroup => {
-        // Add sector header row
+        // Sector Header
         tableData.push([
           { 
-            content: sectorGroup.sector.toUpperCase(), 
+            content: sectorGroup.sector, 
             colSpan: isAdmin ? 4 : 3, 
             styles: { 
-              fillColor: [68, 64, 60], // #44403C
-              textColor: [255, 255, 255], 
+              fillColor: [250, 250, 249],
+              textColor: [28, 25, 23], 
               fontStyle: 'bold',
-              halign: 'left',
-              cellPadding: { top: 4, bottom: 4, left: 5 }
+              cellPadding: 4,
+              fontSize: 10
             } 
           },
           isAdmin ? { 
             content: new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(sectorGroup.totalValue), 
             styles: { 
-              fillColor: [68, 64, 60], 
-              textColor: [255, 255, 255], 
+              fillColor: [250, 250, 249],
               halign: 'right', 
               fontStyle: 'bold' 
             } 
           } : ''
         ]);
         
-        // Add items for this sector
+        // Items
         Object.values(sectorGroup.items).sort((a, b) => b.quantity - a.quantity).forEach(item => {
           tableData.push([
             { content: item.name, styles: { cellPadding: { left: 8 } } },
             item.category,
-            { content: item.quantity.toString(), styles: { halign: 'center', fontStyle: 'bold' } },
+            { content: item.quantity.toString(), styles: { halign: 'center' } },
             isAdmin ? { content: new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.value), styles: { halign: 'right' } } : ''
           ]);
         });
       });
       
-      // Generate table
       autoTable(doc, {
-        startY: 75,
-        head: [['Item / Descrição', 'Categoria', 'Qtd', isAdmin ? 'Valor Total' : '']],
+        startY: 60,
+        head: [['Item / Produto', 'Categoria', 'Qtd', isAdmin ? 'Total (R$)' : '']],
         body: tableData,
-        theme: 'grid',
+        theme: 'plain', // Minimalist theme
         headStyles: { 
-          fillColor: [28, 25, 23], 
-          halign: 'center', 
-          fontSize: 10, 
+          textColor: [120, 113, 108], 
+          fontSize: 8, 
           fontStyle: 'bold',
+          halign: 'center',
           cellPadding: 4
         },
         styles: { 
           fontSize: 9, 
-          cellPadding: 3, 
-          lineColor: [231, 229, 228], // #E7E5E4
-          lineWidth: 0.1
+          cellPadding: 3,
+          textColor: [68, 64, 60] 
+        },
+        // Custom borders for the "minimalist" look (only horizontal lines)
+        didParseCell: (data) => {
+          if (data.section === 'body') {
+            data.cell.styles.lineWidth = { bottom: 0.1 };
+            data.cell.styles.lineColor = [231, 229, 228];
+          }
         },
         columnStyles: {
           0: { cellWidth: 'auto' },
@@ -2242,21 +2251,18 @@ export default function App() {
           3: { cellWidth: 35 }
         },
         didDrawPage: (data) => {
-          // Footer
-          doc.setFontSize(8);
+          doc.setFontSize(7);
           doc.setTextColor(168, 162, 158);
-          const str = 'Página ' + (doc as any).internal.getNumberOfPages();
-          doc.text(str, pageWidth - 25, doc.internal.pageSize.height - 10);
-          doc.text('Inventário Inteligente - Sistema de Gestão de Estoque', 14, doc.internal.pageSize.height - 10);
+          doc.text(`Documento emitido pelo Sistema de Gestão Hospitalar - Página ${doc.getNumberOfPages()}`, 14, doc.internal.pageSize.height - 10);
         }
       });
       
-      const fileName = `Relatorio_Consumo_${format(new Date(), 'dd-MM-yyyy')}.pdf`;
+      const fileName = `Relatorio_Consumo_Policlinica_${format(new Date(), 'dd-MM-yyyy')}.pdf`;
       doc.save(fileName);
-      showToast("Relatório de consumo exportado com sucesso!", "success");
+      showToast("Relatório profissional exportado!", "success");
     } catch (error) {
-      console.error('Erro ao exportar PDF de consumo:', error);
-      showToast("Erro ao exportar PDF de consumo.", "error");
+      console.error('Error exporting PDF:', error);
+      showToast("Erro ao gerar PDF profissional.", "error");
     }
   };
 
@@ -4160,36 +4166,36 @@ export default function App() {
                         <tbody className="divide-y divide-[#F5F5F4]">
                           {reportData.consumptionBySector.map((sectorGroup, idx) => (
                             <React.Fragment key={idx}>
-                              <tr className="bg-[#1C1917] text-white">
-                                <td className="py-3 px-4 font-black text-sm uppercase tracking-wider" colSpan={isAdmin ? 3 : 2}>
+                              <tr className="bg-[#F5F5F4]/50 border-b border-[#E7E5E4]">
+                                <td className="py-2 px-4 font-bold text-[10px] uppercase tracking-wider text-[#78716C]" colSpan={isAdmin ? 3 : 2}>
                                   {sectorGroup.sector}
                                 </td>
                                 {isAdmin && (
-                                  <td className="py-3 px-4 text-right font-black text-white">
+                                  <td className="py-2 px-4 text-right font-bold text-[#1C1917] text-xs">
                                     {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(sectorGroup.totalValue)}
                                   </td>
                                 )}
                               </tr>
                               {Object.values(sectorGroup.items).sort((a, b) => b.quantity - a.quantity).map((item, iIdx) => (
-                                <tr key={`${idx}-${iIdx}`} className="hover:bg-[#FAFAF9] transition-all border-l-4 border-[#E7E5E4]">
-                                  <td className="py-3 pl-8 text-sm font-bold text-[#1C1917]">
+                                <tr key={`${idx}-${iIdx}`} className="hover:bg-[#FAFAF9]/50 transition-all border-b border-[#F5F5F4]/30 last:border-b-0">
+                                  <td className="py-3 px-8 text-sm font-medium text-[#44403C]">
                                     {item.name}
                                   </td>
                                   <td className="py-3">
                                     <span 
-                                      className="text-[10px] font-bold px-2 py-1 rounded-lg text-white"
+                                      className="text-[10px] font-bold px-2 py-0.5 rounded text-white whitespace-nowrap opacity-80"
                                       style={{ backgroundColor: getCategoryColor(item.category) }}
                                     >
                                       {item.category}
                                     </span>
                                   </td>
                                   <td className="py-3 text-center">
-                                    <span className="bg-[#F5F5F4] text-[#1C1917] px-3 py-1 rounded-lg font-black text-xs">
+                                    <span className="text-[#1C1917] font-bold text-sm">
                                       {item.quantity}
                                     </span>
                                   </td>
                                   {isAdmin && (
-                                    <td className="py-3 text-right font-bold text-rose-600 text-xs">
+                                    <td className="py-3 text-right font-medium text-[#78716C] text-sm">
                                       {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.value)}
                                     </td>
                                   )}
