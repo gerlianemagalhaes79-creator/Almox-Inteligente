@@ -2136,58 +2136,121 @@ export default function App() {
   const handleExportConsumptionPDF = () => {
     try {
       const doc = new jsPDF();
+      const pageWidth = doc.internal.pageSize.width;
       
-      // Add title
-      doc.setFontSize(18);
-      doc.setTextColor(28, 25, 23); // #1C1917
-      doc.text('Relatório de Consumo de Materiais', 14, 22);
+      // Header Banner
+      doc.setFillColor(28, 25, 23); // #1C1917
+      doc.rect(0, 0, pageWidth, 40, 'F');
       
-      doc.setFontSize(11);
+      // Title
+      doc.setFontSize(22);
+      doc.setTextColor(255, 255, 255);
+      doc.setFont('helvetica', 'bold');
+      doc.text('Relatório de Consumo', 14, 25);
+      
+      // Subtitle / Date
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(168, 162, 158); // #A8A29E
+      doc.text(`Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 14, 33);
+      
+      // Info Box
+      doc.setFillColor(245, 245, 244); // #F5F5F4
+      doc.roundedRect(14, 45, pageWidth - 28, 25, 3, 3, 'F');
+      
+      doc.setFontSize(9);
       doc.setTextColor(120, 113, 108); // #78716C
-      const sectorText = reportSectorFilter === 'all' ? 'Todos os Setores' : reportSectorFilter;
-      doc.text(`Período: ${format(parseISO(reportRange.start), 'dd/MM/yyyy')} até ${format(parseISO(reportRange.end), 'dd/MM/yyyy')}`, 14, 30);
-      doc.text(`Setor: ${sectorText}`, 14, 36);
-      doc.text(`Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 14, 42);
+      doc.setFont('helvetica', 'bold');
+      doc.text('PERÍODO:', 20, 55);
+      doc.text('SETOR:', 20, 62);
+      
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(28, 25, 23); // #1C1917
+      doc.text(`${format(parseISO(reportRange.start), 'dd/MM/yyyy')} até ${format(parseISO(reportRange.end), 'dd/MM/yyyy')}`, 45, 55);
+      doc.text(reportSectorFilter === 'all' ? 'Todos os Setores' : reportSectorFilter, 45, 62);
+
+      // Summary Stats on the right of the info box
+      const totalValue = reportData.consumptionReport.reduce((sum, i) => sum + i.totalValue, 0);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(120, 113, 108);
+      doc.text('TOTAL EM SAÍDAS:', pageWidth - 80, 58);
+      doc.setFontSize(12);
+      doc.setTextColor(225, 29, 72); // rose-600
+      doc.text(new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalValue), pageWidth - 80, 64);
       
       // Prepare data for table
       const tableData: any[] = [];
       reportData.consumptionBySector.forEach(sectorGroup => {
         // Add sector header row
         tableData.push([
-          { content: sectorGroup.sector, colSpan: isAdmin ? 4 : 3, styles: { fillColor: [28, 25, 23], textColor: [255, 255, 255], fontStyle: 'bold' } },
-          isAdmin ? { content: new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(sectorGroup.totalValue), styles: { fillColor: [28, 25, 23], textColor: [255, 255, 255], halign: 'right', fontStyle: 'bold' } } : ''
+          { 
+            content: sectorGroup.sector.toUpperCase(), 
+            colSpan: isAdmin ? 4 : 3, 
+            styles: { 
+              fillColor: [68, 64, 60], // #44403C
+              textColor: [255, 255, 255], 
+              fontStyle: 'bold',
+              halign: 'left',
+              cellPadding: { top: 4, bottom: 4, left: 5 }
+            } 
+          },
+          isAdmin ? { 
+            content: new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(sectorGroup.totalValue), 
+            styles: { 
+              fillColor: [68, 64, 60], 
+              textColor: [255, 255, 255], 
+              halign: 'right', 
+              fontStyle: 'bold' 
+            } 
+          } : ''
         ]);
         
         // Add items for this sector
         Object.values(sectorGroup.items).sort((a, b) => b.quantity - a.quantity).forEach(item => {
           tableData.push([
-            { content: `   ${item.name}`, styles: { fontSize: 9 } },
-            { content: item.category, styles: { fontSize: 8 } },
-            { content: item.quantity.toString(), styles: { halign: 'center', fontSize: 9, fontStyle: 'bold' } },
-            isAdmin ? { content: new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.value), styles: { halign: 'right', fontSize: 8 } } : ''
+            { content: item.name, styles: { cellPadding: { left: 8 } } },
+            item.category,
+            { content: item.quantity.toString(), styles: { halign: 'center', fontStyle: 'bold' } },
+            isAdmin ? { content: new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.value), styles: { halign: 'right' } } : ''
           ]);
         });
       });
       
       // Generate table
       autoTable(doc, {
-        startY: 50,
-        head: [['Setor / Item', 'Categoria', 'Quantidade', isAdmin ? 'Valor Total' : '']],
+        startY: 75,
+        head: [['Item / Descrição', 'Categoria', 'Qtd', isAdmin ? 'Valor Total' : '']],
         body: tableData,
-        theme: 'striped',
-        headStyles: { fillColor: [28, 25, 23], halign: 'center' }, // #1C1917
-        styles: { fontSize: 9, cellPadding: 3 },
+        theme: 'grid',
+        headStyles: { 
+          fillColor: [28, 25, 23], 
+          halign: 'center', 
+          fontSize: 10, 
+          fontStyle: 'bold',
+          cellPadding: 4
+        },
+        styles: { 
+          fontSize: 9, 
+          cellPadding: 3, 
+          lineColor: [231, 229, 228], // #E7E5E4
+          lineWidth: 0.1
+        },
+        columnStyles: {
+          0: { cellWidth: 'auto' },
+          1: { cellWidth: 40 },
+          2: { cellWidth: 20 },
+          3: { cellWidth: 35 }
+        },
+        didDrawPage: (data) => {
+          // Footer
+          doc.setFontSize(8);
+          doc.setTextColor(168, 162, 158);
+          const str = 'Página ' + (doc as any).internal.getNumberOfPages();
+          doc.text(str, pageWidth - 25, doc.internal.pageSize.height - 10);
+          doc.text('Inventário Inteligente - Sistema de Gestão de Estoque', 14, doc.internal.pageSize.height - 10);
+        }
       });
       
-      // Add total value at the end
-      const finalY = (doc as any).lastAutoTable.finalY || 50;
-      const totalValue = reportData.consumptionReport.reduce((sum, i) => sum + i.totalValue, 0);
-      doc.setFontSize(12);
-      doc.setFont('helvetica', 'bold');
-      doc.setTextColor(225, 29, 72); // rose-600
-      doc.text(`Valor Total de Saídas: ${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalValue)}`, 14, finalY + 10);
-
-      // Save PDF
       const fileName = `Relatorio_Consumo_${format(new Date(), 'dd-MM-yyyy')}.pdf`;
       doc.save(fileName);
       showToast("Relatório de consumo exportado com sucesso!", "success");
@@ -2454,6 +2517,10 @@ export default function App() {
       totalValue,
       originStats,
       topRequested,
+      topConsumed: Object.values(consumptionReport)
+        .map(i => ({ name: i.name, value: i.totalQuantity }))
+        .sort((a, b) => b.value - a.value)
+        .slice(0, 10),
       exitsByReason
     };
   }, [transactions, items, reportRange, reportSectorFilter, allRequestItems, requests, userProfile, isAdmin]);
@@ -3958,6 +4025,28 @@ export default function App() {
                     </div>
                   </div>
                 )}
+
+                {/* Top Consumed Items */}
+                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
+                  <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
+                    <ArrowDownLeft size={18} className="text-rose-600" /> Itens Mais Consumidos (Top 10)
+                  </h4>
+                  <div className="h-[400px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={reportData.topConsumed}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F5F5F4" />
+                        <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1C1917', fontWeight: 'bold'}} />
+                        <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
+                        <Tooltip 
+                          cursor={{fill: '#FAFAF9'}}
+                          contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                        />
+                        <Bar dataKey="value" name="Qtd Consumida" fill="#f43f5e" radius={[8, 8, 0, 0]} barSize={40} />
+                        <Legend />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
 
                 {/* Top Requested Items */}
                 <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
