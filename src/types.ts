@@ -50,6 +50,7 @@ export interface Item {
   category: string | null;
   batch_number: string | null;
   location?: 'Almoxarifado' | 'Farmácia';
+  room?: string;
   deletedAt?: string;
   deletedBy?: string;
 }
@@ -63,6 +64,7 @@ export interface Transaction {
   quantity: number;
   sector?: string;
   location?: 'Almoxarifado' | 'Farmácia';
+  room?: string;
   date: string;
   responsible?: string;
   responsibleEmail?: string;

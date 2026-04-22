@@ -89,7 +89,7 @@ import {
   Area,
   Legend
 } from 'recharts';
-import { format, subDays, isWithinInterval, startOfDay, endOfDay, parseISO } from 'date-fns';
+import { format, subDays, isWithinInterval, startOfDay, endOfDay, parseISO, differenceInDays } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 
 interface ItemGroup {
@@ -140,6 +140,8 @@ const SECTOR_COLORS: Record<string, string> = {
   'Escritório da Qualidade': '#4b5563',
   'TI': '#1e293b',
 };
+
+const ROOMS = ['Sala A', 'Sala B', 'Almoxarifado Principal', 'Farmácia'];
 
 const CATEGORY_COLORS: Record<string, string> = {
   'Médico Hospitalar': '#ef4444',
@@ -350,6 +352,9 @@ export default function App() {
   const [adminObservation, setAdminObservation] = useState('');
   const [isSubmittingRequest, setIsSubmittingRequest] = useState(false);
   const [editingRequest, setEditingRequest] = useState<MaterialRequest | null>(null);
+  const [showRoomInventoryModal, setShowRoomInventoryModal] = useState(false);
+  const [selectedRoom, setSelectedRoom] = useState('Sala A');
+  const [selectedRoomCategories, setSelectedRoomCategories] = useState<string[]>([]);
   
   const createNotification = async (userId: string, title: string, message: string, requestId?: string) => {
     try {
@@ -371,6 +376,7 @@ export default function App() {
     supplier: '',
     category: 'Expediente',
     origin: 'extra' as 'contract' | 'extra' | 'donation',
+    room: ROOMS[0],
     items: [{
       id: Math.random().toString(36).substr(2, 9),
       name: '',
@@ -1689,6 +1695,7 @@ export default function App() {
               unit_price: price || currentItemData.unit_price,
               supplier: bulkEntry.supplier || currentItemData.supplier,
               category: bulkEntry.category || currentItemData.category,
+              room: bulkEntry.room || currentItemData.room,
               updatedAt: serverTimestamp()
             });
 
@@ -1700,6 +1707,7 @@ export default function App() {
               origin: bulkEntry.origin,
               quantity: initial_qty,
               location: inventoryLocation,
+              room: bulkEntry.room,
               date: new Date().toISOString(),
               responsible: user?.displayName || 'Sistema',
               responsibleEmail: user?.email || '',
@@ -1722,6 +1730,7 @@ export default function App() {
             unit_price: price,
             supplier: bulkEntry.supplier,
             category: bulkEntry.category,
+            room: bulkEntry.room,
             batch_number: itemData.batch_number,
             quantity: initial_qty,
             location: inventoryLocation,
@@ -1735,6 +1744,7 @@ export default function App() {
             origin: bulkEntry.origin,
             quantity: initial_qty,
             location: inventoryLocation,
+            room: bulkEntry.room,
             date: new Date().toISOString(),
             responsible: user?.displayName || 'Sistema',
             responsibleEmail: user?.email || '',
@@ -1750,6 +1760,7 @@ export default function App() {
         supplier: '',
         category: 'Expediente',
         origin: 'extra',
+        room: ROOMS[0],
         items: [{
           id: Math.random().toString(36).substr(2, 9),
           name: '',
@@ -2133,6 +2144,100 @@ export default function App() {
     }
   };
 
+  const handleExportRoomInventoryPDF = (room: string, filteredCategories: string[]) => {
+    try {
+      // @ts-ignore - jsPDF types might not be perfectly aligned with imports
+      const doc = new jsPDF();
+      const pageWidth = doc.internal.pageSize.width;
+      
+      // Header
+      doc.setDrawColor(37, 99, 235); // blue-600
+      doc.setLineWidth(1.5);
+      doc.line(14, 15, 24, 15);
+      doc.line(19, 10, 19, 20);
+      
+      doc.setFontSize(16);
+      doc.setTextColor(28, 25, 23);
+      doc.setFont('helvetica', 'bold');
+      doc.text('POLICLÍNICA', 28, 17);
+      
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(120, 113, 108);
+      doc.text('CONTROLE DE ESTOQUE POR SALA', 28, 22);
+
+      doc.setDrawColor(231, 229, 228);
+      doc.setLineWidth(0.5);
+      doc.line(14, 28, pageWidth - 14, 28);
+      
+      doc.setFontSize(14);
+      doc.setTextColor(28, 25, 23);
+      doc.setFont('helvetica', 'bold');
+      doc.text(`Mapa de Estoque - ${room}`, 14, 40);
+      
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(120, 113, 108);
+      doc.text(`Emitido em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 14, 46);
+
+      // Filter items by room and categories
+      const roomItems = items.filter(i => 
+        (i.room === room || (!i.room && room === 'Almoxarifado Principal')) && 
+        filteredCategories.includes(i.category || '') &&
+        i.quantity > 0
+      ).sort((a, b) => a.name.localeCompare(b.name));
+
+      const tableData = roomItems.map(item => {
+        const daysToExpiry = item.expiry_date ? differenceInDays(new Date(item.expiry_date), new Date()) : null;
+        let expiryStatus = '-';
+        if (daysToExpiry !== null) {
+          if (daysToExpiry < 0) expiryStatus = 'VENCIDO';
+          else if (daysToExpiry <= 30) expiryStatus = 'CRÍTICO';
+          else expiryStatus = `${daysToExpiry} dias`;
+        }
+
+        return [
+          item.name,
+          item.batch_number || '-',
+          item.category || '-',
+          { content: item.quantity.toString(), styles: { fontStyle: 'bold' as any, halign: 'center' as any } },
+          item.expiry_date ? format(new Date(item.expiry_date), 'dd/MM/yyyy') : '-',
+          { content: expiryStatus, styles: { halign: 'center' as any } }
+        ];
+      });
+
+      autoTable(doc, {
+        startY: 55,
+        head: [['Produto', 'Lote', 'Categoria', 'Estoque', 'Validade', 'Status (Dias)']],
+        body: tableData,
+        theme: 'striped',
+        headStyles: { 
+          fillColor: [28, 25, 23],
+          textColor: [255, 255, 255],
+          fontSize: 8,
+          fontStyle: 'bold',
+          halign: 'center'
+        },
+        styles: { fontSize: 8, cellPadding: 2.5 },
+        columnStyles: {
+          0: { cellWidth: 60 },
+          1: { cellWidth: 25 },
+          2: { cellWidth: 35 },
+          3: { cellWidth: 20 },
+          4: { cellWidth: 25 },
+          5: { cellWidth: 30 }
+        },
+        margin: { horizontal: 14 }
+      });
+      
+      doc.save(`mapa-sala-${room.toLowerCase().replace(/ /g, '-')}-${format(new Date(), 'yyyy-MM-dd')}.pdf`);
+      showToast("Documento de porta gerado com sucesso!");
+    } catch (error) {
+      console.error("PDF Error:", error);
+      showToast("Erro ao gerar PDF", "error");
+    }
+  };
+
   const handleExportConsumptionPDF = () => {
     try {
       const doc = new jsPDF();
@@ -2224,7 +2329,7 @@ export default function App() {
         startY: 60,
         head: [['Item / Produto', 'Categoria', 'Qtd', isAdmin ? 'Total (R$)' : '']],
         body: tableData,
-        theme: 'plain', // Minimalist theme
+        theme: 'plain', 
         headStyles: { 
           textColor: [120, 113, 108], 
           fontSize: 8, 
@@ -2235,20 +2340,24 @@ export default function App() {
         styles: { 
           fontSize: 9, 
           cellPadding: 3,
-          textColor: [68, 64, 60] 
+          textColor: [68, 64, 60],
+          lineWidth: 0 // Remove default borders
         },
-        // Custom borders for the "minimalist" look (only horizontal lines)
+        columnStyles: {
+          0: { cellWidth: 'auto' },
+          1: { cellWidth: 40 },
+          2: { cellWidth: 20, halign: 'center' as any },
+          3: { cellWidth: 35, halign: 'right' as any }
+        },
         didParseCell: (data) => {
           if (data.section === 'body') {
             data.cell.styles.lineWidth = { bottom: 0.1 };
             data.cell.styles.lineColor = [231, 229, 228];
           }
-        },
-        columnStyles: {
-          0: { cellWidth: 'auto' },
-          1: { cellWidth: 40 },
-          2: { cellWidth: 20 },
-          3: { cellWidth: 35 }
+          if (data.section === 'head') {
+            data.cell.styles.lineWidth = { bottom: 0.5 };
+            data.cell.styles.lineColor = [28, 25, 23];
+          }
         },
         didDrawPage: (data) => {
           doc.setFontSize(7);
@@ -4144,12 +4253,23 @@ export default function App() {
                           {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.consumptionReport.reduce((sum, i) => sum + i.totalValue, 0))}
                         </p>
                       </div>
-                      <button 
-                        onClick={handleExportConsumptionPDF}
-                        className="flex items-center gap-2 bg-[#1C1917] text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-[#292524] transition-all shadow-sm"
-                      >
-                        <Download size={14} /> Exportar PDF de Consumo
-                      </button>
+                      <div className="flex gap-2">
+                        <button 
+                          onClick={() => {
+                            setSelectedRoomCategories([...categories]);
+                            setShowRoomInventoryModal(true);
+                          }}
+                          className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-blue-700 transition-all shadow-sm"
+                        >
+                          <Printer size={14} /> Mapa de Sala (Porta)
+                        </button>
+                        <button 
+                          onClick={handleExportConsumptionPDF}
+                          className="flex items-center gap-2 bg-[#1C1917] text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-[#292524] transition-all shadow-sm"
+                        >
+                          <Download size={14} /> Exportar PDF de Consumo
+                        </button>
+                      </div>
                     </div>
                   </div>
                   
@@ -4868,6 +4988,20 @@ export default function App() {
                 </div>
                 
                 <div className="lg:col-span-1">
+                  <label className="block text-xs font-black text-[#78716C] uppercase tracking-widest mb-2">Sala / Localização</label>
+                  <select 
+                    required
+                    className="w-full px-4 py-3 bg-white border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold appearance-none cursor-pointer"
+                    value={bulkEntry.room}
+                    onChange={e => setBulkEntry({...bulkEntry, room: e.target.value})}
+                  >
+                    {ROOMS.map(room => (
+                      <option key={room} value={room}>{room}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="lg:col-span-1">
                   <label className="block text-xs font-black text-[#78716C] uppercase tracking-widest mb-2">Tipo de Item (Categoria)</label>
                   <div className="flex gap-2">
                     {showNewCategoryInput ? (
@@ -4916,6 +5050,19 @@ export default function App() {
                       </>
                     )}
                   </div>
+                </div>
+
+                <div className="lg:col-span-1">
+                  <label className="block text-xs font-black text-[#78716C] uppercase tracking-widest mb-2">Sala / Depósito</label>
+                  <select 
+                    className="w-full px-4 py-3 bg-white border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
+                    value={bulkEntry.room}
+                    onChange={e => setBulkEntry({...bulkEntry, room: e.target.value})}
+                  >
+                    {ROOMS.map(room => (
+                      <option key={room} value={room}>{room}</option>
+                    ))}
+                  </select>
                 </div>
 
                 <div className="lg:col-span-1">
@@ -5086,6 +5233,83 @@ export default function App() {
                 </button>
               </div>
             </form>
+          </motion.div>
+        </div>
+      )}
+
+      {showRoomInventoryModal && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[60] flex items-center justify-center p-6">
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="bg-white w-full max-w-md rounded-3xl p-8 shadow-2xl"
+          >
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-xl font-bold flex items-center gap-2">
+                <Printer className="text-blue-600" size={24} /> Mapa de Estoque (Porta)
+              </h3>
+              <button onClick={() => setShowRoomInventoryModal(false)} className="text-[#A8A29E] hover:text-[#1C1917]">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="space-y-6">
+              <div>
+                <label className="block text-xs font-black text-[#78716C] uppercase tracking-widest mb-2 ml-1">Selecione a Sala</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {ROOMS.map(room => (
+                    <button
+                      key={room}
+                      onClick={() => setSelectedRoom(room)}
+                      className={`px-4 py-3 rounded-xl text-xs font-bold border transition-all ${selectedRoom === room ? 'bg-[#1C1917] text-white border-[#1C1917]' : 'bg-[#F5F5F4] text-[#78716C] border-[#E7E5E4] hover:bg-[#E7E5E4]'}`}
+                    >
+                      {room}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-black text-[#78716C] uppercase tracking-widest mb-2 ml-1">Filtrar Categorias</label>
+                <div className="max-h-48 overflow-y-auto space-y-2 p-2 bg-[#F5F5F4] rounded-xl border border-[#E7E5E4]">
+                  {categories.map(cat => (
+                    <label key={cat} className="flex items-center gap-3 p-2 hover:bg-white rounded-lg cursor-pointer transition-all">
+                      <input 
+                        type="checkbox"
+                        className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        checked={selectedRoomCategories.includes(cat)}
+                        onChange={e => {
+                          if (e.target.checked) {
+                            setSelectedRoomCategories([...selectedRoomCategories, cat]);
+                          } else {
+                            setSelectedRoomCategories(selectedRoomCategories.filter(c => c !== cat));
+                          }
+                        }}
+                      />
+                      <span className="text-xs font-bold text-[#44403C]">{cat}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex gap-4">
+                <button 
+                  onClick={() => setShowRoomInventoryModal(false)}
+                  className="flex-1 px-6 py-4 rounded-2xl font-bold text-[#78716C] hover:bg-[#F5F5F4] transition-all"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  onClick={() => {
+                    handleExportRoomInventoryPDF(selectedRoom, selectedRoomCategories);
+                    setShowRoomInventoryModal(false);
+                  }}
+                  className="flex-[2] px-6 py-4 bg-[#1C1917] text-white rounded-2xl font-bold hover:bg-[#292524] transition-all shadow-lg shadow-blue-500/20 flex items-center justify-center gap-3"
+                >
+                  <Printer size={20} /> Gerar Documento
+                </button>
+              </div>
+            </div>
           </motion.div>
         </div>
       )}
@@ -5810,6 +6034,145 @@ export default function App() {
           </motion.div>
         </div>
       )}
+
+      {/* Room Inventory Modal */}
+      <AnimatePresence>
+        {showRoomInventoryModal && (
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[80] flex items-center justify-center p-6">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white w-full max-w-2xl rounded-[32px] p-8 shadow-2xl max-h-[90vh] flex flex-col"
+            >
+              <div className="flex justify-between items-center mb-6">
+                <div>
+                  <h3 className="text-2xl font-black text-[#1C1917] flex items-center gap-3">
+                    <Printer className="text-blue-600" size={28} />
+                    Mapa de Sala (Porta)
+                  </h3>
+                  <p className="text-sm text-[#78716C] mt-1 font-medium italic">Selecione a sala e as categorias para o documento de estoque</p>
+                </div>
+                <button 
+                  onClick={() => setShowRoomInventoryModal(false)}
+                  className="p-2 hover:bg-[#F5F5F4] rounded-full transition-all"
+                >
+                  <X size={24} />
+                </button>
+              </div>
+
+              <div className="space-y-8 flex-1 overflow-y-auto pr-2 custom-scrollbar">
+                {/* Room Selection */}
+                <div className="space-y-4">
+                  <h3 className="text-xs font-black text-[#1C1917] uppercase tracking-widest flex items-center gap-2">
+                    <div className="w-1.5 h-1.5 rounded-full bg-blue-600"></div>
+                    1. Selecione a Sala
+                  </h3>
+                  <div className="grid grid-cols-2 gap-3">
+                    {ROOMS.map(room => (
+                      <button 
+                        key={room}
+                        onClick={() => setSelectedRoom(room)}
+                        className={`p-4 rounded-2xl border-2 text-sm font-bold transition-all text-left flex flex-col gap-1 ${
+                          selectedRoom === room 
+                            ? 'border-blue-600 bg-blue-50 text-blue-700 shadow-md' 
+                            : 'border-[#E7E5E4] hover:border-blue-200 hover:bg-slate-50 text-[#44403C]'
+                        }`}
+                      >
+                        <span className="opacity-70 text-[10px] uppercase">Local</span>
+                        {room}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Categories Selection */}
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-xs font-black text-[#1C1917] uppercase tracking-widest flex items-center gap-2">
+                      <div className="w-1.5 h-1.5 rounded-full bg-blue-600"></div>
+                      2. Filtrar Categorias
+                    </h3>
+                    <div className="flex gap-2">
+                      <button 
+                        onClick={() => setSelectedRoomCategories([...categories])}
+                        className="text-[10px] font-bold text-blue-600 hover:underline uppercase tracking-tighter"
+                      >
+                        Marcar Todas
+                      </button>
+                      <span className="text-[#D6D3D1]">|</span>
+                      <button 
+                        onClick={() => setSelectedRoomCategories([])}
+                        className="text-[10px] font-bold text-red-600 hover:underline uppercase tracking-tighter"
+                      >
+                        Desmarcar Todas
+                      </button>
+                    </div>
+                  </div>
+                  
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {categories.map(category => (
+                      <label 
+                        key={category}
+                        className="flex items-center gap-2.5 p-3 rounded-xl border border-[#E7E5E4] hover:bg-slate-50 transition-colors cursor-pointer"
+                      >
+                        <input 
+                          type="checkbox" 
+                          checked={selectedRoomCategories.includes(category)}
+                          onChange={() => {
+                            if (selectedRoomCategories.includes(category)) {
+                              setSelectedRoomCategories(selectedRoomCategories.filter(c => c !== category));
+                            } else {
+                              setSelectedRoomCategories([...selectedRoomCategories, category]);
+                            }
+                          }}
+                          className="w-4 h-4 rounded border-[#D6D3D1] text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="text-xs font-bold text-[#44403C] truncate">{category}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Summary */}
+                <div className="bg-blue-50 p-6 rounded-3xl border border-blue-100 italic">
+                  <div className="flex items-start gap-3">
+                    <Info size={18} className="text-blue-600 mt-0.5" />
+                    <div>
+                      <h4 className="text-sm font-bold text-blue-900 mb-1">Informações do Documento</h4>
+                      <p className="text-xs text-blue-800 leading-relaxed">
+                        Será gerado um PDF formatado para impressão contendo os itens da <strong>{selectedRoom}</strong> 
+                        que pertencem às <strong>{selectedRoomCategories.length}</strong> categorias selecionadas.
+                        O relatório inclui lote, validade e situação do estoque em dias.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-6 border-t border-[#E7E5E4] flex gap-4">
+                <button 
+                  onClick={() => setShowRoomInventoryModal(false)}
+                  className="flex-1 py-4 px-6 border-2 border-[#E7E5E4] text-[#78716C] rounded-2xl text-sm font-black uppercase tracking-widest hover:bg-[#F5F5F4] transition-all"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  onClick={() => {
+                    handleExportRoomInventoryPDF(selectedRoom, selectedRoomCategories);
+                    setShowRoomInventoryModal(false);
+                  }}
+                  disabled={selectedRoomCategories.length === 0}
+                  className="flex-[2] py-4 px-6 bg-blue-600 text-white rounded-2xl text-sm font-black uppercase tracking-widest hover:bg-blue-700 transition-all shadow-xl shadow-blue-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3"
+                >
+                  <Printer size={18} />
+                  Gerar Mapa de Sala
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {showRequestDetailModal.show && showRequestDetailModal.request && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[80] flex items-center justify-center p-6">
