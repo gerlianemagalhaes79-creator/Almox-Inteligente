@@ -354,6 +354,7 @@ export default function App() {
   const [editingRequest, setEditingRequest] = useState<MaterialRequest | null>(null);
   const [showRoomInventoryModal, setShowRoomInventoryModal] = useState(false);
   const [selectedRoom, setSelectedRoom] = useState('Sala A');
+  const [customRoomName, setCustomRoomName] = useState('Sala A');
   const [selectedRoomCategories, setSelectedRoomCategories] = useState<string[]>([]);
   
   const createNotification = async (userId: string, title: string, message: string, requestId?: string) => {
@@ -2144,7 +2145,7 @@ export default function App() {
     }
   };
 
-  const handleExportRoomInventoryPDF = (room: string, filteredCategories: string[]) => {
+  const handleExportRoomInventoryPDF = (roomFilter: string, displayRoomName: string, filteredCategories: string[]) => {
     try {
       // @ts-ignore - jsPDF types might not be perfectly aligned with imports
       const doc = new jsPDF();
@@ -2173,65 +2174,84 @@ export default function App() {
       doc.setFontSize(14);
       doc.setTextColor(28, 25, 23);
       doc.setFont('helvetica', 'bold');
-      doc.text(`Mapa de Estoque - ${room}`, 14, 40);
+      doc.text(`Mapa de Estoque - ${displayRoomName}`, 14, 40);
       
       doc.setFontSize(9);
       doc.setFont('helvetica', 'normal');
       doc.setTextColor(120, 113, 108);
-      doc.text(`Emitido em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 14, 46);
+      doc.text(`Local Físico Origem: ${roomFilter}`, 14, 46);
+      doc.text(`Emitido em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 14, 52);
 
       // Filter items by room and categories
-      const roomItems = items.filter(i => 
-        (i.room === room || (!i.room && room === 'Almoxarifado Principal')) && 
-        filteredCategories.includes(i.category || '') &&
-        i.quantity > 0
-      ).sort((a, b) => a.name.localeCompare(b.name));
+      const roomItems = items.filter(i => {
+        if (i.deletedAt || i.quantity <= 0) return false;
+        
+        const matchesRoom = i.room === roomFilter || 
+                          (!i.room && roomFilter === 'Almoxarifado Principal');
+        
+        const matchesCategory = filteredCategories.length === 0 || 
+                               (i.category && filteredCategories.includes(i.category));
+        
+        return matchesRoom && matchesCategory;
+      }).sort((a, b) => a.name.localeCompare(b.name));
 
-      const tableData = roomItems.map(item => {
-        const daysToExpiry = item.expiry_date ? differenceInDays(new Date(item.expiry_date), new Date()) : null;
-        let expiryStatus = '-';
-        if (daysToExpiry !== null) {
-          if (daysToExpiry < 0) expiryStatus = 'VENCIDO';
-          else if (daysToExpiry <= 30) expiryStatus = 'CRÍTICO';
-          else expiryStatus = `${daysToExpiry} dias`;
-        }
+      if (roomItems.length === 0) {
+        doc.setFontSize(10);
+        doc.setTextColor(150, 150, 150);
+        doc.text('NENHUM ITEM ENCONTRADO PARA OS FILTROS SELECIONADOS.', 14, 70);
+      } else {
+        const tableData = roomItems.map(item => {
+          const daysToExpiry = item.expiry_date && item.expiry_date !== 'Indeterminada' 
+            ? differenceInDays(new Date(item.expiry_date), new Date()) 
+            : null;
+            
+          let expiryStatus = '-';
+          if (daysToExpiry !== null) {
+            if (daysToExpiry < 0) expiryStatus = 'VENCIDO';
+            else if (daysToExpiry <= 30) expiryStatus = 'CRÍTICO';
+            else expiryStatus = `${daysToExpiry} dias`;
+          } else if (item.expiry_date === 'Indeterminada') {
+            expiryStatus = 'Indeterminada';
+          }
 
-        return [
-          item.name,
-          item.batch_number || '-',
-          item.category || '-',
-          { content: item.quantity.toString(), styles: { fontStyle: 'bold' as any, halign: 'center' as any } },
-          item.expiry_date ? format(new Date(item.expiry_date), 'dd/MM/yyyy') : '-',
-          { content: expiryStatus, styles: { halign: 'center' as any } }
-        ];
-      });
+          return [
+            item.name,
+            item.batch_number || '-',
+            item.category || '-',
+            { content: item.quantity.toString(), styles: { fontStyle: 'bold' as any, halign: 'center' as any } },
+            item.expiry_date || '-',
+            { content: expiryStatus, styles: { halign: 'center' as any } }
+          ];
+        });
 
-      autoTable(doc, {
-        startY: 55,
-        head: [['Produto', 'Lote', 'Categoria', 'Estoque', 'Validade', 'Status (Dias)']],
-        body: tableData,
-        theme: 'striped',
-        headStyles: { 
-          fillColor: [28, 25, 23],
-          textColor: [255, 255, 255],
-          fontSize: 8,
-          fontStyle: 'bold',
-          halign: 'center'
-        },
-        styles: { fontSize: 8, cellPadding: 2.5 },
-        columnStyles: {
-          0: { cellWidth: 60 },
-          1: { cellWidth: 25 },
-          2: { cellWidth: 35 },
-          3: { cellWidth: 20 },
-          4: { cellWidth: 25 },
-          5: { cellWidth: 30 }
-        },
-        margin: { horizontal: 14 }
-      });
+        autoTable(doc, {
+          startY: 60,
+          head: [['Produto', 'Lote', 'Categoria', 'Estoque', 'Validade', 'Status (Dias)']],
+          body: tableData,
+          theme: 'striped',
+          headStyles: { 
+            fillColor: [28, 25, 23],
+            textColor: [255, 255, 255],
+            fontSize: 8,
+            fontStyle: 'bold',
+            halign: 'center'
+          },
+          styles: { fontSize: 8, cellPadding: 2.5 },
+          columnStyles: {
+            0: { cellWidth: 'auto' },
+            1: { cellWidth: 25 },
+            2: { cellWidth: 35 },
+            3: { cellWidth: 20 },
+            4: { cellWidth: 25 },
+            5: { cellWidth: 30 }
+          },
+          margin: { horizontal: 14 }
+        });
+      }
       
-      doc.save(`mapa-sala-${room.toLowerCase().replace(/ /g, '-')}-${format(new Date(), 'yyyy-MM-dd')}.pdf`);
-      showToast("Documento de porta gerado com sucesso!");
+      const safeRoomName = displayRoomName.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, '-');
+      doc.save(`mapa-sala-${safeRoomName}-${format(new Date(), 'yyyy-MM-dd')}.pdf`);
+      showToast("Documento de porta gerado com sucesso!", "success");
     } catch (error) {
       console.error("PDF Error:", error);
       showToast("Erro ao gerar PDF", "error");
@@ -6072,7 +6092,10 @@ export default function App() {
                     {ROOMS.map(room => (
                       <button 
                         key={room}
-                        onClick={() => setSelectedRoom(room)}
+                        onClick={() => {
+                          setSelectedRoom(room);
+                          setCustomRoomName(room);
+                        }}
                         className={`p-4 rounded-2xl border-2 text-sm font-bold transition-all text-left flex flex-col gap-1 ${
                           selectedRoom === room 
                             ? 'border-blue-600 bg-blue-50 text-blue-700 shadow-md' 
@@ -6086,12 +6109,27 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* Custom Name */}
+                <div className="space-y-4">
+                  <h3 className="text-xs font-black text-[#1C1917] uppercase tracking-widest flex items-center gap-2">
+                    <div className="w-1.5 h-1.5 rounded-full bg-blue-600"></div>
+                    2. Nome da Sala no Relatório (Editável)
+                  </h3>
+                  <input 
+                    type="text"
+                    value={customRoomName}
+                    onChange={(e) => setCustomRoomName(e.target.value)}
+                    className="w-full px-6 py-4 bg-[#FAFAF9] border-2 border-[#E7E5E4] rounded-2xl text-sm font-bold focus:border-blue-600 transition-all outline-none"
+                    placeholder="Ex: Sala de Curativos, Emergência..."
+                  />
+                </div>
+
                 {/* Categories Selection */}
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
                     <h3 className="text-xs font-black text-[#1C1917] uppercase tracking-widest flex items-center gap-2">
                       <div className="w-1.5 h-1.5 rounded-full bg-blue-600"></div>
-                      2. Filtrar Categorias
+                      3. Filtrar Categorias
                     </h3>
                     <div className="flex gap-2">
                       <button 
@@ -6141,7 +6179,8 @@ export default function App() {
                     <div>
                       <h4 className="text-sm font-bold text-blue-900 mb-1">Informações do Documento</h4>
                       <p className="text-xs text-blue-800 leading-relaxed">
-                        Será gerado um PDF formatado para impressão contendo os itens da <strong>{selectedRoom}</strong> 
+                        Será gerado um PDF formatado para impressão contendo os itens de <strong>{selectedRoom}</strong> 
+                        com o título personalizado <strong>"{customRoomName}"</strong> 
                         que pertencem às <strong>{selectedRoomCategories.length}</strong> categorias selecionadas.
                         O relatório inclui lote, validade e situação do estoque em dias.
                       </p>
@@ -6159,7 +6198,7 @@ export default function App() {
                 </button>
                 <button 
                   onClick={() => {
-                    handleExportRoomInventoryPDF(selectedRoom, selectedRoomCategories);
+                    handleExportRoomInventoryPDF(selectedRoom, customRoomName, selectedRoomCategories);
                     setShowRoomInventoryModal(false);
                   }}
                   disabled={selectedRoomCategories.length === 0}
