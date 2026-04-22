@@ -2184,13 +2184,20 @@ export default function App() {
 
       // Filter items by room and categories
       const roomItems = items.filter(i => {
+        // Ignorar excluídos ou sem estoque
         if (i.deletedAt || i.quantity <= 0) return false;
         
-        const matchesRoom = i.room === roomFilter || 
-                          (!i.room && roomFilter === 'Almoxarifado Principal');
+        // Normalização para comparação robusta
+        const itemRoom = (i.room || 'Almoxarifado Principal').trim().toLowerCase();
+        const targetRoom = roomFilter.trim().toLowerCase();
         
+        const matchesRoom = itemRoom === targetRoom;
+        
+        // Se nenhuma categoria selecionada, mostra tudo da sala. Se selecionadas, filtra.
         const matchesCategory = filteredCategories.length === 0 || 
-                               (i.category && filteredCategories.includes(i.category));
+                               (i.category && filteredCategories.some(cat => 
+                                 cat.trim().toLowerCase() === i.category?.trim().toLowerCase()
+                               ));
         
         return matchesRoom && matchesCategory;
       }).sort((a, b) => a.name.localeCompare(b.name));
@@ -6316,41 +6323,53 @@ export default function App() {
                     <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
                       <th className="px-4 py-3 font-bold text-xs text-[#78716C]">Item</th>
                       <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Qtd. Solicitada</th>
+                      <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Saldo em Estoque</th>
                       <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Qtd. a Liberar</th>
-                      {isAdmin && <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Saldo em Estoque</th>}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#E7E5E4]">
                     {allRequestItems.filter(ri => ri.request_id === showRequestDetailModal.request?.id).map(item => {
-                      const totalStock = groupedArray.find(g => g.name === item.product_name)?.total_quantity || 0;
+                      // Calcular estoque atual deste item (somando todos os lotes)
+                      const totalStock = items
+                        .filter(i => !i.deletedAt && i.name === item.product_name)
+                        .reduce((sum, i) => sum + i.quantity, 0);
+                        
                       return (
-                        <tr key={item.id}>
-                          <td className="px-4 py-3 text-sm font-bold">{item.product_name}</td>
-                          <td className="px-4 py-3 text-sm font-bold text-center">{item.quantity_requested}</td>
+                        <tr key={item.id} className="hover:bg-slate-50 transition-colors">
+                          <td className="px-4 py-3 text-sm font-bold text-[#1C1917]">{item.product_name}</td>
+                          <td className="px-4 py-3 text-sm font-bold text-center text-[#78716C] bg-slate-50/50">{item.quantity_requested}</td>
                           <td className="px-4 py-3 text-center">
-                            {isAdmin && showRequestDetailModal.request?.status === 'PENDENTE' ? (
-                              <input 
-                                type="number" 
-                                min="0"
-                                max={totalStock}
-                                value={item.quantity_approved}
-                                onChange={(e) => {
-                                  const val = parseInt(e.target.value) || 0;
-                                  setAllRequestItems(allRequestItems.map(ri => ri.id === item.id ? { ...ri, quantity_approved: val } : ri));
-                                }}
-                                className="w-16 px-2 py-1 bg-[#F5F5F4] border border-[#E7E5E4] rounded text-center font-bold text-xs"
-                              />
-                            ) : (
-                              <span className="text-sm font-bold">{item.quantity_approved}</span>
-                            )}
-                          </td>
-                          {isAdmin && (
-                            <td className="px-4 py-3 text-center">
-                              <span className={`text-xs font-bold ${ totalStock < item.quantity_requested ? 'text-rose-600' : 'text-emerald-600'}`}>
+                            <div className="flex flex-col items-center">
+                              <span className={`text-sm font-black ${totalStock <= 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
                                 {totalStock}
                               </span>
-                            </td>
-                          )}
+                              {totalStock < item.quantity_requested && totalStock > 0 && (
+                                <span className="text-[9px] text-amber-600 font-bold uppercase leading-none">Estoque Insuficiente</span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            {isAdmin && showRequestDetailModal.request?.status === 'PENDENTE' ? (
+                              <div className="flex justify-center">
+                                <input 
+                                  type="number" 
+                                  min="0"
+                                  value={item.quantity_approved}
+                                  onChange={(e) => {
+                                    const val = parseInt(e.target.value) || 0;
+                                    setAllRequestItems(allRequestItems.map(ri => ri.id === item.id ? { ...ri, quantity_approved: val } : ri));
+                                  }}
+                                  className={`w-20 px-3 py-2 border-2 rounded-xl text-center font-black text-sm transition-all outline-none ${
+                                    item.quantity_approved > totalStock 
+                                      ? 'bg-rose-50 border-rose-200 text-rose-700 focus:border-rose-500' 
+                                      : 'bg-white border-blue-100 text-blue-700 focus:border-blue-500'
+                                  }`}
+                                />
+                              </div>
+                            ) : (
+                              <span className="text-sm font-black text-[#1C1917]">{item.quantity_approved}</span>
+                            )}
+                          </td>
                         </tr>
                       );
                     })}
