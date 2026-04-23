@@ -377,7 +377,7 @@ export default function App() {
     supplier: '',
     category: 'Expediente',
     origin: 'extra' as 'contract' | 'extra' | 'donation',
-    room: ROOMS[0],
+    room: 'Almoxarifado Principal',
     items: [{
       id: Math.random().toString(36).substr(2, 9),
       name: '',
@@ -2262,6 +2262,106 @@ export default function App() {
     } catch (error) {
       console.error("PDF Error:", error);
       showToast("Erro ao gerar PDF", "error");
+    }
+  };
+
+  const handleExportDeliveryReceiptPDF = (data: {
+    sector: string;
+    items: { product_name: string; quantity: number }[];
+    requestId?: string;
+    date: string;
+  }) => {
+    try {
+      // @ts-ignore
+      const doc = new jsPDF();
+      const pageWidth = doc.internal.pageSize.width;
+      
+      // Logo/Header (Minimalist)
+      doc.setDrawColor(37, 99, 235);
+      doc.setLineWidth(1.5);
+      doc.line(14, 15, 24, 15);
+      doc.line(19, 10, 19, 20);
+      
+      doc.setFontSize(16);
+      doc.setTextColor(28, 25, 23);
+      doc.setFont('helvetica', 'bold');
+      doc.text('POLICLÍNICA', 28, 17);
+      
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(120, 113, 108);
+      doc.text('COMPROVANTE DE ENTREGA DE MATERIAIS', 28, 22);
+
+      doc.setDrawColor(231, 229, 228);
+      doc.setLineWidth(0.5);
+      doc.line(14, 28, pageWidth - 14, 28);
+
+      // Info Section
+      doc.setFontSize(11);
+      doc.setTextColor(28, 25, 23);
+      doc.setFont('helvetica', 'bold');
+      doc.text(`Setor de Destino: ${data.sector}`, 14, 40);
+      
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`Data da Entrega: ${format(new Date(data.date), 'dd/MM/yyyy HH:mm')}`, 14, 47);
+      if (data.requestId) {
+        doc.text(`Pedido Ref: #${data.requestId.slice(-5).toUpperCase()}`, 14, 53);
+      }
+
+      // Table
+      const tableData = data.items.map(i => [i.product_name, i.quantity.toString(), '_________________']);
+      
+      autoTable(doc, {
+        startY: 60,
+        head: [['Descrição do Material', 'Qtd. Entregue', 'Conferido']],
+        body: tableData,
+        theme: 'grid',
+        headStyles: { 
+          fillColor: [245, 245, 244], 
+          textColor: [28, 25, 23],
+          fontStyle: 'bold',
+          lineColor: [231, 229, 228],
+          lineWidth: 0.1
+        },
+        styles: { 
+          fontSize: 9, 
+          cellPadding: 4,
+          lineColor: [231, 229, 228],
+          lineWidth: 0.1
+        },
+        columnStyles: {
+          0: { cellWidth: 'auto' },
+          1: { cellWidth: 30, halign: 'center' },
+          2: { cellWidth: 40, halign: 'center' }
+        }
+      });
+
+      // Signature Area
+      const finalY = (doc as any).lastAutoTable.finalY + 30;
+      
+      doc.setDrawColor(120, 113, 108);
+      doc.setLineWidth(0.5);
+      doc.line(pageWidth / 2 - 40, finalY, pageWidth / 2 + 40, finalY);
+      
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'bold');
+      doc.text('Assinatura do Responsável (Líder do Setor)', pageWidth / 2, finalY + 7, { align: 'center' });
+      
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(168, 162, 158);
+      doc.text('Ao assinar, o responsável confirma o recebimento integral dos itens acima listados.', pageWidth / 2, finalY + 15, { align: 'center' });
+
+      // Footer
+      doc.setFontSize(8);
+      doc.text(`Página 1 de 1`, pageWidth / 2, 285, { align: 'center' });
+
+      doc.save(`comprovante-${data.sector.toLowerCase().replace(/ /g, '-')}-${format(new Date(), 'dd-MM-yyyy')}.pdf`);
+      showToast("Comprovante gerado com sucesso!", "success");
+    } catch (error) {
+      console.error("Receipt PDF Error:", error);
+      showToast("Erro ao gerar comprovante", "error");
     }
   };
 
