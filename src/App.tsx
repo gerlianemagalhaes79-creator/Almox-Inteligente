@@ -1610,6 +1610,24 @@ export default function App() {
       }
 
       showToast("Entrega confirmada e estoque atualizado!", "success");
+      
+      // Auto-generate delivery receipt for the request
+      const itemsForReceipt = allRequestItems
+        .filter(ri => ri.request_id === requestId)
+        .map(i => ({
+          product_name: i.product_name,
+          quantity: i.quantity_approved || 0
+        }));
+      
+      if (itemsForReceipt.length > 0) {
+        handleExportDeliveryReceiptPDF({
+          sector: requestData.sector,
+          items: itemsForReceipt,
+          requestId: requestId,
+          date: new Date().toISOString()
+        });
+      }
+
       setShowRequestDetailModal({ show: false });
     } catch (error: any) {
       handleFirestoreError(error, OperationType.WRITE, `requests/${requestId}/delivery`);
@@ -1946,6 +1964,21 @@ export default function App() {
       }
 
       setShowTransactionModal({ show: false, type: 'entry' });
+      
+      // Auto-generate delivery receipt for manual exit
+      if (showTransactionModal.type === 'exit' && basket.length > 0 && selectedSector) {
+        const itemsForReceipt = basket.map(b => ({
+          product_name: items.find(i => i.id === b.item_id)?.name || 'Produto Não Identificado',
+          quantity: b.quantity
+        }));
+        
+        handleExportDeliveryReceiptPDF({
+          sector: selectedSector,
+          items: itemsForReceipt,
+          date: new Date().toISOString()
+        });
+      }
+
       setTransactionMinStock(NaN);
       setTransactionQty(1);
       setExitReason('consumo');
@@ -2277,58 +2310,64 @@ export default function App() {
       const pageWidth = doc.internal.pageSize.width;
       const pageHeight = doc.internal.pageSize.height;
       
-      // Header Section (Professional Style)
-      // Left side: Name and Polyclinic info
+      // Header Section (Institutional Style based on provided image)
+      // Left side Branding
+      doc.setFontSize(18);
+      doc.setTextColor(0, 139, 190); // Cyan-Blue for "Policlínica de Sobral"
+      doc.setFont('helvetica', 'bold');
+      doc.text('Policlínica de Sobral', 14, 20);
+      
+      doc.setFontSize(10);
+      doc.setTextColor(245, 158, 11); // Yellow-Orange for "BERNARDO FÉLIX DA SILVA"
+      doc.setFont('helvetica', 'bold');
+      doc.text('BERNARDO FÉLIX DA SILVA', 14, 25);
+
+      // Right side Institutional info/logo placeholder
       doc.setFontSize(14);
-      doc.setTextColor(28, 25, 23);
-      doc.setFont('helvetica', 'bold');
-      doc.text('POLICLÍNICA DE SOBRAL', 14, 20);
-      
-      doc.setFontSize(10);
-      doc.setFont('helvetica', 'bold');
-      doc.text('BERNARDO FÉLIX DA SILVA', 14, 26);
-      
-      doc.setFontSize(8);
-      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(0, 139, 190);
+      doc.text('CPSMS', pageWidth - 14, 20, { align: 'right' });
+      doc.setFontSize(6);
       doc.setTextColor(120, 113, 108);
-      doc.text('Consórcio Público de Saúde da Microrregião de Sobral - CPSMS', 14, 31);
-
-      // Right side: Document Title
-      doc.setFontSize(10);
+      doc.text('CONSÓRCIO PÚBLICO DE SAÚDE', pageWidth - 14, 23, { align: 'right' });
+      doc.text('DA MICRORREGIÃO DE SOBRAL', pageWidth - 14, 26, { align: 'right' });
+      
+      // Document Title & Emissions
+      doc.setFontSize(11);
       doc.setTextColor(28, 25, 23);
       doc.setFont('helvetica', 'bold');
-      doc.text('COMPROVANTE DE ENTREGA', pageWidth - 14, 20, { align: 'right' });
+      doc.text('RECIBO DE ENTREGA DE MATERIAL', pageWidth / 2, 40, { align: 'center' });
+      
       doc.setFontSize(8);
       doc.setFont('helvetica', 'normal');
-      doc.text(`Emissão: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, pageWidth - 14, 25, { align: 'right' });
+      doc.text(`Data de Emissão: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, pageWidth - 14, 45, { align: 'right' });
 
-      // Stylized separator
-      doc.setDrawColor(37, 99, 235);
-      doc.setLineWidth(1);
-      doc.line(14, 35, pageWidth - 14, 35);
+      // Stylized blue separator
+      doc.setDrawColor(0, 139, 190);
+      doc.setLineWidth(0.5);
+      doc.line(14, 48, pageWidth - 14, 48);
 
       // Info Card
       doc.setFillColor(248, 250, 252);
-      doc.roundedRect(14, 40, pageWidth - 28, 25, 3, 3, 'F');
+      doc.roundedRect(14, 52, pageWidth - 28, 20, 2, 2, 'F');
       
       doc.setFontSize(9);
       doc.setTextColor(71, 85, 105);
       doc.setFont('helvetica', 'bold');
-      doc.text('DESTINATÁRIO:', 19, 48);
-      doc.text('REFERÊNCIA:', 19, 58);
+      doc.text('SETOR DESTINO:', 19, 60);
+      doc.text('REFERÊNCIA:', 19, 68);
       
       doc.setTextColor(30, 41, 59);
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(11);
-      doc.text(data.sector.toUpperCase(), 48, 48);
+      doc.text(data.sector.toUpperCase(), 52, 60);
       
       doc.setFontSize(9);
       doc.setFont('helvetica', 'normal');
-      doc.text(data.requestId ? `#${data.requestId.slice(-5).toUpperCase()}` : 'Saída Direta (Avulsa)', 48, 58);
+      doc.text(data.requestId ? `Solicitação #${data.requestId.slice(-5).toUpperCase()}` : 'Baixa Direta no Sistema', 52, 68);
       
-      doc.text('DATA DA SAÍDA:', pageWidth - 80, 58);
+      doc.text('DATA DA SAÍDA:', pageWidth - 80, 68);
       doc.setFont('helvetica', 'bold');
-      doc.text(format(new Date(data.date), 'dd/MM/yyyy'), pageWidth - 50, 58);
+      doc.text(format(new Date(data.date), 'dd/MM/yyyy'), pageWidth - 50, 68);
 
       // Materials Table
       const tableData = data.items.map(i => [
@@ -2338,8 +2377,8 @@ export default function App() {
       ]);
       
       autoTable(doc, {
-        startY: 75,
-        head: [['DESCRIÇÃO DO MATERIAL', 'QTD entregue', 'CONFERÊNCIA']],
+        startY: 80,
+        head: [['DESCRIÇÃO DO MATERIAL', 'QTD ENTREGUE', 'CONFERÊNCIA']],
         body: tableData,
         theme: 'grid',
         headStyles: { 
@@ -2350,9 +2389,9 @@ export default function App() {
           fontSize: 9
         },
         styles: { 
-          fontSize: 9, 
-          cellPadding: 6,
-          lineColor: [226, 232, 240],
+          fontSize: 8, 
+          cellPadding: 4,
+          lineColor: [200, 200, 200],
           lineWidth: 0.1
         },
         columnStyles: {
@@ -2361,55 +2400,58 @@ export default function App() {
           2: { cellWidth: 45, halign: 'center' }
         },
         alternateRowStyles: {
-          fillColor: [248, 250, 252]
+          fillColor: [252, 252, 252]
         }
       });
 
-      const finalY = (doc as any).lastAutoTable.finalY + 40;
+      const finalY = (doc as any).lastAutoTable.finalY + 35;
       
       // Signature Section
-      doc.setDrawColor(148, 163, 184);
+      doc.setDrawColor(100, 100, 100);
       doc.setLineWidth(0.5);
       
       // Signature lines
-      const signLineW = 60;
-      doc.line(30, finalY, 30 + signLineW, finalY);
-      doc.line(pageWidth - 30 - signLineW, finalY, pageWidth - 30, finalY);
+      const signLineW = 70;
+      doc.line(20, finalY, 20 + signLineW, finalY);
+      doc.line(pageWidth - 20 - signLineW, finalY, pageWidth - 20, finalY);
       
       doc.setFontSize(8);
-      doc.setTextColor(71, 85, 105);
+      doc.setTextColor(30, 41, 59);
       doc.setFont('helvetica', 'bold');
-      doc.text('RESPONSÁVEL PELA ENTREGA', 30 + (signLineW/2), finalY + 5, { align: 'center' });
-      doc.text('LÍDER DO SETOR / RECEBEDOR', pageWidth - 30 - (signLineW/2), finalY + 5, { align: 'center' });
+      doc.text('RESPONSÁVEL PELA ENTREGA', 20 + (signLineW/2), finalY + 5, { align: 'center' });
+      doc.text('RESPONSÁVEL PELO SETOR (RECEBIMENTO)', pageWidth - 20 - (signLineW/2), finalY + 5, { align: 'center' });
       
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7);
-      doc.text('Almoxarifado Geral', 30 + (signLineW/2), finalY + 10, { align: 'center' });
-      doc.text(data.sector, pageWidth - 30 - (signLineW/2), finalY + 10, { align: 'center' });
+      const responsibleName = userProfile?.name || user?.displayName || 'Responsável';
+      doc.text(responsibleName, 20 + (signLineW/2), finalY + 10, { align: 'center' });
+      doc.text(`Setor: ${data.sector}`, pageWidth - 20 - (signLineW/2), finalY + 10, { align: 'center' });
 
       // Disclaimer
       doc.setFontSize(8);
-      doc.setTextColor(148, 163, 184);
-      doc.text('Confirmo que recebi os materiais acima descritos em perfeitas condições e nas quantidades especificadas.', pageWidth/2, finalY + 25, { align: 'center' });
+      doc.setTextColor(100, 100, 100);
+      doc.text('Confirmo o recebimento dos materiais acima relacionados para uso exclusivo no setor designado.', pageWidth/2, finalY + 25, { align: 'center' });
 
-      // Footer
-      doc.setDrawColor(226, 232, 240);
-      doc.line(14, pageHeight - 25, pageWidth - 14, pageHeight - 25);
-      
+      // Footer (Institutional Address from model)
       doc.setFontSize(7);
-      doc.setTextColor(148, 163, 184);
+      doc.setTextColor(120, 113, 108);
+      doc.setDrawColor(226, 232, 240);
+      doc.line(14, pageHeight - 20, pageWidth - 14, pageHeight - 20);
+      
       const footerLine1 = 'Policlínica Bernardo Félix da Silva. Av. Monsenhor Aloísio Pinto, 481, Dom Expedito CEP 62050-255, Sobral Ceará.';
       const footerLine2 = 'Fone: (88) 3614-3156 . Fax: (88) 3614-3245';
-      doc.text(footerLine1, pageWidth / 2, pageHeight - 15, { align: 'center' });
-      doc.text(footerLine2, pageWidth / 2, pageHeight - 10, { align: 'center' });
+      doc.text(footerLine1, pageWidth / 2, pageHeight - 12, { align: 'center' });
+      doc.text(footerLine2, pageWidth / 2, pageHeight - 8, { align: 'center' });
 
-      doc.save(`RECIBO-${data.sector.toUpperCase().replace(/ /g, '-')}-${format(new Date(), 'ddMMyy-HHmm')}.pdf`);
-      showToast("Recibo gerado com sucesso!", "success");
+      const fileName = `RECIBO-${data.sector.toUpperCase().replace(/ /g, '-')}-${format(new Date(), 'ddMMyy-HHmm')}.pdf`;
+      doc.save(fileName);
+      showToast("Comprovante individual gerado com sucesso!", "success");
     } catch (error) {
       console.error("Receipt PDF Error:", error);
-      showToast("Erro ao gerar recibo", "error");
+      showToast("Erro ao gerar PDF do comprovante", "error");
     }
   };
+
 
   const handleExportConsumptionPDF = () => {
     try {
@@ -6433,6 +6475,32 @@ export default function App() {
                 </div>
                 <p className="text-sm font-medium italic">"{showRequestDetailModal.request.adminObservation}"</p>
               </div>
+            )}
+
+            {showRequestDetailModal.request.status === 'ENTREGUE' && (
+              <button 
+                onClick={() => {
+                  const itemsForReceipt = allRequestItems
+                    .filter(ri => ri.request_id === showRequestDetailModal.request?.id)
+                    .map(i => ({
+                      product_name: i.product_name,
+                      quantity: i.quantity_approved || 0
+                    }));
+                  
+                  if (itemsForReceipt.length > 0 && showRequestDetailModal.request) {
+                    handleExportDeliveryReceiptPDF({
+                      sector: showRequestDetailModal.request.sector,
+                      items: itemsForReceipt,
+                      requestId: showRequestDetailModal.request.id,
+                      date: showRequestDetailModal.request.deliveredAt || showRequestDetailModal.request.date
+                    });
+                  }
+                }}
+                className="flex-[2] py-4 px-6 bg-emerald-600 text-white rounded-2xl text-sm font-black uppercase tracking-widest hover:bg-emerald-700 transition-all shadow-xl shadow-emerald-200 flex items-center justify-center gap-3"
+              >
+                <Printer size={18} />
+                Reimprimir Comprovante
+              </button>
             )}
 
             {isAdmin && showRequestDetailModal.request.status !== 'ENTREGUE' && (
