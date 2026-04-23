@@ -1399,9 +1399,26 @@ export default function App() {
             : `Sua solicitação #${requestId.slice(-5).toUpperCase()} foi aprovada.`;
           await createNotification(userSnap.docs[0].id, 'Solicitação Aprovada', msg, requestId);
         }
+
+        // Auto-generate delivery receipt on approval as requested
+        const itemsForReceipt = items
+          .filter(i => i.quantity_approved > 0)
+          .map(i => ({
+            product_name: i.product_name,
+            quantity: i.quantity_approved
+          }));
+        
+        if (itemsForReceipt.length > 0) {
+          handleExportDeliveryReceiptPDF({
+            sector: request.sector,
+            items: itemsForReceipt,
+            requestId: requestId,
+            date: new Date().toISOString()
+          });
+        }
       }
 
-      showToast("Solicitação aprovada!", "success");
+      showToast("Solicitação aprovada e recibo gerado!", "success");
     } catch (error: any) {
       handleFirestoreError(error, OperationType.UPDATE, `requests/${requestId}`);
       showToast(`Erro ao aprovar: ${error.message}`, "error");
@@ -1453,6 +1470,8 @@ export default function App() {
         });
       });
 
+      let deliveredSector = '';
+      
       await runTransaction(db, async (transaction) => {
         console.log('Iniciando transação do Firestore...');
         const requestRef = doc(db, 'requests', requestId);
@@ -1463,6 +1482,7 @@ export default function App() {
         }
 
         const requestData = requestSnap.data() as MaterialRequest;
+        deliveredSector = requestData.sector;
         console.log('Dados da solicitação recuperados:', requestData.status);
         
         if (requestData.status === 'ENTREGUE') {
@@ -1612,16 +1632,16 @@ export default function App() {
       showToast("Entrega confirmada e estoque atualizado!", "success");
       
       // Auto-generate delivery receipt for the request
-      const itemsForReceipt = allRequestItems
-        .filter(ri => ri.request_id === requestId)
+      const itemsForReceipt = requestItems
+        .filter(ri => ri.quantity_approved > 0)
         .map(i => ({
           product_name: i.product_name,
-          quantity: i.quantity_approved || 0
+          quantity: i.quantity_approved
         }));
       
-      if (itemsForReceipt.length > 0) {
+      if (itemsForReceipt.length > 0 && deliveredSector) {
         handleExportDeliveryReceiptPDF({
-          sector: requestData.sector,
+          sector: deliveredSector,
           items: itemsForReceipt,
           requestId: requestId,
           date: new Date().toISOString()
