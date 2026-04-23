@@ -3575,6 +3575,7 @@ export default function App() {
                 <thead>
                   <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Item / Lote</th>
+                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Sala</th>
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Tipo {isAdmin && '/ Fornecedor'}</th>
                     {isAdmin && <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Origem</th>}
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">{isAdmin ? 'Preço Un.' : '---'}</th>
@@ -3622,22 +3623,32 @@ export default function App() {
                                 </button>
                               </div>
                             ) : (
-                              <div className="flex items-center gap-2 group/name">
-                                <p className="font-bold text-lg">{group.name}</p>
-                                {isAdmin && (
-                                  <button 
-                                    onClick={(e) => { e.stopPropagation(); setEditingMaterialName({ oldName: group.name, newName: group.name }); }}
-                                    className="opacity-0 group-hover/name:opacity-100 p-1 text-[#A8A29E] hover:text-[#1C1917] transition-all"
-                                    title="Editar Nome do Material"
-                                  >
-                                    <Edit2 size={16} />
-                                  </button>
+                              <div className="flex flex-col">
+                                <div className="flex items-center gap-2 group/name">
+                                  <p className="font-bold text-lg">{group.name}</p>
+                                  {isAdmin && (
+                                    <button 
+                                      onClick={(e) => { e.stopPropagation(); setEditingMaterialName({ oldName: group.name, newName: group.name }); }}
+                                      className="opacity-0 group-hover/name:opacity-100 p-1 text-[#A8A29E] hover:text-[#1C1917] transition-all"
+                                      title="Editar Nome do Material"
+                                    >
+                                      <Edit2 size={16} />
+                                    </button>
+                                  )}
+                                </div>
+                                {group.batches[0]?.description && (
+                                  <p className="text-[10px] text-[#A8A29E] italic mt-0.5 line-clamp-1">{group.batches[0].description}</p>
                                 )}
                               </div>
                             )}
                           </div>
                         </td>
-                        <td className="px-6 py-5">
+                      <td className="px-6 py-5">
+                        <span className="text-xs font-bold text-[#57534E] bg-stone-100 px-2 py-1 rounded-md">
+                          {group.batches[0]?.room || '---'}
+                        </span>
+                      </td>
+                      <td className="px-6 py-5">
                           <p className="text-sm font-semibold text-[#44403C]">{group.category || '---'}</p>
                           {isAdmin && <p className="text-xs text-[#78716C]">{group.supplier || '---'}</p>}
                         </td>
@@ -3691,6 +3702,7 @@ export default function App() {
                             <span className="text-[9px] font-bold uppercase tracking-tighter">Semanas</span>
                           </div>
                         </td>
+                        <td className="px-6 py-5 text-xs text-[#A8A29E]">---</td>
                         <td className="px-6 py-5 text-right">
                           <div className="flex flex-col items-end gap-1">
                             <button className="text-xs font-bold text-emerald-600 uppercase tracking-wider hover:underline">
@@ -3707,6 +3719,10 @@ export default function App() {
                         <tr key={item.id} className="bg-white hover:bg-[#FAFAF9] transition-all border-l-4 border-emerald-500">
                           <td className="px-12 py-4">
                             <p className="text-sm font-mono font-bold text-[#57534E]">Lote: {item.batch_number || '---'}</p>
+                            {item.description && <p className="text-[10px] text-[#A8A29E] italic">{item.description}</p>}
+                          </td>
+                          <td className="px-6 py-4">
+                            <p className="text-xs font-semibold text-[#57534E] italic">{item.room || '---'}</p>
                           </td>
                           <td className="px-6 py-4">
                             {isAdmin ? (
@@ -3934,15 +3950,19 @@ export default function App() {
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
-                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Data</th>
-                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Item</th>
-                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Tipo</th>
-                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Setor</th>
-                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Responsável</th>
-                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">Qtd</th>
-                      {isAdmin && <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">Valor Unit.</th>}
-                      {isAdmin && <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">Total</th>}
-                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">Ações</th>
+                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Data</th>
+                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Item</th>
+                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Lote</th>
+                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Validade</th>
+                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Tipo</th>
+                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-center">Origem</th>
+                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-center">Sala</th>
+                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Setor</th>
+                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">Responsável</th>
+                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">Qtd</th>
+                    {isAdmin && <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right whitespace-nowrap">Val. Unit</th>}
+                    {isAdmin && <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right whitespace-nowrap">Total</th>}
+                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">Ações</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#E7E5E4]">
@@ -3950,17 +3970,14 @@ export default function App() {
                       .filter(t => (showDeletedHistory ? !!t.deletedAt : !t.deletedAt) && (t.location || 'Almoxarifado') === inventoryLocation)
                       .map(t => (
                       <tr key={t.id} className={`hover:bg-[#FAFAF9] transition-all ${t.deletedAt ? 'opacity-60 grayscale-[0.5]' : ''}`}>
-                        <td className="px-6 py-5 text-sm text-[#57534E]">
+                        <td className="px-6 py-5 text-sm text-[#57534E] whitespace-nowrap">
                           {new Date(t.date).toLocaleString('pt-BR')}
                         </td>
                         <td className="px-6 py-5">
-                          <div className="font-bold">{t.item_name}</div>
-                          <div className="text-[10px] text-[#A8A29E]">
-                            Lote: {t.batch_number || 'N/A'} | Val: {t.expiry_date ? new Date(t.expiry_date).toLocaleDateString('pt-BR') : 'N/A'}
-                          </div>
+                          <div className="font-bold whitespace-nowrap">{t.item_name}</div>
                           {t.exitReason && t.exitReason !== 'consumo' && (
                             <div className="text-[10px] text-rose-500 font-bold mt-1 uppercase">
-                              Motivo Saída: {t.exitReason}
+                              Motivo: {t.exitReason}
                               {t.expiryReason && <span className="text-[#78716C] lowercase font-normal ml-1">({t.expiryReason})</span>}
                             </div>
                           )}
@@ -3968,14 +3985,28 @@ export default function App() {
                             <div className="text-[10px] text-rose-500 font-bold mt-1">Exclusão: {t.deletionReason}</div>
                           )}
                           {t.deletedByEmail && (
-                            <div className="text-[10px] text-rose-400 mt-0.5 italic">Por: {t.deletedByEmail}</div>
+                            <div className="text-[10px] text-rose-400 mt-0.5 italic whitespace-nowrap">Por: {t.deletedByEmail}</div>
                           )}
+                        </td>
+                        <td className="px-6 py-5 text-xs font-mono text-[#78716C] whitespace-nowrap">
+                          {t.batch_number || '---'}
+                        </td>
+                        <td className="px-6 py-5 text-xs text-[#78716C] whitespace-nowrap">
+                          {t.expiry_date ? new Date(t.expiry_date).toLocaleDateString('pt-BR') : '---'}
                         </td>
                         <td className="px-6 py-5">
                           <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${t.type === 'entry' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
                             {t.type === 'entry' ? <ArrowDownLeft size={14} /> : <ArrowUpRight size={14} />}
                             {t.type === 'entry' ? 'Entrada' : 'Saída'}
                           </span>
+                        </td>
+                        <td className="px-6 py-5">
+                          <span className={`text-[10px] font-bold px-2 py-1 rounded-md ${t.origin === 'contract' ? 'bg-blue-50 text-blue-600' : t.origin === 'donation' ? 'bg-emerald-50 text-emerald-600' : 'bg-purple-50 text-purple-600'}`}>
+                            {t.origin === 'contract' ? 'Contrato' : t.origin === 'donation' ? 'Doação' : 'Extra'}
+                          </span>
+                        </td>
+                        <td className="px-6 py-5 text-xs font-semibold text-[#57534E] italic">
+                          {t.room || '---'}
                         </td>
                         <td className="px-6 py-5 text-sm font-medium text-[#78716C]">
                           {t.sector || '---'}
