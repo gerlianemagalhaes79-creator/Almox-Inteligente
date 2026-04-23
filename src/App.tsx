@@ -3509,7 +3509,7 @@ export default function App() {
                       <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${t.type === 'entry' ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'}`}>
                         {t.type === 'entry' ? <ArrowDownLeft size={18} /> : <ArrowUpRight size={18} />}
                       </div>
-                      <div>
+                      <div className="flex-1">
                         <p className="font-bold text-sm">{t.item_name}</p>
                         <p className="text-xs text-[#78716C]">
                           {t.type === 'entry' ? 'Entrada' : `Saída para ${t.sector || '---'}`} de {t.quantity} unidades
@@ -3520,6 +3520,18 @@ export default function App() {
                           {t.supplier && <p className="text-[10px] text-amber-600 font-bold">De: {t.supplier}</p>}
                         </div>
                       </div>
+                      {isAdmin && !t.deletedAt && (
+                        <button 
+                          onClick={() => {
+                            setDeletionReason('');
+                            setShowDeleteModal({ show: true, transactionId: t.id });
+                          }}
+                          className="p-2 text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all self-center"
+                          title="Excluir Movimentação"
+                        >
+                          <Trash2 size={18} />
+                        </button>
+                      )}
                     </div>
                   ))}
                   {recentTransactions.length === 0 && <p className="text-[#A8A29E] text-sm italic">Nenhuma movimentação.</p>}
@@ -3575,7 +3587,6 @@ export default function App() {
                 <thead>
                   <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Item / Lote</th>
-                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Sala</th>
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Tipo {isAdmin && '/ Fornecedor'}</th>
                     {isAdmin && <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Origem</th>}
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">{isAdmin ? 'Preço Un.' : '---'}</th>
@@ -3643,11 +3654,6 @@ export default function App() {
                             )}
                           </div>
                         </td>
-                      <td className="px-6 py-5">
-                        <span className="text-xs font-bold text-[#57534E] bg-stone-100 px-2 py-1 rounded-md">
-                          {group.batches[0]?.room || '---'}
-                        </span>
-                      </td>
                       <td className="px-6 py-5">
                           <p className="text-sm font-semibold text-[#44403C]">{group.category || '---'}</p>
                           {isAdmin && <p className="text-xs text-[#78716C]">{group.supplier || '---'}</p>}
@@ -3720,9 +3726,6 @@ export default function App() {
                           <td className="px-12 py-4">
                             <p className="text-sm font-mono font-bold text-[#57534E]">Lote: {item.batch_number || '---'}</p>
                             {item.description && <p className="text-[10px] text-[#A8A29E] italic">{item.description}</p>}
-                          </td>
-                          <td className="px-6 py-4">
-                            <p className="text-xs font-semibold text-[#57534E] italic">{item.room || '---'}</p>
                           </td>
                           <td className="px-6 py-4">
                             {isAdmin ? (
@@ -3951,12 +3954,11 @@ export default function App() {
                   <thead>
                     <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Data</th>
+                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Movimentação</th>
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Item</th>
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Lote</th>
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Validade</th>
-                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Tipo</th>
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-center">Origem</th>
-                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-center">Sala</th>
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Setor</th>
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">Responsável</th>
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">Qtd</th>
@@ -3972,6 +3974,12 @@ export default function App() {
                       <tr key={t.id} className={`hover:bg-[#FAFAF9] transition-all ${t.deletedAt ? 'opacity-60 grayscale-[0.5]' : ''}`}>
                         <td className="px-6 py-5 text-sm text-[#57534E] whitespace-nowrap">
                           {new Date(t.date).toLocaleString('pt-BR')}
+                        </td>
+                        <td className="px-6 py-5">
+                          <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${t.type === 'entry' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+                            {t.type === 'entry' ? <ArrowDownLeft size={14} /> : <ArrowUpRight size={14} />}
+                            {t.type === 'entry' ? 'Entrada' : 'Saída'}
+                          </span>
                         </td>
                         <td className="px-6 py-5">
                           <div className="font-bold whitespace-nowrap">{t.item_name}</div>
@@ -3994,19 +4002,10 @@ export default function App() {
                         <td className="px-6 py-5 text-xs text-[#78716C] whitespace-nowrap">
                           {t.expiry_date ? new Date(t.expiry_date).toLocaleDateString('pt-BR') : '---'}
                         </td>
-                        <td className="px-6 py-5">
-                          <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${t.type === 'entry' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
-                            {t.type === 'entry' ? <ArrowDownLeft size={14} /> : <ArrowUpRight size={14} />}
-                            {t.type === 'entry' ? 'Entrada' : 'Saída'}
-                          </span>
-                        </td>
-                        <td className="px-6 py-5">
+                        <td className="px-6 py-5 text-center">
                           <span className={`text-[10px] font-bold px-2 py-1 rounded-md ${t.origin === 'contract' ? 'bg-blue-50 text-blue-600' : t.origin === 'donation' ? 'bg-emerald-50 text-emerald-600' : 'bg-purple-50 text-purple-600'}`}>
                             {t.origin === 'contract' ? 'Contrato' : t.origin === 'donation' ? 'Doação' : 'Extra'}
                           </span>
-                        </td>
-                        <td className="px-6 py-5 text-xs font-semibold text-[#57534E] italic">
-                          {t.room || '---'}
                         </td>
                         <td className="px-6 py-5 text-sm font-medium text-[#78716C]">
                           {t.sector || '---'}
@@ -4051,10 +4050,10 @@ export default function App() {
                                 setDeletionReason('');
                                 setShowDeleteModal({ show: true, transactionId: t.id });
                               }}
-                              className="p-2 text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
-                              title="Excluir (Teste)"
+                              className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg transition-all"
+                              title="Apagar Movimentação"
                             >
-                              <Trash2 size={18} />
+                              <Trash2 size={20} />
                             </button>
                           )}
                         </td>
