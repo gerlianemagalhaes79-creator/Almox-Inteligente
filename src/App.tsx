@@ -91,6 +91,8 @@ import {
 } from 'recharts';
 import { format, subDays, isWithinInterval, startOfDay, endOfDay, parseISO, differenceInDays } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
+// @ts-ignore
+import letterheadImg from './stamped_paper.jpg.jpg';
 
 interface ItemGroup {
   name: string;
@@ -2481,64 +2483,12 @@ export default function App() {
       const margin = 20;
 
       const drawLetterhead = (pdfDoc: any) => {
-        // --- COLORS FROM MODEL ---
-        const cpsmsCyan = [0, 169, 219];    // Official Cyan-Blue
-        const cpsmsOrange = [255, 185, 0];   // Official Yellow/Orange
-        const subtextGray = [120, 113, 108]; // Footer/Subtext Gray
-
-        // --- HEADER ---
-        // Left Side: Policlínica de Sobral
-        pdfDoc.setFontSize(22);
-        pdfDoc.setTextColor(cpsmsCyan[0], cpsmsCyan[1], cpsmsCyan[2]);
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('Policlínica de Sobral', margin, 20);
-        
-        pdfDoc.setFontSize(11);
-        pdfDoc.setTextColor(cpsmsOrange[0], cpsmsOrange[1], cpsmsOrange[2]);
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('BERNARDO FÉLIX DA SILVA', margin, 26);
-
-        // Right Side: CPSMS Logo (Butterfly shape simulation)
-        const logoX = pageWidth - margin - 46; 
-        const logoY = 16;
-        
-        // Leaf 1 (Top Left - Yellow/Orange)
-        pdfDoc.setFillColor(255, 185, 0);
-        pdfDoc.roundedRect(logoX, logoY, 4, 4, 1.5, 1.5, 'F');
-        
-        // Leaf 2 (Top Right - Cyan)
-        pdfDoc.setFillColor(0, 169, 219);
-        pdfDoc.roundedRect(logoX + 4.5, logoY, 4, 4, 1.5, 1.5, 'F');
-        
-        // Leaf 3 (Bottom Left - Cyan)
-        pdfDoc.setFillColor(0, 169, 219);
-        pdfDoc.roundedRect(logoX, logoY + 4.5, 4, 4, 1.5, 1.5, 'F');
-        
-        // Leaf 4 (Bottom Right - Cyan)
-        pdfDoc.setFillColor(0, 169, 219);
-        pdfDoc.roundedRect(logoX + 4.5, logoY + 4.5, 4, 4, 1.5, 1.5, 'F');
-
-        // CPSMS Text
-        pdfDoc.setFontSize(26);
-        pdfDoc.setTextColor(0, 169, 219);
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('CPSMS', pageWidth - margin, 21, { align: 'right' });
-        
-        // Consórcio Subtext
-        pdfDoc.setFontSize(6);
-        pdfDoc.setTextColor(subtextGray[0], subtextGray[1], subtextGray[2]);
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('CONSÓRCIO PÚBLICO DE SAÚDE', pageWidth - margin, 24, { align: 'right' });
-        pdfDoc.text('DA MICRORREGIÃO DE SOBRAL', pageWidth - margin, 26.5, { align: 'right' });
-
-        // --- FOOTER ---
-        pdfDoc.setFontSize(8.5);
-        pdfDoc.setTextColor(60, 60, 60);
-        pdfDoc.setFont('helvetica', 'normal');
-        const footerLine1 = 'Policlínica Bernardo Félix da Silva. Av. Monsenhor Aloísio Pinto, 481, Dom Expedito CEP';
-        const footerLine2 = '62050-255, Sobral Ceará. Fone: (88) 3614-3156 . Fax: (88) 3614-3245';
-        pdfDoc.text(footerLine1, pageWidth / 2, pageHeight - 15, { align: 'center' });
-        pdfDoc.text(footerLine2, pageWidth / 2, pageHeight - 11, { align: 'center' });
+        // --- ADD LETTERHEAD IMAGE BACKGROUND ---
+        try {
+          pdfDoc.addImage(letterheadImg, 'JPEG', 0, 0, pageWidth, pageHeight);
+        } catch (e) {
+          console.error("Error adding letterhead image:", e);
+        }
       };
 
       drawLetterhead(doc);
