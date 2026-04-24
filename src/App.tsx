@@ -92,7 +92,7 @@ import {
 import { format, subDays, isWithinInterval, startOfDay, endOfDay, parseISO, differenceInDays } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 // @ts-ignore
-import letterheadImg from './stamped_paper.jpg.jpg';
+import letterheadImg from './stamped_paper.jpg';
 
 interface ItemGroup {
   name: string;
@@ -294,9 +294,26 @@ export default function App() {
 
   useEffect(() => {
     const loadImage = async () => {
+      // Method 1: Fetch as Blob (Good for most cases)
+      try {
+        const response = await fetch(letterheadImg);
+        const blob = await response.blob();
+        if (blob.type.includes('image')) {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            setLetterheadBase64(reader.result as string);
+          };
+          reader.readAsDataURL(blob);
+          return;
+        }
+      } catch (error) {
+        console.warn("Fetch method failed, trying canvas fallback:", error);
+      }
+
+      // Method 2: Canvas draw (Fallback)
       try {
         const img = new Image();
-        img.crossOrigin = 'Anonymous';
+        img.crossOrigin = 'anonymous';
         img.onload = () => {
           const canvas = document.createElement('canvas');
           canvas.width = img.width;
@@ -304,24 +321,15 @@ export default function App() {
           const ctx = canvas.getContext('2d');
           if (ctx) {
             ctx.drawImage(img, 0, 0);
-            try {
-              const dataUrl = canvas.toDataURL('image/jpeg');
-              setLetterheadBase64(dataUrl);
-            } catch (e) {
-              console.error("Canvas toDataURL failed:", e);
-              // Fallback to the original image URL if canvas fails
-              setLetterheadBase64(letterheadImg);
-            }
+            setLetterheadBase64(canvas.toDataURL('image/jpeg'));
           }
         };
-        img.onerror = (err) => {
-          console.error("Erro ao carregar imagem do papel timbrado:", err);
-          // Fallback to the original image URL
+        img.onerror = () => {
           setLetterheadBase64(letterheadImg);
         };
         img.src = letterheadImg;
-      } catch (error) {
-        console.error("Erro no processo de carregamento do papel timbrado:", error);
+      } catch (e) {
+        setLetterheadBase64(letterheadImg);
       }
     };
     loadImage();
@@ -2250,18 +2258,19 @@ export default function App() {
     const pageWidth = pdfDoc.internal.pageSize.width;
     const pageHeight = pdfDoc.internal.pageSize.height;
     
-    // Prioritize base64, then imported URL
     const imgToUse = letterheadBase64 || letterheadImg;
     
-    try {
-      if (imgToUse) {
-        // Using 'JPEG' as format. Adjust if it's PNG
-        // We use alias 'letterhead' for caching in jsPDF if needed, 
-        // but here we just pass the source
-        pdfDoc.addImage(imgToUse, 'JPEG', 0, 0, pageWidth, pageHeight, undefined, 'FAST');
+    if (imgToUse) {
+      try {
+        // Detect format from data URL if possible
+        let format = 'JPEG';
+        if (typeof imgToUse === 'string' && imgToUse.startsWith('data:image/png')) {
+          format = 'PNG';
+        }
+        pdfDoc.addImage(imgToUse, format, 0, 0, pageWidth, pageHeight);
+      } catch (e) {
+        console.warn("Could not add letterhead background. Error:", e);
       }
-    } catch (e) {
-      console.error("Error adding letterhead image:", e);
     }
   };
 
