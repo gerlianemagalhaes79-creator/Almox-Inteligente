@@ -295,15 +295,33 @@ export default function App() {
   useEffect(() => {
     const loadImage = async () => {
       try {
-        const response = await fetch(letterheadImg);
-        const blob = await response.blob();
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          setLetterheadBase64(reader.result as string);
+        const img = new Image();
+        img.crossOrigin = 'Anonymous';
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.width;
+          canvas.height = img.height;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0);
+            try {
+              const dataUrl = canvas.toDataURL('image/jpeg');
+              setLetterheadBase64(dataUrl);
+            } catch (e) {
+              console.error("Canvas toDataURL failed:", e);
+              // Fallback to the original image URL if canvas fails
+              setLetterheadBase64(letterheadImg);
+            }
+          }
         };
-        reader.readAsDataURL(blob);
+        img.onerror = (err) => {
+          console.error("Erro ao carregar imagem do papel timbrado:", err);
+          // Fallback to the original image URL
+          setLetterheadBase64(letterheadImg);
+        };
+        img.src = letterheadImg;
       } catch (error) {
-        console.error("Erro ao carregar papel timbrado:", error);
+        console.error("Erro no processo de carregamento do papel timbrado:", error);
       }
     };
     loadImage();
@@ -2231,10 +2249,16 @@ export default function App() {
   const drawLetterhead = (pdfDoc: any) => {
     const pageWidth = pdfDoc.internal.pageSize.width;
     const pageHeight = pdfDoc.internal.pageSize.height;
+    
+    // Prioritize base64, then imported URL
     const imgToUse = letterheadBase64 || letterheadImg;
+    
     try {
       if (imgToUse) {
-        pdfDoc.addImage(imgToUse, 'JPEG', 0, 0, pageWidth, pageHeight);
+        // Using 'JPEG' as format. Adjust if it's PNG
+        // We use alias 'letterhead' for caching in jsPDF if needed, 
+        // but here we just pass the source
+        pdfDoc.addImage(imgToUse, 'JPEG', 0, 0, pageWidth, pageHeight, undefined, 'FAST');
       }
     } catch (e) {
       console.error("Error adding letterhead image:", e);
