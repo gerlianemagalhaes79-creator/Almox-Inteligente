@@ -2462,7 +2462,21 @@ export default function App() {
       const doc = new jsPDF();
       const pageWidth = doc.internal.pageSize.width;
       
-      const donorName = data.donatingUnitName || 'Policlínica Bernardo Félix da Silva';
+      const formatTitleCase = (str: string) => {
+        if (!str) return '';
+        const lower = str.toLowerCase();
+        // Exception for common prepositions in PT-BR
+        const minorWords = ['de', 'da', 'do', 'das', 'dos', 'e', 'em', 'para'];
+        return lower.split(' ').map((word, index) => {
+          if (index > 0 && minorWords.includes(word)) return word;
+          return word.charAt(0).toUpperCase() + word.slice(1);
+        }).join(' ');
+      };
+
+      const donorName = formatTitleCase(data.donatingUnitName || 'Policlínica Bernardo Félix da Silva');
+      const receivingName = formatTitleCase(data.receivingUnit.name);
+      const receivingAddress = data.receivingUnit.address;
+      const receivingCNPJ = data.receivingUnit.cnpj;
       
       // Header Section (Institutional Style)
       doc.setFontSize(14);
@@ -2479,8 +2493,8 @@ export default function App() {
       doc.setTextColor(107, 114, 128); // Gray-500
       doc.setFont('helvetica', 'normal');
       doc.text('Código: TERMO-ALMOX', pageWidth - 20, 20, { align: 'right' });
-      doc.text(`Data Impl.: ${format(new Date(), 'dd/MM/yyyy')}`, pageWidth - 20, 24, { align: 'right' });
-      doc.text(`Última Rev.: ${data.revisionDate || '---'}`, pageWidth - 20, 28, { align: 'right' });
+      doc.text(`Data de Implantação: ${format(new Date(), 'dd/MM/yyyy')}`, pageWidth - 20, 24, { align: 'right' });
+      doc.text(`Última Revisão: ${data.revisionDate || '---'}`, pageWidth - 20, 28, { align: 'right' });
       
       // Donation Number
       if (data.donationNumber) {
@@ -2494,7 +2508,7 @@ export default function App() {
       doc.setFontSize(12);
       doc.setTextColor(17, 24, 39); // Gray-900
       doc.setFont('helvetica', 'bold');
-      doc.text('TERMO DE DOAÇÃO DE MATERIAIS E INSUMOS', pageWidth / 2, 50, { align: 'center' });
+      doc.text('Termo de Doação de Materiais e Insumos', pageWidth / 2, 50, { align: 'center' });
       
       // Stylized separator
       doc.setDrawColor(209, 213, 219); // Gray-300
@@ -2505,18 +2519,20 @@ export default function App() {
       doc.setFontSize(10);
       doc.setTextColor(31, 41, 55);
       doc.setFont('helvetica', 'normal');
-      
-      const receivingName = data.receivingUnit.name;
-      const receivingAddress = data.receivingUnit.address;
-      const receivingCNPJ = data.receivingUnit.cnpj;
 
       const donationText = `A ${donorName}, inscrita sob o CNPJ nº 12.208.466/0001-66, por intermédio de seu Setor de Almoxarifado, formaliza por este instrumento a doação à unidade ${receivingName}, situada em ${receivingAddress}, inscrita sob o CNPJ nº ${receivingCNPJ}, dos materiais e insumos abaixo discriminados. A presente cessão justifica-se pela otimização de estoque em virtude da redução de demanda interna e proximidade do prazo de validade, assegurando a destinação útil dos itens.`;
       
-      const textLines = doc.splitTextToSize(donationText, pageWidth - 40);
-      doc.text(textLines, 20, 65, { align: 'justify', lineHeightFactor: 1.5 });
+      const margin = 20;
+      const textWidth = pageWidth - (margin * 2);
+      const textLines = doc.splitTextToSize(donationText, textWidth);
+      doc.text(textLines, margin, 65, { 
+        align: 'justify', 
+        maxWidth: textWidth,
+        lineHeightFactor: 1.5 
+      });
 
       // Calculate current Y after donation text
-      const tableStartY = 65 + (textLines.length * 5) + 10;
+      const tableStartY = 65 + (textLines.length * 7) + 5;
 
       // Materials Table
       const tableData = data.items.map(i => [
@@ -2578,7 +2594,6 @@ export default function App() {
       doc.setLineWidth(0.5);
       
       const signLineW = 75;
-      const margin = 20;
       
       // Left Signature (Donor)
       doc.line(margin, signY, margin + signLineW, signY);
