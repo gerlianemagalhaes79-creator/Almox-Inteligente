@@ -79,6 +79,7 @@ export interface Transaction {
   donationUnitAddress?: string;
   donationUnitCNPJ?: string;
   donationRevisionDate?: string;
+  donationNumber?: string;
   batch_number?: string;
   expiry_date?: string;
 }

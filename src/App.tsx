@@ -1936,6 +1936,28 @@ export default function App() {
             });
 
             const newTransRef = doc(transCol);
+            const currentDonationNumber = exitReason === 'doacao' ? (() => {
+              const currentYear = new Date().getFullYear();
+              const yearlyDonations = transactions.filter(t => 
+                t.exitReason === 'doacao' && 
+                !t.deletedAt && 
+                new Date(t.date).getFullYear() === currentYear
+              );
+              const uniqueDonations = new Set();
+              yearlyDonations.forEach(t => {
+                // Group by either donationNumber or a "session key" (rough timestamp + destinatario)
+                if ((t as any).donationNumber) {
+                  uniqueDonations.add((t as any).donationNumber);
+                } else {
+                  // Fallback for older transactions: group by date (minute precision) and sector
+                  const dateKey = new Date(t.date).toISOString().slice(0, 16);
+                  uniqueDonations.add(`${dateKey}-${t.sector}`);
+                }
+              });
+              const nextCount = uniqueDonations.size + 1;
+              return `${nextCount.toString().padStart(2, '0')}/${currentYear}`;
+            })() : null;
+
             transaction.set(newTransRef, {
               item_id: currentItemData.id || itemRef.id,
               item_name: currentItemData.name,
@@ -1953,6 +1975,7 @@ export default function App() {
               donationUnitAddress: exitReason === 'doacao' ? donationUnitAddress : null,
               donationUnitCNPJ: exitReason === 'doacao' ? donationUnitCNPJ : null,
               donationRevisionDate: exitReason === 'doacao' ? donationRevisionDate : null,
+              donationNumber: currentDonationNumber,
               batch_number: currentItemData.batch_number,
               expiry_date: currentItemData.expiry_date
             });
@@ -2059,6 +2082,24 @@ export default function App() {
         }));
         
         if (exitReason === 'doacao') {
+          // Calculate donation number for this year
+          const currentYear = new Date().getFullYear();
+          const yearlyDonations = transactions.filter(t => 
+            t.exitReason === 'doacao' && 
+            !t.deletedAt && 
+            new Date(t.date).getFullYear() === currentYear
+          );
+          const uniqueDonations = new Set();
+          yearlyDonations.forEach(t => {
+            if ((t as any).donationNumber) {
+              uniqueDonations.add((t as any).donationNumber);
+            } else {
+              const dateKey = new Date(t.date).toISOString().slice(0, 16);
+              uniqueDonations.add(`${dateKey}-${t.sector}`);
+            }
+          });
+          const currentDonationNumber = `${(uniqueDonations.size + 1).toString().padStart(2, '0')}/${currentYear}`;
+
           handleExportDonationTermPDF({
             donatingUnitName: donationUnitName || 'Policlínica Bernardo Félix da Silva',
             receivingUnit: {
@@ -2068,6 +2109,7 @@ export default function App() {
             },
             items: itemsForReceipt,
             revisionDate: donationRevisionDate,
+            donationNumber: currentDonationNumber,
             date: new Date().toISOString()
           });
         } else {
@@ -2412,6 +2454,7 @@ export default function App() {
     receivingUnit: { name: string; address: string; cnpj: string };
     items: { product_name: string; quantity: number }[];
     revisionDate: string;
+    donationNumber?: string;
     date: string;
   }) => {
     try {
@@ -2419,7 +2462,7 @@ export default function App() {
       const doc = new jsPDF();
       const pageWidth = doc.internal.pageSize.width;
       
-      const donorName = data.donatingUnitName || 'Policlínica Bernardo Félix da Silva';
+      const donorName = (data.donatingUnitName || 'Policlínica Bernardo Félix da Silva').toUpperCase();
       
       // Header Section (Institutional Style)
       doc.setFontSize(18);
@@ -2430,7 +2473,7 @@ export default function App() {
       doc.setFontSize(10);
       doc.setTextColor(245, 158, 11); // Yellow-Orange
       doc.setFont('helvetica', 'bold');
-      doc.text(donorName.toUpperCase(), 14, 25);
+      doc.text(donorName, 14, 25);
 
       // Right side Info
       doc.setFontSize(9);
@@ -2441,25 +2484,33 @@ export default function App() {
       doc.text(`DATA IMPL.: ${format(new Date(), 'dd/MM/yyyy')}`, pageWidth - 14, 24, { align: 'right' });
       doc.text(`ÚLTIMA REV.: ${data.revisionDate || '---'}`, pageWidth - 14, 28, { align: 'right' });
       
+      // Donation Number
+      if (data.donationNumber) {
+        doc.setFontSize(10);
+        doc.setTextColor(30, 41, 59);
+        doc.text(`TERMO Nº: ${data.donationNumber}`, pageWidth - 14, 34, { align: 'right' });
+      }
+
       // Document Title
       doc.setFontSize(14);
       doc.setTextColor(28, 25, 23);
       doc.setFont('helvetica', 'bold');
-      doc.text('TERMO DE DOAÇÃO DE MATERIAIS', pageWidth / 2, 42, { align: 'center' });
+      doc.text('TERMO DE DOAÇÃO DE MATERIAIS', pageWidth / 2, 45, { align: 'center' });
       
       // Stylized separator
       doc.setDrawColor(0, 139, 190);
       doc.setLineWidth(0.5);
-      doc.line(14, 48, pageWidth - 14, 48);
+      doc.line(14, 50, pageWidth - 14, 50);
 
-      // Donation Text
+      // Donation Text (ABNT / Formal style)
       doc.setFontSize(10);
       doc.setTextColor(30, 41, 59);
       doc.setFont('helvetica', 'normal');
-      const donationText = `${donorName}, CNPJ: 12.208.466/0001-66, por meio do setor de Almoxarifado está doando para o ${data.receivingUnit.name.toUpperCase()}, endereço: ${data.receivingUnit.address.toUpperCase()}, CNPJ: ${data.receivingUnit.cnpj}, os itens abaixo especificados em virtude de redução de demanda interna e prazo próximo a data de validade.`;
+      
+      const donationText = `A ${donorName}, inscrita sob o CNPJ nº 12.208.466/0001-66, por intermédio de seu Setor de Almoxarifado, formaliza por este instrumento a DOAÇÃO à unidade ${data.receivingUnit.name.toUpperCase()}, situada em ${data.receivingUnit.address.toUpperCase()}, inscrita sob o CNPJ nº ${data.receivingUnit.cnpj}, dos materiais e insumos abaixo discriminados. A presente cessão justifica-se pela otimização de estoque em virtude da redução de demanda interna e proximidade do prazo de validade, assegurando a destinação útil dos itens.`;
       
       const textLines = doc.splitTextToSize(donationText, pageWidth - 28);
-      doc.text(textLines, 14, 60);
+      doc.text(textLines, 14, 60, { align: 'justify' });
 
       // Materials Table
       const tableData = data.items.map(i => [
@@ -4276,6 +4327,7 @@ export default function App() {
                                       },
                                       items: [{ product_name: t.item_name, quantity: t.quantity }],
                                       revisionDate: t.donationRevisionDate || '',
+                                      donationNumber: t.donationNumber,
                                       date: t.date
                                     });
                                   } else {
