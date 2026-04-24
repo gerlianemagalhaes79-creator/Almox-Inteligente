@@ -91,6 +91,8 @@ import {
 } from 'recharts';
 import { format, subDays, isWithinInterval, startOfDay, endOfDay, parseISO, differenceInDays } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
+// @ts-ignore
+import letterheadImg from './stamped_paper.jpg.jpg';
 
 interface ItemGroup {
   name: string;
@@ -2208,18 +2210,31 @@ export default function App() {
     }
   };
 
+  const drawLetterhead = (pdfDoc: any) => {
+    const pageWidth = pdfDoc.internal.pageSize.width;
+    const pageHeight = pdfDoc.internal.pageSize.height;
+    try {
+      pdfDoc.addImage(letterheadImg, 'JPEG', 0, 0, pageWidth, pageHeight);
+    } catch (e) {
+      console.error("Error adding letterhead image:", e);
+    }
+  };
+
   const handleExportInventoryPDF = () => {
     try {
       const doc = new jsPDF();
+      const margin = 14;
+      
+      drawLetterhead(doc);
       
       // Add title
       doc.setFontSize(18);
       doc.setTextColor(28, 25, 23); // #1C1917
-      doc.text('Relatório de Estoque Atual', 14, 22);
+      doc.text('Relatório de Estoque Atual', margin, 40);
       
       doc.setFontSize(11);
       doc.setTextColor(120, 113, 108); // #78716C
-      doc.text(`Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 14, 30);
+      doc.text(`Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, margin, 48);
       
       // Prepare data for table
       const tableData = groupedArray.map(group => [
@@ -2232,7 +2247,7 @@ export default function App() {
       
       // Generate table
       autoTable(doc, {
-        startY: 40,
+        startY: 55,
         head: [['Item', 'Categoria', 'Estoque', 'Mínimo', 'Status']],
         body: tableData,
         theme: 'striped',
@@ -2250,6 +2265,11 @@ export default function App() {
               data.cell.styles.fontStyle = 'bold';
             }
           }
+        },
+        didDrawPage: (data) => {
+          if (data.pageNumber > 1) {
+            drawLetterhead(doc);
+          }
         }
       });
       
@@ -2266,15 +2286,18 @@ export default function App() {
   const handleExportRequestsPDF = () => {
     try {
       const doc = new jsPDF();
+      const margin = 14;
+      
+      drawLetterhead(doc);
       
       // Add title
       doc.setFontSize(18);
       doc.setTextColor(28, 25, 23); // #1C1917
-      doc.text('Relatório de Solicitações de Materiais', 14, 22);
+      doc.text('Relatório de Solicitações de Materiais', margin, 40);
       
       doc.setFontSize(11);
       doc.setTextColor(120, 113, 108); // #78716C
-      doc.text(`Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 14, 30);
+      doc.text(`Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, margin, 48);
       
       // Determine which requests to export based on current tab
       let requestsToExport = [];
@@ -2300,7 +2323,7 @@ export default function App() {
       
       // Generate table
       autoTable(doc, {
-        startY: 40,
+        startY: 55,
         head: [['Nº', 'Data', 'Setor', 'Status', 'Itens']],
         body: tableData,
         theme: 'striped',
@@ -2311,7 +2334,12 @@ export default function App() {
           3: { halign: 'center' },
           4: { halign: 'center' }
         },
-        styles: { fontSize: 9, cellPadding: 3 }
+        styles: { fontSize: 9, cellPadding: 3 },
+        didDrawPage: (data) => {
+          if (data.pageNumber > 1) {
+            drawLetterhead(doc);
+          }
+        }
       });
       
       // Save PDF
@@ -2330,36 +2358,18 @@ export default function App() {
       const doc = new jsPDF();
       const pageWidth = doc.internal.pageSize.width;
       
-      // Header
-      doc.setDrawColor(37, 99, 235); // blue-600
-      doc.setLineWidth(1.5);
-      doc.line(14, 15, 24, 15);
-      doc.line(19, 10, 19, 20);
-      
-      doc.setFontSize(16);
-      doc.setTextColor(28, 25, 23);
-      doc.setFont('helvetica', 'bold');
-      doc.text('POLICLÍNICA', 28, 17);
-      
-      doc.setFontSize(8);
-      doc.setFont('helvetica', 'normal');
-      doc.setTextColor(120, 113, 108);
-      doc.text('CONTROLE DE ESTOQUE POR SALA', 28, 22);
-
-      doc.setDrawColor(231, 229, 228);
-      doc.setLineWidth(0.5);
-      doc.line(14, 28, pageWidth - 14, 28);
+      drawLetterhead(doc);
       
       doc.setFontSize(14);
       doc.setTextColor(28, 25, 23);
       doc.setFont('helvetica', 'bold');
-      doc.text(`Mapa de Estoque - ${displayRoomName}`, 14, 40);
+      doc.text(`Mapa de Estoque - ${displayRoomName}`, 14, 45);
       
       doc.setFontSize(9);
       doc.setFont('helvetica', 'normal');
       doc.setTextColor(120, 113, 108);
-      doc.text(`Local Físico Origem: ${roomFilter}`, 14, 46);
-      doc.text(`Emitido em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 14, 52);
+      doc.text(`Local Físico Origem: ${roomFilter}`, 14, 51);
+      doc.text(`Emitido em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 14, 57);
 
       // Filter items by room and categories
       const roomItems = items.filter(i => {
@@ -2384,7 +2394,7 @@ export default function App() {
       if (roomItems.length === 0) {
         doc.setFontSize(10);
         doc.setTextColor(150, 150, 150);
-        doc.text('NENHUM ITEM ENCONTRADO PARA OS FILTROS SELECIONADOS.', 14, 70);
+        doc.text('NENHUM ITEM ENCONTRADO PARA OS FILTROS SELECIONADOS.', 14, 75);
       } else {
         const tableData = roomItems.map(item => {
           const daysToExpiry = item.expiry_date && item.expiry_date !== 'Indeterminada' 
@@ -2411,7 +2421,7 @@ export default function App() {
         });
 
         autoTable(doc, {
-          startY: 60,
+          startY: 65,
           head: [['Produto', 'Lote', 'Categoria', 'Estoque', 'Validade', 'Status (Dias)']],
           body: tableData,
           theme: 'striped',
@@ -2431,7 +2441,12 @@ export default function App() {
             4: { cellWidth: 25 },
             5: { cellWidth: 30 }
           },
-          margin: { horizontal: 14 }
+          margin: { horizontal: 14 },
+          didDrawPage: (data) => {
+            if (data.pageNumber > 1) {
+              drawLetterhead(doc);
+            }
+          }
         });
       }
       
@@ -2461,6 +2476,7 @@ export default function App() {
       // @ts-ignore
       const doc = new jsPDF();
       const pageWidth = doc.internal.pageSize.width;
+      const pageHeight = doc.internal.pageSize.height;
       
       const formatTitleCase = (str: string) => {
         if (!str) return '';
@@ -2477,75 +2493,57 @@ export default function App() {
       const receivingName = formatTitleCase(data.receivingUnit.name);
       const receivingAddress = data.receivingUnit.address;
       const receivingCNPJ = data.receivingUnit.cnpj;
-      
-      // Header Section (Institutional Style)
-      doc.setFontSize(14);
-      doc.setTextColor(31, 41, 55); // Gray-800
-      doc.setFont('helvetica', 'bold');
-      doc.text('Policlínica de Sobral', 20, 20);
-      
-      doc.setFontSize(10);
-      doc.setTextColor(245, 158, 11); // Yellow-Orange
-      doc.text(donorName, 20, 26);
+      const margin = 20;
 
-      // Right side Info
+      drawLetterhead(doc);
+
+      // --- DOCUMENT INFO ---
       doc.setFontSize(8);
-      doc.setTextColor(107, 114, 128); // Gray-500
+      doc.setTextColor(107, 114, 128);
       doc.setFont('helvetica', 'normal');
-      doc.text('Código: TERMO-ALMOX', pageWidth - 20, 20, { align: 'right' });
-      doc.text(`Data de Implantação: ${format(new Date(), 'dd/MM/yyyy')}`, pageWidth - 20, 24, { align: 'right' });
-      doc.text(`Última Revisão: ${data.revisionDate || '---'}`, pageWidth - 20, 28, { align: 'right' });
+      doc.text('Código: TERMO-ALMOX', pageWidth - margin, 45, { align: 'right' });
+      doc.text(`Data de Implantação: ${format(new Date(), 'dd/MM/yyyy')}`, pageWidth - margin, 49, { align: 'right' });
+      doc.text(`Última Revisão: ${data.revisionDate || '---'}`, pageWidth - margin, 53, { align: 'right' });
       
-      // Donation Number
       if (data.donationNumber) {
         doc.setFontSize(9);
         doc.setTextColor(31, 41, 55);
         doc.setFont('helvetica', 'bold');
-        doc.text(`Termo nº: ${data.donationNumber}`, pageWidth - 20, 36, { align: 'right' });
+        doc.text(`Termo nº: ${data.donationNumber}`, pageWidth - margin, 59, { align: 'right' });
       }
 
-      // Document Title
+      // --- TITLE ---
       doc.setFontSize(12);
-      doc.setTextColor(17, 24, 39); // Gray-900
+      doc.setTextColor(17, 24, 39);
       doc.setFont('helvetica', 'bold');
-      doc.text('Termo de Doação de Materiais e Insumos', pageWidth / 2, 50, { align: 'center' });
+      doc.text('Termo de Doação de Materiais e Insumos', pageWidth / 2, 70, { align: 'center' });
       
-      // Stylized separator
-      doc.setDrawColor(209, 213, 219); // Gray-300
+      doc.setDrawColor(209, 213, 219);
       doc.setLineWidth(0.2);
-      doc.line(20, 54, pageWidth - 20, 54);
+      doc.line(margin, 74, pageWidth - margin, 74);
 
-      // Donation Text (ABNT / Formal style)
+      // --- CONTENT ---
       doc.setFontSize(10);
       doc.setTextColor(31, 41, 55);
       doc.setFont('helvetica', 'normal');
-
+      
       const donationText = `A ${donorName}, inscrita sob o CNPJ nº 12.208.466/0001-66, por intermédio de seu Setor de Almoxarifado, formaliza por este instrumento a doação à unidade ${receivingName}, situada em ${receivingAddress}, inscrita sob o CNPJ nº ${receivingCNPJ}, dos materiais e insumos abaixo discriminados. A presente cessão justifica-se pela otimização de estoque em virtude da redução de demanda interna e proximidade do prazo de validade, assegurando a destinação útil dos itens.`;
       
-      const margin = 20;
       const textWidth = pageWidth - (margin * 2);
       const textLines = doc.splitTextToSize(donationText, textWidth);
-      doc.text(textLines, margin, 65, { 
+      doc.text(textLines, margin, 85, { 
         align: 'justify', 
         maxWidth: textWidth,
         lineHeightFactor: 1.5 
       });
 
-      // Calculate current Y after donation text
-      const tableStartY = 65 + (textLines.length * 7) + 5;
+      const tableStartY = 85 + (textLines.length * 7) + 5;
 
-      // Materials Table
-      const tableData = data.items.map(i => [
-        i.product_name, 
-        i.quantity.toString(), 
-        '                  '
-      ]);
-      
       autoTable(doc, {
         startY: tableStartY,
-        margin: { left: 20, right: 20 },
+        margin: { left: margin, right: margin },
         head: [['Descrição do Material', 'Qtd Doada', 'Conferência']],
-        body: tableData,
+        body: data.items.map(i => [i.product_name, i.quantity.toString(), ' ']),
         theme: 'grid',
         headStyles: { 
           fillColor: [243, 244, 246], 
@@ -2567,35 +2565,33 @@ export default function App() {
           0: { cellWidth: 'auto' },
           1: { cellWidth: 25, halign: 'center', fontStyle: 'bold' },
           2: { cellWidth: 40, halign: 'center' }
+        },
+        didDrawPage: (data) => {
+          if (data.pageNumber > 1) {
+            drawLetterhead(doc);
+          }
         }
       });
 
       const tableFinalY = (doc as any).lastAutoTable.finalY;
-      let signAreaY = tableFinalY + 20;
+      let signAreaY = tableFinalY + 15;
 
-      // Check for page overflow
-      const pageHeight = doc.internal.pageSize.height;
-      if (signAreaY + 40 > pageHeight) {
+      if (signAreaY + 50 > pageHeight - 20) {
         doc.addPage();
-        signAreaY = 30;
+        signAreaY = 40;
       }
 
-      // Location and Date
       doc.setFontSize(10);
       doc.setFont('helvetica', 'normal');
       doc.setTextColor(31, 41, 55);
       const formattedDate = format(new Date(data.date), "dd 'de' MMMM 'de' yyyy", { locale: ptBR });
       doc.text(`Sobral-CE, ${formattedDate}.`, pageWidth / 2, signAreaY, { align: 'center' });
 
-      const signY = signAreaY + 30;
-      
-      // Signature Section
-      doc.setDrawColor(156, 163, 175); // Gray-400
+      const signY = signAreaY + 25;
+      doc.setDrawColor(156, 163, 175);
       doc.setLineWidth(0.5);
-      
       const signLineW = 75;
       
-      // Left Signature (Donor)
       doc.line(margin, signY, margin + signLineW, signY);
       doc.setFontSize(8);
       doc.setFont('helvetica', 'bold');
@@ -2604,7 +2600,6 @@ export default function App() {
       doc.text('Unidade Doadora', margin + (signLineW / 2), signY + 10, { align: 'center' });
       doc.text('(assinatura e carimbo)', margin + (signLineW / 2), signY + 14, { align: 'center' });
       
-      // Right Signature (Receiver)
       doc.line(pageWidth - margin - signLineW, signY, pageWidth - margin, signY);
       doc.setFontSize(8);
       doc.setFont('helvetica', 'bold');
@@ -2613,7 +2608,6 @@ export default function App() {
       doc.text('Unidade Receptora', pageWidth - margin - (signLineW / 2), signY + 10, { align: 'center' });
       doc.text('(assinatura e carimbo)', pageWidth - margin - (signLineW / 2), signY + 14, { align: 'center' });
 
-      // Save PDF
       doc.save(`Termo_Doacao_${data.receivingUnit.name.replace(/\s+/g, '_')}_${format(new Date(), 'dd-MM-yyyy')}.pdf`);
       showToast("Termo de Doação gerado com sucesso!", "success");
     } catch (error) {
@@ -2634,64 +2628,45 @@ export default function App() {
       const pageWidth = doc.internal.pageSize.width;
       const pageHeight = doc.internal.pageSize.height;
       
-      // Header Section (Institutional Style based on provided image)
-      // Left side Branding
-      doc.setFontSize(18);
-      doc.setTextColor(0, 139, 190); // Cyan-Blue for "Policlínica de Sobral"
-      doc.setFont('helvetica', 'bold');
-      doc.text('Policlínica de Sobral', 14, 20);
-      
-      doc.setFontSize(10);
-      doc.setTextColor(245, 158, 11); // Yellow-Orange for "BERNARDO FÉLIX DA SILVA"
-      doc.setFont('helvetica', 'bold');
-      doc.text('BERNARDO FÉLIX DA SILVA', 14, 25);
-
-      // Right side Institutional info/logo placeholder
-      doc.setFontSize(14);
-      doc.setTextColor(0, 139, 190);
-      doc.text('CPSMS', pageWidth - 14, 20, { align: 'right' });
-      doc.setFontSize(6);
-      doc.setTextColor(120, 113, 108);
-      doc.text('CONSÓRCIO PÚBLICO DE SAÚDE', pageWidth - 14, 23, { align: 'right' });
-      doc.text('DA MICRORREGIÃO DE SOBRAL', pageWidth - 14, 26, { align: 'right' });
+      drawLetterhead(doc);
       
       // Document Title & Emissions
       doc.setFontSize(11);
       doc.setTextColor(28, 25, 23);
       doc.setFont('helvetica', 'bold');
-      doc.text('RECIBO DE ENTREGA DE MATERIAL', pageWidth / 2, 40, { align: 'center' });
+      doc.text('RECIBO DE ENTREGA DE MATERIAL', pageWidth / 2, 45, { align: 'center' });
       
       doc.setFontSize(8);
       doc.setFont('helvetica', 'normal');
-      doc.text(`Data de Emissão: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, pageWidth - 14, 45, { align: 'right' });
+      doc.text(`Data de Emissão: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, pageWidth - 14, 50, { align: 'right' });
 
       // Stylized blue separator
       doc.setDrawColor(0, 139, 190);
       doc.setLineWidth(0.5);
-      doc.line(14, 48, pageWidth - 14, 48);
+      doc.line(14, 53, pageWidth - 14, 53);
 
       // Info Card
       doc.setFillColor(248, 250, 252);
-      doc.roundedRect(14, 52, pageWidth - 28, 20, 2, 2, 'F');
+      doc.roundedRect(14, 57, pageWidth - 28, 20, 2, 2, 'F');
       
       doc.setFontSize(9);
       doc.setTextColor(71, 85, 105);
       doc.setFont('helvetica', 'bold');
-      doc.text('SETOR DESTINO:', 19, 60);
-      doc.text('REFERÊNCIA:', 19, 68);
+      doc.text('SETOR DESTINO:', 19, 65);
+      doc.text('REFERÊNCIA:', 19, 73);
       
       doc.setTextColor(30, 41, 59);
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(11);
-      doc.text(data.sector.toUpperCase(), 52, 60);
+      doc.text(data.sector.toUpperCase(), 52, 65);
       
       doc.setFontSize(9);
       doc.setFont('helvetica', 'normal');
-      doc.text(data.requestId ? `Solicitação #${data.requestId.slice(-5).toUpperCase()}` : 'Baixa Direta no Sistema', 52, 68);
+      doc.text(data.requestId ? `Solicitação #${data.requestId.slice(-5).toUpperCase()}` : 'Baixa Direta no Sistema', 52, 73);
       
-      doc.text('DATA DA SAÍDA:', pageWidth - 80, 68);
+      doc.text('DATA DA SAÍDA:', pageWidth - 80, 73);
       doc.setFont('helvetica', 'bold');
-      doc.text(format(new Date(data.date), 'dd/MM/yyyy'), pageWidth - 50, 68);
+      doc.text(format(new Date(data.date), 'dd/MM/yyyy'), pageWidth - 50, 73);
 
       // Materials Table
       const tableData = data.items.map(i => [
@@ -2701,7 +2676,7 @@ export default function App() {
       ]);
       
       autoTable(doc, {
-        startY: 80,
+        startY: 85,
         head: [['DESCRIÇÃO DO MATERIAL', 'QTD ENTREGUE', 'CONFERÊNCIA']],
         body: tableData,
         theme: 'grid',
@@ -2725,6 +2700,11 @@ export default function App() {
         },
         alternateRowStyles: {
           fillColor: [252, 252, 252]
+        },
+        didDrawPage: (data) => {
+          if (data.pageNumber > 1) {
+            drawLetterhead(doc);
+          }
         }
       });
 
@@ -2756,17 +2736,6 @@ export default function App() {
       doc.setTextColor(100, 100, 100);
       doc.text('Confirmo o recebimento dos materiais acima relacionados para uso exclusivo no setor designado.', pageWidth/2, finalY + 25, { align: 'center' });
 
-      // Footer (Institutional Address from model)
-      doc.setFontSize(7);
-      doc.setTextColor(120, 113, 108);
-      doc.setDrawColor(226, 232, 240);
-      doc.line(14, pageHeight - 20, pageWidth - 14, pageHeight - 20);
-      
-      const footerLine1 = 'Policlínica Bernardo Félix da Silva. Av. Monsenhor Aloísio Pinto, 481, Dom Expedito CEP 62050-255, Sobral Ceará.';
-      const footerLine2 = 'Fone: (88) 3614-3156 . Fax: (88) 3614-3245';
-      doc.text(footerLine1, pageWidth / 2, pageHeight - 12, { align: 'center' });
-      doc.text(footerLine2, pageWidth / 2, pageHeight - 8, { align: 'center' });
-
       const fileName = `RECIBO-${data.sector.toUpperCase().replace(/ /g, '-')}-${format(new Date(), 'ddMMyy-HHmm')}.pdf`;
       doc.save(fileName);
       showToast("Comprovante individual gerado com sucesso!", "success");
@@ -2782,50 +2751,31 @@ export default function App() {
       const doc = new jsPDF();
       const pageWidth = doc.internal.pageSize.width;
       
-      // Minimalist Header (No heavy boxes)
-      // Simulated Logo / Icon (Simple and clean)
-      doc.setDrawColor(225, 29, 72); // rose-600 color for medical accent
-      doc.setLineWidth(1.5);
-      doc.line(14, 15, 24, 15); // Horizontal line of a plus
-      doc.line(19, 10, 19, 20); // Vertical line of a plus
-      
-      doc.setFontSize(16);
-      doc.setTextColor(28, 25, 23); // dark stone
-      doc.setFont('helvetica', 'bold');
-      doc.text('POLICLÍNICA', 28, 17);
-      
-      doc.setFontSize(8);
-      doc.setFont('helvetica', 'normal');
-      doc.setTextColor(120, 113, 108);
-      doc.text('GESTÃO DE ALMOXARIFADO E FARMÁCIA', 28, 22);
-
-      doc.setDrawColor(231, 229, 228); // light border
-      doc.setLineWidth(0.5);
-      doc.line(14, 28, pageWidth - 14, 28);
+      drawLetterhead(doc);
       
       // Title and Date
       doc.setFontSize(14);
-      doc.setTextColor(28, 25, 23);
+      doc.setTextColor(28, 25, 23); // dark stone
       doc.setFont('helvetica', 'bold');
-      doc.text('Relatório de Consumo por Setor', 14, 40);
+      doc.text('Relatório de Consumo por Setor', 14, 45);
       
       doc.setFontSize(9);
       doc.setFont('helvetica', 'normal');
       doc.setTextColor(120, 113, 108);
-      doc.text(`Período: ${format(parseISO(reportRange.start), 'dd/MM/yyyy')} a ${format(parseISO(reportRange.end), 'dd/MM/yyyy')}`, 14, 46);
-      doc.text(`Emitido em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 14, 51);
+      doc.text(`Período: ${format(parseISO(reportRange.start), 'dd/MM/yyyy')} a ${format(parseISO(reportRange.end), 'dd/MM/yyyy')}`, 14, 51);
+      doc.text(`Emitido em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 14, 56);
       
       // Summary Box (Minimalist)
       const totalValue = reportData.consumptionReport.reduce((sum, i) => sum + i.totalValue, 0);
       doc.setFillColor(250, 250, 249); // stone-50
-      doc.roundedRect(pageWidth - 85, 35, 71, 18, 2, 2, 'F');
+      doc.roundedRect(pageWidth - 85, 40, 71, 18, 2, 2, 'F');
       doc.setFontSize(8);
       doc.setTextColor(120, 113, 108);
-      doc.text('VALOR TOTAL CONSUMIDO', pageWidth - 80, 42);
+      doc.text('VALOR TOTAL CONSUMIDO', pageWidth - 80, 47);
       doc.setFontSize(11);
       doc.setTextColor(28, 25, 23);
       doc.setFont('helvetica', 'bold');
-      doc.text(new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalValue), pageWidth - 80, 49);
+      doc.text(new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalValue), pageWidth - 80, 54);
 
       // Table Data
       const tableData: any[] = [];
@@ -2833,14 +2783,14 @@ export default function App() {
         // Sector Header
         tableData.push([
           { 
-            content: sectorGroup.sector, 
+            content: sectorGroup.sector.toUpperCase(), 
             colSpan: isAdmin ? 4 : 3, 
             styles: { 
               fillColor: [250, 250, 249],
               textColor: [28, 25, 23], 
               fontStyle: 'bold',
               cellPadding: 4,
-              fontSize: 10
+              fontSize: 9
             } 
           },
           isAdmin ? { 
@@ -2865,43 +2815,16 @@ export default function App() {
       });
       
       autoTable(doc, {
-        startY: 60,
+        startY: 65,
         head: [['Item / Produto', 'Categoria', 'Qtd', isAdmin ? 'Total (R$)' : '']],
         body: tableData,
-        theme: 'plain', 
-        headStyles: { 
-          textColor: [120, 113, 108], 
-          fontSize: 8, 
-          fontStyle: 'bold',
-          halign: 'center',
-          cellPadding: 4
-        },
-        styles: { 
-          fontSize: 9, 
-          cellPadding: 3,
-          textColor: [68, 64, 60],
-          lineWidth: 0 // Remove default borders
-        },
-        columnStyles: {
-          0: { cellWidth: 'auto' },
-          1: { cellWidth: 40 },
-          2: { cellWidth: 20, halign: 'center' as any },
-          3: { cellWidth: 35, halign: 'right' as any }
-        },
-        didParseCell: (data) => {
-          if (data.section === 'body') {
-            data.cell.styles.lineWidth = { bottom: 0.1 };
-            data.cell.styles.lineColor = [231, 229, 228];
-          }
-          if (data.section === 'head') {
-            data.cell.styles.lineWidth = { bottom: 0.5 };
-            data.cell.styles.lineColor = [28, 25, 23];
-          }
-        },
+        theme: 'striped',
+        headStyles: { fillColor: [28, 25, 23], halign: 'center', fontSize: 9 },
+        styles: { fontSize: 8.5 },
         didDrawPage: (data) => {
-          doc.setFontSize(7);
-          doc.setTextColor(168, 162, 158);
-          doc.text(`Documento emitido pelo Sistema de Gestão Hospitalar - Página ${doc.getNumberOfPages()}`, 14, doc.internal.pageSize.height - 10);
+          if (data.pageNumber > 1) {
+            drawLetterhead(doc);
+          }
         }
       });
       
