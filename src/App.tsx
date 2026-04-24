@@ -2462,106 +2462,141 @@ export default function App() {
       const doc = new jsPDF();
       const pageWidth = doc.internal.pageSize.width;
       
-      const donorName = (data.donatingUnitName || 'Policlínica Bernardo Félix da Silva').toUpperCase();
+      const donorName = data.donatingUnitName || 'Policlínica Bernardo Félix da Silva';
       
       // Header Section (Institutional Style)
-      doc.setFontSize(18);
-      doc.setTextColor(0, 139, 190); // Cyan-Blue
+      doc.setFontSize(14);
+      doc.setTextColor(31, 41, 55); // Gray-800
       doc.setFont('helvetica', 'bold');
-      doc.text('Policlínica de Sobral', 14, 20);
+      doc.text('Policlínica de Sobral', 20, 20);
       
       doc.setFontSize(10);
       doc.setTextColor(245, 158, 11); // Yellow-Orange
-      doc.setFont('helvetica', 'bold');
-      doc.text(donorName, 14, 25);
+      doc.text(donorName, 20, 26);
 
       // Right side Info
-      doc.setFontSize(9);
-      doc.setTextColor(120, 113, 108);
-      doc.setFont('helvetica', 'bold');
-      doc.text('CÓDIGO: TERMO-ALMOX', pageWidth - 14, 20, { align: 'right' });
-      doc.setFontSize(7);
-      doc.text(`DATA IMPL.: ${format(new Date(), 'dd/MM/yyyy')}`, pageWidth - 14, 24, { align: 'right' });
-      doc.text(`ÚLTIMA REV.: ${data.revisionDate || '---'}`, pageWidth - 14, 28, { align: 'right' });
+      doc.setFontSize(8);
+      doc.setTextColor(107, 114, 128); // Gray-500
+      doc.setFont('helvetica', 'normal');
+      doc.text('Código: TERMO-ALMOX', pageWidth - 20, 20, { align: 'right' });
+      doc.text(`Data Impl.: ${format(new Date(), 'dd/MM/yyyy')}`, pageWidth - 20, 24, { align: 'right' });
+      doc.text(`Última Rev.: ${data.revisionDate || '---'}`, pageWidth - 20, 28, { align: 'right' });
       
       // Donation Number
       if (data.donationNumber) {
-        doc.setFontSize(10);
-        doc.setTextColor(30, 41, 59);
-        doc.text(`TERMO Nº: ${data.donationNumber}`, pageWidth - 14, 34, { align: 'right' });
+        doc.setFontSize(9);
+        doc.setTextColor(31, 41, 55);
+        doc.setFont('helvetica', 'bold');
+        doc.text(`Termo nº: ${data.donationNumber}`, pageWidth - 20, 36, { align: 'right' });
       }
 
       // Document Title
-      doc.setFontSize(14);
-      doc.setTextColor(28, 25, 23);
+      doc.setFontSize(12);
+      doc.setTextColor(17, 24, 39); // Gray-900
       doc.setFont('helvetica', 'bold');
-      doc.text('TERMO DE DOAÇÃO DE MATERIAIS', pageWidth / 2, 45, { align: 'center' });
+      doc.text('TERMO DE DOAÇÃO DE MATERIAIS E INSUMOS', pageWidth / 2, 50, { align: 'center' });
       
       // Stylized separator
-      doc.setDrawColor(0, 139, 190);
-      doc.setLineWidth(0.5);
-      doc.line(14, 50, pageWidth - 14, 50);
+      doc.setDrawColor(209, 213, 219); // Gray-300
+      doc.setLineWidth(0.2);
+      doc.line(20, 54, pageWidth - 20, 54);
 
       // Donation Text (ABNT / Formal style)
       doc.setFontSize(10);
-      doc.setTextColor(30, 41, 59);
+      doc.setTextColor(31, 41, 55);
       doc.setFont('helvetica', 'normal');
       
-      const donationText = `A ${donorName}, inscrita sob o CNPJ nº 12.208.466/0001-66, por intermédio de seu Setor de Almoxarifado, formaliza por este instrumento a DOAÇÃO à unidade ${data.receivingUnit.name.toUpperCase()}, situada em ${data.receivingUnit.address.toUpperCase()}, inscrita sob o CNPJ nº ${data.receivingUnit.cnpj}, dos materiais e insumos abaixo discriminados. A presente cessão justifica-se pela otimização de estoque em virtude da redução de demanda interna e proximidade do prazo de validade, assegurando a destinação útil dos itens.`;
+      const receivingName = data.receivingUnit.name;
+      const receivingAddress = data.receivingUnit.address;
+      const receivingCNPJ = data.receivingUnit.cnpj;
+
+      const donationText = `A ${donorName}, inscrita sob o CNPJ nº 12.208.466/0001-66, por intermédio de seu Setor de Almoxarifado, formaliza por este instrumento a doação à unidade ${receivingName}, situada em ${receivingAddress}, inscrita sob o CNPJ nº ${receivingCNPJ}, dos materiais e insumos abaixo discriminados. A presente cessão justifica-se pela otimização de estoque em virtude da redução de demanda interna e proximidade do prazo de validade, assegurando a destinação útil dos itens.`;
       
-      const textLines = doc.splitTextToSize(donationText, pageWidth - 28);
-      doc.text(textLines, 14, 60, { align: 'justify' });
+      const textLines = doc.splitTextToSize(donationText, pageWidth - 40);
+      doc.text(textLines, 20, 65, { align: 'justify', lineHeightFactor: 1.5 });
+
+      // Calculate current Y after donation text
+      const tableStartY = 65 + (textLines.length * 5) + 10;
 
       // Materials Table
       const tableData = data.items.map(i => [
-        i.product_name.toUpperCase(), 
+        i.product_name, 
         i.quantity.toString(), 
-        '_________________'
+        '                  '
       ]);
       
       autoTable(doc, {
-        startY: 85,
-        head: [['DESCRIÇÃO DO MATERIAL', 'QTD DOADA', 'CONFERÊNCIA']],
+        startY: tableStartY,
+        margin: { left: 20, right: 20 },
+        head: [['Descrição do Material', 'Qtd Doada', 'Conferência']],
         body: tableData,
         theme: 'grid',
         headStyles: { 
-          fillColor: [30, 41, 59], 
-          textColor: [255, 255, 255],
+          fillColor: [243, 244, 246], 
+          textColor: [31, 41, 55],
           fontStyle: 'bold',
-          halign: 'center',
-          fontSize: 9
+          halign: 'left',
+          fontSize: 9,
+          lineWidth: 0.1,
+          lineColor: [209, 213, 219]
         },
         styles: { 
           fontSize: 8, 
           cellPadding: 4,
-          lineColor: [200, 200, 200],
-          lineWidth: 0.1
+          lineColor: [209, 213, 219],
+          lineWidth: 0.1,
+          textColor: [55, 65, 81]
         },
         columnStyles: {
           0: { cellWidth: 'auto' },
-          1: { cellWidth: 35, halign: 'center', fontStyle: 'bold' },
-          2: { cellWidth: 45, halign: 'center' }
+          1: { cellWidth: 25, halign: 'center', fontStyle: 'bold' },
+          2: { cellWidth: 40, halign: 'center' }
         }
       });
 
-      const finalY = (doc as any).lastAutoTable.finalY + 40;
+      const tableFinalY = (doc as any).lastAutoTable.finalY;
+      let signAreaY = tableFinalY + 20;
+
+      // Check for page overflow
+      const pageHeight = doc.internal.pageSize.height;
+      if (signAreaY + 40 > pageHeight) {
+        doc.addPage();
+        signAreaY = 30;
+      }
+
+      // Location and Date
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(31, 41, 55);
+      const formattedDate = format(new Date(data.date), "dd 'de' MMMM 'de' yyyy", { locale: ptBR });
+      doc.text(`Sobral-CE, ${formattedDate}.`, pageWidth / 2, signAreaY, { align: 'center' });
+
+      const signY = signAreaY + 30;
       
       // Signature Section
-      doc.setDrawColor(100, 100, 100);
+      doc.setDrawColor(156, 163, 175); // Gray-400
       doc.setLineWidth(0.5);
       
       const signLineW = 75;
-      doc.line(20, finalY, 20 + signLineW, finalY);
-      doc.line(pageWidth - 20 - signLineW, finalY, pageWidth - 20, finalY);
+      const margin = 20;
       
+      // Left Signature (Donor)
+      doc.line(margin, signY, margin + signLineW, signY);
       doc.setFontSize(8);
       doc.setFont('helvetica', 'bold');
-      doc.text(donorName.toUpperCase(), 20 + (signLineW / 2), finalY + 5, { align: 'center' });
-      doc.text(data.receivingUnit.name.toUpperCase(), pageWidth - 20 - (signLineW / 2), finalY + 5, { align: 'center' });
-      
+      doc.text(donorName, margin + (signLineW / 2), signY + 5, { align: 'center' });
       doc.setFont('helvetica', 'normal');
-      doc.text('UNIDADE DOADORA (ASSINATURA/CARIMBO)', 20 + (signLineW / 2), finalY + 10, { align: 'center' });
-      doc.text('UNIDADE RECEPTORA (ASSINATURA/CARIMBO)', pageWidth - 20 - (signLineW / 2), finalY + 10, { align: 'center' });
+      doc.text('Unidade Doadora', margin + (signLineW / 2), signY + 10, { align: 'center' });
+      doc.text('(assinatura e carimbo)', margin + (signLineW / 2), signY + 14, { align: 'center' });
+      
+      // Right Signature (Receiver)
+      doc.line(pageWidth - margin - signLineW, signY, pageWidth - margin, signY);
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'bold');
+      doc.text(receivingName, pageWidth - margin - (signLineW / 2), signY + 5, { align: 'center' });
+      doc.setFont('helvetica', 'normal');
+      doc.text('Unidade Receptora', pageWidth - margin - (signLineW / 2), signY + 10, { align: 'center' });
+      doc.text('(assinatura e carimbo)', pageWidth - margin - (signLineW / 2), signY + 14, { align: 'center' });
 
       // Save PDF
       doc.save(`Termo_Doacao_${data.receivingUnit.name.replace(/\s+/g, '_')}_${format(new Date(), 'dd-MM-yyyy')}.pdf`);
