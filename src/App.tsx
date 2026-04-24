@@ -290,6 +290,24 @@ export default function App() {
   const [authName, setAuthName] = useState('');
   const [authSector, setAuthSector] = useState('Administrativo');
   const [activeTab, setActiveTab] = useState<'dashboard' | 'inventory' | 'history' | 'requests' | 'reports' | 'my-requests' | 'new-request' | 'users' | 'trash'>('dashboard');
+  const [letterheadBase64, setLetterheadBase64] = useState<string | null>(null);
+
+  useEffect(() => {
+    const loadImage = async () => {
+      try {
+        const response = await fetch(letterheadImg);
+        const blob = await response.blob();
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          setLetterheadBase64(reader.result as string);
+        };
+        reader.readAsDataURL(blob);
+      } catch (error) {
+        console.error("Erro ao carregar papel timbrado:", error);
+      }
+    };
+    loadImage();
+  }, []);
   const [showAddModal, setShowAddModal] = useState(false);
   const [showTransactionModal, setShowTransactionModal] = useState<{show: boolean, type: 'entry' | 'exit', item?: Item}>({ show: false, type: 'entry' });
   const [transactionMinStock, setTransactionMinStock] = useState<number>(NaN);
@@ -2213,8 +2231,11 @@ export default function App() {
   const drawLetterhead = (pdfDoc: any) => {
     const pageWidth = pdfDoc.internal.pageSize.width;
     const pageHeight = pdfDoc.internal.pageSize.height;
+    const imgToUse = letterheadBase64 || letterheadImg;
     try {
-      pdfDoc.addImage(letterheadImg, 'JPEG', 0, 0, pageWidth, pageHeight);
+      if (imgToUse) {
+        pdfDoc.addImage(imgToUse, 'JPEG', 0, 0, pageWidth, pageHeight);
+      }
     } catch (e) {
       console.error("Error adding letterhead image:", e);
     }
