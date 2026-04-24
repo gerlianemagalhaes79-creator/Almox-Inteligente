@@ -91,8 +91,9 @@ import {
 } from 'recharts';
 import { format, subDays, isWithinInterval, startOfDay, endOfDay, parseISO, differenceInDays } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
-// @ts-ignore
-import letterheadImg from './stamped_paper.jpg';
+// Redução de importações
+// Papel timbrado agora é carregado via public path (/stamped_paper.jpg)
+const letterheadImg = '/stamped_paper.jpg';
 
 interface ItemGroup {
   name: string;
@@ -294,42 +295,17 @@ export default function App() {
 
   useEffect(() => {
     const loadImage = async () => {
-      // Method 1: Fetch as Blob (Good for most cases)
       try {
-        const response = await fetch(letterheadImg);
+        const response = await fetch('/stamped_paper.jpg');
+        if (!response.ok) throw new Error('Falha ao buscar imagem');
         const blob = await response.blob();
-        if (blob.type.includes('image')) {
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            setLetterheadBase64(reader.result as string);
-          };
-          reader.readAsDataURL(blob);
-          return;
-        }
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          setLetterheadBase64(reader.result as string);
+        };
+        reader.readAsDataURL(blob);
       } catch (error) {
-        console.warn("Fetch method failed, trying canvas fallback:", error);
-      }
-
-      // Method 2: Canvas draw (Fallback)
-      try {
-        const img = new Image();
-        img.crossOrigin = 'anonymous';
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          canvas.width = img.width;
-          canvas.height = img.height;
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.drawImage(img, 0, 0);
-            setLetterheadBase64(canvas.toDataURL('image/jpeg'));
-          }
-        };
-        img.onerror = () => {
-          setLetterheadBase64(letterheadImg);
-        };
-        img.src = letterheadImg;
-      } catch (e) {
-        setLetterheadBase64(letterheadImg);
+        console.error("Erro ao carregar papel timbrado (/public):", error);
       }
     };
     loadImage();
@@ -2255,22 +2231,15 @@ export default function App() {
   };
 
   const drawLetterhead = (pdfDoc: any) => {
+    if (!letterheadBase64) return;
+    
     const pageWidth = pdfDoc.internal.pageSize.width;
     const pageHeight = pdfDoc.internal.pageSize.height;
     
-    const imgToUse = letterheadBase64 || letterheadImg;
-    
-    if (imgToUse) {
-      try {
-        // Detect format from data URL if possible
-        let format = 'JPEG';
-        if (typeof imgToUse === 'string' && imgToUse.startsWith('data:image/png')) {
-          format = 'PNG';
-        }
-        pdfDoc.addImage(imgToUse, format, 0, 0, pageWidth, pageHeight);
-      } catch (e) {
-        console.warn("Could not add letterhead background. Error:", e);
-      }
+    try {
+      pdfDoc.addImage(letterheadBase64, 'JPEG', 0, 0, pageWidth, pageHeight);
+    } catch (e) {
+      console.warn("Could not add letterhead background:", e);
     }
   };
 
