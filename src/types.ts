@@ -14,6 +14,7 @@ export interface MaterialRequest {
   observation?: string;
   adminObservation?: string;
   requesterEmail: string;
+  deliveredAt?: string;
   deletedAt?: string;
   deletedBy?: string;
 }
@@ -74,6 +75,10 @@ export interface Transaction {
   deletedByEmail?: string;
   exitReason?: 'consumo' | 'doacao' | 'vencido';
   expiryReason?: string;
+  donationUnitName?: string;
+  donationUnitAddress?: string;
+  donationUnitCNPJ?: string;
+  donationRevisionDate?: string;
   batch_number?: string;
   expiry_date?: string;
 }

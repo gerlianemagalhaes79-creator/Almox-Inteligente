@@ -350,6 +350,68 @@ export default function App() {
   const [requestBasket, setRequestBasket] = useState<{product_id: string, product_name: string, quantity: number}[]>([]);
   const [requestObservation, setRequestObservation] = useState('');
   const [adminObservation, setAdminObservation] = useState('');
+  const [isSyncingStock, setIsSyncingStock] = useState(false);
+
+  // Auto-update Minimum Stock based on consumption velocity (5 weeks coverage)
+  useEffect(() => {
+    if (!isAdmin || items.length === 0 || transactions.length === 0 || isSyncingStock) return;
+
+    const syncStockVelocity = async () => {
+      const updates: { id: string, newMin: number }[] = [];
+      const now = new Date();
+      
+      // We only consider items with enough history (e.g., at least 1 exit in the last 60 days)
+      Object.keys(weeklyExitRates).forEach(itemName => {
+        const weeklyRate = weeklyExitRates[itemName];
+        if (weeklyRate > 0) {
+          const recommendedMin = Math.ceil(weeklyRate * 5);
+          
+          // Find all batches of this item and check if their min_quantity needs update
+          items.forEach(item => {
+            if (item.name === itemName && !item.deletedAt) {
+              // Only update if difference is more than 0 and actually different from stored
+              if (recommendedMin !== item.min_quantity) {
+                updates.push({ id: item.id, newMin: recommendedMin });
+              }
+            }
+          });
+        }
+      });
+
+      if (updates.length > 0) {
+        setIsSyncingStock(true);
+        try {
+          console.log(`Auto-otimizando estoque mínimo para ${updates.length} lotes...`);
+          // Batch updates to Firestore (max 500 per batch)
+          for (let i = 0; i < updates.length; i += 450) {
+            const batch = writeBatch(db);
+            const chunk = updates.slice(i, i + 450);
+            chunk.forEach(u => {
+              batch.update(doc(db, 'items', u.id), {
+                min_quantity: u.newMin,
+                updatedAt: serverTimestamp()
+              });
+            });
+            await batch.commit();
+          }
+          console.log("Otimização de estoque mínimo concluída.");
+        } catch (error) {
+          console.error("Erro ao auto-atualizar estoques mínimos:", error);
+        } finally {
+          setIsSyncingStock(false);
+        }
+      }
+    };
+
+    // Run sync after a short delay once data is loaded, and then every hour if the tab stays open
+    const initialSync = setTimeout(syncStockVelocity, 10000);
+    const intervalSync = setInterval(syncStockVelocity, 3600000); 
+
+    return () => {
+      clearTimeout(initialSync);
+      clearInterval(intervalSync);
+    };
+  }, [isAdmin, items, transactions, weeklyExitRates, isSyncingStock]);
   const [isSubmittingRequest, setIsSubmittingRequest] = useState(false);
   const [editingRequest, setEditingRequest] = useState<MaterialRequest | null>(null);
   const [showRoomInventoryModal, setShowRoomInventoryModal] = useState(false);
@@ -1887,6 +1949,10 @@ export default function App() {
               responsibleEmail: user?.email || '',
               exitReason: exitReason,
               expiryReason: exitReason === 'vencido' ? expiryReason : null,
+              donationUnitName: exitReason === 'doacao' ? (donationUnitName || 'Policlínica Bernardo Félix da Silva') : null,
+              donationUnitAddress: exitReason === 'doacao' ? donationUnitAddress : null,
+              donationUnitCNPJ: exitReason === 'doacao' ? donationUnitCNPJ : null,
+              donationRevisionDate: exitReason === 'doacao' ? donationRevisionDate : null,
               batch_number: currentItemData.batch_number,
               expiry_date: currentItemData.expiry_date
             });
@@ -1992,11 +2058,25 @@ export default function App() {
           quantity: b.quantity
         }));
         
-        handleExportDeliveryReceiptPDF({
-          sector: selectedSector,
-          items: itemsForReceipt,
-          date: new Date().toISOString()
-        });
+        if (exitReason === 'doacao') {
+          handleExportDonationTermPDF({
+            donatingUnitName: donationUnitName || 'Policlínica Bernardo Félix da Silva',
+            receivingUnit: {
+              name: selectedSector || 'Unidade Receptora',
+              address: donationUnitAddress,
+              cnpj: donationUnitCNPJ
+            },
+            items: itemsForReceipt,
+            revisionDate: donationRevisionDate,
+            date: new Date().toISOString()
+          });
+        } else {
+          handleExportDeliveryReceiptPDF({
+            sector: selectedSector,
+            items: itemsForReceipt,
+            date: new Date().toISOString()
+          });
+        }
       }
 
       setTransactionMinStock(NaN);
@@ -2006,6 +2086,10 @@ export default function App() {
       setSelectedSector(SECTORS[0]);
       setSelectedItemId('');
       setBasket([]);
+      setDonationUnitName('');
+      setDonationUnitAddress('');
+      setDonationUnitCNPJ('');
+      setDonationRevisionDate('');
     } catch (error: any) {
       console.error('Erro na transação:', error);
       alert(`Erro na movimentação: ${error.message}`);
@@ -2315,6 +2399,125 @@ export default function App() {
     } catch (error) {
       console.error("PDF Error:", error);
       showToast("Erro ao gerar PDF", "error");
+    }
+  };
+
+  const [donationUnitName, setDonationUnitName] = useState('');
+  const [donationUnitAddress, setDonationUnitAddress] = useState('');
+  const [donationUnitCNPJ, setDonationUnitCNPJ] = useState('');
+  const [donationRevisionDate, setDonationRevisionDate] = useState('');
+
+  const handleExportDonationTermPDF = (data: {
+    donatingUnitName?: string;
+    receivingUnit: { name: string; address: string; cnpj: string };
+    items: { product_name: string; quantity: number }[];
+    revisionDate: string;
+    date: string;
+  }) => {
+    try {
+      // @ts-ignore
+      const doc = new jsPDF();
+      const pageWidth = doc.internal.pageSize.width;
+      
+      const donorName = data.donatingUnitName || 'Policlínica Bernardo Félix da Silva';
+      
+      // Header Section (Institutional Style)
+      doc.setFontSize(18);
+      doc.setTextColor(0, 139, 190); // Cyan-Blue
+      doc.setFont('helvetica', 'bold');
+      doc.text('Policlínica de Sobral', 14, 20);
+      
+      doc.setFontSize(10);
+      doc.setTextColor(245, 158, 11); // Yellow-Orange
+      doc.setFont('helvetica', 'bold');
+      doc.text(donorName.toUpperCase(), 14, 25);
+
+      // Right side Info
+      doc.setFontSize(9);
+      doc.setTextColor(120, 113, 108);
+      doc.setFont('helvetica', 'bold');
+      doc.text('CÓDIGO: TERMO-ALMOX', pageWidth - 14, 20, { align: 'right' });
+      doc.setFontSize(7);
+      doc.text(`DATA IMPL.: ${format(new Date(), 'dd/MM/yyyy')}`, pageWidth - 14, 24, { align: 'right' });
+      doc.text(`ÚLTIMA REV.: ${data.revisionDate || '---'}`, pageWidth - 14, 28, { align: 'right' });
+      
+      // Document Title
+      doc.setFontSize(14);
+      doc.setTextColor(28, 25, 23);
+      doc.setFont('helvetica', 'bold');
+      doc.text('TERMO DE DOAÇÃO DE MATERIAIS', pageWidth / 2, 42, { align: 'center' });
+      
+      // Stylized separator
+      doc.setDrawColor(0, 139, 190);
+      doc.setLineWidth(0.5);
+      doc.line(14, 48, pageWidth - 14, 48);
+
+      // Donation Text
+      doc.setFontSize(10);
+      doc.setTextColor(30, 41, 59);
+      doc.setFont('helvetica', 'normal');
+      const donationText = `${donorName}, CNPJ: 12.208.466/0001-66, por meio do setor de Almoxarifado está doando para o ${data.receivingUnit.name.toUpperCase()}, endereço: ${data.receivingUnit.address.toUpperCase()}, CNPJ: ${data.receivingUnit.cnpj}, os itens abaixo especificados em virtude de redução de demanda interna e prazo próximo a data de validade.`;
+      
+      const textLines = doc.splitTextToSize(donationText, pageWidth - 28);
+      doc.text(textLines, 14, 60);
+
+      // Materials Table
+      const tableData = data.items.map(i => [
+        i.product_name.toUpperCase(), 
+        i.quantity.toString(), 
+        '_________________'
+      ]);
+      
+      autoTable(doc, {
+        startY: 85,
+        head: [['DESCRIÇÃO DO MATERIAL', 'QTD DOADA', 'CONFERÊNCIA']],
+        body: tableData,
+        theme: 'grid',
+        headStyles: { 
+          fillColor: [30, 41, 59], 
+          textColor: [255, 255, 255],
+          fontStyle: 'bold',
+          halign: 'center',
+          fontSize: 9
+        },
+        styles: { 
+          fontSize: 8, 
+          cellPadding: 4,
+          lineColor: [200, 200, 200],
+          lineWidth: 0.1
+        },
+        columnStyles: {
+          0: { cellWidth: 'auto' },
+          1: { cellWidth: 35, halign: 'center', fontStyle: 'bold' },
+          2: { cellWidth: 45, halign: 'center' }
+        }
+      });
+
+      const finalY = (doc as any).lastAutoTable.finalY + 40;
+      
+      // Signature Section
+      doc.setDrawColor(100, 100, 100);
+      doc.setLineWidth(0.5);
+      
+      const signLineW = 75;
+      doc.line(20, finalY, 20 + signLineW, finalY);
+      doc.line(pageWidth - 20 - signLineW, finalY, pageWidth - 20, finalY);
+      
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'bold');
+      doc.text(donorName.toUpperCase(), 20 + (signLineW / 2), finalY + 5, { align: 'center' });
+      doc.text(data.receivingUnit.name.toUpperCase(), pageWidth - 20 - (signLineW / 2), finalY + 5, { align: 'center' });
+      
+      doc.setFont('helvetica', 'normal');
+      doc.text('UNIDADE DOADORA (ASSINATURA/CARIMBO)', 20 + (signLineW / 2), finalY + 10, { align: 'center' });
+      doc.text('UNIDADE RECEPTORA (ASSINATURA/CARIMBO)', pageWidth - 20 - (signLineW / 2), finalY + 10, { align: 'center' });
+
+      // Save PDF
+      doc.save(`Termo_Doacao_${data.receivingUnit.name.replace(/\s+/g, '_')}_${format(new Date(), 'dd-MM-yyyy')}.pdf`);
+      showToast("Termo de Doação gerado com sucesso!", "success");
+    } catch (error) {
+      console.error('Erro ao exportar PDF de Doação:', error);
+      alert('Ocorreu um erro ao gerar o Termo de Doação.');
     }
   };
 
@@ -3711,7 +3914,10 @@ export default function App() {
                         </td>
                         <td className="px-6 py-5 text-[#57534E] font-medium">
                           <div className="flex flex-col">
-                            <span>{group.min_quantity}</span>
+                            <span className="flex items-center gap-1">
+                              {group.min_quantity}
+                              <TrendingUp size={12} className="text-emerald-500" />
+                            </span>
                             <span className="text-[10px] text-[#A8A29E]">({group.weeklyExitRate.toFixed(1)}/sem)</span>
                           </div>
                         </td>
@@ -4056,26 +4262,57 @@ export default function App() {
                           </td>
                         )}
                         <td className="px-6 py-5 text-right">
-                          {t.deletedAt ? (
-                            <button 
-                              onClick={() => handleRecoverTransaction(t.id)}
-                              className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all"
-                              title="Recuperar Movimentação"
-                            >
-                              <RotateCcw size={18} />
-                            </button>
-                          ) : (
-                            <button 
-                              onClick={() => {
-                                setDeletionReason('');
-                                setShowDeleteModal({ show: true, transactionId: t.id });
-                              }}
-                              className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg transition-all"
-                              title="Apagar Movimentação"
-                            >
-                              <Trash2 size={20} />
-                            </button>
-                          )}
+                          <div className="flex items-center justify-end gap-2">
+                            {t.type === 'exit' && !t.deletedAt && (
+                              <button 
+                                onClick={() => {
+                                  if (t.exitReason === 'doacao') {
+                                    handleExportDonationTermPDF({
+                                      donatingUnitName: t.donationUnitName,
+                                      receivingUnit: {
+                                        name: t.sector || 'Unidade Receptora',
+                                        address: t.donationUnitAddress || '',
+                                        cnpj: t.donationUnitCNPJ || ''
+                                      },
+                                      items: [{ product_name: t.item_name, quantity: t.quantity }],
+                                      revisionDate: t.donationRevisionDate || '',
+                                      date: t.date
+                                    });
+                                  } else {
+                                    handleExportDeliveryReceiptPDF({
+                                      sector: t.sector || 'Sem Setor',
+                                      items: [{ product_name: t.item_name, quantity: t.quantity }],
+                                      date: t.date
+                                    });
+                                  }
+                                }}
+                                className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
+                                title={t.exitReason === 'doacao' ? 'Reimprimir Termo de Doação' : 'Reimprimir Recibo de Entrega'}
+                              >
+                                {t.exitReason === 'doacao' ? <FileText size={18} /> : <Printer size={18} />}
+                              </button>
+                            )}
+                            {t.deletedAt ? (
+                              <button 
+                                onClick={() => handleRecoverTransaction(t.id)}
+                                className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all"
+                                title="Recuperar Movimentação"
+                              >
+                                <RotateCcw size={18} />
+                              </button>
+                            ) : (
+                              <button 
+                                onClick={() => {
+                                  setDeletionReason('');
+                                  setShowDeleteModal({ show: true, transactionId: t.id });
+                                }}
+                                className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg transition-all"
+                                title="Apagar Movimentação"
+                              >
+                                <Trash2 size={20} />
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -5566,7 +5803,7 @@ export default function App() {
                 </button>
                 <button 
                   onClick={() => {
-                    handleExportRoomInventoryPDF(selectedRoom, selectedRoomCategories);
+                    handleExportRoomInventoryPDF(selectedRoom, customRoomName, selectedRoomCategories);
                     setShowRoomInventoryModal(false);
                   }}
                   className="flex-[2] px-6 py-4 bg-[#1C1917] text-white rounded-2xl font-bold hover:bg-[#292524] transition-all shadow-lg shadow-blue-500/20 flex items-center justify-center gap-3"
@@ -5716,14 +5953,65 @@ export default function App() {
                         <p className="text-sm text-emerald-600">Esta movimentação será registrada como consumo interno da Farmácia.</p>
                       </div>
                     ) : exitReason === 'doacao' ? (
-                      <input 
-                        required
-                        type="text"
-                        placeholder="Digite o destinatário..."
-                        className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
-                        value={selectedSector}
-                        onChange={e => setSelectedSector(e.target.value)}
-                      />
+                      <div className="space-y-4">
+                        <div>
+                          <label className="block text-[10px] font-bold text-[#A8A29E] uppercase mb-1 ml-1">Unidade Doadora</label>
+                          <input 
+                            required
+                            type="text"
+                            placeholder="Policlínica Bernardo Félix da Silva"
+                            className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
+                            value={donationUnitName || 'Policlínica Bernardo Félix da Silva'}
+                            onChange={e => setDonationUnitName(e.target.value)}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold text-[#A8A29E] uppercase mb-1 ml-1">Unidade Receptora (Nome)</label>
+                          <input 
+                            required
+                            type="text"
+                            placeholder="Nome da unidade receptora..."
+                            className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
+                            value={selectedSector}
+                            onChange={e => setSelectedSector(e.target.value)}
+                          />
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="block text-[10px] font-bold text-[#A8A29E] uppercase mb-1 ml-1">Endereço Receptora</label>
+                            <input 
+                              required
+                              type="text"
+                              placeholder="Endereço..."
+                              className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-xs"
+                              value={donationUnitAddress}
+                              onChange={e => setDonationUnitAddress(e.target.value)}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold text-[#A8A29E] uppercase mb-1 ml-1">CNPJ Receptora</label>
+                            <input 
+                              required
+                              type="text"
+                              placeholder="00.000.000/0000-00"
+                              className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-xs"
+                              value={donationUnitCNPJ}
+                              onChange={e => setDonationUnitCNPJ(e.target.value)}
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold text-[#A8A29E] uppercase mb-1 ml-1">Data da Última Revisão</label>
+                          <input 
+                            required
+                            type="text"
+                            placeholder="Ex: 24/04/2026"
+                            className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
+                            value={donationRevisionDate}
+                            onChange={e => setDonationRevisionDate(e.target.value)}
+                          />
+                        </div>
+                      </div>
                     ) : (
                       <select 
                         required
