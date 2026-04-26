@@ -71,6 +71,7 @@ import {
 import { initializeApp } from 'firebase/app';
 import { db, auth } from './firebase';
 import firebaseConfig from '../firebase-applet-config.json';
+import stampedPaper from './stamped_paper.jpg';
 import { Item, Transaction, UserProfile, MaterialRequest, RequestItem, Notification } from './types';
 import { 
   BarChart, 
@@ -2481,64 +2482,47 @@ export default function App() {
       const margin = 20;
 
       const drawLetterhead = (pdfDoc: any) => {
-        // --- COLORS FROM MODEL ---
-        const cpsmsCyan = [0, 169, 219];    // Official Cyan-Blue
-        const cpsmsOrange = [255, 185, 0];   // Official Yellow/Orange
-        const subtextGray = [120, 113, 108]; // Footer/Subtext Gray
+        // Use the official letterhead image as background
+        try {
+          pdfDoc.addImage(stampedPaper, 'JPEG', 0, 0, pageWidth, pageHeight);
+        } catch (e) {
+          console.error("Error adding letterhead image:", e);
+          
+          // Fallback if image fails to load
+          const cpsmsCyan = [0, 169, 219];
+          const cpsmsOrange = [255, 185, 0];
+          const subtextGray = [120, 113, 108];
 
-        // --- HEADER ---
-        // Left Side: Policlínica de Sobral
-        pdfDoc.setFontSize(22);
-        pdfDoc.setTextColor(cpsmsCyan[0], cpsmsCyan[1], cpsmsCyan[2]);
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('Policlínica de Sobral', margin, 20);
-        
-        pdfDoc.setFontSize(11);
-        pdfDoc.setTextColor(cpsmsOrange[0], cpsmsOrange[1], cpsmsOrange[2]);
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('BERNARDO FÉLIX DA SILVA', margin, 26);
+          pdfDoc.setFontSize(22);
+          pdfDoc.setTextColor(cpsmsCyan[0], cpsmsCyan[1], cpsmsCyan[2]);
+          pdfDoc.setFont('helvetica', 'bold');
+          pdfDoc.text('Policlínica de Sobral', margin, 20);
+          
+          pdfDoc.setFontSize(11);
+          pdfDoc.setTextColor(cpsmsOrange[0], cpsmsOrange[1], cpsmsOrange[2]);
+          pdfDoc.setFont('helvetica', 'bold');
+          pdfDoc.text('BERNARDO FÉLIX DA SILVA', margin, 26);
 
-        // Right Side: CPSMS Logo (Butterfly shape simulation)
-        const logoX = pageWidth - margin - 46; 
-        const logoY = 16;
-        
-        // Leaf 1 (Top Left - Yellow/Orange)
-        pdfDoc.setFillColor(255, 185, 0);
-        pdfDoc.roundedRect(logoX, logoY, 4, 4, 1.5, 1.5, 'F');
-        
-        // Leaf 2 (Top Right - Cyan)
-        pdfDoc.setFillColor(0, 169, 219);
-        pdfDoc.roundedRect(logoX + 4.5, logoY, 4, 4, 1.5, 1.5, 'F');
-        
-        // Leaf 3 (Bottom Left - Cyan)
-        pdfDoc.setFillColor(0, 169, 219);
-        pdfDoc.roundedRect(logoX, logoY + 4.5, 4, 4, 1.5, 1.5, 'F');
-        
-        // Leaf 4 (Bottom Right - Cyan)
-        pdfDoc.setFillColor(0, 169, 219);
-        pdfDoc.roundedRect(logoX + 4.5, logoY + 4.5, 4, 4, 1.5, 1.5, 'F');
+          const logoX = pageWidth - margin - 46; 
+          const logoY = 16;
+          pdfDoc.setFillColor(255, 185, 0);
+          pdfDoc.roundedRect(logoX, logoY, 4, 4, 1.5, 1.5, 'F');
+          pdfDoc.setFillColor(0, 169, 219);
+          pdfDoc.roundedRect(logoX + 4.5, logoY, 4, 4, 1.5, 1.5, 'F');
+          pdfDoc.roundedRect(logoX, logoY + 4.5, 4, 4, 1.5, 1.5, 'F');
+          pdfDoc.roundedRect(logoX + 4.5, logoY + 4.5, 4, 4, 1.5, 1.5, 'F');
 
-        // CPSMS Text
-        pdfDoc.setFontSize(26);
-        pdfDoc.setTextColor(0, 169, 219);
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('CPSMS', pageWidth - margin, 21, { align: 'right' });
-        
-        // Consórcio Subtext
-        pdfDoc.setFontSize(6);
-        pdfDoc.setTextColor(subtextGray[0], subtextGray[1], subtextGray[2]);
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('CONSÓRCIO PÚBLICO DE SAÚDE', pageWidth - margin, 24, { align: 'right' });
-        pdfDoc.text('DA MICRORREGIÃO DE SOBRAL', pageWidth - margin, 26.5, { align: 'right' });
-
-        // --- FOOTER ---
-        pdfDoc.setFontSize(8.5);
-        pdfDoc.setTextColor(60, 60, 60);
-        pdfDoc.setFont('helvetica', 'normal');
-        const footerLine1 = 'Policlínica Bernardo Félix da Silva. Av. Monsenhor Aloísio Pinto, 481, Dom Expedito CEP';
-        const footerLine2 = '62050-255, Sobral Ceará. Fone: (88) 3614-3156 . Fax: (88) 3614-3245';
-        pdfDoc.text(footerLine1, pageWidth / 2, pageHeight - 15, { align: 'center' });
-        pdfDoc.text(footerLine2, pageWidth / 2, pageHeight - 11, { align: 'center' });
+          pdfDoc.setFontSize(26);
+          pdfDoc.setTextColor(0, 169, 219);
+          pdfDoc.setFont('helvetica', 'bold');
+          pdfDoc.text('CPSMS', pageWidth - margin, 21, { align: 'right' });
+          
+          pdfDoc.setFontSize(6);
+          pdfDoc.setTextColor(subtextGray[0], subtextGray[1], subtextGray[2]);
+          pdfDoc.setFont('helvetica', 'bold');
+          pdfDoc.text('CONSÓRCIO PÚBLICO DE SAÚDE', pageWidth - margin, 24, { align: 'right' });
+          pdfDoc.text('DA MICRORREGIÃO DE SOBRAL', pageWidth - margin, 26.5, { align: 'right' });
+        }
       };
 
       drawLetterhead(doc);
@@ -2674,26 +2658,34 @@ export default function App() {
       const pageWidth = doc.internal.pageSize.width;
       const pageHeight = doc.internal.pageSize.height;
       
-      // Header Section (Institutional Style based on provided image)
-      // Left side Branding
-      doc.setFontSize(18);
-      doc.setTextColor(0, 139, 190); // Cyan-Blue for "Policlínica de Sobral"
-      doc.setFont('helvetica', 'bold');
-      doc.text('Policlínica de Sobral', 14, 20);
-      
-      doc.setFontSize(10);
-      doc.setTextColor(245, 158, 11); // Yellow-Orange for "BERNARDO FÉLIX DA SILVA"
-      doc.setFont('helvetica', 'bold');
-      doc.text('BERNARDO FÉLIX DA SILVA', 14, 25);
+      const drawLetterhead = (pdfDoc: any) => {
+        try {
+          pdfDoc.addImage(stampedPaper, 'JPEG', 0, 0, pageWidth, pageHeight);
+        } catch (e) {
+          console.error("Error adding letterhead image:", e);
+          
+          // Fallback if image fails to load
+          pdfDoc.setFontSize(18);
+          pdfDoc.setTextColor(0, 139, 190);
+          pdfDoc.setFont('helvetica', 'bold');
+          pdfDoc.text('Policlínica de Sobral', 14, 20);
+          
+          pdfDoc.setFontSize(10);
+          pdfDoc.setTextColor(245, 158, 11);
+          pdfDoc.setFont('helvetica', 'bold');
+          pdfDoc.text('BERNARDO FÉLIX DA SILVA', 14, 25);
 
-      // Right side Institutional info/logo placeholder
-      doc.setFontSize(14);
-      doc.setTextColor(0, 139, 190);
-      doc.text('CPSMS', pageWidth - 14, 20, { align: 'right' });
-      doc.setFontSize(6);
-      doc.setTextColor(120, 113, 108);
-      doc.text('CONSÓRCIO PÚBLICO DE SAÚDE', pageWidth - 14, 23, { align: 'right' });
-      doc.text('DA MICRORREGIÃO DE SOBRAL', pageWidth - 14, 26, { align: 'right' });
+          pdfDoc.setFontSize(14);
+          pdfDoc.setTextColor(0, 139, 190);
+          pdfDoc.text('CPSMS', pageWidth - 14, 20, { align: 'right' });
+          pdfDoc.setFontSize(6);
+          pdfDoc.setTextColor(120, 113, 108);
+          pdfDoc.text('CONSÓRCIO PÚBLICO DE SAÚDE', pageWidth - 14, 23, { align: 'right' });
+          pdfDoc.text('DA MICRORREGIÃO DE SOBRAL', pageWidth - 14, 26, { align: 'right' });
+        }
+      };
+
+      drawLetterhead(doc);
       
       // Document Title & Emissions
       doc.setFontSize(11);
@@ -2765,6 +2757,11 @@ export default function App() {
         },
         alternateRowStyles: {
           fillColor: [252, 252, 252]
+        },
+        didDrawPage: (data) => {
+          if (data.pageNumber > 1) {
+            drawLetterhead(doc);
+          }
         }
       });
 
