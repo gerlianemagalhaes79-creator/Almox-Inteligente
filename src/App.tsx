@@ -2449,25 +2449,40 @@ export default function App() {
   const [donationUnitCNPJ, setDonationUnitCNPJ] = useState('');
   const [donationRevisionDate, setDonationRevisionDate] = useState('');
 
-  const getImageDataURL = (url: string): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.crossOrigin = 'Anonymous';
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        canvas.width = img.width;
-        canvas.height = img.height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(img, 0, 0);
-          resolve(canvas.toDataURL('image/jpeg'));
-        } else {
-          reject(new Error('Could not get canvas context'));
+  const getImageDataURL = async (url: string): Promise<string> => {
+    try {
+      // Use window.location.origin to ensure absolute URL in production
+      const absoluteUrl = url.startsWith('http') ? url : window.location.origin + url;
+      const response = await fetch(absoluteUrl);
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      const blob = await response.blob();
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+    } catch (err) {
+      console.error("Erro ao carregar imagem para o PDF:", err);
+      // Try again with just the path if absolute URL fails
+      if (url.startsWith('/')) {
+        try {
+          const response = await fetch(url);
+          if (response.ok) {
+            const blob = await response.blob();
+            return new Promise((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onloadend = () => resolve(reader.result as string);
+              reader.onerror = reject;
+              reader.readAsDataURL(blob);
+            });
+          }
+        } catch (e) {
+          console.error("Second attempt failed:", e);
         }
-      };
-      img.onerror = (err) => reject(err);
-      img.src = url;
-    });
+      }
+      throw err;
+    }
   };
 
   const handleExportDonationTermPDF = async (data: {
@@ -2485,7 +2500,7 @@ export default function App() {
       try {
         base64Image = await getImageDataURL("/stamped_paper.jpg");
       } catch (err) {
-        console.error("Could not load stamped paper image:", err);
+        console.warn("Could not load logo image for Donation Term, using fallback text header:", err);
       }
 
       // @ts-ignore
@@ -2690,7 +2705,7 @@ export default function App() {
       try {
         base64Image = await getImageDataURL("/stamped_paper.jpg");
       } catch (err) {
-        console.error("Could not load stamped paper image:", err);
+        console.warn("Could not load logo image for Delivery Receipt, using fallback text header:", err);
       }
 
       // @ts-ignore
