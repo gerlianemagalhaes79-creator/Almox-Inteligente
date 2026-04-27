@@ -2735,13 +2735,6 @@ export default function App() {
   }) => {
     try {
       showToast("Gerando Recibo...", "info");
-
-      let base64Image = "";
-      try {
-        base64Image = await getImageDataURL("/official_letterhead.png");
-      } catch (err) {
-        console.warn("Could not load logo image for Delivery Receipt, using fallback text header:", err);
-      }
       
       // @ts-ignore
       const doc = new jsPDF();
@@ -2750,16 +2743,6 @@ export default function App() {
       const margin = 14;
 
       const drawLetterhead = (pdfDoc: any) => {
-        if (base64Image) {
-          try {
-            // Detectar formato da string base64
-            const format = base64Image.includes('image/png') ? 'PNG' : 'JPEG';
-            pdfDoc.addImage(base64Image, format, 0, 0, pageWidth, pageHeight, undefined, 'FAST');
-            return;
-          } catch (e) {
-            console.error("Error adding letterhead image to Delivery Receipt:", e);
-          }
-        }
         const cpsmsCyan = [0, 169, 219];
         const cpsmsOrange = [255, 185, 0];
         const subtextGray = [120, 113, 108];
