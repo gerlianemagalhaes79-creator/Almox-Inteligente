@@ -34,6 +34,7 @@ import {
   Info,
   Printer,
   Copy,
+  BookOpen,
   Image as ImageIcon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -2278,6 +2279,83 @@ export default function App() {
     }
   };
 
+  const handleExportMaterialsCatalogPDF = () => {
+    try {
+      // @ts-ignore
+      const doc = new jsPDF();
+      const pageWidth = doc.internal.pageSize.width;
+      
+      // Title
+      doc.setFontSize(18);
+      doc.setTextColor(28, 25, 23); // #1C1917
+      doc.setFont('helvetica', 'bold');
+      doc.text('Catálogo de Materiais em Estoque', 14, 22);
+      
+      doc.setFontSize(11);
+      doc.setTextColor(120, 113, 108); // #78716C
+      doc.setFont('helvetica', 'normal');
+      doc.text('Policlínica Bernardo Félix da Silva', 14, 30);
+      doc.text(`Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 14, 36);
+      
+      // Filter unique items across all batches and locations
+      const uniqueItems: Record<string, { name: string, category: string, supplier: string }> = {};
+      
+      items.filter(i => !i.deletedAt && i.quantity > 0).forEach(item => {
+        if (!uniqueItems[item.name]) {
+          uniqueItems[item.name] = {
+            name: item.name,
+            category: item.category || '---',
+            supplier: item.supplier || '---'
+          };
+        }
+      });
+      
+      const tableData = Object.values(uniqueItems)
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map(item => [
+          item.name,
+          item.category,
+          item.supplier
+        ]);
+      
+      // Generate table (NO Stock, NO Batch, NO Expiry)
+      autoTable(doc, {
+        startY: 45,
+        head: [['Material / Produto', 'Categoria', 'Fornecedor']],
+        body: tableData,
+        theme: 'striped',
+        headStyles: { fillColor: [28, 25, 23], halign: 'left' }, // #1C1917
+        styles: { fontSize: 9, cellPadding: 3.5 },
+        columnStyles: {
+          0: { cellWidth: 'auto' },
+          1: { cellWidth: 50 },
+          2: { cellWidth: 50 }
+        }
+      });
+      
+      // Footer on every page
+      const pageCount = (doc as any).internal.getNumberOfPages();
+      for (let i = 1; i <= pageCount; i++) {
+        doc.setPage(i);
+        doc.setFontSize(8);
+        doc.setTextColor(168, 162, 158);
+        doc.text(
+          `Página ${i} de ${pageCount} - Catálogo gerado para consulta administrativa`,
+          pageWidth / 2,
+          doc.internal.pageSize.height - 10,
+          { align: 'center' }
+        );
+      }
+      
+      const dateStr = format(new Date(), 'dd-MM-yyyy');
+      doc.save(`Catalogo_Materiais_${dateStr}.pdf`);
+      showToast("Catálogo de materiais exportado com sucesso!", "success");
+    } catch (error) {
+      console.error('Erro ao exportar catálogo:', error);
+      showToast("Erro ao exportar catálogo de materiais.", "error");
+    }
+  };
+
   const handleExportRequestsPDF = () => {
     try {
       const doc = new jsPDF();
@@ -3761,6 +3839,12 @@ export default function App() {
                   >
                     <Download size={14} /> Exportar Excel
                   </button>
+                  <button 
+                    onClick={handleExportMaterialsCatalogPDF}
+                    className="flex items-center gap-2 bg-blue-600 text-white px-4 py-1.5 rounded-xl text-xs font-bold hover:bg-blue-700 transition-all shadow-sm"
+                  >
+                    <FileText size={14} /> Catálogo (Líderes)
+                  </button>
                 </div>
               )}
               {(activeTab === 'requests' || activeTab === 'my-requests') && (
@@ -4661,6 +4745,27 @@ export default function App() {
               exit={{ opacity: 0, scale: 0.98 }}
               className="space-y-8"
             >
+              {/* Materials Catalog Section - For Leaders (No Stock/Batch/Expiry) */}
+              <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+                  <div className="flex items-center gap-4">
+                    <div className="bg-blue-600 p-3 rounded-2xl text-white">
+                      <BookOpen size={24} />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-black text-[#1C1917]">Catálogo de Materiais para Líderes</h3>
+                      <p className="text-[#78716C] text-sm font-medium">Relatório simplificado contendo apenas os nomes dos materiais e categorias, ideal para consulta de líderes.</p>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={handleExportMaterialsCatalogPDF}
+                    className="w-full sm:w-auto bg-blue-600 text-white px-8 py-3 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-blue-700 transition-all shadow-lg"
+                  >
+                    <Printer size={18} /> Imprimir Catálogo (Sem Estoque)
+                  </button>
+                </div>
+              </div>
+
               {/* Print Requests Section - Only for Admin */}
               {isAdmin && (
                 <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
