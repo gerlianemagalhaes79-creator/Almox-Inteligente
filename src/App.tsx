@@ -113,7 +113,7 @@ const SECTORS = [
   'CER', 'Setor de Terapias', 'SSVV', 'Recepção', 
   'Higienização', 'Manutenção', 'Almoxarifado',
   'Telefonia', 'Marcação', 'Entrega de Exames', 'Regulação',
-  'Farmácia', 'CME', 'Envase', 'SESMT', 'Ouvidoria', 'Copa', 'Escritório da Qualidade', 'TI'
+  'Farmácia', 'CME', 'Envase', 'SESMT', 'Ouvidoria', 'Copa', 'Escritório da Qualidade', 'TI', 'SAME'
 ];
 
 const SECTOR_COLORS: Record<string, string> = {
@@ -141,6 +141,7 @@ const SECTOR_COLORS: Record<string, string> = {
   'Copa': '#84cc16',
   'Escritório da Qualidade': '#4b5563',
   'TI': '#1e293b',
+  'SAME': '#7c2d12'
 };
 
 const ROOMS = ['Sala A', 'Sala B', 'Almoxarifado Principal', 'Farmácia'];
