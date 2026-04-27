@@ -71,7 +71,6 @@ import {
 import { initializeApp } from 'firebase/app';
 import { db, auth } from './firebase';
 import firebaseConfig from '../firebase-applet-config.json';
-import stampedPaper from './stamped_paper.jpg';
 import { Item, Transaction, UserProfile, MaterialRequest, RequestItem, Notification } from './types';
 import { 
   BarChart, 
@@ -2482,7 +2481,8 @@ export default function App() {
       const margin = 20;
 
       const drawLetterhead = (pdfDoc: any) => {
-        // Use the official letterhead image as background
+        // Use the official letterhead image as background from public folder
+        const stampedPaper = "/stamped_paper.jpg";
         try {
           pdfDoc.addImage(stampedPaper, 'JPEG', 0, 0, pageWidth, pageHeight);
         } catch (e) {
@@ -2659,6 +2659,7 @@ export default function App() {
       const pageHeight = doc.internal.pageSize.height;
       
       const drawLetterhead = (pdfDoc: any) => {
+        const stampedPaper = "/stamped_paper.jpg";
         try {
           pdfDoc.addImage(stampedPaper, 'JPEG', 0, 0, pageWidth, pageHeight);
         } catch (e) {
