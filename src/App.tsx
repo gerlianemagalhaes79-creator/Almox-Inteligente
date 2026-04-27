@@ -2451,9 +2451,7 @@ export default function App() {
 
   const getImageDataURL = async (url: string): Promise<string> => {
     try {
-      // Use window.location.origin to ensure absolute URL in production
-      const absoluteUrl = url.startsWith('http') ? url : window.location.origin + url;
-      const response = await fetch(absoluteUrl);
+      const response = await fetch(url);
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const blob = await response.blob();
       return new Promise((resolve, reject) => {
@@ -2464,23 +2462,6 @@ export default function App() {
       });
     } catch (err) {
       console.error("Erro ao carregar imagem para o PDF:", err);
-      // Try again with just the path if absolute URL fails
-      if (url.startsWith('/')) {
-        try {
-          const response = await fetch(url);
-          if (response.ok) {
-            const blob = await response.blob();
-            return new Promise((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onloadend = () => resolve(reader.result as string);
-              reader.onerror = reject;
-              reader.readAsDataURL(blob);
-            });
-          }
-        } catch (e) {
-          console.error("Second attempt failed:", e);
-        }
-      }
       throw err;
     }
   };
@@ -2495,23 +2476,79 @@ export default function App() {
   }) => {
     try {
       showToast("Gerando Termo de Doação...", "info");
-      
+
       let base64Image = "";
       try {
-        base64Image = await getImageDataURL("/stamped_paper.jpg");
+        base64Image = await getImageDataURL("/official_letterhead.png");
       } catch (err) {
         console.warn("Could not load logo image for Donation Term, using fallback text header:", err);
       }
-
+      
       // @ts-ignore
       const doc = new jsPDF();
       const pageWidth = doc.internal.pageSize.width;
       const pageHeight = doc.internal.pageSize.height;
-      
+      const margin = 20;
+
+      const drawLetterhead = (pdfDoc: any) => {
+        if (base64Image) {
+          try {
+            pdfDoc.addImage(base64Image, 'PNG', 0, 0, pageWidth, pageHeight);
+            return;
+          } catch (e) {
+            console.error("Error adding letterhead image:", e);
+          }
+        }
+        const cpsmsCyan = [0, 169, 219];
+        const cpsmsOrange = [255, 185, 0];
+        const subtextGray = [120, 113, 108];
+
+        // Header Left Side
+        pdfDoc.setFontSize(22);
+        pdfDoc.setTextColor(cpsmsCyan[0], cpsmsCyan[1], cpsmsCyan[2]);
+        pdfDoc.setFont('helvetica', 'bold');
+        pdfDoc.text('Policlínica de Sobral', margin, 20);
+        
+        pdfDoc.setFontSize(11);
+        pdfDoc.setTextColor(cpsmsOrange[0], cpsmsOrange[1], cpsmsOrange[2]);
+        pdfDoc.setFont('helvetica', 'bold');
+        pdfDoc.text('BERNARDO FÉLIX DA SILVA', margin, 26);
+
+        // Header Right Side (Vector Logo)
+        const logoX = pageWidth - margin - 46; 
+        const logoY = 16;
+        
+        pdfDoc.setFillColor(cpsmsOrange[0], cpsmsOrange[1], cpsmsOrange[2]);
+        pdfDoc.roundedRect(logoX, logoY, 4, 4, 1.5, 1.5, 'F');
+        pdfDoc.setFillColor(cpsmsCyan[0], cpsmsCyan[1], cpsmsCyan[2]);
+        pdfDoc.roundedRect(logoX + 4.5, logoY, 4, 4, 1.5, 1.5, 'F');
+        pdfDoc.roundedRect(logoX, logoY + 4.5, 4, 4, 1.5, 1.5, 'F');
+        pdfDoc.roundedRect(logoX + 4.5, logoY + 4.5, 4, 4, 1.5, 1.5, 'F');
+
+        pdfDoc.setFontSize(26);
+        pdfDoc.setTextColor(cpsmsCyan[0], cpsmsCyan[1], cpsmsCyan[2]);
+        pdfDoc.setFont('helvetica', 'bold');
+        pdfDoc.text('CPSMS', pageWidth - margin, 21, { align: 'right' });
+        
+        pdfDoc.setFontSize(6);
+        pdfDoc.setTextColor(subtextGray[0], subtextGray[1], subtextGray[2]);
+        pdfDoc.setFont('helvetica', 'bold');
+        pdfDoc.text('CONSÓRCIO PÚBLICO DE SAÚDE', pageWidth - margin, 24, { align: 'right' });
+        pdfDoc.text('DA MICRORREGIÃO DE SOBRAL', pageWidth - margin, 26.5, { align: 'right' });
+
+        // Footer
+        pdfDoc.setFontSize(7.5);
+        pdfDoc.setTextColor(120, 113, 108);
+        pdfDoc.setFont('helvetica', 'normal');
+        const footer1 = 'Policlínica Bernardo Félix da Silva. Av. Monsenhor Aloísio Pinto, 481, CEP 62050-255, Sobral-CE';
+        const footer2 = 'Fone: (88) 3614-3156 | Fax: (88) 3614-3245 | cpsms.ce.gov.br';
+        pdfDoc.text(footer1, pageWidth / 2, pageHeight - 12, { align: 'center' });
+        pdfDoc.text(footer2, pageWidth / 2, pageHeight - 8, { align: 'center' });
+      };
+
       const formatTitleCase = (str: string) => {
         if (!str) return '';
         const lower = str.toLowerCase();
-        // Exception for common prepositions in PT-BR
         const minorWords = ['de', 'da', 'do', 'das', 'dos', 'e', 'em', 'para'];
         return lower.split(' ').map((word, index) => {
           if (index > 0 && minorWords.includes(word)) return word;
@@ -2523,53 +2560,6 @@ export default function App() {
       const receivingName = formatTitleCase(data.receivingUnit.name);
       const receivingAddress = data.receivingUnit.address;
       const receivingCNPJ = data.receivingUnit.cnpj;
-      const margin = 20;
-
-      const drawLetterhead = (pdfDoc: any) => {
-        if (base64Image) {
-          try {
-            pdfDoc.addImage(base64Image, 'JPEG', 0, 0, pageWidth, pageHeight);
-            return;
-          } catch (e) {
-            console.error("Error adding letterhead image:", e);
-          }
-        }
-        
-        // Fallback if image fails to load
-        const cpsmsCyan = [0, 169, 219];
-        const cpsmsOrange = [255, 185, 0];
-        const subtextGray = [120, 113, 108];
-
-        pdfDoc.setFontSize(22);
-        pdfDoc.setTextColor(cpsmsCyan[0], cpsmsCyan[1], cpsmsCyan[2]);
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('Policlínica de Sobral', margin, 20);
-        
-        pdfDoc.setFontSize(11);
-        pdfDoc.setTextColor(cpsmsOrange[0], cpsmsOrange[1], cpsmsOrange[2]);
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('BERNARDO FÉLIX DA SILVA', margin, 26);
-
-        const logoX = pageWidth - margin - 46; 
-        const logoY = 16;
-        pdfDoc.setFillColor(255, 185, 0);
-        pdfDoc.roundedRect(logoX, logoY, 4, 4, 1.5, 1.5, 'F');
-        pdfDoc.setFillColor(0, 169, 219);
-        pdfDoc.roundedRect(logoX + 4.5, logoY, 4, 4, 1.5, 1.5, 'F');
-        pdfDoc.roundedRect(logoX, logoY + 4.5, 4, 4, 1.5, 1.5, 'F');
-        pdfDoc.roundedRect(logoX + 4.5, logoY + 4.5, 4, 4, 1.5, 1.5, 'F');
-
-        pdfDoc.setFontSize(26);
-        pdfDoc.setTextColor(0, 169, 219);
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('CPSMS', pageWidth - margin, 21, { align: 'right' });
-        
-        pdfDoc.setFontSize(6);
-        pdfDoc.setTextColor(subtextGray[0], subtextGray[1], subtextGray[2]);
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('CONSÓRCIO PÚBLICO DE SAÚDE', pageWidth - margin, 24, { align: 'right' });
-        pdfDoc.text('DA MICRORREGIÃO DE SOBRAL', pageWidth - margin, 26.5, { align: 'right' });
-      };
 
       drawLetterhead(doc);
 
@@ -2700,47 +2690,74 @@ export default function App() {
   }) => {
     try {
       showToast("Gerando Recibo...", "info");
-      
+
       let base64Image = "";
       try {
-        base64Image = await getImageDataURL("/stamped_paper.jpg");
+        base64Image = await getImageDataURL("/official_letterhead.png");
       } catch (err) {
         console.warn("Could not load logo image for Delivery Receipt, using fallback text header:", err);
       }
-
+      
       // @ts-ignore
       const doc = new jsPDF();
       const pageWidth = doc.internal.pageSize.width;
       const pageHeight = doc.internal.pageSize.height;
-      
+      const margin = 14;
+
       const drawLetterhead = (pdfDoc: any) => {
         if (base64Image) {
           try {
-            pdfDoc.addImage(base64Image, 'JPEG', 0, 0, pageWidth, pageHeight);
+            pdfDoc.addImage(base64Image, 'PNG', 0, 0, pageWidth, pageHeight);
             return;
           } catch (e) {
             console.error("Error adding letterhead image:", e);
           }
         }
-        
-        // Fallback if image fails to load
-        pdfDoc.setFontSize(18);
-        pdfDoc.setTextColor(0, 139, 190);
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('Policlínica de Sobral', 14, 20);
-        
-        pdfDoc.setFontSize(10);
-        pdfDoc.setTextColor(245, 158, 11);
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('BERNARDO FÉLIX DA SILVA', 14, 25);
+        const cpsmsCyan = [0, 169, 219];
+        const cpsmsOrange = [255, 185, 0];
+        const subtextGray = [120, 113, 108];
 
-        pdfDoc.setFontSize(14);
-        pdfDoc.setTextColor(0, 139, 190);
-        pdfDoc.text('CPSMS', pageWidth - 14, 20, { align: 'right' });
+        // Header Left Side
+        pdfDoc.setFontSize(22);
+        pdfDoc.setTextColor(cpsmsCyan[0], cpsmsCyan[1], cpsmsCyan[2]);
+        pdfDoc.setFont('helvetica', 'bold');
+        pdfDoc.text('Policlínica de Sobral', margin, 20);
+        
+        pdfDoc.setFontSize(11);
+        pdfDoc.setTextColor(cpsmsOrange[0], cpsmsOrange[1], cpsmsOrange[2]);
+        pdfDoc.setFont('helvetica', 'bold');
+        pdfDoc.text('BERNARDO FÉLIX DA SILVA', margin, 26);
+
+        // Header Right Side (Vector Logo)
+        const logoX = pageWidth - margin - 46; 
+        const logoY = 16;
+        
+        pdfDoc.setFillColor(cpsmsOrange[0], cpsmsOrange[1], cpsmsOrange[2]);
+        pdfDoc.roundedRect(logoX, logoY, 4, 4, 1.5, 1.5, 'F');
+        pdfDoc.setFillColor(cpsmsCyan[0], cpsmsCyan[1], cpsmsCyan[2]);
+        pdfDoc.roundedRect(logoX + 4.5, logoY, 4, 4, 1.5, 1.5, 'F');
+        pdfDoc.roundedRect(logoX, logoY + 4.5, 4, 4, 1.5, 1.5, 'F');
+        pdfDoc.roundedRect(logoX + 4.5, logoY + 4.5, 4, 4, 1.5, 1.5, 'F');
+
+        pdfDoc.setFontSize(26);
+        pdfDoc.setTextColor(cpsmsCyan[0], cpsmsCyan[1], cpsmsCyan[2]);
+        pdfDoc.setFont('helvetica', 'bold');
+        pdfDoc.text('CPSMS', pageWidth - margin, 21, { align: 'right' });
+        
         pdfDoc.setFontSize(6);
+        pdfDoc.setTextColor(subtextGray[0], subtextGray[1], subtextGray[2]);
+        pdfDoc.setFont('helvetica', 'bold');
+        pdfDoc.text('CONSÓRCIO PÚBLICO DE SAÚDE', pageWidth - margin, 24, { align: 'right' });
+        pdfDoc.text('DA MICRORREGIÃO DE SOBRAL', pageWidth - margin, 26.5, { align: 'right' });
+
+        // Footer
+        pdfDoc.setFontSize(7.5);
         pdfDoc.setTextColor(120, 113, 108);
-        pdfDoc.text('CONSÓRCIO PÚBLICO DE SAÚDE', pageWidth - 14, 23, { align: 'right' });
-        pdfDoc.text('DA MICRORREGIÃO DE SOBRAL', pageWidth - 14, 26, { align: 'right' });
+        pdfDoc.setFont('helvetica', 'normal');
+        const footer1 = 'Policlínica Bernardo Félix da Silva. Av. Monsenhor Aloísio Pinto, 481, CEP 62050-255, Sobral-CE';
+        const footer2 = 'Fone: (88) 3614-3156 | Fax: (88) 3614-3245 | cpsms.ce.gov.br';
+        pdfDoc.text(footer1, pageWidth / 2, pageHeight - 12, { align: 'center' });
+        pdfDoc.text(footer2, pageWidth / 2, pageHeight - 8, { align: 'center' });
       };
 
       drawLetterhead(doc);
