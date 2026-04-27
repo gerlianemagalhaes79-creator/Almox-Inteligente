@@ -2451,9 +2451,21 @@ export default function App() {
 
   const getImageDataURL = async (url: string): Promise<string> => {
     try {
-      const response = await fetch(url);
+      // Garantir o caminho absoluto para o Vercel e evitar cache
+      const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
+      const cacheBust = `?v=${new Date().getTime()}`;
+      const fullUrl = url.startsWith('http') ? url : `${baseUrl}${url.startsWith('/') ? '' : '/'}${url}${cacheBust}`;
+      
+      const response = await fetch(fullUrl);
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const blob = await response.blob();
+      console.log(`Imagem carregada: ${url}, Tamanho: ${blob.size} bytes`);
+      
+      // Se o blob for muito pequeno (ex: < 1KB), provavelmente não é a imagem correta
+      if (blob.size < 1000) {
+        throw new Error("Imagem muito pequena ou inválida carregada.");
+      }
+
       return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onloadend = () => resolve(reader.result as string);
@@ -2493,10 +2505,11 @@ export default function App() {
       const drawLetterhead = (pdfDoc: any) => {
         if (base64Image) {
           try {
-            pdfDoc.addImage(base64Image, 'PNG', 0, 0, pageWidth, pageHeight);
+            // Usar compressão FAST e garantir renderização
+            pdfDoc.addImage(base64Image, 'PNG', 0, 0, pageWidth, pageHeight, undefined, 'FAST');
             return;
           } catch (e) {
-            console.error("Error adding letterhead image:", e);
+            console.error("Error adding letterhead image to Donation Term:", e);
           }
         }
         const cpsmsCyan = [0, 169, 219];
@@ -2707,10 +2720,11 @@ export default function App() {
       const drawLetterhead = (pdfDoc: any) => {
         if (base64Image) {
           try {
-            pdfDoc.addImage(base64Image, 'PNG', 0, 0, pageWidth, pageHeight);
+            // Usar compressão FAST e garantir renderização
+            pdfDoc.addImage(base64Image, 'PNG', 0, 0, pageWidth, pageHeight, undefined, 'FAST');
             return;
           } catch (e) {
-            console.error("Error adding letterhead image:", e);
+            console.error("Error adding letterhead image to Delivery Receipt:", e);
           }
         }
         const cpsmsCyan = [0, 169, 219];
