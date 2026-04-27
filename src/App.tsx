@@ -2451,7 +2451,6 @@ export default function App() {
 
   const getImageDataURL = async (url: string): Promise<string> => {
     try {
-      // Garantir o caminho absoluto para o Vercel e evitar cache
       const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
       const cacheBust = `?v=${new Date().getTime()}`;
       const fullUrl = url.startsWith('http') ? url : `${baseUrl}${url.startsWith('/') ? '' : '/'}${url}${cacheBust}`;
@@ -2459,18 +2458,30 @@ export default function App() {
       const response = await fetch(fullUrl);
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const blob = await response.blob();
-      console.log(`Imagem carregada: ${url}, Tamanho: ${blob.size} bytes`);
+      console.log(`Imagem carregada: ${url}, Tamanho: ${blob.size} bytes, Tipo: ${blob.type}`);
       
-      // Se o blob for muito pequeno (ex: < 1KB), provavelmente não é a imagem correta
-      if (blob.size < 1000) {
+      if (blob.size < 500) {
         throw new Error("Imagem muito pequena ou inválida carregada.");
       }
 
+      // Convert to JPEG using Canvas to fix "wrong PNG signature" and format issues
       return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result as string);
-        reader.onerror = reject;
-        reader.readAsDataURL(blob);
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.width;
+          canvas.height = img.height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            reject(new Error("Could not get canvas context"));
+            return;
+          }
+          ctx.drawImage(img, 0, 0);
+          resolve(canvas.toDataURL('image/jpeg', 0.9));
+        };
+        img.onerror = () => reject(new Error("Erro ao processar imagem no canvas"));
+        img.src = URL.createObjectURL(blob);
       });
     } catch (err) {
       console.error("Erro ao carregar imagem para o PDF:", err);
@@ -2505,8 +2516,8 @@ export default function App() {
       const drawLetterhead = (pdfDoc: any) => {
         if (base64Image) {
           try {
-            // Usar compressão FAST e garantir renderização
-            pdfDoc.addImage(base64Image, 'PNG', 0, 0, pageWidth, pageHeight, undefined, 'FAST');
+            // Usar JPEG (convertido no getImageDataURL) para compatibilidade máxima
+            pdfDoc.addImage(base64Image, 'JPEG', 0, 0, pageWidth, pageHeight, undefined, 'FAST');
             return;
           } catch (e) {
             console.error("Error adding letterhead image to Donation Term:", e);
@@ -2720,8 +2731,8 @@ export default function App() {
       const drawLetterhead = (pdfDoc: any) => {
         if (base64Image) {
           try {
-            // Usar compressão FAST e garantir renderização
-            pdfDoc.addImage(base64Image, 'PNG', 0, 0, pageWidth, pageHeight, undefined, 'FAST');
+            // Usar JPEG (convertido no getImageDataURL) para compatibilidade máxima
+            pdfDoc.addImage(base64Image, 'JPEG', 0, 0, pageWidth, pageHeight, undefined, 'FAST');
             return;
           } catch (e) {
             console.error("Error adding letterhead image to Delivery Receipt:", e);
