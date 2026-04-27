@@ -4,6 +4,7 @@ export interface UserProfile {
   email: string;
   role: 'ADMIN' | 'SETOR';
   sector?: string;
+  allowedSectors?: string[];
 }
 
 export interface MaterialRequest {

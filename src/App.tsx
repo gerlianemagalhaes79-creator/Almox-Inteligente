@@ -17,7 +17,6 @@ import {
   Edit2,
   BarChart3,
   TrendingUp,
-  Image,
   Upload,
   TrendingDown,
   DollarSign,
@@ -34,7 +33,8 @@ import {
   Users,
   Info,
   Printer,
-  Copy
+  Copy,
+  Image as ImageIcon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as XLSX from 'xlsx';
@@ -288,7 +288,13 @@ export default function App() {
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authName, setAuthName] = useState('');
-  const [authSector, setAuthSector] = useState('Administrativo');
+  const [authSectors, setAuthSectors] = useState<string[]>([]);
+  const [selectedSector, setSelectedSector] = useState(SECTORS[0]);
+  const [donationUnitName, setDonationUnitName] = useState('');
+  const [donationUnitAddress, setDonationUnitAddress] = useState('');
+  const [donationUnitCNPJ, setDonationUnitCNPJ] = useState('');
+  const [donationRevisionDate, setDonationRevisionDate] = useState('');
+  const [letterheadImage, setLetterheadImage] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'inventory' | 'history' | 'requests' | 'reports' | 'my-requests' | 'new-request' | 'users' | 'trash'>('dashboard');
   const [showAddModal, setShowAddModal] = useState(false);
   const [showTransactionModal, setShowTransactionModal] = useState<{show: boolean, type: 'entry' | 'exit', item?: Item}>({ show: false, type: 'entry' });
@@ -316,17 +322,17 @@ export default function App() {
   const [inventoryLocation, setInventoryLocation] = useState<'Almoxarifado' | 'Farmácia'>('Almoxarifado');
 
   useEffect(() => {
-    if (userProfile?.sector === 'Farmácia') {
+    if (selectedSector === 'Farmácia') {
       setInventoryLocation('Farmácia');
     } else {
       setInventoryLocation('Almoxarifado');
     }
-  }, [userProfile?.sector]);
+  }, [selectedSector]);
   
   const isAdmin = userProfile?.role === 'ADMIN' || 
                   user?.email === 'gerlianemagalhaes79@gmail.com' || 
                   user?.email === 'poli.almoxarifado@gmail.com' || 
-                  userProfile?.sector === 'Almoxarifado';
+                  selectedSector === 'Almoxarifado';
 
   const weeklyExitRates = useMemo(() => {
     const sixtyDaysAgo = new Date();
@@ -533,7 +539,6 @@ export default function App() {
   const [transactionQty, setTransactionQty] = useState(1);
   const [exitReason, setExitReason] = useState<'consumo' | 'doacao' | 'vencido'>('consumo');
   const [expiryReason, setExpiryReason] = useState('');
-  const [selectedSector, setSelectedSector] = useState(SECTORS[0]);
   const [selectedItemId, setSelectedItemId] = useState<string>('');
   const [selectedItemName, setSelectedItemName] = useState<string>('');
   const [basket, setBasket] = useState<{item_id: string, quantity: number}[]>([]);
@@ -831,7 +836,11 @@ export default function App() {
               setUserProfile(profile);
               
               // Auto-select sector for the user
-              if (profile.sector) {
+              // Priority: allowedSectors[0] > sector > default
+              if (profile.allowedSectors && profile.allowedSectors.length > 0) {
+                // Keep current selectedSector if it's still allowed, otherwise pick first
+                setSelectedSector(prev => (prev && profile.allowedSectors?.includes(prev) ? prev : profile.allowedSectors![0]));
+              } else if (profile.sector) {
                 setSelectedSector(profile.sector);
               }
 
@@ -926,7 +935,7 @@ export default function App() {
     if (!user || !userProfile) return;
     
     let unsubscribeUsers = () => {};
-    if (user.email === 'gerlianemagalhaes79@gmail.com' || userProfile.role === 'ADMIN' || userProfile.sector === 'Almoxarifado') {
+    if (user.email === 'gerlianemagalhaes79@gmail.com' || userProfile.role === 'ADMIN' || selectedSector === 'Almoxarifado') {
       // Ensure master admins are in the database so they appear in the list
       const masterAdmins = [
         { email: 'gerlianemagalhaes79@gmail.com', name: 'Admin' },
@@ -995,8 +1004,8 @@ export default function App() {
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!authEmail || !authName || !authSector) {
-      showToast("Preencha todos os campos.", "error");
+    if (!authEmail || !authName || authSectors.length === 0) {
+      showToast("Preencha todos os campos e selecione ao menos um setor.", "error");
       return;
     }
     setLoginLoading(true);
@@ -1010,13 +1019,15 @@ export default function App() {
         email: userDocId,
         name: authName,
         role: role,
-        sector: authSector,
+        sector: authSectors[0], // Main sector or legacy
+        allowedSectors: authSectors,
         registeredAt: new Date().toISOString()
       }, { merge: true });
       
       showToast("Usuário pré-cadastrado com sucesso! Agora ele pode entrar usando o Google.", "success");
       setAuthEmail('');
       setAuthName('');
+      setAuthSectors([]);
       setIsRegistering(false);
     } catch (error: any) {
       handleFirestoreError(error, OperationType.WRITE, 'users');
@@ -1181,7 +1192,7 @@ export default function App() {
       }
 
       const requestData = {
-        sector: userProfile.sector,
+        sector: selectedSector,
         date: editingRequest ? editingRequest.date : new Date().toISOString(),
         status: 'PENDENTE',
         observation: requestObservation,
@@ -2284,7 +2295,7 @@ export default function App() {
       if (activeTab === 'requests') {
         requestsToExport = requests.filter(req => !req.deletedAt);
       } else if (activeTab === 'my-requests') {
-        requestsToExport = requests.filter(r => r.sector === userProfile?.sector && !r.deletedAt);
+        requestsToExport = requests.filter(r => r.sector === selectedSector && !r.deletedAt);
       } else {
         requestsToExport = requests.filter(req => !req.deletedAt);
       }
@@ -2447,12 +2458,6 @@ export default function App() {
     }
   };
 
-  const [donationUnitName, setDonationUnitName] = useState('');
-  const [donationUnitAddress, setDonationUnitAddress] = useState('');
-  const [donationUnitCNPJ, setDonationUnitCNPJ] = useState('');
-  const [donationRevisionDate, setDonationRevisionDate] = useState('');
-  const [letterheadImage, setLetterheadImage] = useState<string | null>(null);
-
   const getImageDataURL = async (url: string): Promise<string> => {
     try {
       const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
@@ -2550,7 +2555,6 @@ export default function App() {
         if (base64Image) {
           try {
             console.log("[PDF] Desenhando imagem de papel timbrado no Termo de Doação");
-            // Detectar formato da string base64
             const format = base64Image.includes('image/png') ? 'PNG' : 'JPEG';
             pdfDoc.addImage(base64Image, format, 0, 0, pageWidth, pageHeight, undefined, 'FAST');
             return;
@@ -2558,6 +2562,17 @@ export default function App() {
             console.error("Error adding letterhead image to Donation Term:", e);
           }
         }
+        
+        // Use appLogo as small logo if full letterhead background is not provided
+        if (appLogo) {
+          try {
+            const format = appLogo.includes('image/png') ? 'PNG' : 'JPEG';
+            pdfDoc.addImage(appLogo, format, margin, 14, 40, 20, undefined, 'FAST');
+          } catch (e) {
+            console.error("Error adding appLogo to Donation Term:", e);
+          }
+        }
+
         console.log("[PDF] Usando cabeçalho padrão (fallback) no Termo de Doação");
         const cpsmsCyan = [0, 169, 219];
         const cpsmsOrange = [255, 185, 0];
@@ -2567,12 +2582,12 @@ export default function App() {
         pdfDoc.setFontSize(22);
         pdfDoc.setTextColor(cpsmsCyan[0], cpsmsCyan[1], cpsmsCyan[2]);
         pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('Policlínica de Sobral', margin, 20);
+        pdfDoc.text('Policlínica de Sobral', appLogo ? margin + 45 : margin, 20);
         
         pdfDoc.setFontSize(11);
         pdfDoc.setTextColor(cpsmsOrange[0], cpsmsOrange[1], cpsmsOrange[2]);
         pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('BERNARDO FÉLIX DA SILVA', margin, 26);
+        pdfDoc.text('BERNARDO FÉLIX DA SILVA', appLogo ? margin + 45 : margin, 26);
 
         // Header Right Side (Vector Logo)
         const logoX = pageWidth - margin - 46; 
@@ -2742,6 +2757,32 @@ export default function App() {
     }
   };
 
+  const [appLogo, setAppLogo] = useState<string | null>(null);
+
+  // Load app logo from localStorage on mount
+  useEffect(() => {
+    const savedLogo = localStorage.getItem('app_logo_base64');
+    if (savedLogo) setAppLogo(savedLogo);
+  }, []);
+
+  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (file.size > 2 * 1024 * 1024) {
+        showToast("Imagem muito grande. Máximo 2MB.", "error");
+        return;
+      }
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const base64 = reader.result as string;
+        setAppLogo(base64);
+        localStorage.setItem('app_logo_base64', base64);
+        showToast("Logo atualizada!", "success");
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
   const handleExportDeliveryReceiptPDF = async (data: {
     sector: string;
     items: { product_name: string; quantity: number }[];
@@ -2758,6 +2799,16 @@ export default function App() {
       const margin = 14;
 
       const drawLetterhead = (pdfDoc: any) => {
+        if (appLogo) {
+          try {
+            // Draw custom logo at the top right if available
+            const format = appLogo.includes('image/png') ? 'PNG' : 'JPEG';
+            pdfDoc.addImage(appLogo, format, margin, 14, 40, 20, undefined, 'FAST');
+          } catch (e) {
+            console.error("Error adding appLogo to Delivery Receipt:", e);
+          }
+        }
+
         const cpsmsCyan = [0, 169, 219];
         const cpsmsOrange = [255, 185, 0];
         const subtextGray = [120, 113, 108];
@@ -2766,12 +2817,14 @@ export default function App() {
         pdfDoc.setFontSize(22);
         pdfDoc.setTextColor(cpsmsCyan[0], cpsmsCyan[1], cpsmsCyan[2]);
         pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('Policlínica de Sobral', margin, 20);
+        // If there's an app logo, we might want to offset the text or skip it? 
+        // For now, let's keep the text but maybe offset it if needed.
+        pdfDoc.text('Policlínica de Sobral', appLogo ? margin + 45 : margin, 20);
         
         pdfDoc.setFontSize(11);
         pdfDoc.setTextColor(cpsmsOrange[0], cpsmsOrange[1], cpsmsOrange[2]);
         pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('BERNARDO FÉLIX DA SILVA', margin, 26);
+        pdfDoc.text('BERNARDO FÉLIX DA SILVA', appLogo ? margin + 45 : margin, 26);
 
         // Header Right Side (Vector Logo)
         const logoX = pageWidth - margin - 46; 
@@ -3078,7 +3131,7 @@ export default function App() {
                     user?.email === 'gerlianemagalhaes79@gmail.com' || 
                     user?.email === 'poli.almoxarifado@gmail.com' || 
                     userProfile?.sector === 'Almoxarifado';
-    const effectiveSectorFilter = isAdmin ? reportSectorFilter : (userProfile?.sector || 'none');
+    const effectiveSectorFilter = isAdmin ? reportSectorFilter : (selectedSector || 'none');
 
     const filteredTrans = transactions.filter(t => {
       if (t.deletedAt) return false;
@@ -3278,7 +3331,7 @@ export default function App() {
       if (!request) return;
       
       // If not admin, only count items from their own sector
-      if (!isAdmin && request.sector !== userProfile?.sector) return;
+      if (!isAdmin && request.sector !== selectedSector) return;
       
       // If admin and sector filter is active, filter by that sector
       if (isAdmin && reportSectorFilter !== 'all' && request.sector !== reportSectorFilter) return;
@@ -3598,9 +3651,21 @@ export default function App() {
             <p className="text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Usuário</p>
             <div className="flex items-center gap-3">
               <img src={user.photoURL || ''} className="w-8 h-8 rounded-full border border-[#E7E5E4]" alt="" />
-              <div className="overflow-hidden">
+              <div className="overflow-hidden flex-1">
                 <p className="text-xs font-bold truncate">{user.displayName}</p>
-                <p className="text-[10px] text-[#A8A29E] font-medium truncate uppercase">{userProfile?.sector || 'Sem Setor'}</p>
+                {userProfile?.allowedSectors && userProfile.allowedSectors.length > 1 ? (
+                  <select 
+                    value={selectedSector}
+                    onChange={(e) => setSelectedSector(e.target.value)}
+                    className="text-[10px] text-[#1C1917] font-black uppercase bg-[#F5F5F4] border-none rounded p-1 mt-1 cursor-pointer hover:bg-[#E7E5E4] transition-all w-full focus:ring-0"
+                  >
+                    {userProfile.allowedSectors.map(s => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <p className="text-[10px] text-[#A8A29E] font-medium truncate uppercase">{selectedSector || 'Sem Setor'}</p>
+                )}
                 <button onClick={handleLogout} className="text-[10px] text-rose-600 font-bold hover:underline flex items-center gap-1 mt-1">
                   <LogOut size={10} /> Sair
                 </button>
@@ -3626,8 +3691,8 @@ export default function App() {
               {activeTab === 'history' && 'Histórico de Movimentações'}
               {activeTab === 'requests' && 'Solicitações de Materiais'}
               {activeTab === 'trash' && 'Lixeira (Exclusão em 3 dias)'}
-              {activeTab === 'my-requests' && `Minhas Solicitações - ${userProfile?.sector || ''}`}
-              {activeTab === 'new-request' && `Nova Solicitação - ${userProfile?.sector || ''}`}
+              {activeTab === 'my-requests' && `Minhas Solicitações - ${selectedSector || ''}`}
+              {activeTab === 'new-request' && `Nova Solicitação - ${selectedSector || ''}`}
               {editingRequest && ' - Editando Solicitação'}
               {activeTab === 'reports' && 'Relatórios e Análises'}
             </h2>
@@ -3840,7 +3905,7 @@ export default function App() {
                 )}
               </div>
             )}
-            {(isAdmin || userProfile?.sector === 'Farmácia') && (
+            {(isAdmin || selectedSector === 'Farmácia') && (
               <>
                 <button 
                   onClick={() => setShowAddModal(true)}
@@ -3881,7 +3946,7 @@ export default function App() {
                   <p className="text-xs text-[#A8A29E] mt-2 font-bold uppercase tracking-wider">{groupedArray.length} tipos de itens</p>
                 </div>
 
-                {(isAdmin || userProfile?.sector === 'Farmácia') && (
+                {(isAdmin || selectedSector === 'Farmácia') && (
                   <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
                     <div className="flex justify-between items-start mb-4">
                       <div className="bg-blue-100 p-3 rounded-2xl text-blue-600">
@@ -5137,18 +5202,33 @@ export default function App() {
                           onChange={e => setAuthName(e.target.value)}
                         />
                       </div>
-                      <div>
-                        <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1.5 ml-1">Setor</label>
-                        <select 
-                          required
-                          className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
-                          value={authSector}
-                          onChange={e => setAuthSector(e.target.value)}
-                        >
-                          {SECTORS.map(sector => (
-                            <option key={sector} value={sector}>{sector}</option>
-                          ))}
-                        </select>
+                      <div className="md:col-span-2">
+                        <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-2 ml-1">Setores Autorizados</label>
+                        <div className="flex flex-wrap gap-2 p-2 bg-[#F5F5F4] rounded-2xl border border-[#E7E5E4]/50">
+                          {SECTORS.map(sector => {
+                            const isSelected = authSectors.includes(sector);
+                            return (
+                              <button
+                                key={sector}
+                                type="button"
+                                onClick={() => {
+                                  if (isSelected) {
+                                    setAuthSectors(authSectors.filter(s => s !== sector));
+                                  } else {
+                                    setAuthSectors([...authSectors, sector]);
+                                  }
+                                }}
+                                className={`px-3 py-2 rounded-xl text-xs font-bold transition-all ${
+                                  isSelected 
+                                    ? 'bg-[#1C1917] text-white shadow-md' 
+                                    : 'bg-white text-[#78716C] border border-[#E7E5E4] hover:bg-[#E7E5E4]'
+                                }`}
+                              >
+                                {sector}
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -5196,9 +5276,26 @@ export default function App() {
                         <td className="px-6 py-4 font-bold text-sm">{u.name}</td>
                         <td className="px-6 py-4 text-sm text-[#78716C]">{u.email}</td>
                         <td className="px-6 py-4">
-                          <span className="text-xs font-bold px-2 py-1 rounded-lg" style={{ backgroundColor: `${SECTOR_COLORS[u.sector || ''] || '#000000'}20`, color: SECTOR_COLORS[u.sector || ''] || '#000000' }}>
-                            {u.sector}
-                          </span>
+                          <div className="flex flex-wrap gap-1 max-w-[200px]">
+                            {u.allowedSectors && u.allowedSectors.length > 0 ? (
+                              u.allowedSectors.map(s => (
+                                <span 
+                                  key={s}
+                                  className="text-[9px] font-bold px-1.5 py-0.5 rounded-md" 
+                                  style={{ 
+                                    backgroundColor: `${SECTOR_COLORS[s || ''] || '#000000'}15`, 
+                                    color: SECTOR_COLORS[s || ''] || '#000000' 
+                                  }}
+                                >
+                                  {s}
+                                </span>
+                              ))
+                            ) : (
+                              <span className="text-xs font-bold px-2 py-1 rounded-lg" style={{ backgroundColor: `${SECTOR_COLORS[u.sector || ''] || '#000000'}20`, color: SECTOR_COLORS[u.sector || ''] || '#000000' }}>
+                                {u.sector}
+                              </span>
+                            )}
+                          </div>
                         </td>
                         <td className="px-6 py-4">
                           <span className={`text-[10px] font-black px-2 py-1 rounded-full uppercase tracking-widest ${u.role === 'ADMIN' ? 'bg-purple-100 text-purple-600' : 'bg-gray-100 text-gray-600'}`}>
@@ -5498,7 +5595,7 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#E7E5E4]">
-                    {requests.filter(r => r.sector === userProfile?.sector && !r.deletedAt).map(req => (
+                    {requests.filter(r => r.sector === selectedSector && !r.deletedAt).map(req => (
                       <tr key={req.id} className="hover:bg-[#FAFAF9] transition-all">
                         <td className="px-6 py-4">
                           <p className="font-bold text-sm">#{req.id.slice(-5).toUpperCase()}</p>
@@ -5552,7 +5649,7 @@ export default function App() {
                     ))}
                   </tbody>
                 </table>
-                {requests.filter(r => r.sector === userProfile?.sector).length === 0 && (
+                {requests.filter(r => r.sector === selectedSector).length === 0 && (
                   <div className="p-20 text-center">
                     <FileText className="mx-auto text-[#E7E5E4] mb-4" size={48} />
                     <p className="text-[#78716C]">Você ainda não fez nenhuma solicitação.</p>
@@ -5594,7 +5691,7 @@ export default function App() {
                     <label className="block text-xs font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Setor Solicitante</label>
                     <input 
                       type="text" 
-                      value={userProfile?.sector || ''} 
+                      value={selectedSector || ''} 
                       disabled 
                       className="w-full px-4 py-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-2xl font-bold text-[#78716C]"
                     />
@@ -6703,6 +6800,42 @@ export default function App() {
                   </div>
                 </div>
               )}
+
+              <div className="p-6 bg-[#FAFAF9] rounded-2xl border border-[#E7E5E4]">
+                <div className="flex items-center justify-between mb-4">
+                  <h4 className="font-bold text-[#1C1917]">Logotipo da Unidade</h4>
+                  {appLogo && (
+                    <button 
+                      onClick={() => {
+                        setAppLogo(null);
+                        localStorage.removeItem('app_logo_base64');
+                      }}
+                      className="text-[10px] font-bold text-rose-600 hover:underline"
+                    >
+                      Remover
+                    </button>
+                  )}
+                </div>
+                
+                <label className="block w-full cursor-pointer group">
+                  <div className={`overflow-hidden rounded-xl border-2 border-dashed transition-all flex flex-col items-center justify-center gap-2 ${appLogo ? 'h-32 border-transparent' : 'h-32 border-[#E7E5E4] hover:border-[#1C1917]/20 hover:bg-[#F5F5F4]'}`}>
+                    {appLogo ? (
+                      <img src={appLogo} alt="Logo" className="w-full h-full object-contain" />
+                    ) : (
+                      <>
+                        <div className="p-3 bg-white rounded-full shadow-sm">
+                          <Upload size={20} className="text-[#A8A29E]" />
+                        </div>
+                        <p className="text-xs font-bold text-[#78716C]">Upload Logo JPG/PNG</p>
+                      </>
+                    )}
+                  </div>
+                  <input type="file" accept="image/*" className="hidden" onChange={handleLogoUpload} />
+                </label>
+                <p className="text-[10px] text-[#A8A29E] mt-3 leading-relaxed">
+                  Esta logo será usada no cabeçalho de todos os documentos (Recibos e Termos de Doação).
+                </p>
+              </div>
 
               <div className="p-6 bg-[#FAFAF9] rounded-2xl border border-[#E7E5E4]">
                 <h4 className="font-bold text-[#1C1917] mb-2">Informações do Sistema</h4>
