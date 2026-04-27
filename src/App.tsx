@@ -2462,14 +2462,51 @@ export default function App() {
         throw new Error(`Imagem muito pequena: ${blob.size} bytes`);
       }
 
+      // Converte para JPEG via Canvas para evitar erros de signature no jsPDF
       return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          const base64 = reader.result as string;
-          resolve(base64);
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        
+        const timeout = setTimeout(() => {
+          reject(new Error("Timeout carregando imagem"));
+        }, 8000);
+
+        img.onload = () => {
+          clearTimeout(timeout);
+          try {
+            const canvas = document.createElement('canvas');
+            canvas.width = img.width;
+            canvas.height = img.height;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) {
+              reject(new Error("Erro ao criar contexto de canvas"));
+              return;
+            }
+            // Fundo branco para imagens transparentes
+            ctx.fillStyle = "#FFFFFF";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0);
+            
+            // Forçamos o formato JPEG com qualidade alta
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+            resolve(dataUrl);
+            URL.revokeObjectURL(img.src);
+          } catch (e) {
+            reject(e);
+          }
         };
-        reader.onerror = () => reject(new Error("Erro ao ler blob com FileReader"));
-        reader.readAsDataURL(blob);
+
+        img.onerror = () => {
+          clearTimeout(timeout);
+          // Se o Canvas falhar, tenta FileReader direto como último recurso
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.onerror = () => reject(new Error("Erro ao processar imagem"));
+          reader.readAsDataURL(blob);
+          URL.revokeObjectURL(img.src);
+        };
+
+        img.src = URL.createObjectURL(blob);
       });
     } catch (err) {
       console.error(`[PDF] Erro em getImageDataURL (${url}):`, err);
