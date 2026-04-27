@@ -17,6 +17,8 @@ import {
   Edit2,
   BarChart3,
   TrendingUp,
+  Image,
+  Upload,
   TrendingDown,
   DollarSign,
   Filter,
@@ -2132,6 +2134,7 @@ export default function App() {
       setDonationUnitAddress('');
       setDonationUnitCNPJ('');
       setDonationRevisionDate('');
+      setLetterheadImage(null);
     } catch (error: any) {
       console.error('Erro na transação:', error);
       alert(`Erro na movimentação: ${error.message}`);
@@ -2448,6 +2451,7 @@ export default function App() {
   const [donationUnitAddress, setDonationUnitAddress] = useState('');
   const [donationUnitCNPJ, setDonationUnitCNPJ] = useState('');
   const [donationRevisionDate, setDonationRevisionDate] = useState('');
+  const [letterheadImage, setLetterheadImage] = useState<string | null>(null);
 
   const getImageDataURL = async (url: string): Promise<string> => {
     try {
@@ -2525,11 +2529,15 @@ export default function App() {
     try {
       showToast("Gerando Termo de Doação...", "info");
 
-      let base64Image = "";
-      try {
-        base64Image = await getImageDataURL("/official_letterhead.png");
-      } catch (err) {
-        console.warn("Could not load logo image for Donation Term, using fallback text header:", err);
+      let base64Image = letterheadImage || "";
+      
+      // Se não houver imagem personalizada, tenta carregar a padrão
+      if (!base64Image) {
+        try {
+          base64Image = await getImageDataURL("/official_letterhead.png");
+        } catch (err) {
+          console.warn("Could not load logo image for Donation Term, using fallback text header:", err);
+        }
       }
       
       // @ts-ignore
@@ -6252,6 +6260,53 @@ export default function App() {
                           </div>
                         </div>
                         <div>
+                          <label className="block text-[10px] font-bold text-[#A8A29E] uppercase mb-1 ml-1">Papel Timbrado (Opcional - JPEG/PNG)</label>
+                          <div className="flex items-center gap-3">
+                            <label className="flex-1 cursor-pointer group">
+                              <div className="flex items-center gap-2 px-4 py-3 bg-[#F5F5F4] border-2 border-dashed border-[#E7E5E4] rounded-xl hover:border-[#1C1917]/20 transition-all">
+                                <Upload size={16} className="text-[#A8A29E] group-hover:text-[#1C1917]" />
+                                <span className="text-xs font-bold text-[#78716C] group-hover:text-[#1C1917]">
+                                  {letterheadImage ? 'Alterar Imagem' : 'Selecionar Timbrado'}
+                                </span>
+                              </div>
+                              <input 
+                                type="file" 
+                                accept="image/*" 
+                                className="hidden" 
+                                onChange={(e) => {
+                                  const file = e.target.files?.[0];
+                                  if (file) {
+                                    const reader = new FileReader();
+                                    reader.onloadend = () => {
+                                      setLetterheadImage(reader.result as string);
+                                    };
+                                    reader.readAsDataURL(file);
+                                  }
+                                }}
+                              />
+                            </label>
+                            {letterheadImage && (
+                              <button 
+                                type="button"
+                                onClick={() => setLetterheadImage(null)}
+                                className="p-3 bg-red-50 text-red-500 rounded-xl hover:bg-red-100 transition-colors"
+                                title="Remover imagem"
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                            )}
+                          </div>
+                          {letterheadImage && (
+                            <div className="mt-2 relative w-full h-12 bg-white rounded-lg border border-[#E7E5E4] overflow-hidden">
+                              <img 
+                                src={letterheadImage} 
+                                alt="Preview" 
+                                className="w-full h-full object-contain"
+                              />
+                            </div>
+                          )}
+                        </div>
+                        <div>
                           <label className="block text-[10px] font-bold text-[#A8A29E] uppercase mb-1 ml-1">Data da Última Revisão</label>
                           <input 
                             required
@@ -6470,7 +6525,10 @@ export default function App() {
               <div className="flex gap-3 pt-4">
                 <button 
                   type="button"
-                  onClick={() => setShowTransactionModal({ show: false, type: 'entry' })}
+                  onClick={() => {
+                    setShowTransactionModal({ show: false, type: 'entry' });
+                    setLetterheadImage(null);
+                  }}
                   className="flex-1 px-4 py-3 rounded-xl font-bold text-[#78716C] hover:bg-[#F5F5F4] transition-all"
                 >
                   Cancelar
