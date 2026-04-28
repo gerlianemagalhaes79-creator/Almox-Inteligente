@@ -12,6 +12,7 @@ import {
   Search,
   Settings,
   ChevronRight,
+  Menu,
   X,
   Check,
   Edit2,
@@ -299,6 +300,7 @@ export default function App() {
   const [donationUnitCNPJ, setDonationUnitCNPJ] = useState('');
   const [donationRevisionDate, setDonationRevisionDate] = useState('');
   const [letterheadImage, setLetterheadImage] = useState<string | null>(null);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'inventory' | 'history' | 'requests' | 'reports' | 'my-requests' | 'new-request' | 'users' | 'trash' | 'leader-stats'>('dashboard');
   const leaderStatistics = useMemo(() => {
     if (userProfile?.role !== 'LÍDER' && userProfile?.role !== 'SETOR') return { topRequested: [], topDelivered: [] };
@@ -3663,91 +3665,130 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#F5F5F4] text-[#1C1917] font-sans">
+      {/* Mobile Header */}
+      <header className="lg:hidden fixed top-0 left-0 right-0 h-16 bg-white border-b border-[#E7E5E4] flex items-center justify-between px-4 z-20">
+        <div className="flex items-center gap-2">
+          <Package className="text-[#1C1917] w-6 h-6" />
+          <h1 className="font-black text-lg tracking-tighter">Policlínica</h1>
+        </div>
+        <button 
+          onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+          className="p-2 hover:bg-[#F5F5F4] rounded-lg transition-colors"
+        >
+          {isMobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
+        </button>
+      </header>
+
+      {/* Sidebar Overlay */}
+      <AnimatePresence>
+        {isMobileMenuOpen && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setIsMobileMenuOpen(false)}
+            className="fixed inset-0 bg-[#1C1917]/20 backdrop-blur-sm z-30 lg:hidden"
+          />
+        )}
+      </AnimatePresence>
+
       {/* Sidebar */}
-      <aside className="fixed left-0 top-0 h-full w-64 bg-white border-r border-[#E7E5E4] p-6 flex flex-col gap-8 z-10">
-        <div className="flex items-center gap-3 px-2">
-          <div className="bg-[#1C1917] p-2 rounded-lg shadow-md">
-            <Package className="text-white w-6 h-6" />
+      <aside className={`fixed lg:left-0 top-0 h-full w-64 bg-white border-r border-[#E7E5E4] p-6 flex flex-col gap-8 z-40 transition-transform duration-300 transform ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
+        <div className="flex items-center justify-between lg:justify-start gap-3 px-2">
+          <div className="flex items-center gap-3">
+            <div className="bg-[#1C1917] p-2 rounded-lg shadow-md">
+              <Package className="text-white w-6 h-6" />
+            </div>
+            <div className="flex flex-col">
+              <h1 className="font-black text-xl tracking-tighter leading-none">Policlínica</h1>
+              <span className="text-[10px] font-bold text-[#78716C] uppercase tracking-widest">Almoxarifado</span>
+            </div>
           </div>
-          <div className="flex flex-col">
-            <h1 className="font-black text-xl tracking-tighter leading-none">Policlínica</h1>
-            <span className="text-[10px] font-bold text-[#78716C] uppercase tracking-widest">Almoxarifado</span>
-          </div>
+          <button 
+            onClick={() => setIsMobileMenuOpen(false)}
+            className="lg:hidden p-2 hover:bg-[#F5F5F4] rounded-lg"
+          >
+            <X size={20} />
+          </button>
         </div>
 
-        <nav className="flex flex-col gap-1">
-          {isAdmin ? (
+        <nav className="flex flex-col gap-1 overflow-y-auto">
+          {userProfile && (
             <>
-              <button 
-                onClick={() => setActiveTab('dashboard')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'dashboard' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
-              >
-                <LayoutDashboard size={20} /> Dashboard
-              </button>
-              <button 
-                onClick={() => setActiveTab('inventory')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'inventory' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
-              >
-                <Package size={20} /> Estoque
-              </button>
-              <button 
-                onClick={() => setActiveTab('history')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'history' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
-              >
-                <History size={20} /> Histórico
-              </button>
-              <button 
-                onClick={() => setActiveTab('requests')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'requests' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
-              >
-                <FileText size={20} /> Solicitações
-              </button>
-              <button 
-                onClick={() => setActiveTab('trash')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'trash' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
-              >
-                <Trash2 size={20} /> Lixeira
-              </button>
-              <button 
-                onClick={() => setActiveTab('reports')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'reports' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
-              >
-                <BarChart3 size={20} /> Relatórios
-              </button>
-              <button 
-                onClick={() => setActiveTab('users')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'users' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
-              >
-                <Users size={20} /> Usuários
-              </button>
-            </>
-          ) : (
-            <>
-              <button 
-                onClick={() => setActiveTab('new-request')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'new-request' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
-              >
-                <Plus size={20} /> Nova Solicitação
-              </button>
-              <button 
-                onClick={() => setActiveTab('my-requests')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'my-requests' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
-              >
-                <FileText size={20} /> Minhas Solicitações
-              </button>
-              <button 
-                onClick={() => setActiveTab('reports')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'reports' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
-              >
-                <BarChart3 size={20} /> Relatórios
-              </button>
-              {(userProfile?.role === 'LÍDER' || userProfile?.role === 'SETOR') && (
-                <button 
-                  onClick={() => setActiveTab('leader-stats')}
-                  className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'leader-stats' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
-                >
-                  <BarChart3 size={20} /> Estatísticas
-                </button>
+              {(isAdmin || userProfile.role === 'ADMIN') ? (
+                <>
+                  <button 
+                    onClick={() => { setActiveTab('dashboard'); setIsMobileMenuOpen(false); }}
+                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'dashboard' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                  >
+                    <LayoutDashboard size={20} /> Dashboard
+                  </button>
+                  <button 
+                    onClick={() => { setActiveTab('inventory'); setIsMobileMenuOpen(false); }}
+                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'inventory' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                  >
+                    <Package size={20} /> Estoque
+                  </button>
+                  <button 
+                    onClick={() => { setActiveTab('history'); setIsMobileMenuOpen(false); }}
+                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'history' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                  >
+                    <History size={20} /> Histórico
+                  </button>
+                  <button 
+                    onClick={() => { setActiveTab('requests'); setIsMobileMenuOpen(false); }}
+                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'requests' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                  >
+                    <FileText size={20} /> Solicitações
+                  </button>
+                  <button 
+                    onClick={() => { setActiveTab('trash'); setIsMobileMenuOpen(false); }}
+                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'trash' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                  >
+                    <Trash2 size={20} /> Lixeira
+                  </button>
+                  <button 
+                    onClick={() => { setActiveTab('reports'); setIsMobileMenuOpen(false); }}
+                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'reports' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                  >
+                    <BarChart3 size={20} /> Relatórios
+                  </button>
+                  <button 
+                    onClick={() => { setActiveTab('users'); setIsMobileMenuOpen(false); }}
+                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'users' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                  >
+                    <Users size={20} /> Usuários
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button 
+                    onClick={() => { setActiveTab('new-request'); setIsMobileMenuOpen(false); }}
+                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'new-request' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                  >
+                    <Plus size={20} /> Nova Solicitação
+                  </button>
+                  <button 
+                    onClick={() => { setActiveTab('my-requests'); setIsMobileMenuOpen(false); }}
+                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'my-requests' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                  >
+                    <FileText size={20} /> Minhas Solicitações
+                  </button>
+                  <button 
+                    onClick={() => { setActiveTab('reports'); setIsMobileMenuOpen(false); }}
+                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'reports' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                  >
+                    <BarChart3 size={20} /> Relatórios
+                  </button>
+                  {(userProfile?.role === 'LÍDER' || userProfile?.role === 'SETOR') && (
+                    <button 
+                      onClick={() => { setActiveTab('leader-stats'); setIsMobileMenuOpen(false); }}
+                      className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'leader-stats' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                    >
+                      <BarChart3 size={20} /> Estatísticas
+                    </button>
+                  )}
+                </>
               )}
             </>
           )}
@@ -3789,10 +3830,10 @@ export default function App() {
       </aside>
 
       {/* Main Content */}
-      <main className="ml-64 p-10 max-w-7xl mx-auto">
-        <header className="flex justify-between items-center mb-10">
+      <main className="lg:ml-64 p-4 lg:p-10 max-w-7xl mx-auto mt-16 lg:mt-0">
+        <header className="flex flex-col lg:flex-row lg:justify-between lg:items-center gap-4 mb-6 lg:mb-10">
           <div>
-            <h2 className="text-3xl font-bold tracking-tight mb-1">
+            <h2 className="text-xl lg:text-3xl font-bold tracking-tight mb-1">
               {activeTab === 'dashboard' && 'Visão Geral'}
               {activeTab === 'inventory' && 'Gerenciamento de Estoque'}
               {activeTab === 'history' && 'Histórico de Movimentações'}
@@ -4048,7 +4089,7 @@ export default function App() {
               className="space-y-6"
             >
               {/* Stats Cards */}
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 lg:gap-6">
                 <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
                   <div className="flex justify-between items-start mb-4">
                     <div className="bg-emerald-100 p-3 rounded-2xl text-emerald-600">
@@ -4242,8 +4283,9 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="bg-white rounded-3xl border border-[#E7E5E4] shadow-sm overflow-hidden">
-              <table className="w-full text-left border-collapse">
+              <div className="bg-white rounded-[32px] border border-[#E7E5E4] shadow-sm overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse min-w-[1000px]">
                 <thead>
                   <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Item / Lote</th>
@@ -4556,6 +4598,7 @@ export default function App() {
                   </tr>
                 </tfoot>
               </table>
+              </div>
               {filteredItems.length === 0 && (
                 <div className="p-20 text-center">
                   <Package className="mx-auto text-[#E7E5E4] mb-4" size={48} />
@@ -4614,7 +4657,8 @@ export default function App() {
               </div>
 
               <div className="bg-white rounded-3xl border border-[#E7E5E4] shadow-sm overflow-hidden">
-                <table className="w-full text-left border-collapse">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse min-w-[1200px]">
                   <thead>
                     <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
                     <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Data</th>
@@ -4757,6 +4801,7 @@ export default function App() {
                     ))}
                   </tbody>
                 </table>
+                </div>
                 {((showDeletedHistory && transactions.filter(t => !!t.deletedAt && (t.location || 'Almoxarifado') === inventoryLocation).length === 0) || 
                   (!showDeletedHistory && transactions.filter(t => !t.deletedAt && (t.location || 'Almoxarifado') === inventoryLocation).length === 0)) && (
                   <div className="p-20 text-center">
@@ -4843,7 +4888,7 @@ export default function App() {
               )}
 
               {/* Report Stats */}
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 lg:gap-6">
                 {isAdmin ? (
                   <>
                     <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
@@ -5295,7 +5340,7 @@ export default function App() {
                   </div>
                   
                     <div className="overflow-x-auto">
-                      <table className="w-full text-left border-collapse">
+                      <table className="w-full text-left border-collapse min-w-[600px]">
                         <thead>
                           <tr className="border-b border-[#E7E5E4]">
                             <th className="pb-4 font-bold text-xs text-[#78716C] uppercase tracking-wider">Setor / Item</th>
@@ -5454,7 +5499,8 @@ export default function App() {
               )}
 
               <div className="bg-white rounded-3xl border border-[#E7E5E4] shadow-sm overflow-hidden">
-                <table className="w-full text-left border-collapse">
+                <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse min-w-[700px]">
                   <thead>
                     <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
                       <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Nome</th>
@@ -5510,6 +5556,7 @@ export default function App() {
                     ))}
                   </tbody>
                 </table>
+                </div>
               </div>
             </motion.div>
           )}
@@ -5529,7 +5576,8 @@ export default function App() {
                   <h3 className="font-bold text-[#1C1917]">Itens Excluídos</h3>
                 </div>
                 <div className="bg-white rounded-3xl border border-[#E7E5E4] shadow-sm overflow-hidden">
-                  <table className="w-full text-left border-collapse">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse min-w-[600px]">
                     <thead>
                       <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
                         <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Item</th>
@@ -5571,6 +5619,7 @@ export default function App() {
                       ))}
                     </tbody>
                   </table>
+                  </div>
                   {items.filter(i => i.deletedAt).length === 0 && (
                     <div className="p-12 text-center">
                       <p className="text-[#A8A29E] text-sm">Nenhum item na lixeira.</p>
@@ -5586,7 +5635,8 @@ export default function App() {
                   <h3 className="font-bold text-[#1C1917]">Solicitações Excluídas</h3>
                 </div>
                 <div className="bg-white rounded-3xl border border-[#E7E5E4] shadow-sm overflow-hidden">
-                  <table className="w-full text-left border-collapse">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse min-w-[600px]">
                     <thead>
                       <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
                         <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Solicitação</th>
@@ -5628,6 +5678,7 @@ export default function App() {
                       ))}
                     </tbody>
                   </table>
+                  </div>
                   {requests.filter(r => r.deletedAt).length === 0 && (
                     <div className="p-12 text-center">
                       <p className="text-[#A8A29E] text-sm">Nenhuma solicitação na lixeira.</p>
@@ -5643,7 +5694,8 @@ export default function App() {
                   <h3 className="font-bold text-[#1C1917]">Movimentações Excluídas</h3>
                 </div>
                 <div className="bg-white rounded-3xl border border-[#E7E5E4] shadow-sm overflow-hidden">
-                  <table className="w-full text-left border-collapse">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse min-w-[500px]">
                     <thead>
                       <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
                         <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Movimentação</th>
@@ -5680,6 +5732,7 @@ export default function App() {
                       ))}
                     </tbody>
                   </table>
+                  </div>
                   {transactions.filter(t => t.deletedAt).length === 0 && (
                     <div className="p-12 text-center">
                       <p className="text-[#A8A29E] text-sm">Nenhuma movimentação na lixeira.</p>
@@ -6989,7 +7042,7 @@ export default function App() {
           <motion.div 
             initial={{ scale: 0.9, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
-            className="bg-white w-full max-w-2xl rounded-3xl p-8 shadow-2xl max-h-[80vh] overflow-y-auto"
+            className="bg-white w-[95vw] lg:w-full lg:max-w-2xl rounded-3xl p-4 sm:p-8 shadow-2xl max-h-[85vh] overflow-y-auto"
           >
             <div className="flex justify-between items-center mb-6">
               <h3 className="text-2xl font-bold">
@@ -7335,7 +7388,7 @@ export default function App() {
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-white w-full max-w-2xl rounded-[32px] p-8 shadow-2xl max-h-[90vh] flex flex-col"
+              className="bg-white w-[95vw] lg:w-full lg:max-w-2xl rounded-[32px] p-4 sm:p-8 shadow-2xl max-h-[90vh] flex flex-col"
             >
               <div className="flex justify-between items-center mb-6">
                 <div>
