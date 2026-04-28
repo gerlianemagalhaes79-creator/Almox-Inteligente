@@ -1582,11 +1582,25 @@ export default function App() {
       }
 
       await runTransaction(db, async (transaction) => {
-        // Read current request state within transaction
-        const tRequestSnap = await transaction.get(requestRef);
-        const tRequestData = tRequestSnap.data() as MaterialRequest | undefined;
-        if (tRequestData?.status === 'ENTREGUE') return;
+        // Collect all batch and pharmacy refs to read them all first
+        const batchRefs = itemsStockData.flatMap(d => d.batches.map(b => doc(db, 'items', b.id)));
+        const pharmRefs = itemsStockData.flatMap(d => d.pharmItems.map(p => p.ref));
+        
+        // 1. Perform ALL reads first
+        const [tRequestSnap, ...itemSnaps] = await Promise.all([
+          transaction.get(requestRef),
+          ...batchRefs.map(ref => transaction.get(ref)),
+          ...pharmRefs.map(ref => transaction.get(ref))
+        ]);
 
+        const tRequestData = tRequestSnap.data() as MaterialRequest | undefined;
+        if (!tRequestData || tRequestData.status === 'ENTREGUE') return;
+
+        // Map snapshots for easy access by path
+        const snapMap = new Map();
+        itemSnaps.forEach(snap => snapMap.set(snap.ref.path, snap));
+
+        // 2. Perform ALL writes
         transaction.update(requestRef, { 
           status: 'ENTREGUE',
           deliveredAt: new Date().toISOString(),
@@ -1601,8 +1615,8 @@ export default function App() {
             if (remaining <= 0) break;
 
             const tBatchRef = doc(db, 'items', batch.id);
-            const tBatchSnap = await transaction.get(tBatchRef);
-            if (!tBatchSnap.exists()) continue;
+            const tBatchSnap = snapMap.get(tBatchRef.path);
+            if (!tBatchSnap || !tBatchSnap.exists()) continue;
             
             const tBatchData = tBatchSnap.data() as Item;
             const currentQty = tBatchData.quantity || 0;
@@ -1636,9 +1650,10 @@ export default function App() {
             if (requestData.sector === 'Farmácia' && batch.location !== 'Farmácia') {
               const existingPharm = pharmItems.find((p: any) => p.batch_number === batch.batch_number);
               if (existingPharm) {
-                const tPharmSnap = await transaction.get(existingPharm.ref);
-                const tPharmData = tPharmSnap.data() as Item | undefined;
-                transaction.update(existingPharm.ref, {
+                const tPharmRef = existingPharm.ref;
+                const tPharmSnap = snapMap.get(tPharmRef.path);
+                const tPharmData = tPharmSnap?.data() as Item | undefined;
+                transaction.update(tPharmRef, {
                   quantity: (tPharmData?.quantity || 0) + toTake,
                   updatedAt: serverTimestamp()
                 });
