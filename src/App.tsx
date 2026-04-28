@@ -1181,24 +1181,24 @@ export default function App() {
       // 1. Fetch fresh inventory to validate stock correctly
       const itemsSnapshot = await getDocs(collection(db, 'items'));
       const freshItems = itemsSnapshot.docs
-        .map(d => d.data() as Item)
+        .map(d => ({ id: d.id, ...d.data() } as Item))
         .filter(i => !i.deletedAt);
       
       // Calculate total stock with normalized names
-      const totalInventory = freshItems.reduce((acc, item) => {
+      const totalInventory: Record<string, number> = {};
+      freshItems.forEach(item => {
+        if (!item.name) return;
         const key = normalizeString(item.name);
-        acc[key] = (acc[key] || 0) + (Number(item.quantity) || 0);
-        return acc;
-      }, {} as Record<string, number>);
+        totalInventory[key] = (totalInventory[key] || 0) + (Number(item.quantity) || 0);
+      });
 
       // Aggregate current request basket quantities by product
-      const basketAggregation = requestBasket.reduce((acc, item) => {
+      const basketAggregation: Record<string, number> = {};
+      requestBasket.forEach(item => {
         const key = normalizeString(item.product_name);
-        // Ensure quantity is a valid positive number
         const qty = Math.max(1, Math.floor(Number(item.quantity) || 1));
-        acc[key] = (acc[key] || 0) + qty;
-        return acc;
-      }, {} as Record<string, number>);
+        basketAggregation[key] = (basketAggregation[key] || 0) + qty;
+      });
 
       // Validate stock
       for (const [productNameKey, requestedQty] of Object.entries(basketAggregation)) {
@@ -1206,8 +1206,9 @@ export default function App() {
         
         if (requestedQty > totalAvailable) {
           const originalName = requestBasket.find(i => normalizeString(i.product_name) === productNameKey)?.product_name || "Produto";
+          console.warn(`Stock check failed for ${productNameKey}: requested ${requestedQty}, available ${totalAvailable}`);
           showToast(
-            `Estoque insuficiente para "${originalName}". Disponível: ${totalAvailable}. Sugestão: reduza a quantidade ou aguarde reposição.`, 
+            `Estoque insuficiente para "${originalName}". Disponível: ${totalAvailable}.`, 
             "error"
           );
           setIsSubmittingRequest(false);
