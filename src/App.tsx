@@ -314,6 +314,8 @@ export default function App() {
   const [showUserDeleteConfirm, setShowUserDeleteConfirm] = useState<{show: boolean, user?: UserProfile}>({ show: false });
   const [toast, setToast] = useState<{show: boolean, message: string, type: 'success' | 'error' | 'info'}>({ show: false, message: '', type: 'info' });
   const [showRequestDetailModal, setShowRequestDetailModal] = useState<{show: boolean, request?: MaterialRequest}>({ show: false });
+  const [adminAddItemSearch, setAdminAddItemSearch] = useState('');
+  const [isAdminAddingItem, setIsAdminAddingItem] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [usersList, setUsersList] = useState<UserProfile[]>([]);
@@ -1178,14 +1180,19 @@ export default function App() {
 
     setIsSubmittingRequest(true);
     try {
-      // Check stock availability for all items in the basket
+      // Check stock availability for all items in the basket using a fresh calculation that ignores location
+      // Leaders should be able to request from total stock, admin will decide where to take it from
+      const totalInventory = items.filter(i => !i.deletedAt && i.quantity > 0).reduce((acc, item) => {
+        acc[item.name] = (acc[item.name] || 0) + item.quantity;
+        return acc;
+      }, {} as Record<string, number>);
+
       for (const basketItem of requestBasket) {
-        const inventoryItem = groupedArray.find(gi => gi.name === basketItem.product_name);
-        const totalAvailable = inventoryItem?.total_quantity || 0;
+        const totalAvailable = totalInventory[basketItem.product_name] || 0;
         
         if (basketItem.quantity > totalAvailable) {
           showToast(
-            `Quantidade solicitada para "${basketItem.product_name}" (${basketItem.quantity}) é maior que o estoque total disponível (${totalAvailable}). Por favor, entre em contato com o responsável pelo almoxarifado para verificar a disponibilidade.`, 
+            `Quantidade insuficiente em estoque para "${basketItem.product_name}". Você solicitou ${basketItem.quantity}, mas o estoque atual é de apenas ${totalAvailable} unidades. Por favor, ajuste sua solicitação.`, 
             "error"
           );
           setIsSubmittingRequest(false);
@@ -1439,6 +1446,28 @@ export default function App() {
     }
   };
 
+  const handleAddExtraItemToRequest = async (requestId: string, productName: string, productId: string) => {
+    setIsAdminAddingItem(true);
+    try {
+      const newItem: Omit<RequestItem, 'id'> = {
+        request_id: requestId,
+        product_id: productId,
+        product_name: productName,
+        quantity_requested: 1,
+        quantity_approved: 1
+      };
+      
+      await addDoc(collection(db, 'request_items'), newItem);
+      setAdminAddItemSearch('');
+      showToast(`"${productName}" adicionado à solicitação.`, "success");
+    } catch (error: any) {
+      handleFirestoreError(error, OperationType.CREATE, 'request_items');
+      showToast("Erro ao adicionar item.", "error");
+    } finally {
+      setIsAdminAddingItem(false);
+    }
+  };
+
   const handleUpdateObservation = async (requestId: string) => {
     try {
       await updateDoc(doc(db, 'requests', requestId), { 
@@ -1453,31 +1482,158 @@ export default function App() {
 
   const handleApproveRequest = async (requestId: string, items: RequestItem[]) => {
     try {
-      const batch = writeBatch(db);
-      const requestRef = doc(db, 'requests', requestId);
-      batch.update(requestRef, { 
-        status: 'APROVADO',
-        adminObservation: adminObservation 
-      });
-      
-      items.forEach(item => {
-        const itemRef = doc(db, 'request_items', item.id);
-        batch.update(itemRef, { quantity_approved: item.quantity_approved });
+      // We will perform approval AND stock deduction in a single transaction
+      await runTransaction(db, async (transaction) => {
+        const requestRef = doc(db, 'requests', requestId);
+        const requestSnap = await transaction.get(requestRef);
+        
+        if (!requestSnap.exists()) {
+          throw new Error("Solicitação não encontrada.");
+        }
+
+        const requestData = requestSnap.data() as MaterialRequest;
+        if (requestData.status !== 'PENDENTE') {
+          throw new Error("Esta solicitação já foi processada.");
+        }
+
+        // 1. Mark request as ENTREGUE (since stock is being deducted now)
+        transaction.update(requestRef, { 
+          status: 'ENTREGUE',
+          adminObservation: adminObservation,
+          deliveredAt: new Date().toISOString(),
+          updatedAt: serverTimestamp()
+        });
+        
+        // 2. Update item quantities in request_items
+        items.forEach(item => {
+          const itemRef = doc(db, 'request_items', item.id);
+          transaction.update(itemRef, { quantity_approved: item.quantity_approved });
+        });
+
+        // 3. Deduct from stock (Automatic Baixa)
+        // We need all available batches for these products first. 
+        // Transactions can't do collection queries easily without passing the data, 
+        // but we can query BEFORE the transaction or inside if we use the data we have.
+        // To be safe and simplify, I will reuse the deduction logic but since I'm in a transaction,
+        // I'll fetch the batches now.
+        
+        for (const reqItem of items) {
+          if (reqItem.quantity_approved <= 0) continue;
+
+          // Fetch fresh batches for this product
+          const productBatchesQuery = query(
+            collection(db, 'items'),
+            where('name', '==', reqItem.product_name),
+            where('quantity', '>', 0),
+            where('deletedAt', '==', null)
+          );
+          
+          const batchesSnap = await getDocs(productBatchesQuery);
+          let batches = batchesSnap.docs.map(d => ({ id: d.id, ...d.data() as Item }));
+          
+          // Sort FIFO
+          batches.sort((a, b) => {
+            if (a.expiry_date === 'Indeterminada' || !a.expiry_date) return 1;
+            if (b.expiry_date === 'Indeterminada' || !b.expiry_date) return -1;
+            return new Date(a.expiry_date).getTime() - new Date(b.expiry_date).getTime();
+          });
+
+          let remainingToDeduct = reqItem.quantity_approved;
+          
+          for (const batch of batches) {
+            if (remainingToDeduct <= 0) break;
+
+            const batchRef = doc(db, 'items', batch.id);
+            // Re-fetch within transaction to be absolutely safe
+            const batchSnap = await transaction.get(batchRef);
+            if (!batchSnap.exists()) continue;
+            
+            const currentQty = batchSnap.data().quantity;
+            if (currentQty <= 0) continue;
+
+            const toTake = Math.min(currentQty, remainingToDeduct);
+            
+            transaction.update(batchRef, {
+              quantity: currentQty - toTake,
+              updatedAt: serverTimestamp()
+            });
+
+            // Record transaction
+            const transRef = doc(collection(db, 'transactions'));
+            transaction.set(transRef, {
+              item_id: batch.id,
+              item_name: reqItem.product_name,
+              type: 'exit',
+              origin: batch.origin || 'extra',
+              quantity: toTake,
+              sector: requestData.sector,
+              location: batch.location || 'Almoxarifado',
+              date: new Date().toISOString(),
+              responsible: user?.displayName || user?.email,
+              responsibleEmail: user?.email,
+              exitReason: 'consumo',
+              batch_number: batch.batch_number,
+              expiry_date: batch.expiry_date
+            });
+
+            // Automatic transfer to Pharmacy if needed
+            if (requestData.sector === 'Farmácia' && batch.location !== 'Farmácia') {
+              const pharmacyItemsQuery = query(
+                collection(db, 'items'),
+                where('name', '==', reqItem.product_name),
+                where('batch_number', '==', batch.batch_number || ''),
+                where('location', '==', 'Farmácia'),
+                where('deletedAt', '==', null)
+              );
+              const pharmSnap = await getDocs(pharmacyItemsQuery);
+              
+              if (!pharmSnap.empty) {
+                transaction.update(pharmSnap.docs[0].ref, {
+                  quantity: (pharmSnap.docs[0].data().quantity || 0) + toTake,
+                  updatedAt: serverTimestamp()
+                });
+              } else {
+                const newItemRef = doc(collection(db, 'items'));
+                transaction.set(newItemRef, {
+                  name: reqItem.product_name,
+                  description: batch.description || '',
+                  category: batch.category || 'Outros',
+                  supplier: batch.supplier || 'Transferência',
+                  batch_number: batch.batch_number || '',
+                  expiry_date: batch.expiry_date || 'Indeterminada',
+                  initial_quantity: toTake,
+                  quantity: toTake,
+                  min_quantity: batch.min_quantity || 0,
+                  unit_price: batch.unit_price || 0,
+                  location: 'Farmácia',
+                  origin: batch.origin || 'extra',
+                  date: new Date().toISOString(),
+                  createdAt: serverTimestamp(),
+                  updatedAt: serverTimestamp()
+                });
+              }
+            }
+
+            remainingToDeduct -= toTake;
+          }
+
+          if (remainingToDeduct > 0) {
+            throw new Error(`Erro fatal: Estoque insuficiente para deduzir totalmente "${reqItem.product_name}".`);
+          }
+        }
       });
 
-      await batch.commit();
-      
+      // Notify and generate receipt
       const request = requests.find(r => r.id === requestId);
       if (request) {
         const userSnap = await getDocs(query(collection(db, 'users'), where('email', '==', request.requesterEmail)));
         if (!userSnap.empty) {
           const msg = adminObservation 
-            ? `Sua solicitação #${requestId.slice(-5).toUpperCase()} foi aprovada. Obs: ${adminObservation}`
-            : `Sua solicitação #${requestId.slice(-5).toUpperCase()} foi aprovada.`;
-          await createNotification(userSnap.docs[0].id, 'Solicitação Aprovada', msg, requestId);
+            ? `Sua solicitação #${requestId.slice(-5).toUpperCase()} foi aprovada e entregue com sucesso. Obs: ${adminObservation}`
+            : `Sua solicitação #${requestId.slice(-5).toUpperCase()} foi aprovada e entregue com sucesso.`;
+          await createNotification(userSnap.docs[0].id, 'Solicitação Entregue', msg, requestId);
         }
 
-        // Auto-generate delivery receipt on approval as requested
         const itemsForReceipt = items
           .filter(i => i.quantity_approved > 0)
           .map(i => ({
@@ -1495,10 +1651,11 @@ export default function App() {
         }
       }
 
-      showToast("Solicitação aprovada e recibo gerado!", "success");
+      showToast("Solicitação aprovada e estoque baixado automaticamente!", "success");
+      setShowRequestDetailModal({ show: false });
     } catch (error: any) {
       handleFirestoreError(error, OperationType.UPDATE, `requests/${requestId}`);
-      showToast(`Erro ao aprovar: ${error.message}`, "error");
+      showToast(`Erro ao aprovar e baixar estoque: ${error.message}`, "error");
     }
   };
 
@@ -3705,28 +3862,6 @@ export default function App() {
               >
                 <BarChart3 size={20} /> Catálogo
               </button>
-              {userProfile?.sector === 'Farmácia' && (
-                <>
-                  <button 
-                    onClick={() => setActiveTab('dashboard')}
-                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'dashboard' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
-                  >
-                    <LayoutDashboard size={20} /> Visão Geral
-                  </button>
-                  <button 
-                    onClick={() => setActiveTab('inventory')}
-                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'inventory' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
-                  >
-                    <Package size={20} /> Meu Estoque
-                  </button>
-                  <button 
-                    onClick={() => setActiveTab('history')}
-                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'history' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
-                  >
-                    <History size={20} /> Meu Histórico
-                  </button>
-                </>
-              )}
             </>
           )}
         </nav>
@@ -4320,8 +4455,8 @@ export default function App() {
                         <td className="px-6 py-5 font-medium text-[#57534E]">---</td>
                         <td className="px-6 py-5">
                           <div className="flex flex-col items-center justify-center bg-[#F5F5F4] rounded-2xl p-2 border border-[#E7E5E4]">
-                            <span className={`text-xl font-black ${group.total_quantity <= group.min_quantity ? 'text-orange-600' : 'text-emerald-600'}`}>
-                              {group.total_quantity}
+                            <span className={`text-xl font-black ${!isAdmin ? 'text-[#78716C]' : (group.total_quantity <= group.min_quantity ? 'text-orange-600' : 'text-emerald-600')}`}>
+                              {isAdmin ? group.total_quantity : '---'}
                             </span>
                             <span className="text-[9px] font-bold text-[#A8A29E] uppercase tracking-tighter">Total Geral</span>
                           </div>
@@ -4329,21 +4464,22 @@ export default function App() {
                         <td className="px-6 py-5 text-[#57534E] font-medium">
                           <div className="flex flex-col">
                             <span className="flex items-center gap-1">
-                              {group.min_quantity}
-                              <TrendingUp size={12} className="text-emerald-500" />
+                              {isAdmin ? group.min_quantity : '---'}
+                              {isAdmin && <TrendingUp size={12} className="text-emerald-500" />}
                             </span>
-                            <span className="text-[10px] text-[#A8A29E]">({group.weeklyExitRate.toFixed(1)}/sem)</span>
+                            {isAdmin && <span className="text-[10px] text-[#A8A29E]">({group.weeklyExitRate.toFixed(1)}/sem)</span>}
                           </div>
                         </td>
                         <td className="px-6 py-5">
                           <div className={`flex flex-col items-center justify-center p-2 rounded-xl border ${
+                            !isAdmin ? 'bg-[#F5F5F4] border-[#E7E5E4] text-[#A8A29E]' :
                             group.durationWeeks === 'infinite' ? 'bg-blue-50 border-blue-100 text-blue-600' :
                             group.durationWeeks <= 1 ? 'bg-red-50 border-red-100 text-red-600' :
                             group.durationWeeks <= 5 ? 'bg-orange-50 border-orange-100 text-orange-600' :
                             'bg-emerald-50 border-emerald-100 text-emerald-600'
                           }`}>
                             <span className="text-sm font-black">
-                              {group.durationWeeks === 'infinite' ? '∞' : `${group.durationWeeks.toFixed(1)}`}
+                              {isAdmin ? (group.durationWeeks === 'infinite' ? '∞' : `${group.durationWeeks.toFixed(1)}`) : '---'}
                             </span>
                             <span className="text-[9px] font-bold uppercase tracking-tighter">Semanas</span>
                           </div>
@@ -4759,15 +4895,15 @@ export default function App() {
                       <BookOpen size={24} />
                     </div>
                     <div>
-                      <h3 className="text-xl font-black text-[#1C1917]">Catálogo de Materiais para Líderes</h3>
-                      <p className="text-[#78716C] text-sm font-medium">Relatório simplificado contendo apenas os nomes dos materiais e categorias, ideal para consulta de líderes.</p>
+                      <h3 className="text-xl font-black text-[#1C1917]">Dúvidas sobre o que pedir?</h3>
+                      <p className="text-[#78716C] text-sm font-medium">Relatório simplificado contendo apenas os nomes dos materiais e categorias.</p>
                     </div>
                   </div>
                   <button 
                     onClick={handleExportMaterialsCatalogPDF}
                     className="w-full sm:w-auto bg-blue-600 text-white px-8 py-3 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-blue-700 transition-all shadow-lg"
                   >
-                    <Printer size={18} /> Imprimir Catálogo (Sem Estoque)
+                    <Printer size={18} /> Ver Catálogo de Itens
                   </button>
                 </div>
               </div>
@@ -4818,8 +4954,10 @@ export default function App() {
                 </div>
               )}
 
-              {/* Report Stats */}
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+              {/* Report Stats - ADMIN ONLY */}
+              {isAdmin && (
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                 {isAdmin && (
                   <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
                     <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Entradas no Período</p>
@@ -5273,11 +5411,13 @@ export default function App() {
                         </tbody>
                       </table>
                     </div>
-                </div>
+                  </div>
                 )}
               </div>
-            </motion.div>
+            </>
           )}
+        </motion.div>
+      )}
 
           {activeTab === 'users' && isAdmin && (
             <motion.div 
@@ -5833,21 +5973,37 @@ export default function App() {
                           animate={{ opacity: 1, y: 0 }}
                           className="absolute left-0 right-0 top-full mt-2 bg-white border border-[#E7E5E4] rounded-2xl shadow-xl z-50 max-h-60 overflow-y-auto overflow-x-hidden"
                         >
-                          {Object.values(groupedItems)
+                          {(() => {
+                            const allActiveGroups: Record<string, {name: string, category: string, id: string}> = {};
+                            items.filter(i => !i.deletedAt && i.quantity > 0).forEach(i => {
+                              if (!allActiveGroups[i.name]) {
+                                allActiveGroups[i.name] = { name: i.name, category: i.category || 'Outros', id: i.id };
+                              }
+                            });
+
+                            const filtered = Object.values(allActiveGroups)
                             .filter(group => normalizeString(group.name).includes(normalizeString(requestSearchTerm)))
                             .sort((a, b) => a.name.localeCompare(b.name))
-                            .slice(0, 15)
-                            .map(group => (
+                            .slice(0, 15);
+
+                            if (filtered.length === 0) {
+                              return (
+                                <div className="p-8 text-center text-[#78716C]">
+                                  <p className="text-sm font-medium">Nenhum material encontrado.</p>
+                                </div>
+                              );
+                            }
+
+                            return filtered.map(group => (
                               <button
                                 key={group.name}
                                 type="button"
                                 onClick={() => {
-                                  const item = group.batches[0];
-                                  const existing = requestBasket.find(bi => bi.product_id === item.id);
+                                  const existing = requestBasket.find(bi => bi.product_name === group.name);
                                   if (existing) {
-                                    setRequestBasket(requestBasket.map(bi => bi.product_id === item.id ? { ...bi, quantity: bi.quantity + 1 } : bi));
+                                    setRequestBasket(requestBasket.map(bi => bi.product_name === group.name ? { ...bi, quantity: bi.quantity + 1 } : bi));
                                   } else {
-                                    setRequestBasket([...requestBasket, { product_id: item.id, product_name: item.name, quantity: 1 }]);
+                                    setRequestBasket([...requestBasket, { product_id: group.id, product_name: group.name, quantity: 1 }]);
                                   }
                                   setRequestSearchTerm('');
                                 }}
@@ -5862,13 +6018,8 @@ export default function App() {
                                   <span className="text-xs font-bold">Adicionar</span>
                                 </div>
                               </button>
-                            ))
-                          }
-                          {Object.values(groupedItems).filter(group => normalizeString(group.name).includes(normalizeString(requestSearchTerm))).length === 0 && (
-                            <div className="p-8 text-center text-[#78716C]">
-                              <p className="text-sm font-medium">Nenhum material encontrado.</p>
-                            </div>
-                          )}
+                            ));
+                          })()}
                         </motion.div>
                       )}
                     </div>
@@ -7423,6 +7574,66 @@ export default function App() {
               </div>
             )}
 
+            {isAdmin && showRequestDetailModal.request.status === 'PENDENTE' && (
+              <div className="mb-8 p-6 bg-blue-50/50 border border-blue-100 rounded-3xl">
+                <label className="block text-[10px] font-bold text-blue-600 uppercase tracking-widest mb-3">Adicionar Material Esquecido</label>
+                <div className="relative">
+                  <div className="relative">
+                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-blue-400" size={18} />
+                    <input 
+                      type="text" 
+                      placeholder="Pesquisar material para adicionar..."
+                      className="w-full pl-12 pr-4 py-3 bg-white border border-blue-100 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold text-sm transition-all shadow-sm"
+                      value={adminAddItemSearch}
+                      onChange={(e) => setAdminAddItemSearch(e.target.value)}
+                    />
+                  </div>
+
+                  {adminAddItemSearch.length >= 2 && (
+                    <motion.div 
+                      initial={{ opacity: 0, y: -10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="absolute z-50 w-full mt-2 bg-white border border-[#E7E5E4] rounded-xl shadow-2xl overflow-hidden max-h-[250px] overflow-y-auto"
+                    >
+                      {(() => {
+                        const allActiveGroups: Record<string, {name: string, category: string, id: string}> = {};
+                        items.filter(i => !i.deletedAt && i.quantity > 0).forEach(i => {
+                          if (!allActiveGroups[i.name]) {
+                            allActiveGroups[i.name] = { name: i.name, category: i.category || 'Outros', id: i.id };
+                          }
+                        });
+
+                        const filtered = Object.values(allActiveGroups)
+                          .filter(group => normalizeString(group.name).includes(normalizeString(adminAddItemSearch)))
+                          .sort((a, b) => a.name.localeCompare(b.name))
+                          .slice(0, 5);
+
+                        if (filtered.length === 0) {
+                          return <div className="p-4 text-center text-xs text-gray-500">Nenhum material encontrado.</div>;
+                        }
+
+                        return filtered.map(group => (
+                          <button
+                            key={group.name}
+                            type="button"
+                            onClick={() => handleAddExtraItemToRequest(showRequestDetailModal.request!.id, group.name, group.id)}
+                            disabled={isAdminAddingItem}
+                            className="w-full px-4 py-3 hover:bg-blue-50 flex items-center justify-between text-left transition-colors border-b border-[#F5F5F4] last:border-0"
+                          >
+                            <div>
+                              <p className="text-sm font-bold text-[#1C1917]">{group.name}</p>
+                              <p className="text-[10px] text-[#A8A29E] uppercase font-bold">{group.category}</p>
+                            </div>
+                            <Plus size={16} className="text-blue-600" />
+                          </button>
+                        ));
+                      })()}
+                    </motion.div>
+                  )}
+                </div>
+              </div>
+            )}
+
             <div className="space-y-4 mb-8">
               <h4 className="font-bold text-[#1C1917] flex items-center gap-2">
                 <Package size={18} /> Itens Solicitados
@@ -7433,8 +7644,8 @@ export default function App() {
                     <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
                       <th className="px-4 py-3 font-bold text-xs text-[#78716C]">Item</th>
                       <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Qtd. Solicitada</th>
-                      <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Saldo em Estoque</th>
-                      <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Qtd. a Liberar</th>
+                      {isAdmin && <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Saldo em Estoque</th>}
+                      <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Qtd. Liberada</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#E7E5E4]">
@@ -7448,16 +7659,18 @@ export default function App() {
                         <tr key={item.id} className="hover:bg-slate-50 transition-colors">
                           <td className="px-4 py-3 text-sm font-bold text-[#1C1917]">{item.product_name}</td>
                           <td className="px-4 py-3 text-sm font-bold text-center text-[#78716C] bg-slate-50/50">{item.quantity_requested}</td>
-                          <td className="px-4 py-3 text-center">
-                            <div className="flex flex-col items-center">
-                              <span className={`text-sm font-black ${totalStock <= 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
-                                {totalStock}
-                              </span>
-                              {totalStock < item.quantity_requested && totalStock > 0 && (
-                                <span className="text-[9px] text-amber-600 font-bold uppercase leading-none">Estoque Insuficiente</span>
-                              )}
-                            </div>
-                          </td>
+                          {isAdmin && (
+                            <td className="px-4 py-3 text-center">
+                              <div className="flex flex-col items-center">
+                                <span className={`text-sm font-black ${totalStock <= 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                                  {totalStock}
+                                </span>
+                                {totalStock < item.quantity_requested && totalStock > 0 && (
+                                  <span className="text-[9px] text-amber-600 font-bold uppercase leading-none">Estoque Insuficiente</span>
+                                )}
+                              </div>
+                            </td>
+                          )}
                           <td className="px-4 py-3 text-center">
                             {isAdmin && showRequestDetailModal.request?.status === 'PENDENTE' ? (
                               <div className="flex justify-center">
@@ -7502,17 +7715,9 @@ export default function App() {
                       onClick={() => handleApproveRequest(showRequestDetailModal.request!.id, allRequestItems.filter(ri => ri.request_id === showRequestDetailModal.request?.id))}
                       className="flex-1 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all"
                     >
-                      Aprovar Solicitação
+                      Aprovar e Baixar Estoque
                     </button>
                   </>
-                )}
-                {showRequestDetailModal.request.status === 'APROVADO' && (
-                  <button 
-                    onClick={() => handleDeliverRequest(showRequestDetailModal.request!.id, allRequestItems.filter(ri => ri.request_id === showRequestDetailModal.request?.id))}
-                    className="w-full py-4 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 transition-all flex items-center justify-center gap-2"
-                  >
-                    <CheckCircle size={20} /> Confirmar Entrega e Baixar Estoque
-                  </button>
                 )}
               </div>
             )}
