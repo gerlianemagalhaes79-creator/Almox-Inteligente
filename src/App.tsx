@@ -1173,26 +1173,23 @@ export default function App() {
       showToast("Adicione pelo menos um item à solicitação.", "error");
       return;
     }
-    if (!userProfile?.sector) {
-      showToast("Seu setor não está definido. Entre em contato com o administrador.", "error");
-      return;
-    }
 
     setIsSubmittingRequest(true);
     try {
-      // Check stock availability for all items in the basket using a fresh calculation that ignores location
-      // Leaders should be able to request from total stock, admin will decide where to take it from
-      const totalInventory = items.filter(i => !i.deletedAt && i.quantity > 0).reduce((acc, item) => {
+      // 1. Fetch fresh inventory to validate stock correctly
+      const itemsSnapshot = await getDocs(query(collection(db, 'items'), where('deletedAt', '==', null)));
+      const freshItems = itemsSnapshot.docs.map(d => d.data() as Item);
+      
+      const totalInventory = freshItems.reduce((acc, item) => {
         acc[item.name] = (acc[item.name] || 0) + item.quantity;
         return acc;
       }, {} as Record<string, number>);
 
       for (const basketItem of requestBasket) {
         const totalAvailable = totalInventory[basketItem.product_name] || 0;
-        
         if (basketItem.quantity > totalAvailable) {
           showToast(
-            `Quantidade insuficiente em estoque para "${basketItem.product_name}". Você solicitou ${basketItem.quantity}, mas o estoque atual é de apenas ${totalAvailable} unidades. Por favor, ajuste sua solicitação.`, 
+            `Estoque insuficiente para "${basketItem.product_name}". Disponível total: ${totalAvailable}.`, 
             "error"
           );
           setIsSubmittingRequest(false);
@@ -1200,76 +1197,77 @@ export default function App() {
         }
       }
 
-      const requestData = {
+      // 2. Prepare Request Data
+      const requestId = editingRequest ? editingRequest.id : doc(collection(db, 'requests')).id;
+      const batch = writeBatch(db);
+
+      const requestData: any = {
         sector: selectedSector,
         date: editingRequest ? editingRequest.date : new Date().toISOString(),
         status: 'PENDENTE',
-        observation: requestObservation,
-        requesterEmail: user?.email || ''
+        observation: requestObservation || '',
+        requesterEmail: user?.email || '',
+        updatedAt: serverTimestamp()
       };
 
-      let requestId = '';
-      const finalBatch = writeBatch(db);
-
       if (editingRequest) {
-        requestId = editingRequest.id;
-        finalBatch.update(doc(db, 'requests', requestId), requestData);
+        // Only update relevant fields, preserve original metadata
+        batch.update(doc(db, 'requests', requestId), requestData);
         
-        // Delete old items - we still need to fetch them first though
-        const oldItems = await getDocs(query(collection(db, 'request_items'), where('request_id', '==', requestId)));
-        oldItems.docs.forEach(d => finalBatch.delete(d.ref));
+        // Delete all previous items for this request before re-adding
+        const oldItemsSnap = await getDocs(query(collection(db, 'request_items'), where('request_id', '==', requestId)));
+        oldItemsSnap.docs.forEach(d => batch.delete(d.ref));
       } else {
-        const requestRef = doc(collection(db, 'requests'));
-        requestId = requestRef.id;
-        finalBatch.set(requestRef, requestData);
+        requestData.createdAt = serverTimestamp();
+        requestData.requesterName = user?.displayName || user?.email || 'Usuário';
+        batch.set(doc(db, 'requests', requestId), requestData);
       }
 
+      // 3. Add current basket items
       requestBasket.forEach(item => {
         const itemRef = doc(collection(db, 'request_items'));
-        finalBatch.set(itemRef, {
+        batch.set(itemRef, {
           request_id: requestId,
           product_id: item.product_id,
           product_name: item.product_name,
-          quantity_requested: item.quantity,
-          quantity_approved: item.quantity
+          quantity_requested: Number(item.quantity) || 1,
+          quantity_approved: Number(item.quantity) || 1
         });
       });
 
-      await finalBatch.commit();
+      // 4. Commit everything
+      await batch.commit();
 
       if (!editingRequest) {
-        // Notify Admins and Almoxarifado
+        // Notifications only for NEW requests
         const adminQuery = query(collection(db, 'users'), where('role', '==', 'ADMIN'));
-        const almoxarifadoQuery = query(collection(db, 'users'), where('sector', '==', 'Almoxarifado'));
+        const almoxQuery = query(collection(db, 'users'), where('sector', '==', 'Almoxarifado'));
         
-        const [adminSnap, almoxSnap] = await Promise.all([
-          getDocs(adminQuery),
-          getDocs(almoxarifadoQuery)
-        ]);
-
-        const notifiedEmails = new Set<string>();
+        const [adminSnap, almoxSnap] = await Promise.all([getDocs(adminQuery), getDocs(almoxQuery)]);
+        const notified = new Set<string>();
         
-        const processSnap = (snap: any) => {
-          snap.forEach((adminDoc: any) => {
-            if (!notifiedEmails.has(adminDoc.id)) {
-              createNotification(adminDoc.id, 'Nova Solicitação', `O setor ${userProfile.sector} enviou uma nova solicitação.`, requestId);
-              notifiedEmails.add(adminDoc.id);
+        const notify = (snap: any) => {
+          snap.forEach((d: any) => {
+            if (!notified.has(d.id)) {
+              createNotification(d.id, 'Nova Solicitação', `O setor ${selectedSector} enviou uma nova solicitação.`, requestId);
+              notified.add(d.id);
             }
           });
         };
 
-        processSnap(adminSnap);
-        processSnap(almoxSnap);
+        notify(adminSnap);
+        notify(almoxSnap);
       }
 
-      showToast(editingRequest ? "Solicitação atualizada com sucesso!" : "Solicitação enviada com sucesso!", "success");
+      showToast(editingRequest ? "Solicitação atualizada!" : "Solicitação enviada!", "success");
       setRequestBasket([]);
       setRequestObservation('');
       setEditingRequest(null);
       setActiveTab('my-requests');
     } catch (error: any) {
-      handleFirestoreError(error, OperationType.WRITE, 'requests');
-      showToast(`Erro ao enviar solicitação: ${error.message}`, "error");
+      console.error("Erro ao salvar:", error);
+      handleFirestoreError(error, OperationType.WRITE, `requests/${editingRequest?.id || 'new'}`);
+      showToast(`Erro ao salvar: ${error.message}`, "error");
     } finally {
       setIsSubmittingRequest(false);
     }
