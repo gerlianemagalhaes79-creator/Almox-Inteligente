@@ -2169,25 +2169,27 @@ export default function App() {
       const exportData: any[] = [];
       reportData.consumptionReport.forEach(item => {
         // Main item row
-        exportData.push({
+        const row: any = {
           'Item': item.name,
           'Categoria': item.category,
           'Fornecedor': item.supplier,
           'Quantidade Total': item.totalQuantity,
-          'Valor Total (BRL)': item.totalValue,
           'Destino': 'TOTAL'
-        });
+        };
+        if (isAdmin) row['Valor Total (BRL)'] = item.totalValue;
+        exportData.push(row);
         
         // Sector breakdown rows
         Object.entries(item.sectors).forEach(([sector, qty]) => {
-          exportData.push({
+          const subRow: any = {
             'Item': `   ↳ ${item.name}`,
             'Categoria': item.category,
             'Fornecedor': item.supplier,
             'Quantidade Total': qty,
-            'Valor Total (BRL)': '',
             'Destino': sector
-          });
+          };
+          if (isAdmin) subRow['Valor Total (BRL)'] = '';
+          exportData.push(subRow);
         });
       });
 
@@ -3113,23 +3115,25 @@ export default function App() {
       doc.text(`Período: ${format(parseISO(reportRange.start), 'dd/MM/yyyy')} a ${format(parseISO(reportRange.end), 'dd/MM/yyyy')}`, 14, 46);
       doc.text(`Emitido em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 14, 51);
       
-      // Summary Box (Minimalist)
-      const totalValue = reportData.consumptionReport.reduce((sum, i) => sum + i.totalValue, 0);
-      doc.setFillColor(250, 250, 249); // stone-50
-      doc.roundedRect(pageWidth - 85, 35, 71, 18, 2, 2, 'F');
-      doc.setFontSize(8);
-      doc.setTextColor(120, 113, 108);
-      doc.text('VALOR TOTAL CONSUMIDO', pageWidth - 80, 42);
-      doc.setFontSize(11);
-      doc.setTextColor(28, 25, 23);
-      doc.setFont('helvetica', 'bold');
-      doc.text(new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalValue), pageWidth - 80, 49);
+      // Summary Box (Minimalist) - Only for Admin
+      if (isAdmin) {
+        const totalValue = reportData.consumptionReport.reduce((sum, i) => sum + i.totalValue, 0);
+        doc.setFillColor(250, 250, 249); // stone-50
+        doc.roundedRect(pageWidth - 85, 35, 71, 18, 2, 2, 'F');
+        doc.setFontSize(8);
+        doc.setTextColor(120, 113, 108);
+        doc.text('VALOR TOTAL CONSUMIDO', pageWidth - 80, 42);
+        doc.setFontSize(11);
+        doc.setTextColor(28, 25, 23);
+        doc.setFont('helvetica', 'bold');
+        doc.text(new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalValue), pageWidth - 80, 49);
+      }
 
       // Table Data
       const tableData: any[] = [];
       reportData.consumptionBySector.forEach(sectorGroup => {
         // Sector Header
-        tableData.push([
+        const rowHeader: any[] = [
           { 
             content: sectorGroup.sector, 
             colSpan: isAdmin ? 4 : 3, 
@@ -3140,31 +3144,44 @@ export default function App() {
               cellPadding: 4,
               fontSize: 10
             } 
-          },
-          isAdmin ? { 
+          }
+        ];
+
+        if (isAdmin) {
+          rowHeader.push({ 
             content: new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(sectorGroup.totalValue), 
             styles: { 
               fillColor: [250, 250, 249],
               halign: 'right', 
               fontStyle: 'bold' 
             } 
-          } : ''
-        ]);
+          });
+        }
+        
+        tableData.push(rowHeader);
         
         // Items
         Object.values(sectorGroup.items).sort((a, b) => b.quantity - a.quantity).forEach(item => {
-          tableData.push([
+          const row: any[] = [
             { content: item.name, styles: { cellPadding: { left: 8 } } },
             item.category,
-            { content: item.quantity.toString(), styles: { halign: 'center' } },
-            isAdmin ? { content: new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.value), styles: { halign: 'right' } } : ''
-          ]);
+            { content: item.quantity.toString(), styles: { halign: 'center' } }
+          ];
+
+          if (isAdmin) {
+            row.push({ content: new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.value), styles: { halign: 'right' } });
+          }
+
+          tableData.push(row);
         });
       });
       
+      const headers = ['Item / Produto', 'Categoria', 'Qtd'];
+      if (isAdmin) headers.push('Total (R$)');
+
       autoTable(doc, {
         startY: 60,
-        head: [['Item / Produto', 'Categoria', 'Qtd', isAdmin ? 'Total (R$)' : '']],
+        head: [headers],
         body: tableData,
         theme: 'plain', 
         headStyles: { 
@@ -3712,7 +3729,7 @@ export default function App() {
                 onClick={() => setActiveTab('reports')}
                 className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'reports' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
               >
-                <BarChart3 size={20} /> Catálogo
+                <BarChart3 size={20} /> Relatórios
               </button>
               {userProfile?.role === 'LÍDER' && (
                 <button 
@@ -3774,7 +3791,7 @@ export default function App() {
               {activeTab === 'my-requests' && `Minhas Solicitações - ${selectedSector || ''}`}
               {activeTab === 'new-request' && `Nova Solicitação - ${selectedSector || ''}`}
               {editingRequest && ' - Editando Solicitação'}
-              {activeTab === 'reports' && (isAdmin ? 'Relatórios e Análises' : 'Catálogo de Materiais')}
+              {activeTab === 'reports' && 'Relatórios e Análises'}
               {activeTab === 'leader-stats' && 'Estatísticas do Almoxarifado'}
             </h2>
               {activeTab === 'dashboard' && (
@@ -5174,26 +5191,28 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Detailed Sector Breakdown - Only for Admin */}
-                {isAdmin && (
+                {/* Detailed Sector Breakdown - Visible for Admin and Sector Leaders */}
+                {(isAdmin || userProfile?.role === 'SETOR' || userProfile?.role === 'LÍDER') && (
                   <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
                   <div className="flex justify-between items-start mb-8">
                     <div>
                       <h4 className="text-lg font-bold flex items-center gap-2 mb-1">
                         <History size={18} className="text-[#1C1917]" /> 
-                        Relatório de Consumo por Item e Setor
+                        Relatório de Consumo por Item
                       </h4>
                       <p className="text-xs text-[#78716C] font-medium">
-                        {reportSectorFilter === 'all' ? 'Todos os Setores' : `Setor: ${reportSectorFilter}`} • {format(parseISO(reportRange.start), 'dd/MM/yyyy')} a {format(parseISO(reportRange.end), 'dd/MM/yyyy')}
+                        {isAdmin ? (reportSectorFilter === 'all' ? 'Todos os Setores' : `Setor: ${reportSectorFilter}`) : `Setor: ${selectedSector}`} • {format(parseISO(reportRange.start), 'dd/MM/yyyy')} a {format(parseISO(reportRange.end), 'dd/MM/yyyy')}
                       </p>
                     </div>
                     <div className="flex flex-col items-end gap-3">
-                      <div className="text-right">
-                        <p className="text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest">Valor Total de Saídas</p>
-                        <p className="text-xl font-black text-rose-600">
-                          {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.consumptionReport.reduce((sum, i) => sum + i.totalValue, 0))}
-                        </p>
-                      </div>
+                      {isAdmin && (
+                        <div className="text-right">
+                          <p className="text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest">Valor Total de Saídas</p>
+                          <p className="text-xl font-black text-rose-600">
+                            {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.consumptionReport.reduce((sum, i) => sum + i.totalValue, 0))}
+                          </p>
+                        </div>
+                      )}
                       <div className="flex gap-2">
                         <button 
                           onClick={() => {
@@ -5228,7 +5247,7 @@ export default function App() {
                           {reportData.consumptionBySector.map((sectorGroup, idx) => (
                             <React.Fragment key={idx}>
                               <tr className="bg-[#F5F5F4]/50 border-b border-[#E7E5E4]">
-                                <td className="py-2 px-4 font-bold text-[10px] uppercase tracking-wider text-[#78716C]" colSpan={isAdmin ? 3 : 2}>
+                                <td className="py-2 px-4 font-bold text-[10px] uppercase tracking-wider text-[#78716C]" colSpan={isAdmin ? 3 : 3}>
                                   {sectorGroup.sector}
                                 </td>
                                 {isAdmin && (
