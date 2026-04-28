@@ -297,7 +297,37 @@ export default function App() {
   const [donationUnitCNPJ, setDonationUnitCNPJ] = useState('');
   const [donationRevisionDate, setDonationRevisionDate] = useState('');
   const [letterheadImage, setLetterheadImage] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'inventory' | 'history' | 'requests' | 'reports' | 'my-requests' | 'new-request' | 'users' | 'trash'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'inventory' | 'history' | 'requests' | 'reports' | 'my-requests' | 'new-request' | 'users' | 'trash' | 'leader-stats'>('dashboard');
+  const leaderStatistics = useMemo(() => {
+    if (userProfile?.role !== 'LÍDER') return { topRequested: [], topDelivered: [] };
+
+    const requestedMap: Record<string, number> = {};
+    const deliveredMap: Record<string, number> = {};
+
+    allRequestItems.forEach(item => {
+      // Requested: everyone considers quantity_requested
+      const normalizedName = item.product_name;
+      requestedMap[normalizedName] = (requestedMap[normalizedName] || 0) + (item.quantity_requested || 0);
+
+      // Delivered: only if the parent request is 'ENTREGUE'
+      const parentRequest = requests.find(r => r.id === item.request_id);
+      if (parentRequest?.status === 'ENTREGUE') {
+        deliveredMap[normalizedName] = (deliveredMap[normalizedName] || 0) + (item.quantity_approved || 0);
+      }
+    });
+
+    const topRequested = Object.entries(requestedMap)
+      .map(([name, qty]) => ({ name, qty }))
+      .sort((a, b) => b.qty - a.qty)
+      .slice(0, 10);
+
+    const topDelivered = Object.entries(deliveredMap)
+      .map(([name, qty]) => ({ name, qty }))
+      .sort((a, b) => b.qty - a.qty)
+      .slice(0, 10);
+
+    return { topRequested, topDelivered };
+  }, [allRequestItems, requests, userProfile]);
   const [showAddModal, setShowAddModal] = useState(false);
   const [showTransactionModal, setShowTransactionModal] = useState<{show: boolean, type: 'entry' | 'exit', item?: Item}>({ show: false, type: 'entry' });
   const [transactionMinStock, setTransactionMinStock] = useState<number>(NaN);
@@ -3684,6 +3714,14 @@ export default function App() {
               >
                 <BarChart3 size={20} /> Catálogo
               </button>
+              {userProfile?.role === 'LÍDER' && (
+                <button 
+                  onClick={() => setActiveTab('leader-stats')}
+                  className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'leader-stats' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                >
+                  <BarChart3 size={20} /> Estatísticas
+                </button>
+              )}
             </>
           )}
         </nav>
@@ -3737,6 +3775,7 @@ export default function App() {
               {activeTab === 'new-request' && `Nova Solicitação - ${selectedSector || ''}`}
               {editingRequest && ' - Editando Solicitação'}
               {activeTab === 'reports' && (isAdmin ? 'Relatórios e Análises' : 'Catálogo de Materiais')}
+              {activeTab === 'leader-stats' && 'Estatísticas do Almoxarifado'}
             </h2>
               {activeTab === 'dashboard' && (
                 <div className="flex items-center gap-4 mt-2">
@@ -5733,6 +5772,98 @@ export default function App() {
                     <p className="text-[#78716C]">Você ainda não fez nenhuma solicitação.</p>
                   </div>
                 )}
+              </div>
+            </motion.div>
+          )}
+
+          {activeTab === 'leader-stats' && (
+            <motion.div 
+              key="leader-stats"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              className="space-y-8"
+            >
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                {/* Top Requested */}
+                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
+                  <div className="flex items-center gap-3 mb-6">
+                    <div className="bg-amber-100 p-2 rounded-xl">
+                      <TrendingUp className="text-amber-600" size={24} />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-black">Top 10 Mais Solicitados</h3>
+                      <p className="text-xs text-[#78716C] font-medium uppercase tracking-wider">Baseado na quantidade solicitada</p>
+                    </div>
+                  </div>
+                  
+                  <div className="space-y-4">
+                    {leaderStatistics.topRequested.map((item, index) => (
+                      <div key={item.name} className="flex items-center gap-4 group">
+                        <div className="w-8 h-8 flex items-center justify-center bg-[#F5F5F4] rounded-lg text-xs font-black text-[#78716C]">
+                          {index + 1}
+                        </div>
+                        <div className="flex-1">
+                          <p className="text-sm font-bold text-[#1C1917] line-clamp-1">{item.name}</p>
+                          <div className="w-full h-1.5 bg-[#F5F5F4] rounded-full mt-1.5 overflow-hidden">
+                            <motion.div 
+                              initial={{ width: 0 }}
+                              animate={{ width: `${leaderStatistics.topRequested[0]?.qty ? (item.qty / leaderStatistics.topRequested[0].qty) * 100 : 0}%` }}
+                              className="h-full bg-amber-500 rounded-full"
+                            />
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-sm font-black text-[#1C1917]">{item.qty}</p>
+                          <p className="text-[10px] font-bold text-[#A8A29E] uppercase">Unidades</p>
+                        </div>
+                      </div>
+                    ))}
+                    {leaderStatistics.topRequested.length === 0 && (
+                      <p className="text-center py-8 text-[#A8A29E] text-sm">Sem dados suficientes.</p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Top Delivered */}
+                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
+                  <div className="flex items-center gap-3 mb-6">
+                    <div className="bg-emerald-100 p-2 rounded-xl">
+                      <CheckCircle className="text-emerald-600" size={24} />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-black">Top 10 Mais Entregues</h3>
+                      <p className="text-xs text-[#78716C] font-medium uppercase tracking-wider">Baseado na quantidade aprovada e entregue</p>
+                    </div>
+                  </div>
+                  
+                  <div className="space-y-4">
+                    {leaderStatistics.topDelivered.map((item, index) => (
+                      <div key={item.name} className="flex items-center gap-4 group">
+                        <div className="w-8 h-8 flex items-center justify-center bg-[#F5F5F4] rounded-lg text-xs font-black text-[#78716C]">
+                          {index + 1}
+                        </div>
+                        <div className="flex-1">
+                          <p className="text-sm font-bold text-[#1C1917] line-clamp-1">{item.name}</p>
+                          <div className="w-full h-1.5 bg-[#F5F5F4] rounded-full mt-1.5 overflow-hidden">
+                            <motion.div 
+                              initial={{ width: 0 }}
+                              animate={{ width: `${leaderStatistics.topDelivered[0]?.qty ? (item.qty / leaderStatistics.topDelivered[0].qty) * 100 : 0}%` }}
+                              className="h-full bg-emerald-500 rounded-full"
+                            />
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-sm font-black text-[#1C1917]">{item.qty}</p>
+                          <p className="text-[10px] font-bold text-[#A8A29E] uppercase">Unidades</p>
+                        </div>
+                      </div>
+                    ))}
+                    {leaderStatistics.topDelivered.length === 0 && (
+                      <p className="text-center py-8 text-[#A8A29E] text-sm">Sem dados suficientes.</p>
+                    )}
+                  </div>
+                </div>
               </div>
             </motion.div>
           )}

@@ -2,7 +2,7 @@ export interface UserProfile {
   id: string;
   name: string;
   email: string;
-  role: 'ADMIN' | 'SETOR';
+  role: 'ADMIN' | 'SETOR' | 'LÍDER';
   sector?: string;
   allowedSectors?: string[];
 }
