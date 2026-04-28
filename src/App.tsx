@@ -35,6 +35,8 @@ import {
   Printer,
   Copy,
   BookOpen,
+  Activity,
+  PieChart as PieChartIcon,
   Image as ImageIcon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -3471,6 +3473,14 @@ export default function App() {
         .map(([name, value]) => ({ name, value }))
         .filter(c => c.value > 0)
         .sort((a, b) => b.value - a.value),
+      consumptionCategories: Object.entries(
+        filteredTrans.filter(t => t.type === 'exit').reduce((acc, t) => {
+          const item = items.find(i => i.id === t.item_id);
+          const cat = item?.category || 'Outros';
+          acc[cat] = (acc[cat] || 0) + t.quantity;
+          return acc;
+        }, {} as Record<string, number>)
+      ).map(([name, value]) => ({ name, value })),
       categoryValues: Object.entries(categoryValueData)
         .map(([name, value]) => ({ name, value }))
         .filter(c => c.value > 0)
@@ -4832,50 +4842,44 @@ export default function App() {
                 </div>
               )}
 
-              {/* Report Stats - ADMIN ONLY */}
-              {isAdmin && (
-                <>
-                  <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-                {isAdmin && (
-                  <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
-                    <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Entradas no Período</p>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="bg-emerald-100 p-2 rounded-xl text-emerald-600">
-                          <TrendingUp size={20} />
-                        </div>
-                        <h3 className="text-3xl font-black">{reportData.entries}</h3>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-[10px] font-bold text-[#A8A29E] uppercase">Valor Total</p>
-                        <p className="text-sm font-black text-emerald-600">
-                          {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.entriesValue)}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                )}
-                {isAdmin && (
-                  <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
-                    <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Saídas no Período</p>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="bg-rose-100 p-2 rounded-xl text-rose-600">
-                          <TrendingDown size={20} />
-                        </div>
-                        <h3 className="text-3xl font-black">{reportData.exits}</h3>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-[10px] font-bold text-[#A8A29E] uppercase">Valor Total</p>
-                        <p className="text-sm font-black text-rose-600">
-                          {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.exitsValue)}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                )}
-                {isAdmin && (
+              {/* Report Stats */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                {isAdmin ? (
                   <>
+                    <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
+                      <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Entradas no Período</p>
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <div className="bg-emerald-100 p-2 rounded-xl text-emerald-600">
+                            <TrendingUp size={20} />
+                          </div>
+                          <h3 className="text-3xl font-black">{reportData.entries}</h3>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-[10px] font-bold text-[#A8A29E] uppercase">Valor Total</p>
+                          <p className="text-sm font-black text-emerald-600">
+                            {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.entriesValue)}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
+                      <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Saídas no Período</p>
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <div className="bg-rose-100 p-2 rounded-xl text-rose-600">
+                            <TrendingDown size={20} />
+                          </div>
+                          <h3 className="text-3xl font-black">{reportData.exits}</h3>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-[10px] font-bold text-[#A8A29E] uppercase">Valor Total</p>
+                          <p className="text-sm font-black text-rose-600">
+                            {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.exitsValue)}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
                     <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
                       <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Valor Total em Estoque</p>
                       <div className="flex items-center gap-3">
@@ -4897,141 +4901,197 @@ export default function App() {
                       </div>
                     </div>
                   </>
+                ) : (
+                  <>
+                    <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm lg:col-span-2">
+                      <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Consumo do Setor no Período</p>
+                      <div className="flex items-center gap-4">
+                        <div className="bg-rose-100 p-3 rounded-2xl text-rose-600">
+                          <ArrowDownLeft size={32} />
+                        </div>
+                        <div>
+                          <h3 className="text-4xl font-black text-rose-600">{reportData.exits}</h3>
+                          <p className="text-xs font-bold text-[#A8A29E] uppercase tracking-widest">Unidades Recebidas</p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm lg:col-span-2">
+                      <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Solicitações no Período</p>
+                      <div className="flex items-center gap-4">
+                        <div className="bg-blue-100 p-3 rounded-2xl text-blue-600">
+                          <FileText size={32} />
+                        </div>
+                        <div>
+                          <h3 className="text-4xl font-black text-blue-600">
+                            {requests.filter(r => {
+                              const d = new Date(r.date);
+                              return r.sector === selectedSector && !r.deletedAt && d >= startOfDay(parseISO(reportRange.start)) && d <= endOfDay(parseISO(reportRange.end));
+                            }).length}
+                          </h3>
+                          <p className="text-xs font-bold text-[#A8A29E] uppercase tracking-widest">Pedidos Realizados</p>
+                        </div>
+                      </div>
+                    </div>
+                  </>
                 )}
+              </div>
+
+              {/* Visual Overview Header */}
+              <div className="flex items-center gap-3 px-2">
+                <BarChart3 className="text-[#78716C]" size={20} />
+                <h3 className="text-xl font-black">Panorama Visual de Consumo</h3>
               </div>
 
               {/* Charts Grid */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                {/* Daily Movement */}
-                {isAdmin && (
-                  <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
-                    <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
-                      <BarChart3 size={18} className="text-[#1C1917]" /> Movimentação Diária
-                    </h4>
-                    <div className="h-[300px] w-full">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart data={reportData.daily}>
-                          <defs>
-                            <linearGradient id="colorEntries" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="#10b981" stopOpacity={0.1}/>
-                              <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
-                            </linearGradient>
-                            <linearGradient id="colorExits" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.1}/>
-                              <stop offset="95%" stopColor="#f43f5e" stopOpacity={0}/>
-                            </linearGradient>
-                          </defs>
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F5F5F4" />
-                          <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
-                          <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
-                          <Tooltip 
-                            contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                          />
-                          <Area type="monotone" dataKey="entries" name="Entradas" stroke="#10b981" fillOpacity={1} fill="url(#colorEntries)" strokeWidth={3} />
-                          <Area type="monotone" dataKey="exits" name="Saídas" stroke="#f43f5e" fillOpacity={1} fill="url(#colorExits)" strokeWidth={3} />
-                        </AreaChart>
-                      </ResponsiveContainer>
-                    </div>
+                {/* Movement Chart */}
+                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
+                  <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
+                    <Activity size={18} className="text-blue-600" /> Movimentação {isAdmin ? 'Geral' : 'do Setor'}
+                  </h4>
+                  <div className="h-[300px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={reportData.daily}>
+                        <defs>
+                          <linearGradient id="colorEntries" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#10b981" stopOpacity={0.1}/>
+                            <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                          </linearGradient>
+                          <linearGradient id="colorExits" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.1}/>
+                            <stop offset="95%" stopColor="#f43f5e" stopOpacity={0}/>
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F5F5F4" />
+                        <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
+                        <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
+                        <Tooltip 
+                          contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                        />
+                        {isAdmin && <Area type="monotone" dataKey="entries" name="Entradas" stroke="#10b981" fillOpacity={1} fill="url(#colorEntries)" strokeWidth={3} />}
+                        <Area type="monotone" dataKey="exits" name={isAdmin ? "Saídas" : "Consumo"} stroke="#f43f5e" fillOpacity={1} fill="url(#colorExits)" strokeWidth={3} />
+                      </AreaChart>
+                    </ResponsiveContainer>
                   </div>
-                )}
+                </div>
 
-                {/* Distribution by Category */}
-                {isAdmin && (
-                  <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
-                    <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
-                      <Filter size={18} className="text-[#1C1917]" /> Distribuição por Categoria (Qtd)
-                    </h4>
-                    <div className="h-[300px] w-full">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart>
-                          <Pie
-                            data={reportData.categories}
-                            cx="50%"
-                            cy="50%"
-                            innerRadius={60}
-                            outerRadius={100}
-                            paddingAngle={5}
-                            dataKey="value"
-                            label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                          >
-                            {reportData.categories.map((entry, index) => (
-                              <Cell key={`cell-${index}`} fill={getCategoryColor(entry.name)} />
-                            ))}
-                          </Pie>
-                          <Tooltip 
-                            contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                          />
-                          <Legend verticalAlign="bottom" height={36}/>
-                        </PieChart>
-                      </ResponsiveContainer>
-                    </div>
+                {/* Category Breakdown */}
+                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
+                  <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
+                    <PieChartIcon size={18} className="text-amber-600" /> Distribuição de Consumo por Categoria
+                  </h4>
+                  <div className="h-[300px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={reportData.consumptionCategories}
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={60}
+                          outerRadius={100}
+                          paddingAngle={5}
+                          dataKey="value"
+                          label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                        >
+                          {reportData.consumptionCategories.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={getCategoryColor(entry.name)} />
+                          ))}
+                        </Pie>
+                        <Tooltip 
+                          contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                        />
+                        <Legend verticalAlign="bottom" height={36}/>
+                      </PieChart>
+                    </ResponsiveContainer>
                   </div>
-                )}
+                </div>
 
-                {/* Value by Category */}
-                {isAdmin && (
-                  <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
-                    <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
-                      <DollarSign size={18} className="text-emerald-600" /> Valor em Estoque por Categoria
-                    </h4>
-                    <div className="h-[300px] w-full">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={reportData.categoryValues} layout="vertical">
-                          <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#F5F5F4" />
-                          <XAxis type="number" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
-                          <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1C1917', fontWeight: 'bold'}} width={120} />
-                          <Tooltip 
-                            cursor={{fill: '#FAFAF9'}}
-                            formatter={(value: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value)}
-                            contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                          />
-                          <Bar dataKey="value" name="Valor Total">
-                            {reportData.categoryValues.map((entry, index) => (
-                              <Cell key={`cell-${index}`} fill={getCategoryColor(entry.name)} />
-                            ))}
-                          </Bar>
-                          <Legend />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
+                {/* Top Consumed Items */}
+                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
+                  <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
+                    <ArrowDownLeft size={18} className="text-rose-600" /> Ranking: Itens Mais Consumidos
+                  </h4>
+                  <div className="h-[300px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={reportData.topConsumed} layout="vertical">
+                        <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#F5F5F4" />
+                        <XAxis type="number" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
+                        <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1C1917', fontWeight: 'bold'}} width={120} />
+                        <Tooltip 
+                          cursor={{fill: '#FAFAF9'}}
+                          contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                        />
+                        <Bar dataKey="value" name="Qtd Consumida" fill="#f43f5e" radius={[0, 8, 8, 0]} barSize={20} />
+                      </BarChart>
+                    </ResponsiveContainer>
                   </div>
-                )}
+                </div>
 
-                {/* Exits by Reason - Only for Admin */}
+                {/* Only for Admin Charts */}
                 {isAdmin && (
-                  <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
-                    <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
-                      <TrendingDown size={18} className="text-rose-600" /> Saídas por Motivo
-                    </h4>
-                    <div className="h-[300px] w-full">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart>
-                          <Pie
-                            data={[
-                              { name: 'Consumo', value: reportData.exitsByReason.consumo },
-                              { name: 'Doação', value: reportData.exitsByReason.doacao },
-                              { name: 'Vencimento', value: reportData.exitsByReason.vencido }
-                            ]}
-                            cx="50%"
-                            cy="50%"
-                            innerRadius={60}
-                            outerRadius={100}
-                            paddingAngle={5}
-                            dataKey="value"
-                            label={({ name, value }) => `${name}: ${value}`}
-                          >
-                            <Cell fill="#3b82f6" />
-                            <Cell fill="#f59e0b" />
-                            <Cell fill="#ef4444" />
-                          </Pie>
-                          <Tooltip 
-                            contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                          />
-                          <Legend verticalAlign="bottom" height={36}/>
-                        </PieChart>
-                      </ResponsiveContainer>
+                  <>
+                    {/* Stock Value by Category */}
+                    <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
+                      <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
+                        <DollarSign size={18} className="text-emerald-600" /> Valor em Estoque por Categoria
+                      </h4>
+                      <div className="h-[300px] w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={reportData.categoryValues} layout="vertical">
+                            <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#F5F5F4" />
+                            <XAxis type="number" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
+                            <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1C1917', fontWeight: 'bold'}} width={120} />
+                            <Tooltip 
+                              cursor={{fill: '#FAFAF9'}}
+                              formatter={(value: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value)}
+                              contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                            />
+                            <Bar dataKey="value" name="Valor Total">
+                              {reportData.categoryValues.map((entry, index) => (
+                                <Cell key={`cell-${index}`} fill={getCategoryColor(entry.name)} />
+                              ))}
+                            </Bar>
+                            <Legend />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
                     </div>
-                  </div>
+
+                    {/* Exits by Reason */}
+                    <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
+                      <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
+                        <TrendingDown size={18} className="text-rose-600" /> Saídas por Motivo
+                      </h4>
+                      <div className="h-[300px] w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <PieChart>
+                            <Pie
+                              data={[
+                                { name: 'Consumo', value: reportData.exitsByReason.consumo },
+                                { name: 'Doação', value: reportData.exitsByReason.doacao },
+                                { name: 'Vencimento', value: reportData.exitsByReason.vencido }
+                              ]}
+                              cx="50%"
+                              cy="50%"
+                              innerRadius={60}
+                              outerRadius={100}
+                              paddingAngle={5}
+                              dataKey="value"
+                              label={({ name, value }) => `${name}: ${value}`}
+                            >
+                              <Cell fill="#3b82f6" />
+                              <Cell fill="#f59e0b" />
+                              <Cell fill="#ef4444" />
+                            </Pie>
+                            <Tooltip 
+                              contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                            />
+                            <Legend verticalAlign="bottom" height={36}/>
+                          </PieChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  </>
                 )}
 
                 {/* Exits by Sector - Only for Admin */}
@@ -5190,8 +5250,9 @@ export default function App() {
                     </div>
                   </div>
                 )}
+              </div>
 
-                {/* Detailed Sector Breakdown - Visible for Admin and Sector Leaders */}
+              {/* Detailed Sector Breakdown - Visible for Admin and Sector Leaders */}
                 {(isAdmin || userProfile?.role === 'SETOR' || userProfile?.role === 'LÍDER') && (
                   <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
                   <div className="flex justify-between items-start mb-8">
@@ -5293,11 +5354,8 @@ export default function App() {
                     </div>
                   </div>
                 )}
-              </div>
-            </>
+            </motion.div>
           )}
-        </motion.div>
-      )}
 
           {activeTab === 'users' && isAdmin && (
             <motion.div 
