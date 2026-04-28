@@ -3699,6 +3699,12 @@ export default function App() {
               >
                 <FileText size={20} /> Minhas Solicitações
               </button>
+              <button 
+                onClick={() => setActiveTab('reports')}
+                className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'reports' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+              >
+                <BarChart3 size={20} /> Catálogo
+              </button>
               {userProfile?.sector === 'Farmácia' && (
                 <>
                   <button 
@@ -3773,7 +3779,7 @@ export default function App() {
               {activeTab === 'my-requests' && `Minhas Solicitações - ${selectedSector || ''}`}
               {activeTab === 'new-request' && `Nova Solicitação - ${selectedSector || ''}`}
               {editingRequest && ' - Editando Solicitação'}
-              {activeTab === 'reports' && 'Relatórios e Análises'}
+              {activeTab === 'reports' && (isAdmin ? 'Relatórios e Análises' : 'Catálogo de Materiais')}
             </h2>
               {activeTab === 'dashboard' && (
                 <div className="flex items-center gap-4 mt-2">
@@ -4881,66 +4887,70 @@ export default function App() {
               {/* Charts Grid */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                 {/* Daily Movement */}
-                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
-                  <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
-                    <BarChart3 size={18} className="text-[#1C1917]" /> Movimentação Diária
-                  </h4>
-                  <div className="h-[300px] w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart data={reportData.daily}>
-                        <defs>
-                          <linearGradient id="colorEntries" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#10b981" stopOpacity={0.1}/>
-                            <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
-                          </linearGradient>
-                          <linearGradient id="colorExits" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.1}/>
-                            <stop offset="95%" stopColor="#f43f5e" stopOpacity={0}/>
-                          </linearGradient>
-                        </defs>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F5F5F4" />
-                        <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
-                        <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
-                        <Tooltip 
-                          contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                        />
-                        <Area type="monotone" dataKey="entries" name="Entradas" stroke="#10b981" fillOpacity={1} fill="url(#colorEntries)" strokeWidth={3} />
-                        <Area type="monotone" dataKey="exits" name="Saídas" stroke="#f43f5e" fillOpacity={1} fill="url(#colorExits)" strokeWidth={3} />
-                      </AreaChart>
-                    </ResponsiveContainer>
+                {isAdmin && (
+                  <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
+                    <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
+                      <BarChart3 size={18} className="text-[#1C1917]" /> Movimentação Diária
+                    </h4>
+                    <div className="h-[300px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={reportData.daily}>
+                          <defs>
+                            <linearGradient id="colorEntries" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="#10b981" stopOpacity={0.1}/>
+                              <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                            </linearGradient>
+                            <linearGradient id="colorExits" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.1}/>
+                              <stop offset="95%" stopColor="#f43f5e" stopOpacity={0}/>
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F5F5F4" />
+                          <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
+                          <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
+                          <Tooltip 
+                            contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                          />
+                          <Area type="monotone" dataKey="entries" name="Entradas" stroke="#10b981" fillOpacity={1} fill="url(#colorEntries)" strokeWidth={3} />
+                          <Area type="monotone" dataKey="exits" name="Saídas" stroke="#f43f5e" fillOpacity={1} fill="url(#colorExits)" strokeWidth={3} />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                </div>
+                )}
 
                 {/* Distribution by Category */}
-                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
-                  <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
-                    <Filter size={18} className="text-[#1C1917]" /> Distribuição por Categoria (Qtd)
-                  </h4>
-                  <div className="h-[300px] w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie
-                          data={reportData.categories}
-                          cx="50%"
-                          cy="50%"
-                          innerRadius={60}
-                          outerRadius={100}
-                          paddingAngle={5}
-                          dataKey="value"
-                          label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                        >
-                          {reportData.categories.map((entry, index) => (
-                            <Cell key={`cell-${index}`} fill={getCategoryColor(entry.name)} />
-                          ))}
-                        </Pie>
-                        <Tooltip 
-                          contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                        />
-                        <Legend verticalAlign="bottom" height={36}/>
-                      </PieChart>
-                    </ResponsiveContainer>
+                {isAdmin && (
+                  <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
+                    <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
+                      <Filter size={18} className="text-[#1C1917]" /> Distribuição por Categoria (Qtd)
+                    </h4>
+                    <div className="h-[300px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie
+                            data={reportData.categories}
+                            cx="50%"
+                            cy="50%"
+                            innerRadius={60}
+                            outerRadius={100}
+                            paddingAngle={5}
+                            dataKey="value"
+                            label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                          >
+                            {reportData.categories.map((entry, index) => (
+                              <Cell key={`cell-${index}`} fill={getCategoryColor(entry.name)} />
+                            ))}
+                          </Pie>
+                          <Tooltip 
+                            contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                          />
+                          <Legend verticalAlign="bottom" height={36}/>
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                </div>
+                )}
 
                 {/* Value by Category */}
                 {isAdmin && (
