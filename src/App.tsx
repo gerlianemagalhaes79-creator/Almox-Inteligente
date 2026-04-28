@@ -1209,24 +1209,24 @@ export default function App() {
       };
 
       let requestId = '';
+      const finalBatch = writeBatch(db);
+
       if (editingRequest) {
         requestId = editingRequest.id;
-        await updateDoc(doc(db, 'requests', requestId), requestData);
+        finalBatch.update(doc(db, 'requests', requestId), requestData);
         
-        // Delete old items
+        // Delete old items - we still need to fetch them first though
         const oldItems = await getDocs(query(collection(db, 'request_items'), where('request_id', '==', requestId)));
-        const deleteBatch = writeBatch(db);
-        oldItems.docs.forEach(d => deleteBatch.delete(d.ref));
-        await deleteBatch.commit();
+        oldItems.docs.forEach(d => finalBatch.delete(d.ref));
       } else {
-        const requestRef = await addDoc(collection(db, 'requests'), requestData);
+        const requestRef = doc(collection(db, 'requests'));
         requestId = requestRef.id;
+        finalBatch.set(requestRef, requestData);
       }
 
-      const batch = writeBatch(db);
       requestBasket.forEach(item => {
         const itemRef = doc(collection(db, 'request_items'));
-        batch.set(itemRef, {
+        finalBatch.set(itemRef, {
           request_id: requestId,
           product_id: item.product_id,
           product_name: item.product_name,
@@ -1235,7 +1235,7 @@ export default function App() {
         });
       });
 
-      await batch.commit();
+      await finalBatch.commit();
 
       if (!editingRequest) {
         // Notify Admins and Almoxarifado
@@ -1276,6 +1276,7 @@ export default function App() {
   };
 
   const handleEditRequest = (request: MaterialRequest) => {
+    setSelectedSector(request.sector);
     const items = allRequestItems.filter(ri => ri.request_id === request.id);
     setRequestBasket(items.map(i => ({
       product_id: i.product_id,

@@ -65,7 +65,12 @@ service cloud.firestore {
     match /request_items/{itemId} {
       allow read: if isAuthenticated();
       allow create: if isAuthenticated();
-      allow update, delete: if isAdmin();
+      allow update, delete: if isAdmin() || (
+        isAuthenticated() && 
+        exists(/databases/$(database)/documents/requests/$(resource.data.request_id)) && 
+        get(/databases/$(database)/documents/requests/$(resource.data.request_id)).data.requesterEmail == request.auth.token.email &&
+        get(/databases/$(database)/documents/requests/$(resource.data.request_id)).data.status == 'PENDENTE'
+      );
     }
 
     match /users/{email} {
