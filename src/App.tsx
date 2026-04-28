@@ -1175,21 +1175,39 @@ export default function App() {
     }
 
     setIsSubmittingRequest(true);
+    const loadingToast = showToast("Processando sua solicitação...", "info");
+    
     try {
       // 1. Fetch fresh inventory to validate stock correctly
-      const itemsSnapshot = await getDocs(query(collection(db, 'items'), where('deletedAt', '==', null)));
-      const freshItems = itemsSnapshot.docs.map(d => d.data() as Item);
+      const itemsSnapshot = await getDocs(collection(db, 'items'));
+      const freshItems = itemsSnapshot.docs
+        .map(d => d.data() as Item)
+        .filter(i => !i.deletedAt);
       
+      // Calculate total stock with normalized names
       const totalInventory = freshItems.reduce((acc, item) => {
-        acc[item.name] = (acc[item.name] || 0) + item.quantity;
+        const key = normalizeString(item.name);
+        acc[key] = (acc[key] || 0) + (Number(item.quantity) || 0);
         return acc;
       }, {} as Record<string, number>);
 
-      for (const basketItem of requestBasket) {
-        const totalAvailable = totalInventory[basketItem.product_name] || 0;
-        if (basketItem.quantity > totalAvailable) {
+      // Aggregate current request basket quantities by product
+      const basketAggregation = requestBasket.reduce((acc, item) => {
+        const key = normalizeString(item.product_name);
+        // Ensure quantity is a valid positive number
+        const qty = Math.max(1, Math.floor(Number(item.quantity) || 1));
+        acc[key] = (acc[key] || 0) + qty;
+        return acc;
+      }, {} as Record<string, number>);
+
+      // Validate stock
+      for (const [productNameKey, requestedQty] of Object.entries(basketAggregation)) {
+        const totalAvailable = totalInventory[productNameKey] || 0;
+        
+        if (requestedQty > totalAvailable) {
+          const originalName = requestBasket.find(i => normalizeString(i.product_name) === productNameKey)?.product_name || "Produto";
           showToast(
-            `Estoque insuficiente para "${basketItem.product_name}". Disponível total: ${totalAvailable}.`, 
+            `Estoque insuficiente para "${originalName}". Disponível: ${totalAvailable}. Sugestão: reduza a quantidade ou aguarde reposição.`, 
             "error"
           );
           setIsSubmittingRequest(false);
@@ -1211,10 +1229,8 @@ export default function App() {
       };
 
       if (editingRequest) {
-        // Only update relevant fields, preserve original metadata
         batch.update(doc(db, 'requests', requestId), requestData);
-        
-        // Delete all previous items for this request before re-adding
+        // Better to fetch directly here to be absolutely sure we have current items
         const oldItemsSnap = await getDocs(query(collection(db, 'request_items'), where('request_id', '==', requestId)));
         oldItemsSnap.docs.forEach(d => batch.delete(d.ref));
       } else {
@@ -1230,8 +1246,8 @@ export default function App() {
           request_id: requestId,
           product_id: item.product_id,
           product_name: item.product_name,
-          quantity_requested: Number(item.quantity) || 1,
-          quantity_approved: Number(item.quantity) || 1
+          quantity_requested: Math.max(1, Math.floor(Number(item.quantity) || 1)),
+          quantity_approved: Math.max(1, Math.floor(Number(item.quantity) || 1))
         });
       });
 
@@ -1240,34 +1256,36 @@ export default function App() {
 
       if (!editingRequest) {
         // Notifications only for NEW requests
-        const adminQuery = query(collection(db, 'users'), where('role', '==', 'ADMIN'));
-        const almoxQuery = query(collection(db, 'users'), where('sector', '==', 'Almoxarifado'));
-        
-        const [adminSnap, almoxSnap] = await Promise.all([getDocs(adminQuery), getDocs(almoxQuery)]);
-        const notified = new Set<string>();
-        
-        const notify = (snap: any) => {
-          snap.forEach((d: any) => {
-            if (!notified.has(d.id)) {
-              createNotification(d.id, 'Nova Solicitação', `O setor ${selectedSector} enviou uma nova solicitação.`, requestId);
-              notified.add(d.id);
-            }
-          });
-        };
-
-        notify(adminSnap);
-        notify(almoxSnap);
+        try {
+          const adminQuery = query(collection(db, 'users'), where('role', '==', 'ADMIN'));
+          const almoxQuery = query(collection(db, 'users'), where('sector', '==', 'Almoxarifado'));
+          
+          const [adminSnap, almoxSnap] = await Promise.all([getDocs(adminQuery), getDocs(almoxQuery)]);
+          const notified = new Set<string>();
+          
+          const notify = (snap: any) => {
+            snap.forEach((d: any) => {
+              if (!notified.has(d.id)) {
+                createNotification(d.id, 'Nova Solicitação', `Setor ${selectedSector} enviou uma nova solicitação.`, requestId);
+                notified.add(d.id);
+              }
+            });
+          };
+          notify(adminSnap);
+          notify(almoxSnap);
+        } catch (notifErr) {
+          console.warn("Falha ao enviar notificações:", notifErr);
+        }
       }
 
-      showToast(editingRequest ? "Solicitação atualizada!" : "Solicitação enviada!", "success");
+      showToast(editingRequest ? "Alterações salvas com sucesso!" : "Solicitação enviada com sucesso!", "success");
       setRequestBasket([]);
       setRequestObservation('');
       setEditingRequest(null);
       setActiveTab('my-requests');
     } catch (error: any) {
-      console.error("Erro ao salvar:", error);
-      handleFirestoreError(error, OperationType.WRITE, `requests/${editingRequest?.id || 'new'}`);
-      showToast(`Erro ao salvar: ${error.message}`, "error");
+      console.error("Erro crítico ao salvar:", error);
+      showToast(`Não foi possível salvar: ${error.message}. Verifique sua conexão e tente novamente.`, "error");
     } finally {
       setIsSubmittingRequest(false);
     }
