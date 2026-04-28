@@ -299,19 +299,19 @@ export default function App() {
   const [letterheadImage, setLetterheadImage] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'inventory' | 'history' | 'requests' | 'reports' | 'my-requests' | 'new-request' | 'users' | 'trash' | 'leader-stats'>('dashboard');
   const leaderStatistics = useMemo(() => {
-    if (userProfile?.role !== 'LÍDER') return { topRequested: [], topDelivered: [] };
+    if (userProfile?.role !== 'LÍDER' && userProfile?.role !== 'SETOR') return { topRequested: [], topDelivered: [] };
 
     const requestedMap: Record<string, number> = {};
     const deliveredMap: Record<string, number> = {};
 
     allRequestItems.forEach(item => {
-      // Requested: everyone considers quantity_requested
+      const parentRequest = requests.find(r => r.id === item.request_id);
+      if (!parentRequest || parentRequest.sector !== selectedSector) return;
+
       const normalizedName = item.product_name;
       requestedMap[normalizedName] = (requestedMap[normalizedName] || 0) + (item.quantity_requested || 0);
 
-      // Delivered: only if the parent request is 'ENTREGUE'
-      const parentRequest = requests.find(r => r.id === item.request_id);
-      if (parentRequest?.status === 'ENTREGUE') {
+      if (parentRequest.status === 'ENTREGUE') {
         deliveredMap[normalizedName] = (deliveredMap[normalizedName] || 0) + (item.quantity_approved || 0);
       }
     });
@@ -327,7 +327,7 @@ export default function App() {
       .slice(0, 10);
 
     return { topRequested, topDelivered };
-  }, [allRequestItems, requests, userProfile]);
+  }, [allRequestItems, requests, userProfile, selectedSector]);
   const [showAddModal, setShowAddModal] = useState(false);
   const [showTransactionModal, setShowTransactionModal] = useState<{show: boolean, type: 'entry' | 'exit', item?: Item}>({ show: false, type: 'entry' });
   const [transactionMinStock, setTransactionMinStock] = useState<number>(NaN);
@@ -3731,7 +3731,7 @@ export default function App() {
               >
                 <BarChart3 size={20} /> Relatórios
               </button>
-              {userProfile?.role === 'LÍDER' && (
+              {(userProfile?.role === 'LÍDER' || userProfile?.role === 'SETOR') && (
                 <button 
                   onClick={() => setActiveTab('leader-stats')}
                   className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'leader-stats' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
