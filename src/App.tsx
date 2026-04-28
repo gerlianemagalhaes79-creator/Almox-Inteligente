@@ -1482,83 +1482,122 @@ export default function App() {
 
   const handleApproveRequest = async (requestId: string, items: RequestItem[]) => {
     try {
-      // We will perform approval AND stock deduction in a single transaction
-      await runTransaction(db, async (transaction) => {
-        const requestRef = doc(db, 'requests', requestId);
-        const requestSnap = await transaction.get(requestRef);
-        
-        if (!requestSnap.exists()) {
-          throw new Error("Solicitação não encontrada.");
+      const batch = writeBatch(db);
+      const requestRef = doc(db, 'requests', requestId);
+      batch.update(requestRef, { 
+        status: 'APROVADO',
+        adminObservation: adminObservation,
+        updatedAt: serverTimestamp()
+      });
+      
+      items.forEach(item => {
+        const itemRef = doc(db, 'request_items', item.id);
+        batch.update(itemRef, { quantity_approved: item.quantity_approved });
+      });
+
+      await batch.commit();
+      
+      const request = requests.find(r => r.id === requestId);
+      if (request) {
+        const userSnap = await getDocs(query(collection(db, 'users'), where('email', '==', request.requesterEmail)));
+        if (!userSnap.empty) {
+          const msg = adminObservation 
+            ? `Sua solicitação #${requestId.slice(-5).toUpperCase()} foi aprovada. Obs: ${adminObservation}`
+            : `Sua solicitação #${requestId.slice(-5).toUpperCase()} foi aprovada.`;
+          await createNotification(userSnap.docs[0].id, 'Solicitação Aprovada', msg, requestId);
         }
+      }
 
-        const requestData = requestSnap.data() as MaterialRequest;
-        if (requestData.status !== 'PENDENTE') {
-          throw new Error("Esta solicitação já foi processada.");
-        }
+      showToast("Solicitação aprovada!", "success");
+      setShowRequestDetailModal({ show: false });
+    } catch (error: any) {
+      handleFirestoreError(error, OperationType.UPDATE, `requests/${requestId}`);
+      showToast(`Erro ao aprovar: ${error.message}`, "error");
+    }
+  };
 
-        // 1. Mark request as ENTREGUE (since stock is being deducted now)
-        transaction.update(requestRef, { 
-          status: 'ENTREGUE',
-          adminObservation: adminObservation,
-          deliveredAt: new Date().toISOString(),
-          updatedAt: serverTimestamp()
-        });
+  const handleDeliverRequest = async (requestId: string, requestItems: RequestItem[]) => {
+    try {
+      showToast("Processando entrega... Aguarde.", "info");
+      
+      const requestRef = doc(db, 'requests', requestId);
+      const requestSnap = await getDoc(requestRef);
+      if (!requestSnap.exists()) throw new Error("Solicitação não encontrada.");
+      const requestData = requestSnap.data() as MaterialRequest;
+
+      if (requestData.status === 'ENTREGUE') {
+        showToast("Esta solicitação já foi entregue.", "info");
+        return;
+      }
+
+      // Pre-fetch all necessary stock data
+      const itemsStockData: any[] = [];
+      for (const reqItem of requestItems) {
+        if (reqItem.quantity_approved <= 0) continue;
+
+        const batchesSnap = await getDocs(query(
+          collection(db, 'items'),
+          where('name', '==', reqItem.product_name),
+          where('quantity', '>', 0),
+          where('deletedAt', '==', null)
+        ));
         
-        // 2. Update item quantities in request_items
-        items.forEach(item => {
-          const itemRef = doc(db, 'request_items', item.id);
-          transaction.update(itemRef, { quantity_approved: item.quantity_approved });
+        let batches = batchesSnap.docs.map(d => ({ id: d.id, ...d.data() as Item }));
+        batches.sort((a, b) => {
+          if (a.expiry_date === 'Indeterminada' || !a.expiry_date) return 1;
+          if (b.expiry_date === 'Indeterminada' || !b.expiry_date) return -1;
+          return new Date(a.expiry_date).getTime() - new Date(b.expiry_date).getTime();
         });
 
-        // 3. Deduct from stock (Automatic Baixa)
-        // We need all available batches for these products first. 
-        // Transactions can't do collection queries easily without passing the data, 
-        // but we can query BEFORE the transaction or inside if we use the data we have.
-        // To be safe and simplify, I will reuse the deduction logic but since I'm in a transaction,
-        // I'll fetch the batches now.
-        
-        for (const reqItem of items) {
-          if (reqItem.quantity_approved <= 0) continue;
-
-          // Fetch fresh batches for this product
-          const productBatchesQuery = query(
+        let pharmItems: any[] = [];
+        if (requestData.sector === 'Farmácia') {
+          const pSnap = await getDocs(query(
             collection(db, 'items'),
             where('name', '==', reqItem.product_name),
-            where('quantity', '>', 0),
+            where('location', '==', 'Farmácia'),
             where('deletedAt', '==', null)
-          );
-          
-          const batchesSnap = await getDocs(productBatchesQuery);
-          let batches = batchesSnap.docs.map(d => ({ id: d.id, ...d.data() as Item }));
-          
-          // Sort FIFO
-          batches.sort((a, b) => {
-            if (a.expiry_date === 'Indeterminada' || !a.expiry_date) return 1;
-            if (b.expiry_date === 'Indeterminada' || !b.expiry_date) return -1;
-            return new Date(a.expiry_date).getTime() - new Date(b.expiry_date).getTime();
-          });
+          ));
+          pharmItems = pSnap.docs.map(d => ({ id: d.id, batch_number: d.data().batch_number, ref: d.ref }));
+        }
 
-          let remainingToDeduct = reqItem.quantity_approved;
+        itemsStockData.push({ reqItem, batches, pharmItems });
+      }
+
+      await runTransaction(db, async (transaction) => {
+        // Read current request state within transaction
+        const tRequestSnap = await transaction.get(requestRef);
+        const tRequestData = tRequestSnap.data() as MaterialRequest | undefined;
+        if (tRequestData?.status === 'ENTREGUE') return;
+
+        transaction.update(requestRef, { 
+          status: 'ENTREGUE',
+          deliveredAt: new Date().toISOString(),
+          deliveredBy: user?.email,
+          updatedAt: serverTimestamp()
+        });
+
+        for (const { reqItem, batches, pharmItems } of itemsStockData) {
+          let remaining = reqItem.quantity_approved;
           
           for (const batch of batches) {
-            if (remainingToDeduct <= 0) break;
+            if (remaining <= 0) break;
 
-            const batchRef = doc(db, 'items', batch.id);
-            // Re-fetch within transaction to be absolutely safe
-            const batchSnap = await transaction.get(batchRef);
-            if (!batchSnap.exists()) continue;
+            const tBatchRef = doc(db, 'items', batch.id);
+            const tBatchSnap = await transaction.get(tBatchRef);
+            if (!tBatchSnap.exists()) continue;
             
-            const currentQty = batchSnap.data().quantity;
+            const tBatchData = tBatchSnap.data() as Item;
+            const currentQty = tBatchData.quantity || 0;
             if (currentQty <= 0) continue;
 
-            const toTake = Math.min(currentQty, remainingToDeduct);
+            const toTake = Math.min(currentQty, remaining);
             
-            transaction.update(batchRef, {
+            transaction.update(tBatchRef, {
               quantity: currentQty - toTake,
               updatedAt: serverTimestamp()
             });
 
-            // Record transaction
+            // Log Transaction
             const transRef = doc(collection(db, 'transactions'));
             transaction.set(transRef, {
               item_id: batch.id,
@@ -1576,20 +1615,13 @@ export default function App() {
               expiry_date: batch.expiry_date
             });
 
-            // Automatic transfer to Pharmacy if needed
             if (requestData.sector === 'Farmácia' && batch.location !== 'Farmácia') {
-              const pharmacyItemsQuery = query(
-                collection(db, 'items'),
-                where('name', '==', reqItem.product_name),
-                where('batch_number', '==', batch.batch_number || ''),
-                where('location', '==', 'Farmácia'),
-                where('deletedAt', '==', null)
-              );
-              const pharmSnap = await getDocs(pharmacyItemsQuery);
-              
-              if (!pharmSnap.empty) {
-                transaction.update(pharmSnap.docs[0].ref, {
-                  quantity: (pharmSnap.docs[0].data().quantity || 0) + toTake,
+              const existingPharm = pharmItems.find((p: any) => p.batch_number === batch.batch_number);
+              if (existingPharm) {
+                const tPharmSnap = await transaction.get(existingPharm.ref);
+                const tPharmData = tPharmSnap.data() as Item | undefined;
+                transaction.update(existingPharm.ref, {
+                  quantity: (tPharmData?.quantity || 0) + toTake,
                   updatedAt: serverTimestamp()
                 });
               } else {
@@ -1613,283 +1645,40 @@ export default function App() {
                 });
               }
             }
-
-            remainingToDeduct -= toTake;
+            remaining -= toTake;
           }
 
-          if (remainingToDeduct > 0) {
-            throw new Error(`Erro fatal: Estoque insuficiente para deduzir totalmente "${reqItem.product_name}".`);
+          if (remaining > 0) {
+            throw new Error(`Estoque insuficiente para "${reqItem.product_name}".`);
           }
         }
       });
 
-      // Notify and generate receipt
-      const request = requests.find(r => r.id === requestId);
-      if (request) {
-        const userSnap = await getDocs(query(collection(db, 'users'), where('email', '==', request.requesterEmail)));
-        if (!userSnap.empty) {
-          const msg = adminObservation 
-            ? `Sua solicitação #${requestId.slice(-5).toUpperCase()} foi aprovada e entregue com sucesso. Obs: ${adminObservation}`
-            : `Sua solicitação #${requestId.slice(-5).toUpperCase()} foi aprovada e entregue com sucesso.`;
-          await createNotification(userSnap.docs[0].id, 'Solicitação Entregue', msg, requestId);
-        }
-
-        const itemsForReceipt = items
-          .filter(i => i.quantity_approved > 0)
-          .map(i => ({
-            product_name: i.product_name,
-            quantity: i.quantity_approved
-          }));
-        
-        if (itemsForReceipt.length > 0) {
-          handleExportDeliveryReceiptPDF({
-            sector: request.sector,
-            items: itemsForReceipt,
-            requestId: requestId,
-            date: new Date().toISOString()
-          });
-        }
-      }
-
-      showToast("Solicitação aprovada e estoque baixado automaticamente!", "success");
+      // Cleanup and UI updates
+      showToast("Entrega confirmada e estoque baixado!", "success");
       setShowRequestDetailModal({ show: false });
-    } catch (error: any) {
-      handleFirestoreError(error, OperationType.UPDATE, `requests/${requestId}`);
-      showToast(`Erro ao aprovar e baixar estoque: ${error.message}`, "error");
-    }
-  };
 
-  const handleDeliverRequest = async (requestId: string, requestItems: RequestItem[]) => {
-    console.log('Iniciando entrega da solicitação:', requestId, 'Itens:', requestItems);
-    if (!requestItems || requestItems.length === 0) {
-      showToast("Nenhum item encontrado nesta solicitação.", "error");
-      return;
-    }
-
-    try {
-      // 1. Fetch all available batches for the products in this request
-      const productNames = [...new Set(requestItems.map(ri => ri.product_name))];
-      console.log('Buscando lotes para os produtos:', productNames);
-      
-      // Firestore 'in' query is limited to 10-30 items. Let's chunk it.
-      const chunks = [];
-      for (let i = 0; i < productNames.length; i += 10) {
-        chunks.push(productNames.slice(i, i + 10));
+      // Notifications
+      const uSnap = await getDocs(query(collection(db, 'users'), where('email', '==', requestData.requesterEmail)));
+      if (!uSnap.empty) {
+        await createNotification(uSnap.docs[0].id, 'Entrega Realizada', `Sua solicitação #${requestId.slice(-5).toUpperCase()} foi entregue.`, requestId);
       }
 
-      const availableBatchesByProduct: Record<string, any[]> = {};
-      
-      for (const chunk of chunks) {
-        const itemsSnapshot = await getDocs(query(
-          collection(db, 'items'),
-          where('name', 'in', chunk),
-          where('quantity', '>', 0)
-        ));
-
-        itemsSnapshot.docs.forEach(doc => {
-          const data = doc.data();
-          if (!availableBatchesByProduct[data.name]) {
-            availableBatchesByProduct[data.name] = [];
-          }
-          availableBatchesByProduct[data.name].push({ id: doc.id, ...data });
-        });
-      }
-
-      // Sort batches by expiry date (FIFO-ish)
-      Object.keys(availableBatchesByProduct).forEach(name => {
-        availableBatchesByProduct[name].sort((a, b) => {
-          if (a.expiry_date === 'Indeterminada') return 1;
-          if (b.expiry_date === 'Indeterminada') return -1;
-          return new Date(a.expiry_date).getTime() - new Date(b.expiry_date).getTime();
-        });
+      // Receipt
+      const itemsForReceipt = requestItems.filter(i => i.quantity_approved > 0).map(i => ({
+        product_name: i.product_name,
+        quantity: i.quantity_approved
+      }));
+      handleExportDeliveryReceiptPDF({
+        sector: requestData.sector,
+        items: itemsForReceipt,
+        requestId: requestId,
+        date: new Date().toISOString()
       });
 
-      let deliveredSector = '';
-      
-      await runTransaction(db, async (transaction) => {
-        console.log('Iniciando transação do Firestore...');
-        const requestRef = doc(db, 'requests', requestId);
-        const requestSnap = await transaction.get(requestRef);
-        
-        if (!requestSnap.exists()) {
-          throw new Error("Solicitação não encontrada no banco de dados.");
-        }
-
-        const requestData = requestSnap.data() as MaterialRequest;
-        deliveredSector = requestData.sector;
-        console.log('Dados da solicitação recuperados:', requestData.status);
-        
-        if (requestData.status === 'ENTREGUE') {
-          console.log('Solicitação já está marcada como ENTREGUE.');
-          return;
-        }
-
-        for (const reqItem of requestItems) {
-          console.log(`Processando item: ${reqItem.product_name}, Quantidade: ${reqItem.quantity_approved}`);
-          let remainingToDeduct = reqItem.quantity_approved;
-          const batches = availableBatchesByProduct[reqItem.product_name] || [];
-          
-          let totalAvailableForProduct = batches.reduce((sum, b) => sum + b.quantity, 0);
-          
-          if (totalAvailableForProduct < remainingToDeduct) {
-            throw new Error(`Estoque insuficiente para "${reqItem.product_name}". Solicitado: ${remainingToDeduct}, Disponível total: ${totalAvailableForProduct}.`);
-          }
-
-          for (const batch of batches) {
-            if (remainingToDeduct <= 0) break;
-
-            const batchRef = doc(db, 'items', batch.id);
-            const batchSnap = await transaction.get(batchRef);
-            
-            if (!batchSnap.exists()) {
-              console.warn(`Lote ${batch.id} não existe mais.`);
-              continue;
-            }
-            
-            const currentBatchData = batchSnap.data();
-            const availableInBatch = currentBatchData.quantity;
-
-            if (availableInBatch <= 0) {
-              console.warn(`Lote ${batch.id} está vazio.`);
-              continue;
-            }
-
-            const amountFromThisBatch = Math.min(availableInBatch, remainingToDeduct);
-            console.log(`Deduzindo ${amountFromThisBatch} do lote ${batch.batch_number} (ID: ${batch.id})`);
-            
-            transaction.update(batchRef, {
-              quantity: availableInBatch - amountFromThisBatch,
-              updatedAt: serverTimestamp()
-            });
-
-            const transRef = doc(collection(db, 'transactions'));
-            transaction.set(transRef, {
-              item_id: batch.id,
-              item_name: reqItem.product_name,
-              type: 'exit',
-              origin: currentBatchData.origin,
-              quantity: amountFromThisBatch,
-              sector: requestData.sector,
-              location: 'Almoxarifado',
-              date: new Date().toISOString(),
-              responsible: user?.displayName || user?.email,
-              responsibleEmail: user?.email,
-              exitReason: 'consumo',
-              batch_number: currentBatchData.batch_number,
-              expiry_date: currentBatchData.expiry_date
-            });
-
-            // Automatic transfer to Pharmacy stock if sector is 'Farmácia'
-            if (requestData.sector === 'Farmácia') {
-              const pharmacyItemsQuery = query(
-                collection(db, 'items'),
-                where('name', '==', reqItem.product_name),
-                where('batch_number', '==', currentBatchData.batch_number || ''),
-                where('location', '==', 'Farmácia'),
-                where('deletedAt', '==', null)
-              );
-              
-              const pharmacyItemsSnap = await getDocs(pharmacyItemsQuery);
-              
-              let pharmacyItemId = '';
-              if (!pharmacyItemsSnap.empty) {
-                const pharmacyItemDoc = pharmacyItemsSnap.docs[0];
-                pharmacyItemId = pharmacyItemDoc.id;
-                transaction.update(pharmacyItemDoc.ref, {
-                  quantity: (pharmacyItemDoc.data().quantity || 0) + amountFromThisBatch,
-                  updatedAt: serverTimestamp()
-                });
-              } else {
-                const newItemRef = doc(collection(db, 'items'));
-                pharmacyItemId = newItemRef.id;
-                transaction.set(newItemRef, {
-                  name: reqItem.product_name,
-                  description: currentBatchData.description || '',
-                  quantity: amountFromThisBatch,
-                  min_quantity: currentBatchData.min_quantity || 5,
-                  expiry_date: currentBatchData.expiry_date,
-                  origin: currentBatchData.origin,
-                  unit_price: currentBatchData.unit_price,
-                  supplier: currentBatchData.supplier,
-                  category: currentBatchData.category,
-                  batch_number: currentBatchData.batch_number,
-                  location: 'Farmácia',
-                  createdAt: new Date().toISOString()
-                });
-              }
-
-              // Record entry in Pharmacy history
-              const pharmTransRef = doc(collection(db, 'transactions'));
-              transaction.set(pharmTransRef, {
-                item_id: pharmacyItemId,
-                item_name: reqItem.product_name,
-                type: 'entry',
-                origin: currentBatchData.origin,
-                quantity: amountFromThisBatch,
-                location: 'Farmácia',
-                date: new Date().toISOString(),
-                responsible: 'Sistema (Solicitação)',
-                batch_number: currentBatchData.batch_number,
-                expiry_date: currentBatchData.expiry_date,
-                supplier: currentBatchData.supplier
-              });
-            }
-
-            remainingToDeduct -= amountFromThisBatch;
-          }
-
-          if (remainingToDeduct > 0) {
-            throw new Error(`Não foi possível deduzir a quantidade total para "${reqItem.product_name}" devido a alterações simultâneas no estoque.`);
-          }
-        }
-
-        transaction.update(requestRef, { 
-          status: 'ENTREGUE',
-          deliveredAt: new Date().toISOString(),
-          deliveredBy: user?.email,
-          adminObservation: adminObservation || requestData.adminObservation || ''
-        });
-        console.log('Transação concluída com sucesso.');
-      });
-
-      const request = requests.find(r => r.id === requestId);
-      if (request) {
-        const userSnap = await getDocs(query(collection(db, 'users'), where('email', '==', request.requesterEmail)));
-        if (!userSnap.empty) {
-          const msg = adminObservation 
-            ? `Sua solicitação #${requestId.slice(-5).toUpperCase()} foi entregue. Obs: ${adminObservation}`
-            : `Sua solicitação #${requestId.slice(-5).toUpperCase()} foi entregue.`;
-          await createNotification(userSnap.docs[0].id, 'Material Entregue', msg, requestId);
-        }
-      }
-
-      showToast("Entrega confirmada e estoque atualizado!", "success");
-      
-      // Auto-generate delivery receipt for the request
-      const itemsForReceipt = requestItems
-        .filter(ri => ri.quantity_approved > 0)
-        .map(i => ({
-          product_name: i.product_name,
-          quantity: i.quantity_approved
-        }));
-      
-      if (itemsForReceipt.length > 0 && deliveredSector) {
-        handleExportDeliveryReceiptPDF({
-          sector: deliveredSector,
-          items: itemsForReceipt,
-          requestId: requestId,
-          date: new Date().toISOString()
-        });
-      }
-
-      setShowRequestDetailModal({ show: false });
     } catch (error: any) {
-      handleFirestoreError(error, OperationType.WRITE, `requests/${requestId}/delivery`);
-      if (error.message.includes('insufficient permissions')) {
-        showToast("Erro de permissão: Você não tem autorização para atualizar o estoque.", "error");
-      } else {
-        showToast(`Erro ao processar entrega: ${error.message}`, "error");
-      }
+      console.error("Erro na entrega:", error);
+      showToast(`Erro: ${error.message}`, "error");
     }
   };
 
@@ -7715,9 +7504,17 @@ export default function App() {
                       onClick={() => handleApproveRequest(showRequestDetailModal.request!.id, allRequestItems.filter(ri => ri.request_id === showRequestDetailModal.request?.id))}
                       className="flex-1 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all"
                     >
-                      Aprovar e Baixar Estoque
+                      Aprovar Solicitação
                     </button>
                   </>
+                )}
+                {showRequestDetailModal.request.status === 'APROVADO' && (
+                  <button 
+                    onClick={() => handleDeliverRequest(showRequestDetailModal.request!.id, allRequestItems.filter(ri => ri.request_id === showRequestDetailModal.request?.id))}
+                    className="w-full py-4 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 transition-all flex items-center justify-center gap-2 shadow-lg"
+                  >
+                    <CheckCircle size={20} /> Confirmar Entrega e Baixar Estoque
+                  </button>
                 )}
               </div>
             )}
