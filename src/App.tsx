@@ -1548,19 +1548,23 @@ export default function App() {
         return;
       }
 
-      // Pre-fetch all necessary stock data
+      // Pre-fetch all necessary stock data with normalized name matching
+      const itemsSnapshot = await getDocs(collection(db, 'items'));
+      const allActiveItems = itemsSnapshot.docs
+        .map(d => ({ id: d.id, ...d.data() } as Item))
+        .filter(i => !i.deletedAt);
+
       const itemsStockData: any[] = [];
       for (const reqItem of requestItems) {
         if (reqItem.quantity_approved <= 0) continue;
 
-        const batchesSnap = await getDocs(query(
-          collection(db, 'items'),
-          where('name', '==', reqItem.product_name),
-          where('quantity', '>', 0),
-          where('deletedAt', '==', null)
-        ));
+        const normalizedReqName = normalizeString(reqItem.product_name);
         
-        let batches = batchesSnap.docs.map(d => ({ id: d.id, ...d.data() as Item }));
+        // Find all batches that represent this product (same normalized name)
+        let batches = allActiveItems.filter(item => 
+          normalizeString(item.name) === normalizedReqName && (item.quantity || 0) > 0
+        );
+
         batches.sort((a, b) => {
           if (a.expiry_date === 'Indeterminada' || !a.expiry_date) return 1;
           if (b.expiry_date === 'Indeterminada' || !b.expiry_date) return -1;
@@ -1569,13 +1573,9 @@ export default function App() {
 
         let pharmItems: any[] = [];
         if (requestData.sector === 'Farmácia') {
-          const pSnap = await getDocs(query(
-            collection(db, 'items'),
-            where('name', '==', reqItem.product_name),
-            where('location', '==', 'Farmácia'),
-            where('deletedAt', '==', null)
-          ));
-          pharmItems = pSnap.docs.map(d => ({ id: d.id, batch_number: d.data().batch_number, ref: d.ref }));
+          pharmItems = allActiveItems
+            .filter(item => normalizeString(item.name) === normalizedReqName && item.location === 'Farmácia')
+            .map(item => ({ id: item.id, batch_number: item.batch_number, ref: doc(db, 'items', item.id) }));
         }
 
         itemsStockData.push({ reqItem, batches, pharmItems });
