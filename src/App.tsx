@@ -3903,12 +3903,14 @@ export default function App() {
                       </select>
                     </div>
                   )}
-                  <button 
-                    onClick={handleExportExcel}
-                    className="flex items-center gap-2 bg-emerald-600 text-white px-4 py-1.5 rounded-xl text-xs font-bold hover:bg-emerald-700 transition-all shadow-sm"
-                  >
-                    <Download size={14} /> Exportar Excel
-                  </button>
+                  {isAdmin && (
+                    <button 
+                      onClick={handleExportExcel}
+                      className="flex items-center gap-2 bg-emerald-600 text-white px-4 py-1.5 rounded-xl text-xs font-bold hover:bg-emerald-700 transition-all shadow-sm"
+                    >
+                      <Download size={14} /> Exportar Excel
+                    </button>
+                  )}
                   <button 
                     onClick={handleExportMaterialsCatalogPDF}
                     className="flex items-center gap-2 bg-blue-600 text-white px-4 py-1.5 rounded-xl text-xs font-bold hover:bg-blue-700 transition-all shadow-sm"
@@ -5051,26 +5053,28 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Top Consumed Items */}
-                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
-                  <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
-                    <ArrowDownLeft size={18} className="text-rose-600" /> Ranking: Itens Mais Consumidos
-                  </h4>
-                  <div className="h-[300px] w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={reportData.topConsumed} layout="vertical">
-                        <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#F5F5F4" />
-                        <XAxis type="number" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
-                        <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1C1917', fontWeight: 'bold'}} width={120} />
-                        <Tooltip 
-                          cursor={{fill: '#FAFAF9'}}
-                          contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                        />
-                        <Bar dataKey="value" name="Qtd Consumida" fill="#f43f5e" radius={[0, 8, 8, 0]} barSize={20} />
-                      </BarChart>
-                    </ResponsiveContainer>
+                {/* Top Consumed Items - Only for Admin */}
+                {isAdmin && (
+                  <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
+                    <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
+                      <ArrowDownLeft size={18} className="text-rose-600" /> Ranking: Itens Mais Consumidos
+                    </h4>
+                    <div className="h-[300px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={reportData.topConsumed} layout="vertical">
+                          <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#F5F5F4" />
+                          <XAxis type="number" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
+                          <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1C1917', fontWeight: 'bold'}} width={120} />
+                          <Tooltip 
+                            cursor={{fill: '#FAFAF9'}}
+                            contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                          />
+                          <Bar dataKey="value" name="Qtd Consumida" fill="#f43f5e" radius={[0, 8, 8, 0]} barSize={20} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                </div>
+                )}
 
                 {/* Only for Admin Charts */}
                 {isAdmin && (
@@ -5205,49 +5209,53 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Top Consumed Items */}
-                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
-                  <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
-                    <ArrowDownLeft size={18} className="text-rose-600" /> Itens Mais Consumidos (Top 10)
-                  </h4>
-                  <div className="h-[400px] w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={reportData.topConsumed}>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F5F5F4" />
-                        <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1C1917', fontWeight: 'bold'}} />
-                        <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
-                        <Tooltip 
-                          cursor={{fill: '#FAFAF9'}}
-                          contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                        />
-                        <Bar dataKey="value" name="Qtd Consumida" fill="#f43f5e" radius={[8, 8, 0, 0]} barSize={40} />
-                        <Legend />
-                      </BarChart>
-                    </ResponsiveContainer>
+                {/* Top Consumed Items - Only for Admin */}
+                {isAdmin && (
+                  <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
+                    <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
+                      <ArrowDownLeft size={18} className="text-rose-600" /> Itens Mais Consumidos (Top 10)
+                    </h4>
+                    <div className="h-[400px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={reportData.topConsumed}>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F5F5F4" />
+                          <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1C1917', fontWeight: 'bold'}} />
+                          <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
+                          <Tooltip 
+                            cursor={{fill: '#FAFAF9'}}
+                            contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                          />
+                          <Bar dataKey="value" name="Qtd Consumida" fill="#f43f5e" radius={[8, 8, 0, 0]} barSize={40} />
+                          <Legend />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                </div>
+                )}
 
-                {/* Top Requested Items */}
-                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
-                  <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
-                    <Plus size={18} className="text-blue-600" /> Itens Mais Solicitados (Top 10)
-                  </h4>
-                  <div className="h-[400px] w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={reportData.topRequested}>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F5F5F4" />
-                        <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1C1917', fontWeight: 'bold'}} />
-                        <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
-                        <Tooltip 
-                          cursor={{fill: '#FAFAF9'}}
-                          contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                        />
-                        <Bar dataKey="value" name="Qtd Solicitada" fill="#3b82f6" radius={[8, 8, 0, 0]} barSize={40} />
-                        <Legend />
-                      </BarChart>
-                    </ResponsiveContainer>
+                {/* Top Requested Items - Only for Admin */}
+                {isAdmin && (
+                  <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
+                    <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
+                      <Plus size={18} className="text-blue-600" /> Itens Mais Solicitados (Top 10)
+                    </h4>
+                    <div className="h-[400px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={reportData.topRequested}>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F5F5F4" />
+                          <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1C1917', fontWeight: 'bold'}} />
+                          <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
+                          <Tooltip 
+                            cursor={{fill: '#FAFAF9'}}
+                            contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                          />
+                          <Bar dataKey="value" name="Qtd Solicitada" fill="#3b82f6" radius={[8, 8, 0, 0]} barSize={40} />
+                          <Legend />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                </div>
+                )}
 
                 {/* Extra vs Contract Comparison */}
                 {isAdmin && (
@@ -5320,15 +5328,17 @@ export default function App() {
                         </div>
                       )}
                       <div className="flex gap-2">
-                        <button 
-                          onClick={() => {
-                            setSelectedRoomCategories([...categories]);
-                            setShowRoomInventoryModal(true);
-                          }}
-                          className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-blue-700 transition-all shadow-sm"
-                        >
-                          <Printer size={14} /> Mapa de Sala (Porta)
-                        </button>
+                        {isAdmin && (
+                          <button 
+                            onClick={() => {
+                              setSelectedRoomCategories([...categories]);
+                              setShowRoomInventoryModal(true);
+                            }}
+                            className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-blue-700 transition-all shadow-sm"
+                          >
+                            <Printer size={14} /> Mapa de Sala (Porta)
+                          </button>
+                        )}
                         <button 
                           onClick={handleExportConsumptionPDF}
                           className="flex items-center gap-2 bg-[#1C1917] text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-[#292524] transition-all shadow-sm"
