@@ -1485,6 +1485,12 @@ export default function App() {
   };
 
   const handleDeleteRequest = async (requestId: string) => {
+    const reqToDel = requests.find(r => r.id === requestId);
+    if (reqToDel?.status === 'ENTREGUE') {
+      showToast("Não é possível excluir uma solicitação que já foi entregue.", "error");
+      return;
+    }
+    
     if (!window.confirm("Tem certeza que deseja enviar esta solicitação para a lixeira? Ela será excluída definitivamente após 3 dias.")) return;
     try {
       await updateDoc(doc(db, 'requests', requestId), {
@@ -5808,7 +5814,7 @@ export default function App() {
                             >
                               Ver Detalhes
                             </button>
-                            {isAdmin && (
+                            {isAdmin && req.status !== 'ENTREGUE' && (
                               <button 
                                 onClick={() => handleDeleteRequest(req.id)}
                                 className="p-2 text-rose-400 hover:bg-rose-50 hover:text-rose-600 rounded-xl transition-all"
