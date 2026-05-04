@@ -592,6 +592,11 @@ export default function App() {
     end: format(new Date(), 'yyyy-MM-dd')
   });
   const [reportSectorFilter, setReportSectorFilter] = useState<string>('all');
+  const [pcaRange, setPcaRange] = useState({
+    start: format(subDays(new Date(), 365), 'yyyy-MM-dd'),
+    end: format(new Date(), 'yyyy-MM-dd')
+  });
+  const [pcaCategory, setPcaCategory] = useState('all');
   const [originFilter, setOriginFilter] = useState<'all' | 'contract' | 'extra' | 'donation'>('all');
 
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
@@ -2438,6 +2443,142 @@ export default function App() {
     }
   };
 
+  const handleExportPCA = () => {
+    try {
+      const doc = new jsPDF();
+      const start = startOfDay(parseISO(pcaRange.start));
+      const end = endOfDay(parseISO(pcaRange.end));
+
+      const consumptionTransactions = transactions.filter(t => {
+        if (t.deletedAt) return false;
+        if (t.type !== 'exit' || t.exitReason !== 'consumo') return false;
+        const d = new Date(t.date);
+        return d >= start && d <= end;
+      });
+
+      // Grouping by category
+      const groupedData: Record<string, Record<string, { name: string, quantity: number, unit: string }>> = {};
+
+      consumptionTransactions.forEach(t => {
+        const item = items.find(i => i.id === t.item_id);
+        const category = item?.category || 'Outros';
+        
+        if (pcaCategory !== 'all' && category !== pcaCategory) return;
+
+        if (!groupedData[category]) {
+          groupedData[category] = {};
+        }
+
+        const itemName = t.item_name;
+        if (!groupedData[category][itemName]) {
+          groupedData[category][itemName] = {
+            name: itemName,
+            quantity: 0,
+            unit: item?.description || 'UN'
+          };
+        }
+        groupedData[category][itemName].quantity += t.quantity;
+      });
+
+      // Logo/Header
+      let currentY = 20;
+      if (letterheadImage) {
+        try {
+          doc.addImage(letterheadImage, 'PNG', 14, currentY, 182, 25);
+          currentY += 30;
+        } catch (e) {
+          currentY += 5;
+        }
+      }
+
+      doc.setFontSize(18);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(28, 25, 23);
+      doc.text('Relatório PCA - Plano Anual de Contratação', 105, currentY, { align: 'center' });
+      currentY += 8;
+      
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(120, 113, 108);
+      doc.text(`Período de Consumo: ${format(start, 'dd/MM/yyyy')} até ${format(end, 'dd/MM/yyyy')}`, 105, currentY, { align: 'center' });
+      currentY += 5;
+      doc.text(`Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 105, currentY, { align: 'center' });
+      currentY += 15;
+
+      const categories = Object.keys(groupedData).sort();
+      
+      if (categories.length === 0) {
+        doc.setFontSize(12);
+        doc.text('Nenhum consumo registrado no período selecionado.', 105, currentY + 20, { align: 'center' });
+      } else {
+        categories.forEach((category) => {
+          const itemsInCategory = Object.values(groupedData[category]).sort((a, b) => a.name.localeCompare(b.name));
+          
+          const tableData = itemsInCategory.map(item => [
+            item.name,
+            `${item.quantity}`,
+            item.unit
+          ]);
+
+          if (currentY > 230) {
+            doc.addPage();
+            currentY = 20;
+          }
+
+          // Category Header - Modern and Minimalist
+          doc.setFontSize(11);
+          doc.setFont('helvetica', 'bold');
+          doc.setTextColor(30, 64, 175); // Dark blue text
+          doc.setFillColor(239, 246, 255); // Very light blue background
+          doc.rect(14, currentY, 182, 10, 'F');
+          
+          // Thin border for header
+          doc.setDrawColor(191, 219, 254);
+          doc.rect(14, currentY, 182, 10, 'S');
+          
+          doc.text(category.toUpperCase(), 18, currentY + 7);
+          currentY += 12;
+
+          autoTable(doc, {
+            startY: currentY,
+            head: [['Material', 'Quantidade Total Consumida', 'Unidade']],
+            body: tableData,
+            theme: 'grid',
+            headStyles: { 
+              fillColor: [248, 250, 252], 
+              textColor: [71, 85, 105], 
+              fontSize: 9, 
+              fontStyle: 'bold',
+              lineWidth: 0.1,
+              lineColor: [226, 232, 240]
+            },
+            bodyStyles: { 
+              fontSize: 8, 
+              textColor: [30, 41, 59],
+              lineWidth: 0.1,
+              lineColor: [241, 245, 249]
+            },
+            alternateRowStyles: {
+              fillColor: [250, 250, 250]
+            },
+            margin: { left: 14, right: 14 },
+            styles: {
+              cellPadding: 3
+            }
+          });
+
+          currentY = (doc as any).lastAutoTable.finalY + 15;
+        });
+      }
+
+      doc.save(`Relatorio_PCA_${format(new Date(), 'dd_MM_yyyy')}.pdf`);
+      showToast("Relatório PCA gerado com sucesso!", "success");
+    } catch (error) {
+      console.error('Erro ao gerar relatório PCA:', error);
+      showToast("Erro ao gerar relatório PCA.", "error");
+    }
+  };
+
   const handleExportRoomInventoryPDF = (roomFilter: string, displayRoomName: string, filteredCategories: string[]) => {
     try {
       // @ts-ignore - jsPDF types might not be perfectly aligned with imports
@@ -3917,12 +4058,14 @@ export default function App() {
                       <Download size={14} /> Exportar Excel
                     </button>
                   )}
-                  <button 
-                    onClick={handleExportMaterialsCatalogPDF}
-                    className="flex items-center gap-2 bg-blue-600 text-white px-4 py-1.5 rounded-xl text-xs font-bold hover:bg-blue-700 transition-all shadow-sm"
-                  >
-                    <FileText size={14} /> Catálogo (Líderes)
-                  </button>
+                  {!isAdmin && (
+                    <button 
+                      onClick={handleExportMaterialsCatalogPDF}
+                      className="flex items-center gap-2 bg-blue-600 text-white px-4 py-1.5 rounded-xl text-xs font-bold hover:bg-blue-700 transition-all shadow-sm"
+                    >
+                      <FileText size={14} /> Catálogo (Líderes)
+                    </button>
+                  )}
                 </div>
               )}
               {(activeTab === 'requests' || activeTab === 'my-requests') && (
@@ -4829,25 +4972,27 @@ export default function App() {
               className="space-y-8"
             >
               {/* Materials Catalog Section - For Leaders (No Stock/Batch/Expiry) */}
-              <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-                  <div className="flex items-center gap-4">
-                    <div className="bg-blue-600 p-3 rounded-2xl text-white">
-                      <BookOpen size={24} />
+              {!isAdmin && (
+                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+                    <div className="flex items-center gap-4">
+                      <div className="bg-blue-600 p-3 rounded-2xl text-white">
+                        <BookOpen size={24} />
+                      </div>
+                      <div>
+                        <h3 className="text-xl font-black text-[#1C1917]">Dúvidas sobre o que pedir?</h3>
+                        <p className="text-[#78716C] text-sm font-medium">Relatório simplificado contendo apenas os nomes dos materiais e categorias.</p>
+                      </div>
                     </div>
-                    <div>
-                      <h3 className="text-xl font-black text-[#1C1917]">Dúvidas sobre o que pedir?</h3>
-                      <p className="text-[#78716C] text-sm font-medium">Relatório simplificado contendo apenas os nomes dos materiais e categorias.</p>
-                    </div>
+                    <button 
+                      onClick={handleExportMaterialsCatalogPDF}
+                      className="w-full sm:w-auto bg-blue-600 text-white px-8 py-3 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-blue-700 transition-all shadow-lg"
+                    >
+                      <Printer size={18} /> Ver Catálogo de Itens
+                    </button>
                   </div>
-                  <button 
-                    onClick={handleExportMaterialsCatalogPDF}
-                    className="w-full sm:w-auto bg-blue-600 text-white px-8 py-3 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-blue-700 transition-all shadow-lg"
-                  >
-                    <Printer size={18} /> Ver Catálogo de Itens
-                  </button>
                 </div>
-              </div>
+              )}
 
               {/* Print Requests Section - Only for Admin */}
               {isAdmin && (
@@ -4894,6 +5039,63 @@ export default function App() {
                   </div>
                 </div>
               )}
+
+              {/* PCA Report Section */}
+              <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
+                <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-6">
+                  <div className="flex items-center gap-4">
+                    <div className="bg-emerald-600 p-3 rounded-2xl text-white">
+                      <Calendar size={24} />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-black text-[#1C1917]">Relatório PCA</h3>
+                      <p className="text-[#78716C] text-sm font-medium">Plano Anual de Contratação - Consumo por tipo de item no período</p>
+                    </div>
+                  </div>
+                  
+                  <div className="flex flex-col md:flex-row items-end gap-4">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 w-full">
+                      <div>
+                        <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1 ml-1">Início</label>
+                        <input 
+                          type="date" 
+                          value={pcaRange.start}
+                          onChange={(e) => setPcaRange({...pcaRange, start: e.target.value})}
+                          className="w-full px-4 py-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-emerald-600/10 font-bold text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1 ml-1">Fim</label>
+                        <input 
+                          type="date" 
+                          value={pcaRange.end}
+                          onChange={(e) => setPcaRange({...pcaRange, end: e.target.value})}
+                          className="w-full px-4 py-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-emerald-600/10 font-bold text-sm"
+                        />
+                      </div>
+                      <div className="col-span-2 sm:col-span-1">
+                        <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1 ml-1">Categoria</label>
+                        <select 
+                          value={pcaCategory}
+                          onChange={(e) => setPcaCategory(e.target.value)}
+                          className="w-full px-4 py-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-emerald-600/10 font-bold text-sm"
+                        >
+                          <option value="all">Todas as Categorias</option>
+                          {Object.keys(CATEGORY_COLORS).sort().map(cat => (
+                            <option key={cat} value={cat}>{cat}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                    <button 
+                      onClick={handleExportPCA}
+                      className="w-full md:w-auto bg-emerald-600 text-white px-8 py-3 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-emerald-700 transition-all shadow-lg whitespace-nowrap"
+                    >
+                      <Download size={18} /> Gerar Relatório PCA
+                    </button>
+                  </div>
+                </div>
+              </div>
 
               {/* Report Stats */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 lg:gap-6">
