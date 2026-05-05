@@ -575,7 +575,7 @@ export default function App() {
   };
   
   const [transactionQty, setTransactionQty] = useState(1);
-  const [exitReason, setExitReason] = useState<'consumo' | 'doacao' | 'vencido'>('consumo');
+  const [exitReason, setExitReason] = useState<'consumo' | 'doacao' | 'vencido' | 'perda'>('consumo');
   const [expiryReason, setExpiryReason] = useState('');
   const [selectedItemId, setSelectedItemId] = useState<string>('');
   const [selectedItemName, setSelectedItemName] = useState<string>('');
@@ -2009,7 +2009,7 @@ export default function App() {
               responsible: user?.displayName || 'Sistema',
               responsibleEmail: user?.email || '',
               exitReason: exitReason,
-              expiryReason: exitReason === 'vencido' ? expiryReason : null,
+              expiryReason: (exitReason === 'vencido' || exitReason === 'perda') ? expiryReason : null,
               donationUnitName: exitReason === 'doacao' ? (donationUnitName || 'Policlínica Bernardo Félix da Silva') : null,
               donationUnitAddress: exitReason === 'doacao' ? donationUnitAddress : null,
               donationUnitCNPJ: exitReason === 'doacao' ? donationUnitCNPJ : null,
@@ -4844,7 +4844,7 @@ export default function App() {
                           <div className="font-bold whitespace-nowrap">{t.item_name}</div>
                           {t.exitReason && t.exitReason !== 'consumo' && (
                             <div className="text-[10px] text-rose-500 font-bold mt-1 uppercase">
-                              Motivo: {t.exitReason}
+                              Motivo: {t.exitReason === 'vencido' ? 'Vencimento' : t.exitReason === 'doacao' ? 'Doação' : t.exitReason === 'perda' ? 'Perda/Avaria' : t.exitReason}
                               {t.expiryReason && <span className="text-[#78716C] lowercase font-normal ml-1">({t.expiryReason})</span>}
                             </div>
                           )}
@@ -6833,7 +6833,7 @@ export default function App() {
                 <div className="space-y-6">
                   <div>
                     <label className="block text-sm font-bold text-[#57534E] mb-2">Motivo da Saída</label>
-                    <div className="grid grid-cols-3 gap-2">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                       <button
                         type="button"
                         onClick={() => {
@@ -6858,18 +6858,31 @@ export default function App() {
                         type="button"
                         onClick={() => {
                           setExitReason('vencido');
-                          setSelectedSector('Descarte');
+                          setSelectedSector('Descarte/Vencimento');
+                          setExpiryReason('');
                         }}
                         className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all ${exitReason === 'vencido' ? 'bg-[#1C1917] text-white border-[#1C1917]' : 'bg-white text-[#78716C] border-[#E7E5E4] hover:bg-[#F5F5F4]'}`}
                       >
                         Vencido
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setExitReason('perda');
+                          setSelectedSector('Perda/Avaria');
+                          setExpiryReason('');
+                        }}
+                        className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all ${exitReason === 'perda' ? 'bg-[#1C1917] text-white border-[#1C1917]' : 'bg-white text-[#78716C] border-[#E7E5E4] hover:bg-[#F5F5F4]'}`}
+                      >
+                        Perda/Avaria
                       </button>
                     </div>
                   </div>
 
                   <div>
                     <label className="block text-sm font-bold text-[#57534E] mb-2">
-                      {exitReason === 'doacao' ? 'Destinatário da Doação' : 'Setor de Destino'}
+                      {exitReason === 'doacao' ? 'Destinatário da Doação' : 
+                       (exitReason === 'vencido' || exitReason === 'perda') ? 'Classificação' : 'Setor de Destino'}
                     </label>
                     {inventoryLocation === 'Farmácia' && exitReason === 'consumo' ? (
                       <div className="bg-emerald-50 p-4 rounded-2xl border border-emerald-100">
@@ -6983,6 +6996,11 @@ export default function App() {
                           />
                         </div>
                       </div>
+                    ) : (exitReason === 'vencido' || exitReason === 'perda') ? (
+                      <div className="bg-rose-50 p-4 rounded-2xl border border-rose-100">
+                        <p className="text-xs font-bold text-rose-700 uppercase tracking-widest mb-1">Descarte por {exitReason === 'vencido' ? 'Vencimento' : 'Perda/Avaria'}</p>
+                        <p className="text-sm text-rose-600">Esta movimentação será registrada como {selectedSector}.</p>
+                      </div>
                     ) : (
                       <select 
                         required
@@ -6997,16 +7015,16 @@ export default function App() {
                     )}
                   </div>
 
-                  {exitReason === 'vencido' && (
+                  {(exitReason === 'vencido' || exitReason === 'perda') && (
                     <motion.div 
                       initial={{ opacity: 0, y: -10 }}
                       animate={{ opacity: 1, y: 0 }}
                       className="space-y-2"
                     >
-                      <label className="block text-sm font-bold text-[#57534E]">Justificativa do Vencimento</label>
+                      <label className="block text-sm font-bold text-[#57534E]">Justificativa do {exitReason === 'vencido' ? 'Vencimento' : 'Descarte'}</label>
                       <textarea 
                         required
-                        placeholder="Explique por que o item venceu no estoque..."
+                        placeholder={exitReason === 'vencido' ? "Explique por que o item venceu no estoque..." : "Explique o motivo da perda ou avaria..."}
                         className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm min-h-[100px] resize-none"
                         value={expiryReason}
                         onChange={e => setExpiryReason(e.target.value)}

@@ -74,7 +74,7 @@ export interface Transaction {
   deletedAt?: string;
   deletionReason?: string;
   deletedByEmail?: string;
-  exitReason?: 'consumo' | 'doacao' | 'vencido';
+  exitReason?: 'consumo' | 'doacao' | 'vencido' | 'perda';
   expiryReason?: string;
   donationUnitName?: string;
   donationUnitAddress?: string;
