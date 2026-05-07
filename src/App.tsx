@@ -373,20 +373,20 @@ export default function App() {
                   selectedSector === 'Almoxarifado';
 
   const weeklyExitRates = useMemo(() => {
-    const sixtyDaysAgo = new Date();
-    sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 60);
+    const twentyOneDaysAgo = new Date();
+    twentyOneDaysAgo.setDate(twentyOneDaysAgo.getDate() - 21);
     
     const rates: Record<string, number> = {};
     
     transactions.forEach(t => {
-      if (t.type === 'exit' && !t.deletedAt && new Date(t.date) >= sixtyDaysAgo) {
+      if (t.type === 'exit' && !t.deletedAt && new Date(t.date) >= twentyOneDaysAgo) {
         rates[t.item_name] = (rates[t.item_name] || 0) + t.quantity;
       }
     });
     
-    // Convert to weekly average (60 days is approx 8.57 weeks)
+    // Convert to weekly average (21 days is exactly 3 weeks)
     Object.keys(rates).forEach(name => {
-      rates[name] = rates[name] / (60 / 7);
+      rates[name] = rates[name] / 3;
     });
     
     return rates;
@@ -406,7 +406,7 @@ export default function App() {
       const updates: { id: string, newMin: number }[] = [];
       const now = new Date();
       
-      // We only consider items with enough history (e.g., at least 1 exit in the last 60 days)
+      // We only consider items with enough history (e.g., at least 1 exit in the last 21 days)
       Object.keys(weeklyExitRates).forEach(itemName => {
         const weeklyRate = weeklyExitRates[itemName];
         if (weeklyRate > 0) {
