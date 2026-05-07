@@ -2230,13 +2230,22 @@ export default function App() {
 
   const handleExportInventory = () => {
     try {
-      const exportData = groupedArray.map(group => ({
-        'Item': group.name,
-        'Categoria': group.category || '---',
-        'Estoque Total': group.total_quantity,
-        'Mínimo': group.min_quantity,
-        'Status': group.total_quantity <= group.min_quantity ? 'BAIXO' : 'OK'
-      }));
+      const exportData = groupedArray.map(group => {
+        let status = group.total_quantity <= group.min_quantity ? 'BAIXO' : 'OK';
+        if (group.durationWeeks !== 'infinite') {
+          if (group.durationWeeks <= 4) status = 'MUITO CRÍTICO';
+          else if (group.durationWeeks <= 8) status = 'CRÍTICO';
+        }
+        
+        return {
+          'Item': group.name,
+          'Categoria': group.category || '---',
+          'Estoque Total': group.total_quantity,
+          'Mínimo': group.min_quantity,
+          'Duração (Semanas)': group.durationWeeks === 'infinite' ? '∞' : group.durationWeeks.toFixed(1),
+          'Status': status
+        };
+      });
 
       const ws = XLSX.utils.json_to_sheet(exportData);
       const wb = XLSX.utils.book_new();
@@ -2264,31 +2273,45 @@ export default function App() {
       doc.text(`Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 14, 30);
       
       // Prepare data for table
-      const tableData = groupedArray.map(group => [
-        group.name,
-        group.category || '---',
-        group.total_quantity.toString(),
-        group.min_quantity.toString(),
-        group.total_quantity <= group.min_quantity ? 'BAIXO' : 'OK'
-      ]);
+      const tableData = groupedArray.map(group => {
+        let status = group.total_quantity <= group.min_quantity ? 'BAIXO' : 'OK';
+        if (group.durationWeeks !== 'infinite') {
+          if (group.durationWeeks <= 4) status = 'MUITO CRÍTICO';
+          else if (group.durationWeeks <= 8) status = 'CRÍTICO';
+        }
+        
+        return [
+          group.name,
+          group.category || '---',
+          group.total_quantity.toString(),
+          group.durationWeeks === 'infinite' ? '∞' : group.durationWeeks.toFixed(1),
+          group.min_quantity.toString(),
+          status
+        ];
+      });
       
       // Generate table
       autoTable(doc, {
         startY: 40,
-        head: [['Item', 'Categoria', 'Estoque', 'Mínimo', 'Status']],
+        head: [['Item', 'Categoria', 'Estoque', 'Duração (Sem)', 'Mínimo', 'Status']],
         body: tableData,
         theme: 'striped',
         headStyles: { fillColor: [28, 25, 23], halign: 'center' }, // #1C1917
         columnStyles: {
           2: { halign: 'center' },
           3: { halign: 'center' },
-          4: { halign: 'center' }
+          4: { halign: 'center' },
+          5: { halign: 'center' }
         },
         styles: { fontSize: 9, cellPadding: 3 },
         didParseCell: function(data) {
-          if (data.section === 'body' && data.column.index === 4) {
-            if (data.cell.text[0] === 'BAIXO') {
+          if (data.section === 'body' && data.column.index === 5) {
+            const text = data.cell.text[0];
+            if (text === 'BAIXO' || text === 'MUITO CRÍTICO') {
               data.cell.styles.textColor = [225, 29, 72]; // rose-600
+              data.cell.styles.fontStyle = 'bold';
+            } else if (text === 'CRÍTICO') {
+              data.cell.styles.textColor = [249, 115, 22]; // orange-500
               data.cell.styles.fontStyle = 'bold';
             }
           }
@@ -2444,6 +2467,10 @@ export default function App() {
   };
 
   const handleExportPCA = () => {
+    if (selectedSector !== 'Almoxarifado') {
+      showToast("Acesso restrito ao Almoxarifado.", "error");
+      return;
+    }
     try {
       const doc = new jsPDF();
       const start = startOfDay(parseISO(pcaRange.start));
@@ -4555,17 +4582,37 @@ export default function App() {
                           <div className={`flex flex-col items-center justify-center p-2 rounded-xl border ${
                             !isAdmin ? 'bg-[#F5F5F4] border-[#E7E5E4] text-[#A8A29E]' :
                             group.durationWeeks === 'infinite' ? 'bg-blue-50 border-blue-100 text-blue-600' :
-                            group.durationWeeks <= 1 ? 'bg-red-50 border-red-100 text-red-600' :
-                            group.durationWeeks <= 5 ? 'bg-orange-50 border-orange-100 text-orange-600' :
+                            group.durationWeeks <= 4 ? 'bg-rose-50 border-rose-100 text-rose-600' :
+                            group.durationWeeks <= 8 ? 'bg-orange-50 border-orange-100 text-orange-600' :
                             'bg-emerald-50 border-emerald-100 text-emerald-600'
                           }`}>
                             <span className="text-sm font-black">
                               {isAdmin ? (group.durationWeeks === 'infinite' ? '∞' : `${group.durationWeeks.toFixed(1)}`) : '---'}
                             </span>
-                            <span className="text-[9px] font-bold uppercase tracking-tighter">Semanas</span>
+                            <span className="text-[9px] font-bold uppercase tracking-tighter">
+                              {isAdmin ? (
+                                group.durationWeeks === 'infinite' ? 'Semanas' :
+                                group.durationWeeks <= 4 ? 'M. Crítico' :
+                                group.durationWeeks <= 8 ? 'Crítico' :
+                                'Semanas'
+                              ) : 'Semanas'}
+                            </span>
                           </div>
                         </td>
-                        <td className="px-6 py-5 text-xs text-[#A8A29E]">---</td>
+                        <td className="px-6 py-5 text-xs">
+                          {isAdmin && group.durationWeeks !== 'infinite' && (
+                            <span className={`font-bold uppercase tracking-tight ${
+                              group.durationWeeks <= 4 ? 'text-rose-600' :
+                              group.durationWeeks <= 8 ? 'text-orange-600' :
+                              'text-emerald-600'
+                            }`}>
+                              {group.durationWeeks <= 4 ? 'Muito Crítico' :
+                               group.durationWeeks <= 8 ? 'Crítico' :
+                               'Normal'}
+                            </span>
+                          )}
+                          {!isAdmin || group.durationWeeks === 'infinite' ? <span className="text-[#A8A29E]">---</span> : null}
+                        </td>
                         <td className="px-6 py-5 text-right">
                           <div className="flex flex-col items-end gap-1">
                             <button className="text-xs font-bold text-emerald-600 uppercase tracking-wider hover:underline">
@@ -5041,61 +5088,63 @@ export default function App() {
               )}
 
               {/* PCA Report Section */}
-              <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
-                <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-6">
-                  <div className="flex items-center gap-4">
-                    <div className="bg-emerald-600 p-3 rounded-2xl text-white">
-                      <Calendar size={24} />
-                    </div>
-                    <div>
-                      <h3 className="text-xl font-black text-[#1C1917]">Relatório PCA</h3>
-                      <p className="text-[#78716C] text-sm font-medium">Plano Anual de Contratação - Consumo por tipo de item no período</p>
-                    </div>
-                  </div>
-                  
-                  <div className="flex flex-col md:flex-row items-end gap-4">
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 w-full">
-                      <div>
-                        <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1 ml-1">Início</label>
-                        <input 
-                          type="date" 
-                          value={pcaRange.start}
-                          onChange={(e) => setPcaRange({...pcaRange, start: e.target.value})}
-                          className="w-full px-4 py-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-emerald-600/10 font-bold text-sm"
-                        />
+              {selectedSector === 'Almoxarifado' && (
+                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
+                  <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-6">
+                    <div className="flex items-center gap-4">
+                      <div className="bg-emerald-600 p-3 rounded-2xl text-white">
+                        <Calendar size={24} />
                       </div>
                       <div>
-                        <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1 ml-1">Fim</label>
-                        <input 
-                          type="date" 
-                          value={pcaRange.end}
-                          onChange={(e) => setPcaRange({...pcaRange, end: e.target.value})}
-                          className="w-full px-4 py-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-emerald-600/10 font-bold text-sm"
-                        />
-                      </div>
-                      <div className="col-span-2 sm:col-span-1">
-                        <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1 ml-1">Categoria</label>
-                        <select 
-                          value={pcaCategory}
-                          onChange={(e) => setPcaCategory(e.target.value)}
-                          className="w-full px-4 py-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-emerald-600/10 font-bold text-sm"
-                        >
-                          <option value="all">Todas as Categorias</option>
-                          {Object.keys(CATEGORY_COLORS).sort().map(cat => (
-                            <option key={cat} value={cat}>{cat}</option>
-                          ))}
-                        </select>
+                        <h3 className="text-xl font-black text-[#1C1917]">Relatório PCA</h3>
+                        <p className="text-[#78716C] text-sm font-medium">Plano Anual de Contratação - Consumo por tipo de item no período</p>
                       </div>
                     </div>
-                    <button 
-                      onClick={handleExportPCA}
-                      className="w-full md:w-auto bg-emerald-600 text-white px-8 py-3 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-emerald-700 transition-all shadow-lg whitespace-nowrap"
-                    >
-                      <Download size={18} /> Gerar Relatório PCA
-                    </button>
+                    
+                    <div className="flex flex-col md:flex-row items-end gap-4">
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 w-full">
+                        <div>
+                          <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1 ml-1">Início</label>
+                          <input 
+                            type="date" 
+                            value={pcaRange.start}
+                            onChange={(e) => setPcaRange({...pcaRange, start: e.target.value})}
+                            className="w-full px-4 py-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-emerald-600/10 font-bold text-sm"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1 ml-1">Fim</label>
+                          <input 
+                            type="date" 
+                            value={pcaRange.end}
+                            onChange={(e) => setPcaRange({...pcaRange, end: e.target.value})}
+                            className="w-full px-4 py-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-emerald-600/10 font-bold text-sm"
+                          />
+                        </div>
+                        <div className="col-span-2 sm:col-span-1">
+                          <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1 ml-1">Categoria</label>
+                          <select 
+                            value={pcaCategory}
+                            onChange={(e) => setPcaCategory(e.target.value)}
+                            className="w-full px-4 py-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-emerald-600/10 font-bold text-sm"
+                          >
+                            <option value="all">Todas as Categorias</option>
+                            {Object.keys(CATEGORY_COLORS).sort().map(cat => (
+                              <option key={cat} value={cat}>{cat}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                      <button 
+                        onClick={handleExportPCA}
+                        className="w-full md:w-auto bg-emerald-600 text-white px-8 py-3 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-emerald-700 transition-all shadow-lg whitespace-nowrap"
+                      >
+                        <Download size={18} /> Gerar Relatório PCA
+                      </button>
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
 
               {/* Report Stats */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 lg:gap-6">
