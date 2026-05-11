@@ -6464,20 +6464,6 @@ export default function App() {
                 </div>
                 
                 <div className="lg:col-span-1">
-                  <label className="block text-xs font-black text-[#78716C] uppercase tracking-widest mb-2">Sala / Localização</label>
-                  <select 
-                    required
-                    className="w-full px-4 py-3 bg-white border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold appearance-none cursor-pointer"
-                    value={bulkEntry.room}
-                    onChange={e => setBulkEntry({...bulkEntry, room: e.target.value})}
-                  >
-                    {ROOMS.map(room => (
-                      <option key={room} value={room}>{room}</option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="lg:col-span-1">
                   <label className="block text-xs font-black text-[#78716C] uppercase tracking-widest mb-2">Tipo de Item (Categoria)</label>
                   <div className="flex gap-2">
                     {showNewCategoryInput ? (
@@ -6526,19 +6512,6 @@ export default function App() {
                       </>
                     )}
                   </div>
-                </div>
-
-                <div className="lg:col-span-1">
-                  <label className="block text-xs font-black text-[#78716C] uppercase tracking-widest mb-2">Sala / Depósito</label>
-                  <select 
-                    className="w-full px-4 py-3 bg-white border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
-                    value={bulkEntry.room}
-                    onChange={e => setBulkEntry({...bulkEntry, room: e.target.value})}
-                  >
-                    {ROOMS.map(room => (
-                      <option key={room} value={room}>{room}</option>
-                    ))}
-                  </select>
                 </div>
 
                 <div className="lg:col-span-1">
