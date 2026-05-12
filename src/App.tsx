@@ -2644,414 +2644,6 @@ export default function App() {
     }
   };
 
-// PCA Components Moved Out to prevent flickering
-interface PCARequestFormProps {
-  categories: string[];
-  db: any;
-  user: any;
-  selectedSector: string;
-  setActiveTab: (tab: any) => void;
-  showToast: (msg: string, type: "success" | "error" | "info") => void;
-  handleFirestoreError: (err: any, op: any, path: string) => void;
-  OperationType: any;
-}
-
-const PCARequestForm = ({ 
-  categories, 
-  db, 
-  user, 
-  selectedSector, 
-  setActiveTab, 
-  showToast, 
-  handleFirestoreError, 
-  OperationType 
-}: PCARequestFormProps) => {
-  const [formData, setFormData] = useState({
-    itemType: categories[0] || 'Outros',
-    itemName: '',
-    description: '',
-    unit: '',
-    estimatedAnnualQuantity: 0,
-    justification: '',
-    impactOfAbsence: '',
-    observations: ''
-  });
-  const [isSubmitting, setIsSubmitting] = useState(false);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!formData.itemName || !formData.unit || !formData.estimatedAnnualQuantity || !formData.justification) {
-      showToast("Preencha todos os campos obrigatórios.", "error");
-      return;
-    }
-
-    setIsSubmitting(true);
-    try {
-      await addDoc(collection(db, 'pca_requests'), {
-        ...formData,
-        itemName: formData.itemName.toUpperCase(),
-        sector: selectedSector,
-        userName: user?.displayName || user?.email,
-        userEmail: user?.email,
-        date: new Date().toISOString()
-      });
-      showToast("Solicitação PCA 2026 enviada com sucesso!", "success");
-      setActiveTab('dashboard');
-    } catch (error: any) {
-      handleFirestoreError(error, OperationType.CREATE, 'pca_requests');
-      showToast("Erro ao enviar solicitação.", "error");
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  return (
-    <motion.div 
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -10 }}
-      className="bg-white p-8 lg:p-12 rounded-[40px] border border-[#E7E5E4] shadow-2xl max-w-4xl mx-auto overflow-hidden relative"
-    >
-      <div className="absolute top-0 left-0 w-full h-2 bg-rose-500" />
-      
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-12">
-        <div className="flex items-center gap-5">
-          <div className="bg-rose-100 p-4 rounded-2xl text-rose-600 shadow-inner">
-            <BookOpen size={36} />
-          </div>
-          <div>
-            <h3 className="text-2xl lg:text-3xl font-black tracking-tight text-[#1C1917]">Nova Demanda Não Padronizada</h3>
-            <p className="text-[#78716C] font-bold uppercase text-[10px] tracking-[0.2em]">Plano de Contratação Anual (PCA) 2026</p>
-          </div>
-        </div>
-        <div className="bg-[#F5F5F4] px-4 py-3 rounded-2xl border border-[#E7E5E4]">
-          <p className="text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1">Setor Solicitante</p>
-          <p className="text-sm font-black text-[#1C1917]">{selectedSector}</p>
-        </div>
-      </div>
-
-      <form onSubmit={handleSubmit} className="space-y-8">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-          <div className="space-y-3">
-            <label className="text-[11px] font-black text-[#78716C] uppercase tracking-widest flex items-center gap-2">
-              <Filter size={12} /> Tipo de Item <span className="text-rose-500">*</span>
-            </label>
-            <select 
-              className="w-full px-5 py-4 bg-[#FAFAF9] border-2 border-[#E7E5E4] rounded-2xl font-bold text-sm focus:ring-4 focus:ring-rose-500/10 focus:border-rose-500 transition-all outline-none appearance-none cursor-pointer"
-              value={formData.itemType}
-              onChange={e => setFormData({...formData, itemType: e.target.value})}
-            >
-              {categories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
-            </select>
-          </div>
-          <div className="space-y-3">
-            <label className="text-[11px] font-black text-[#78716C] uppercase tracking-widest flex items-center gap-2">
-              <Package size={12} /> Nome do Material / Item <span className="text-rose-500">*</span>
-            </label>
-            <input 
-              type="text"
-              placeholder="Ex: COMPUTADOR ALL IN ONE, REAGENTE X..."
-              className="w-full px-5 py-4 bg-[#FAFAF9] border-2 border-[#E7E5E4] rounded-2xl font-bold text-sm focus:ring-4 focus:ring-rose-500/10 focus:border-rose-500 transition-all outline-none uppercase placeholder:text-[#A8A29E] placeholder:font-medium"
-              value={formData.itemName}
-              onChange={e => setFormData({...formData, itemName: e.target.value})}
-              required
-            />
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-          <div className="space-y-3">
-            <label className="text-[11px] font-black text-[#78716C] uppercase tracking-widest flex items-center gap-2">
-              <Tag size={12} /> Unidade de Medida <span className="text-rose-500">*</span>
-            </label>
-            <input 
-              type="text"
-              placeholder="Ex: CX, UND, ROL, LITRO..."
-              className="w-full px-5 py-4 bg-[#FAFAF9] border-2 border-[#E7E5E4] rounded-2xl font-bold text-sm focus:ring-4 focus:ring-rose-500/10 focus:border-rose-500 transition-all outline-none uppercase"
-              value={formData.unit}
-              onChange={e => setFormData({...formData, unit: e.target.value})}
-              required
-            />
-          </div>
-          <div className="space-y-3">
-            <label className="text-[11px] font-black text-[#78716C] uppercase tracking-widest flex items-center gap-2">
-              <TrendingUp size={12} /> Quantidade Anual Estimada <span className="text-rose-500">*</span>
-            </label>
-            <input 
-              type="number"
-              min="1"
-              className="w-full px-5 py-4 bg-[#FAFAF9] border-2 border-[#E7E5E4] rounded-2xl font-black text-sm focus:ring-4 focus:ring-rose-500/10 focus:border-rose-500 transition-all outline-none"
-              value={formData.estimatedAnnualQuantity || ''}
-              onChange={e => setFormData({...formData, estimatedAnnualQuantity: Number(e.target.value)})}
-              required
-            />
-          </div>
-        </div>
-
-        <div className="space-y-3">
-          <label className="text-[11px] font-black text-[#78716C] uppercase tracking-widest flex items-center gap-2">
-            <FileText size={12} /> Descrição / Especificação Técnica
-          </label>
-          <textarea 
-            rows={3}
-            placeholder="Descreva detalhadamente o item, medidas, potência, marca referência ou características técnicas necessárias..."
-            className="w-full px-5 py-4 bg-[#FAFAF9] border-2 border-[#E7E5E4] rounded-2xl font-medium text-sm focus:ring-4 focus:ring-rose-500/10 focus:border-rose-500 transition-all outline-none"
-            value={formData.description}
-            onChange={e => setFormData({...formData, description: e.target.value})}
-          />
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-          <div className="space-y-3">
-            <label className="text-[11px] font-black text-[#78716C] uppercase tracking-widest flex items-center gap-2">
-              <MessageSquare size={12} /> Justificativa da Necessidade <span className="text-rose-500">*</span>
-            </label>
-            <textarea 
-              rows={4}
-              placeholder="Por que este item é essencial para o setor?"
-              className="w-full px-5 py-4 bg-[#FAFAF9] border-2 border-[#E7E5E4] rounded-2xl font-medium text-sm focus:ring-4 focus:ring-rose-500/10 focus:border-rose-500 transition-all outline-none"
-              value={formData.justification}
-              onChange={e => setFormData({...formData, justification: e.target.value})}
-              required
-            />
-          </div>
-          <div className="space-y-3">
-            <label className="text-[11px] font-black text-[#78716C] uppercase tracking-widest flex items-center gap-2">
-              <AlertTriangle size={12} /> Impacto da Ausência
-            </label>
-            <textarea 
-              rows={4}
-              placeholder="Quais as consequências se este item não for disponibilizado?"
-              className="w-full px-5 py-4 bg-[#FAFAF9] border-2 border-[#E7E5E4] rounded-2xl font-medium text-sm focus:ring-4 focus:ring-rose-500/10 focus:border-rose-500 transition-all outline-none"
-              value={formData.impactOfAbsence}
-              onChange={e => setFormData({...formData, impactOfAbsence: e.target.value})}
-            />
-          </div>
-        </div>
-
-        <div className="space-y-3">
-          <label className="text-[11px] font-black text-[#78716C] uppercase tracking-widest flex items-center gap-2">
-            <Plus size={12} /> Observações Adicionais
-          </label>
-          <textarea 
-            rows={2}
-            className="w-full px-5 py-4 bg-[#FAFAF9] border-2 border-[#E7E5E4] rounded-2xl font-medium text-sm focus:ring-4 focus:ring-rose-500/10 focus:border-rose-500 transition-all outline-none"
-            value={formData.observations}
-            onChange={e => setFormData({...formData, observations: e.target.value})}
-          />
-        </div>
-
-        <div className="bg-rose-50 p-6 rounded-[24px] border border-rose-100 flex gap-5 items-start">
-          <div className="bg-rose-200/50 p-2 rounded-lg text-rose-600">
-            <Info size={20} />
-          </div>
-          <div className="text-[11px] text-rose-900 leading-relaxed font-semibold uppercase tracking-wide">
-            Atenção: Solicite itens que realmente não constam na padronização. 
-            Ao enviar, o sistema registrará seu nome (<strong>{user?.displayName}</strong>) e setor (<strong>{selectedSector}</strong>) como responsáveis pela demanda.
-          </div>
-        </div>
-
-        <div className="flex flex-col sm:flex-row justify-end gap-4 pt-6 border-t border-[#F5F5F4]">
-          <button 
-            type="button"
-            onClick={() => setActiveTab('dashboard')}
-            className="px-8 py-4 bg-[#F5F5F4] text-[#78716C] rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-[#E7E5E4] transition-all"
-          >
-            Descartar
-          </button>
-          <button 
-            type="submit"
-            disabled={isSubmitting}
-            className="px-10 py-4 bg-rose-600 text-white rounded-2xl font-black text-xs uppercase tracking-[0.2em] hover:bg-rose-700 transition-all shadow-xl shadow-rose-200 flex items-center justify-center gap-3 disabled:opacity-50"
-          >
-            {isSubmitting ? 'PROCESSANDO...' : <><Save size={18} /> ENVIAR SOLICITAÇÃO PCA</>}
-          </button>
-        </div>
-      </form>
-    </motion.div>
-  );
-};
-
-interface PCADashboardProps {
-  pcaRequests: PCARequest[];
-  normalizeString: (str: string | null | undefined) => string;
-  SECTORS: string[];
-  categories: string[];
-  format: any;
-  XLSX: any;
-}
-
-const PCADashboard = ({ 
-  pcaRequests, 
-  normalizeString, 
-  SECTORS, 
-  categories, 
-  format, 
-  XLSX 
-}: PCADashboardProps) => {
-  const [pcaSearch, setPcaSearch] = useState('');
-  const [sectorFilter, setSectorFilter] = useState('all');
-  const [typeFilter, setTypeFilter] = useState('all');
-
-  const filtered = pcaRequests.filter(r => {
-    const matchesSearch = normalizeString(r.itemName).includes(normalizeString(pcaSearch)) || 
-                         normalizeString(r.description).includes(normalizeString(pcaSearch));
-    const matchesSector = sectorFilter === 'all' || r.sector === sectorFilter;
-    const matchesType = typeFilter === 'all' || r.itemType === typeFilter;
-    return matchesSearch && matchesSector && matchesType;
-  }).sort((a, b) => a.itemName.localeCompare(b.itemName));
-
-  const handleExportPCAExcel = () => {
-    const exportData = filtered.map(r => ({
-      'Tipo': r.itemType,
-      'Item': r.itemName,
-      'Descrição': r.description,
-      'Unidade': r.unit,
-      'Qtd Anual': r.estimatedAnnualQuantity,
-      'Justificativa': r.justification,
-      'Impacto': r.impactOfAbsence,
-      'Observações': r.observations,
-      'Setor Solicitante': r.sector,
-      'Usuário': r.userName,
-      'Email': r.userEmail,
-      'Data': format(new Date(r.date), 'dd/MM/yyyy HH:mm')
-    }));
-    const ws = XLSX.utils.json_to_sheet(exportData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "PCA 2026");
-    XLSX.writeFile(wb, `PCA_2026_Demandas_${format(new Date(), 'yyyyMMdd')}.xlsx`);
-  };
-
-  return (
-    <motion.div 
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      className="space-y-6"
-    >
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-         <div className="lg:col-span-2 bg-white p-6 rounded-[32px] border border-[#E7E5E4] shadow-sm flex flex-col md:flex-row gap-4 items-center">
-          <div className="relative flex-1 w-full">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-[#A8A29E]" size={18} />
-            <input 
-              type="text" 
-              placeholder="Pesquisar por item ou descrição..."
-              className="w-full pl-12 pr-4 py-3 bg-[#FAFAF9] border border-[#E7E5E4] rounded-2xl focus:outline-none focus:ring-2 focus:ring-rose-500/20 font-bold"
-              value={pcaSearch}
-              onChange={e => setPcaSearch(e.target.value)}
-            />
-          </div>
-          <div className="flex gap-4 w-full md:w-auto">
-            <select 
-              className="flex-1 px-4 py-3 bg-[#FAFAF9] border border-[#E7E5E4] rounded-2xl font-bold text-xs appearance-none"
-              value={sectorFilter}
-              onChange={e => setSectorFilter(e.target.value)}
-            >
-              <option value="all">Todos os Setores</option>
-              {SECTORS.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
-            <select 
-              className="flex-1 px-4 py-3 bg-[#FAFAF9] border border-[#E7E5E4] rounded-2xl font-bold text-xs appearance-none"
-              value={typeFilter}
-              onChange={e => setTypeFilter(e.target.value)}
-            >
-              <option value="all">Todos os Tipos</option>
-              {categories.map(c => <option key={c} value={c}>{c}</option>)}
-            </select>
-          </div>
-        </div>
-        <div className="bg-emerald-50 p-6 rounded-[32px] border border-emerald-100 shadow-sm flex items-center justify-between">
-          <div>
-            <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-1">Total de Demandas</p>
-            <h3 className="text-3xl font-black text-emerald-900">{filtered.length}</h3>
-          </div>
-          <button 
-            onClick={handleExportPCAExcel}
-            className="p-4 bg-emerald-600 text-white rounded-2xl hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-200"
-            title="Exportar para Excel"
-          >
-            <Download size={24} />
-          </button>
-        </div>
-      </div>
-
-      <div className="bg-white rounded-[40px] border border-[#E7E5E4] shadow-sm overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse min-w-[1400px]">
-            <thead>
-              <tr className="bg-[#FAFAF9] border-b border-[#E7E5E4]">
-                <th className="px-8 py-5 font-black text-[10px] text-[#78716C] uppercase tracking-[0.2em]">Item / Descrição</th>
-                <th className="px-8 py-5 font-black text-[10px] text-[#78716C] uppercase tracking-[0.2em] text-center">Tipo</th>
-                <th className="px-8 py-5 font-black text-[10px] text-[#78716C] uppercase tracking-[0.2em] text-center">Unid / Qtd</th>
-                <th className="px-8 py-5 font-black text-[10px] text-[#78716C] uppercase tracking-[0.2em]">Justificativa</th>
-                <th className="px-8 py-5 font-black text-[10px] text-[#78716C] uppercase tracking-[0.2em]">Solicitante</th>
-                <th className="px-8 py-5 font-black text-[10px] text-[#78716C] uppercase tracking-[0.2em]">Data</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[#F5F5F4]">
-              {filtered.map(r => (
-                <tr key={r.id} className="hover:bg-[#FAFAF9]/60 transition-all group">
-                  <td className="px-8 py-6">
-                    <div className="flex flex-col gap-1">
-                      <span className="font-black text-[#1C1917] text-base group-hover:text-rose-600 transition-colors uppercase">{r.itemName}</span>
-                      <span className="text-xs text-[#78716C] font-medium leading-relaxed max-w-sm line-clamp-2" title={r.description}>
-                        {r.description || '---'}
-                      </span>
-                    </div>
-                  </td>
-                  <td className="px-8 py-6 text-center">
-                    <span className="inline-flex px-4 py-1.5 bg-[#F5F5F4] text-[#44403C] rounded-full text-[10px] font-black uppercase border border-[#E7E5E4]">
-                      {r.itemType}
-                    </span>
-                  </td>
-                  <td className="px-8 py-6">
-                    <div className="flex flex-col items-center">
-                      <span className="text-xs font-black text-[#1C1917]">{r.unit}</span>
-                      <span className="text-lg font-black text-rose-600">{r.estimatedAnnualQuantity}</span>
-                      <span className="text-[9px] font-black text-[#A8A29E] uppercase">Anual</span>
-                    </div>
-                  </td>
-                  <td className="px-8 py-6">
-                    <div className="max-w-xs space-y-1">
-                      <p className="text-[11px] font-bold text-[#1C1917] line-clamp-3 italic">"{r.justification}"</p>
-                      {r.impactOfAbsence && (
-                        <p className="text-[10px] font-medium text-rose-500 line-clamp-2">Impacto: {r.impactOfAbsence}</p>
-                      )}
-                    </div>
-                  </td>
-                  <td className="px-8 py-6">
-                    <div className="flex flex-col">
-                      <span className="text-sm font-black text-[#1C1917]">{r.sector}</span>
-                      <span className="text-xs text-[#78716C] font-medium">{r.userName}</span>
-                    </div>
-                  </td>
-                  <td className="px-8 py-6 whitespace-nowrap">
-                    <div className="flex flex-col">
-                      <span className="text-xs font-black text-[#1C1917]">{format(new Date(r.date), 'dd/MM/yy')}</span>
-                      <span className="text-[10px] text-[#A8A29E] font-bold">{format(new Date(r.date), 'HH:mm')}</span>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {filtered.length === 0 && (
-                <tr>
-                  <td colSpan={6} className="px-8 py-32 text-center">
-                    <div className="flex flex-col items-center gap-4">
-                      <div className="bg-[#F5F5F4] p-6 rounded-full text-[#A8A29E]">
-                        <Search size={48} />
-                      </div>
-                      <p className="text-[#A8A29E] font-bold italic">Nenhuma solicitação de demanda encontrada.</p>
-                    </div>
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </motion.div>
-  );
-};
-
   const handleExportRoomInventoryPDF = (roomFilter: string, displayRoomName: string, filteredCategories: string[]) => {
     try {
       // @ts-ignore - jsPDF types might not be perfectly aligned with imports
@@ -8661,3 +8253,411 @@ const PCADashboard = ({
     </div>
   );
 }
+
+// PCA Components Moved Out to prevent flickering
+interface PCARequestFormProps {
+  categories: string[];
+  db: any;
+  user: any;
+  selectedSector: string;
+  setActiveTab: (tab: any) => void;
+  showToast: (msg: string, type: "success" | "error" | "info") => void;
+  handleFirestoreError: (err: any, op: any, path: string) => void;
+  OperationType: any;
+}
+
+const PCARequestForm = ({ 
+  categories, 
+  db, 
+  user, 
+  selectedSector, 
+  setActiveTab, 
+  showToast, 
+  handleFirestoreError, 
+  OperationType 
+}: PCARequestFormProps) => {
+  const [formData, setFormData] = useState({
+    itemType: categories[0] || 'Outros',
+    itemName: '',
+    description: '',
+    unit: '',
+    estimatedAnnualQuantity: 0,
+    justification: '',
+    impactOfAbsence: '',
+    observations: ''
+  });
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formData.itemName || !formData.unit || !formData.estimatedAnnualQuantity || !formData.justification) {
+      showToast("Preencha todos os campos obrigatórios.", "error");
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      await addDoc(collection(db, 'pca_requests'), {
+        ...formData,
+        itemName: formData.itemName.toUpperCase(),
+        sector: selectedSector,
+        userName: user?.displayName || user?.email,
+        userEmail: user?.email,
+        date: new Date().toISOString()
+      });
+      showToast("Solicitação PCA 2026 enviada com sucesso!", "success");
+      setActiveTab('dashboard');
+    } catch (error: any) {
+      handleFirestoreError(error, OperationType.CREATE, 'pca_requests');
+      showToast("Erro ao enviar solicitação.", "error");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -10 }}
+      className="bg-white p-8 lg:p-12 rounded-[40px] border border-[#E7E5E4] shadow-2xl max-w-4xl mx-auto overflow-hidden relative"
+    >
+      <div className="absolute top-0 left-0 w-full h-2 bg-rose-500" />
+      
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-12">
+        <div className="flex items-center gap-5">
+          <div className="bg-rose-100 p-4 rounded-2xl text-rose-600 shadow-inner">
+            <BookOpen size={36} />
+          </div>
+          <div>
+            <h3 className="text-2xl lg:text-3xl font-black tracking-tight text-[#1C1917]">Nova Demanda Não Padronizada</h3>
+            <p className="text-[#78716C] font-bold uppercase text-[10px] tracking-[0.2em]">Plano de Contratação Anual (PCA) 2026</p>
+          </div>
+        </div>
+        <div className="bg-[#F5F5F4] px-4 py-3 rounded-2xl border border-[#E7E5E4]">
+          <p className="text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1">Setor Solicitante</p>
+          <p className="text-sm font-black text-[#1C1917]">{selectedSector}</p>
+        </div>
+      </div>
+
+      <form onSubmit={handleSubmit} className="space-y-8">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+          <div className="space-y-3">
+            <label className="text-[11px] font-black text-[#78716C] uppercase tracking-widest flex items-center gap-2">
+              <Filter size={12} /> Tipo de Item <span className="text-rose-500">*</span>
+            </label>
+            <select 
+              className="w-full px-5 py-4 bg-[#FAFAF9] border-2 border-[#E7E5E4] rounded-2xl font-bold text-sm focus:ring-4 focus:ring-rose-500/10 focus:border-rose-500 transition-all outline-none appearance-none cursor-pointer"
+              value={formData.itemType}
+              onChange={e => setFormData({...formData, itemType: e.target.value})}
+            >
+              {categories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+            </select>
+          </div>
+          <div className="space-y-3">
+            <label className="text-[11px] font-black text-[#78716C] uppercase tracking-widest flex items-center gap-2">
+              <Package size={12} /> Nome do Material / Item <span className="text-rose-500">*</span>
+            </label>
+            <input 
+              type="text"
+              placeholder="Ex: COMPUTADOR ALL IN ONE, REAGENTE X..."
+              className="w-full px-5 py-4 bg-[#FAFAF9] border-2 border-[#E7E5E4] rounded-2xl font-bold text-sm focus:ring-4 focus:ring-rose-500/10 focus:border-rose-500 transition-all outline-none uppercase placeholder:text-[#A8A29E] placeholder:font-medium"
+              value={formData.itemName}
+              onChange={e => setFormData({...formData, itemName: e.target.value})}
+              required
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+          <div className="space-y-3">
+            <label className="text-[11px] font-black text-[#78716C] uppercase tracking-widest flex items-center gap-2">
+              <Tag size={12} /> Unidade de Medida <span className="text-rose-500">*</span>
+            </label>
+            <input 
+              type="text"
+              placeholder="Ex: CX, UND, ROL, LITRO..."
+              className="w-full px-5 py-4 bg-[#FAFAF9] border-2 border-[#E7E5E4] rounded-2xl font-bold text-sm focus:ring-4 focus:ring-rose-500/10 focus:border-rose-500 transition-all outline-none uppercase"
+              value={formData.unit}
+              onChange={e => setFormData({...formData, unit: e.target.value})}
+              required
+            />
+          </div>
+          <div className="space-y-3">
+            <label className="text-[11px] font-black text-[#78716C] uppercase tracking-widest flex items-center gap-2">
+              <TrendingUp size={12} /> Quantidade Anual Estimada <span className="text-rose-500">*</span>
+            </label>
+            <input 
+              type="number"
+              min="1"
+              className="w-full px-5 py-4 bg-[#FAFAF9] border-2 border-[#E7E5E4] rounded-2xl font-black text-sm focus:ring-4 focus:ring-rose-500/10 focus:border-rose-500 transition-all outline-none"
+              value={formData.estimatedAnnualQuantity || ''}
+              onChange={e => setFormData({...formData, estimatedAnnualQuantity: Number(e.target.value)})}
+              required
+            />
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <label className="text-[11px] font-black text-[#78716C] uppercase tracking-widest flex items-center gap-2">
+            <FileText size={12} /> Descrição / Especificação Técnica
+          </label>
+          <textarea 
+            rows={3}
+            placeholder="Descreva detalhadamente o item, medidas, potência, marca referência ou características técnicas necessárias..."
+            className="w-full px-5 py-4 bg-[#FAFAF9] border-2 border-[#E7E5E4] rounded-2xl font-medium text-sm focus:ring-4 focus:ring-rose-500/10 focus:border-rose-500 transition-all outline-none"
+            value={formData.description}
+            onChange={e => setFormData({...formData, description: e.target.value})}
+          />
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+          <div className="space-y-3">
+            <label className="text-[11px] font-black text-[#78716C] uppercase tracking-widest flex items-center gap-2">
+              <MessageSquare size={12} /> Justificativa da Necessidade <span className="text-rose-500">*</span>
+            </label>
+            <textarea 
+              rows={4}
+              placeholder="Por que este item é essencial para o setor?"
+              className="w-full px-5 py-4 bg-[#FAFAF9] border-2 border-[#E7E5E4] rounded-2xl font-medium text-sm focus:ring-4 focus:ring-rose-500/10 focus:border-rose-500 transition-all outline-none"
+              value={formData.justification}
+              onChange={e => setFormData({...formData, justification: e.target.value})}
+              required
+            />
+          </div>
+          <div className="space-y-3">
+            <label className="text-[11px] font-black text-[#78716C] uppercase tracking-widest flex items-center gap-2">
+              <AlertTriangle size={12} /> Impacto da Ausência
+            </label>
+            <textarea 
+              rows={4}
+              placeholder="Quais as consequências se este item não for disponibilizado?"
+              className="w-full px-5 py-4 bg-[#FAFAF9] border-2 border-[#E7E5E4] rounded-2xl font-medium text-sm focus:ring-4 focus:ring-rose-500/10 focus:border-rose-500 transition-all outline-none"
+              value={formData.impactOfAbsence}
+              onChange={e => setFormData({...formData, impactOfAbsence: e.target.value})}
+            />
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <label className="text-[11px] font-black text-[#78716C] uppercase tracking-widest flex items-center gap-2">
+            <Plus size={12} /> Observações Adicionais
+          </label>
+          <textarea 
+            rows={2}
+            className="w-full px-5 py-4 bg-[#FAFAF9] border-2 border-[#E7E5E4] rounded-2xl font-medium text-sm focus:ring-4 focus:ring-rose-500/10 focus:border-rose-500 transition-all outline-none"
+            value={formData.observations}
+            onChange={e => setFormData({...formData, observations: e.target.value})}
+          />
+        </div>
+
+        <div className="bg-rose-50 p-6 rounded-[24px] border border-rose-100 flex gap-5 items-start">
+          <div className="bg-rose-200/50 p-2 rounded-lg text-rose-600">
+            <Info size={20} />
+          </div>
+          <div className="text-[11px] text-rose-900 leading-relaxed font-semibold uppercase tracking-wide">
+            Atenção: Solicite itens que realmente não constam na padronização. 
+            Ao enviar, o sistema registrará seu nome (<strong>{user?.displayName}</strong>) e setor (<strong>{selectedSector}</strong>) como responsáveis pela demanda.
+          </div>
+        </div>
+
+        <div className="flex flex-col sm:flex-row justify-end gap-4 pt-6 border-t border-[#F5F5F4]">
+          <button 
+            type="button"
+            onClick={() => setActiveTab('dashboard')}
+            className="px-8 py-4 bg-[#F5F5F4] text-[#78716C] rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-[#E7E5E4] transition-all"
+          >
+            Descartar
+          </button>
+          <button 
+            type="submit"
+            disabled={isSubmitting}
+            className="px-10 py-4 bg-rose-600 text-white rounded-2xl font-black text-xs uppercase tracking-[0.2em] hover:bg-rose-700 transition-all shadow-xl shadow-rose-200 flex items-center justify-center gap-3 disabled:opacity-50"
+          >
+            {isSubmitting ? 'PROCESSANDO...' : <><Save size={18} /> ENVIAR SOLICITAÇÃO PCA</>}
+          </button>
+        </div>
+      </form>
+    </motion.div>
+  );
+};
+
+interface PCADashboardProps {
+  pcaRequests: PCARequest[];
+  normalizeString: (str: string | null | undefined) => string;
+  SECTORS: string[];
+  categories: string[];
+  format: any;
+  XLSX: any;
+}
+
+const PCADashboard = ({ 
+  pcaRequests, 
+  normalizeString, 
+  SECTORS, 
+  categories, 
+  format, 
+  XLSX 
+}: PCADashboardProps) => {
+  const [pcaSearch, setPcaSearch] = useState('');
+  const [sectorFilter, setSectorFilter] = useState('all');
+  const [typeFilter, setTypeFilter] = useState('all');
+
+  const filtered = pcaRequests.filter(r => {
+    const matchesSearch = normalizeString(r.itemName).includes(normalizeString(pcaSearch)) || 
+                         normalizeString(r.description).includes(normalizeString(pcaSearch));
+    const matchesSector = sectorFilter === 'all' || r.sector === sectorFilter;
+    const matchesType = typeFilter === 'all' || r.itemType === typeFilter;
+    return matchesSearch && matchesSector && matchesType;
+  }).sort((a, b) => a.itemName.localeCompare(b.itemName));
+
+  const handleExportPCAExcel = () => {
+    const exportData = filtered.map(r => ({
+      'Tipo': r.itemType,
+      'Item': r.itemName,
+      'Descrição': r.description,
+      'Unidade': r.unit,
+      'Qtd Anual': r.estimatedAnnualQuantity,
+      'Justificativa': r.justification,
+      'Impacto': r.impactOfAbsence,
+      'Observações': r.observations,
+      'Setor Solicitante': r.sector,
+      'Usuário': r.userName,
+      'Email': r.userEmail,
+      'Data': format(new Date(r.date), 'dd/MM/yyyy HH:mm')
+    }));
+    const ws = XLSX.utils.json_to_sheet(exportData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "PCA 2026");
+    XLSX.writeFile(wb, `PCA_2026_Demandas_${format(new Date(), 'yyyyMMdd')}.xlsx`);
+  };
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      className="space-y-6"
+    >
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+         <div className="lg:col-span-2 bg-white p-6 rounded-[32px] border border-[#E7E5E4] shadow-sm flex flex-col md:flex-row gap-4 items-center">
+          <div className="relative flex-1 w-full">
+            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-[#A8A29E]" size={18} />
+            <input 
+              type="text" 
+              placeholder="Pesquisar por item ou descrição..."
+              className="w-full pl-12 pr-4 py-3 bg-[#FAFAF9] border border-[#E7E5E4] rounded-2xl focus:outline-none focus:ring-2 focus:ring-rose-500/20 font-bold"
+              value={pcaSearch}
+              onChange={e => setPcaSearch(e.target.value)}
+            />
+          </div>
+          <div className="flex gap-4 w-full md:w-auto">
+            <select 
+              className="flex-1 px-4 py-3 bg-[#FAFAF9] border border-[#E7E5E4] rounded-2xl font-bold text-xs appearance-none"
+              value={sectorFilter}
+              onChange={e => setSectorFilter(e.target.value)}
+            >
+              <option value="all">Todos os Setores</option>
+              {SECTORS.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <select 
+              className="flex-1 px-4 py-3 bg-[#FAFAF9] border border-[#E7E5E4] rounded-2xl font-bold text-xs appearance-none"
+              value={typeFilter}
+              onChange={e => setTypeFilter(e.target.value)}
+            >
+              <option value="all">Todos os Tipos</option>
+              {categories.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="bg-emerald-50 p-6 rounded-[32px] border border-emerald-100 shadow-sm flex items-center justify-between">
+          <div>
+            <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-1">Total de Demandas</p>
+            <h3 className="text-3xl font-black text-emerald-900">{filtered.length}</h3>
+          </div>
+          <button 
+            onClick={handleExportPCAExcel}
+            className="p-4 bg-emerald-600 text-white rounded-2xl hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-200"
+            title="Exportar para Excel"
+          >
+            <Download size={24} />
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-[40px] border border-[#E7E5E4] shadow-sm overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse min-w-[1400px]">
+            <thead>
+              <tr className="bg-[#FAFAF9] border-b border-[#E7E5E4]">
+                <th className="px-8 py-5 font-black text-[10px] text-[#78716C] uppercase tracking-[0.2em]">Item / Descrição</th>
+                <th className="px-8 py-5 font-black text-[10px] text-[#78716C] uppercase tracking-[0.2em] text-center">Tipo</th>
+                <th className="px-8 py-5 font-black text-[10px] text-[#78716C] uppercase tracking-[0.2em] text-center">Unid / Qtd</th>
+                <th className="px-8 py-5 font-black text-[10px] text-[#78716C] uppercase tracking-[0.2em]">Justificativa</th>
+                <th className="px-8 py-5 font-black text-[10px] text-[#78716C] uppercase tracking-[0.2em]">Solicitante</th>
+                <th className="px-8 py-5 font-black text-[10px] text-[#78716C] uppercase tracking-[0.2em]">Data</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#F5F5F4]">
+              {filtered.map(r => (
+                <tr key={r.id} className="hover:bg-[#FAFAF9]/60 transition-all group">
+                  <td className="px-8 py-6">
+                    <div className="flex flex-col gap-1">
+                      <span className="font-black text-[#1C1917] text-base group-hover:text-rose-600 transition-colors uppercase">{r.itemName}</span>
+                      <span className="text-xs text-[#78716C] font-medium leading-relaxed max-w-sm line-clamp-2" title={r.description}>
+                        {r.description || '---'}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="px-8 py-6 text-center">
+                    <span className="inline-flex px-4 py-1.5 bg-[#F5F5F4] text-[#44403C] rounded-full text-[10px] font-black uppercase border border-[#E7E5E4]">
+                      {r.itemType}
+                    </span>
+                  </td>
+                  <td className="px-8 py-6">
+                    <div className="flex flex-col items-center">
+                      <span className="text-xs font-black text-[#1C1917]">{r.unit}</span>
+                      <span className="text-lg font-black text-rose-600">{r.estimatedAnnualQuantity}</span>
+                      <span className="text-[9px] font-black text-[#A8A29E] uppercase">Anual</span>
+                    </div>
+                  </td>
+                  <td className="px-8 py-6">
+                    <div className="max-w-xs space-y-1">
+                      <p className="text-[11px] font-bold text-[#1C1917] line-clamp-3 italic">"{r.justification}"</p>
+                      {r.impactOfAbsence && (
+                        <p className="text-[10px] font-medium text-rose-500 line-clamp-2">Impacto: {r.impactOfAbsence}</p>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-8 py-6">
+                    <div className="flex flex-col">
+                      <span className="text-sm font-black text-[#1C1917]">{r.sector}</span>
+                      <span className="text-xs text-[#78716C] font-medium">{r.userName}</span>
+                    </div>
+                  </td>
+                  <td className="px-8 py-6 whitespace-nowrap">
+                    <div className="flex flex-col">
+                      <span className="text-xs font-black text-[#1C1917]">{format(new Date(r.date), 'dd/MM/yy')}</span>
+                      <span className="text-[10px] text-[#A8A29E] font-bold">{format(new Date(r.date), 'HH:mm')}</span>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {filtered.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-8 py-32 text-center">
+                    <div className="flex flex-col items-center gap-4">
+                      <div className="bg-[#F5F5F4] p-6 rounded-full text-[#A8A29E]">
+                        <Search size={48} />
+                      </div>
+                      <p className="text-[#A8A29E] font-bold italic">Nenhuma solicitação de demanda encontrada.</p>
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </motion.div>
+  );
+};
