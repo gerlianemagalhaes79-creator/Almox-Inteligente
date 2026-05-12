@@ -82,9 +82,30 @@
         "message": { "type": "string" },
         "date": { "type": "string", "format": "date-time" },
         "read": { "type": "boolean" },
-        "requestId": { "type": "string" }
+        "requestId": { "type": "string" },
+        "type": { "type": "string", "enum": ["system", "request", "pca"] }
       },
       "required": ["userId", "title", "message", "date", "read"]
+    },
+    "PCARequest": {
+      "title": "PCARequest",
+      "description": "PCA 2026 Non-standard Demand Request",
+      "type": "object",
+      "properties": {
+        "itemType": { "type": "string" },
+        "itemName": { "type": "string" },
+        "description": { "type": "string" },
+        "unit": { "type": "string" },
+        "estimatedAnnualQuantity": { "type": "number" },
+        "justification": { "type": "string" },
+        "impactOfAbsence": { "type": "string" },
+        "observations": { "type": "string" },
+        "sector": { "type": "string" },
+        "userName": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "date": { "type": "string", "format": "date-time" }
+      },
+      "required": ["itemType", "itemName", "unit", "estimatedAnnualQuantity", "justification", "sector", "userName", "date"]
     }
   },
   "firestore": {
@@ -111,6 +132,10 @@
     "/notifications": {
       "schema": "Notification",
       "description": "Collection of system notifications"
+    },
+    "/pca_requests": {
+      "schema": "PCARequest",
+      "description": "Collection of PCA 2026 non-standard demand requests"
     }
   }
 }
