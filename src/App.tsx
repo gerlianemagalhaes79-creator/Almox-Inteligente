@@ -6330,7 +6330,6 @@ export default function App() {
 
           {activeTab === 'pca-request' && (
             <PCARequestForm 
-              categories={categories}
               db={db}
               user={user}
               selectedSector={selectedSector}
@@ -6346,9 +6345,9 @@ export default function App() {
               pcaRequests={pcaRequests}
               normalizeString={normalizeString}
               SECTORS={SECTORS}
-              categories={categories}
               format={format}
               XLSX={XLSX}
+              letterheadImage={letterheadImage}
             />
           )}
 
@@ -8255,8 +8254,21 @@ export default function App() {
 }
 
 // PCA Components Moved Out to prevent flickering
+// PCA categories per user request for 2026 demands
+const PCA_CATEGORIES = [
+  'Material de Consumo',
+  'Material Médico-Hospitalar',
+  'Equipamentos',
+  'Mobiliário',
+  'Serviços',
+  'Tecnologia da Informação',
+  'Manutenção',
+  'Material de Limpeza',
+  'Material de Escritório',
+  'Outros'
+];
+
 interface PCARequestFormProps {
-  categories: string[];
   db: any;
   user: any;
   selectedSector: string;
@@ -8267,7 +8279,6 @@ interface PCARequestFormProps {
 }
 
 const PCARequestForm = ({ 
-  categories, 
   db, 
   user, 
   selectedSector, 
@@ -8277,7 +8288,7 @@ const PCARequestForm = ({
   OperationType 
 }: PCARequestFormProps) => {
   const [formData, setFormData] = useState({
-    itemType: categories[0] || 'Outros',
+    itemType: PCA_CATEGORIES[0],
     itemName: '',
     description: '',
     unit: '',
@@ -8344,14 +8355,14 @@ const PCARequestForm = ({
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
           <div className="space-y-3">
             <label className="text-[11px] font-black text-[#78716C] uppercase tracking-widest flex items-center gap-2">
-              <Filter size={12} /> Tipo de Item <span className="text-rose-500">*</span>
+              <Filter size={12} /> Categoria da Demanda <span className="text-rose-500">*</span>
             </label>
             <select 
               className="w-full px-5 py-4 bg-[#FAFAF9] border-2 border-[#E7E5E4] rounded-2xl font-bold text-sm focus:ring-4 focus:ring-rose-500/10 focus:border-rose-500 transition-all outline-none appearance-none cursor-pointer"
               value={formData.itemType}
               onChange={e => setFormData({...formData, itemType: e.target.value})}
             >
-              {categories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+              {PCA_CATEGORIES.map(cat => <option key={cat} value={cat}>{cat}</option>)}
             </select>
           </div>
           <div className="space-y-3">
@@ -8486,18 +8497,18 @@ interface PCADashboardProps {
   pcaRequests: PCARequest[];
   normalizeString: (str: string | null | undefined) => string;
   SECTORS: string[];
-  categories: string[];
   format: any;
   XLSX: any;
+  letterheadImage: string | null;
 }
 
 const PCADashboard = ({ 
   pcaRequests, 
   normalizeString, 
   SECTORS, 
-  categories, 
   format, 
-  XLSX 
+  XLSX,
+  letterheadImage
 }: PCADashboardProps) => {
   const [pcaSearch, setPcaSearch] = useState('');
   const [sectorFilter, setSectorFilter] = useState('all');
@@ -8513,7 +8524,7 @@ const PCADashboard = ({
 
   const handleExportPCAExcel = () => {
     const exportData = filtered.map(r => ({
-      'Tipo': r.itemType,
+      'Categoria': r.itemType,
       'Item': r.itemName,
       'Descrição': r.description,
       'Unidade': r.unit,
@@ -8530,6 +8541,195 @@ const PCADashboard = ({
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "PCA 2026");
     XLSX.writeFile(wb, `PCA_2026_Demandas_${format(new Date(), 'yyyyMMdd')}.xlsx`);
+  };
+
+  const handleExportPCAPDF = () => {
+    try {
+      const doc = new jsPDF('l', 'mm', 'a4');
+      const totalPagesExp = '{total_pages_count_string}';
+      
+      const grouped: Record<string, PCARequest[]> = {};
+      filtered.forEach(r => {
+        if (!grouped[r.itemType]) grouped[r.itemType] = [];
+        grouped[r.itemType].push(r);
+      });
+
+      const sortedCategories = Object.keys(grouped).sort();
+
+      const renderHeader = (doc: any, pageNumber: number) => {
+        // Institutional Header
+        if (letterheadImage) {
+          try {
+            doc.addImage(letterheadImage, 'PNG', 14, 10, 269, 25);
+          } catch (e) {
+            console.error("Erro ao carregar imagem do timbrado:", e);
+          }
+        }
+        
+        doc.setFontSize(16);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(31, 41, 55);
+        doc.text("POLICLÍNICA", 148.5, 45, { align: 'center' });
+        
+        doc.setFontSize(14);
+        doc.text("Relatório de Demandas Não Padronizadas – PCA 2026", 148.5, 52, { align: 'center' });
+        
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(107, 114, 128);
+        doc.text(`Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm:ss')}`, 283, 58, { align: 'right' });
+        
+        doc.setDrawColor(229, 231, 235);
+        doc.line(14, 62, 283, 62);
+      };
+
+      let finalY = 68;
+
+      sortedCategories.forEach((cat, index) => {
+        const items = grouped[cat].sort((a, b) => a.itemName.localeCompare(b.itemName));
+        
+        autoTable(doc, {
+          startY: finalY,
+          head: [[
+            { content: `CATEGORIA DA DEMANDA: ${cat.toUpperCase()}`, colSpan: 10, styles: { fillColor: [244, 63, 94], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 10 } }
+          ], [
+            'Item', 
+            'Especificação Técnica', 
+            'Unid', 
+            'Qtd', 
+            'Setor', 
+            'Solicitante', 
+            'Justificativa', 
+            'Impacto', 
+            'Observações'
+          ]],
+          body: items.map(r => [
+            r.itemName.toUpperCase(),
+            r.description || '---',
+            r.unit || '---',
+            r.estimatedAnnualQuantity,
+            r.sector,
+            r.userName || '---',
+            r.justification || '---',
+            r.impactOfAbsence || '---',
+            r.observations || '---'
+          ]),
+          theme: 'grid',
+          headStyles: { 
+            fillColor: [31, 41, 55], 
+            fontSize: 7, 
+            fontStyle: 'bold', 
+            halign: 'center',
+            valign: 'middle'
+          },
+          bodyStyles: { 
+            fontSize: 6.5, 
+            textColor: [55, 65, 81],
+            valign: 'top',
+            cellPadding: 2
+          },
+          columnStyles: {
+            0: { cellWidth: 30, fontStyle: 'bold' },
+            1: { cellWidth: 40 },
+            2: { cellWidth: 10, halign: 'center' },
+            3: { cellWidth: 10, halign: 'center', fontStyle: 'bold' },
+            4: { cellWidth: 20 },
+            5: { cellWidth: 20 },
+            6: { cellWidth: 45 },
+            7: { cellWidth: 35 },
+            8: { cellWidth: 35 }
+          },
+          margin: { top: 65, left: 14, right: 14 },
+          didDrawPage: (data) => {
+            renderHeader(doc, data.pageNumber);
+            
+            // Footer with page number
+            const str = `Página ${data.pageNumber} de ${totalPagesExp}`;
+            doc.setFontSize(8);
+            doc.setFont('helvetica', 'normal');
+            doc.setTextColor(156, 163, 175);
+            doc.text(str, 148.5, doc.internal.pageSize.height - 10, { align: 'center' });
+          }
+        });
+        
+        finalY = (doc as any).lastAutoTable.finalY + 10;
+        
+        if (finalY > doc.internal.pageSize.height - 40 && index < sortedCategories.length - 1) {
+          doc.addPage();
+          finalY = 68;
+        }
+      });
+
+      // Summary
+      if (finalY > doc.internal.pageSize.height - 100) {
+        doc.addPage();
+        finalY = 68;
+      }
+
+      doc.setFontSize(12);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(31, 41, 55);
+      doc.text("RESUMO DE DEMANDAS POR CATEGORIA", 14, finalY);
+      finalY += 6;
+
+      const sectorTotals: Record<string, number> = {};
+      const typeTotals: Record<string, number> = {};
+      filtered.forEach(r => {
+        sectorTotals[r.sector] = (sectorTotals[r.sector] || 0) + 1;
+        typeTotals[r.itemType] = (typeTotals[r.itemType] || 0) + 1;
+      });
+
+      const sectorData = Object.entries(sectorTotals).sort((a, b) => b[1] - a[1]);
+      const typeData = Object.entries(typeTotals).sort((a, b) => b[1] - a[1]);
+
+      autoTable(doc, {
+        startY: finalY,
+        head: [['Setor Solicitante', 'Qtd Solicitações']],
+        body: sectorData,
+        theme: 'striped',
+        styles: { fontSize: 8 },
+        headStyles: { fillColor: [75, 85, 99] },
+        margin: { left: 14, right: 155 }
+      });
+
+      autoTable(doc, {
+        startY: (doc as any).lastAutoTable.finalY - (sectorData.length * 6) - 6, // Align horizontally
+        head: [['Categoria da Demanda', 'Qtd Solicitações']],
+        body: typeData,
+        theme: 'striped',
+        styles: { fontSize: 8 },
+        headStyles: { fillColor: [75, 85, 99] },
+        margin: { left: 155, right: 14 }
+      });
+      
+      const lastY = Math.max((doc as any).lastAutoTable.finalY, finalY + 20);
+      finalY = lastY + 30;
+
+      // Signature section
+      if (finalY > doc.internal.pageSize.height - 40) {
+        doc.addPage();
+        finalY = 68;
+      }
+
+      doc.setDrawColor(156, 163, 175);
+      doc.line(70, finalY, 227, finalY);
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(31, 41, 55);
+      doc.text("ASSINATURA ADMINISTRATIVA / DIRETORIA", 148.5, finalY + 6, { align: 'center' });
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(107, 114, 128);
+      doc.text("Documento gerado para fins de planejamento e elaboração do PCA 2026", 148.5, finalY + 12, { align: 'center' });
+
+      if (typeof doc.putTotalPages === 'function') {
+        doc.putTotalPages(totalPagesExp);
+      }
+
+      doc.save(`Relatorio_PCA_2026_Demanda_${format(new Date(), 'dd-MM-yyyy_HHmm')}.pdf`);
+    } catch (error) {
+      console.error("Erro ao gerar PDF:", error);
+    }
   };
 
   return (
@@ -8564,23 +8764,32 @@ const PCADashboard = ({
               value={typeFilter}
               onChange={e => setTypeFilter(e.target.value)}
             >
-              <option value="all">Todos os Tipos</option>
-              {categories.map(c => <option key={c} value={c}>{c}</option>)}
+              <option value="all">Todas as Categorias</option>
+              {PCA_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
         </div>
         <div className="bg-emerald-50 p-6 rounded-[32px] border border-emerald-100 shadow-sm flex items-center justify-between">
-          <div>
+          <div className="flex flex-col">
             <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-1">Total de Demandas</p>
             <h3 className="text-3xl font-black text-emerald-900">{filtered.length}</h3>
           </div>
-          <button 
-            onClick={handleExportPCAExcel}
-            className="p-4 bg-emerald-600 text-white rounded-2xl hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-200"
-            title="Exportar para Excel"
-          >
-            <Download size={24} />
-          </button>
+          <div className="flex gap-3">
+             <button 
+              onClick={handleExportPCAPDF}
+              className="px-6 py-4 bg-rose-600 text-white rounded-2xl hover:bg-rose-700 transition-all shadow-lg shadow-rose-200 flex items-center gap-2 font-black text-[10px] uppercase tracking-widest"
+              title="Gerar Relatório PCA 2026"
+            >
+              <Printer size={20} /> Relatório PDF
+            </button>
+            <button 
+              onClick={handleExportPCAExcel}
+              className="p-4 bg-emerald-600 text-white rounded-2xl hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-200"
+              title="Exportar para Excel"
+            >
+              <Download size={24} />
+            </button>
+          </div>
         </div>
       </div>
 
@@ -8590,7 +8799,7 @@ const PCADashboard = ({
             <thead>
               <tr className="bg-[#FAFAF9] border-b border-[#E7E5E4]">
                 <th className="px-8 py-5 font-black text-[10px] text-[#78716C] uppercase tracking-[0.2em]">Item / Descrição</th>
-                <th className="px-8 py-5 font-black text-[10px] text-[#78716C] uppercase tracking-[0.2em] text-center">Tipo</th>
+                <th className="px-8 py-5 font-black text-[10px] text-[#78716C] uppercase tracking-[0.2em] text-center">Categoria</th>
                 <th className="px-8 py-5 font-black text-[10px] text-[#78716C] uppercase tracking-[0.2em] text-center">Unid / Qtd</th>
                 <th className="px-8 py-5 font-black text-[10px] text-[#78716C] uppercase tracking-[0.2em]">Justificativa</th>
                 <th className="px-8 py-5 font-black text-[10px] text-[#78716C] uppercase tracking-[0.2em]">Solicitante</th>
