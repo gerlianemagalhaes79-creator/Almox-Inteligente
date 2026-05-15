@@ -35,24 +35,10 @@ service cloud.firestore {
     function isValidNotification(data) {
       return data.keys().hasAll(['userId', 'title', 'message', 'date', 'read']) &&
              data.userId is string &&
-             data.title is string && data.title.size() < 200 &&
-             data.message is string && data.message.size() < 2000 &&
+             data.title is string && data.title.size() < 100 &&
+             data.message is string && data.message.size() < 500 &&
              data.date is string &&
-             data.read is bool &&
-             (!('requestId' in data) || (data.requestId is string)) &&
-             (!('type' in data) || (data.type in ['system', 'request', 'pca']));
-    }
-
-    function isValidPCARequest(data) {
-      return data.keys().hasAll(['itemType', 'itemName', 'unit', 'estimatedAnnualQuantity', 'justification', 'sector', 'userName', 'date']) &&
-             data.itemType is string && data.itemType.size() < 100 &&
-             data.itemName is string && data.itemName.size() < 200 &&
-             data.unit is string && data.unit.size() < 50 &&
-             data.estimatedAnnualQuantity is number &&
-             data.justification is string && data.justification.size() < 1000 &&
-             data.sector is string && data.sector.size() < 100 &&
-             data.userName is string && data.userName.size() < 100 &&
-             data.date is string;
+             data.read is bool;
     }
 
     match /items/{itemId} {
@@ -107,12 +93,6 @@ service cloud.firestore {
       allow update: if isAuthenticated() && resource.data.userId == request.auth.uid && 
                     request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
       allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
-    }
-
-    match /pca_requests/{requestId} {
-      allow read: if isAdmin();
-      allow create: if isAuthenticated() && isValidPCARequest(request.resource.data);
-      allow update, delete: if isAdmin();
     }
   }
 }

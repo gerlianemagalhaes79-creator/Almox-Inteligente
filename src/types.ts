@@ -37,7 +37,6 @@ export interface Notification {
   date: string;
   read: boolean;
   requestId?: string;
-  type?: 'system' | 'request' | 'pca';
 }
 
 export interface Item {
@@ -84,20 +83,4 @@ export interface Transaction {
   donationNumber?: string;
   batch_number?: string;
   expiry_date?: string;
-}
-
-export interface PCARequest {
-  id: string;
-  itemType: string;
-  itemName: string;
-  description: string;
-  unit: string;
-  estimatedAnnualQuantity: number;
-  justification: string;
-  impactOfAbsence: string;
-  observations: string;
-  sector: string;
-  userName: string;
-  userEmail: string;
-  date: string;
 }
