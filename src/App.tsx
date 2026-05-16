@@ -353,6 +353,7 @@ export default function App() {
   const [isAdminAddingItem, setIsAdminAddingItem] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
+  const [showStockConfirm, setShowStockConfirm] = useState<{show: boolean, notificationId?: string, itemName?: string}>({show: false});
   const [usersList, setUsersList] = useState<UserProfile[]>([]);
   const [deletionReason, setDeletionReason] = useState('');
   const [showDeletedHistory, setShowDeletedHistory] = useState(false);
@@ -466,7 +467,7 @@ export default function App() {
   const [customRoomName, setCustomRoomName] = useState('Sala A');
   const [selectedRoomCategories, setSelectedRoomCategories] = useState<string[]>([]);
   
-  const createNotification = async (userId: string, title: string, message: string, requestId?: string) => {
+  const createNotification = async (userId: string, title: string, message: string, requestId?: string, type: 'STOCK_ZERO' | 'SYSTEM' | 'REQUEST' = 'SYSTEM', itemName?: string) => {
     try {
       await addDoc(collection(db, 'notifications'), {
         userId,
@@ -474,10 +475,49 @@ export default function App() {
         message,
         date: new Date().toISOString(),
         read: false,
-        requestId
+        requestId,
+        type,
+        itemName
       });
     } catch (error) {
       console.error("Error creating notification:", error);
+    }
+  };
+
+  const checkStockAndNotify = async (itemName: string) => {
+    try {
+      // Get all active batches for this product
+      const normalizedName = normalizeString(itemName);
+      const itemsSnapshot = await getDocs(query(collection(db, 'items'), where('deletedAt', '==', null)));
+      const batches = itemsSnapshot.docs
+        .map(d => ({ id: d.id, ...d.data() } as Item))
+        .filter(i => normalizeString(i.name) === normalizedName);
+
+      const totalQuantity = batches.reduce((sum, b) => sum + (Number(b.quantity) || 0), 0);
+
+      if (totalQuantity === 0) {
+        // Check if an unconfirmed notification for this item already exists
+        const existingNotifQuery = query(
+          collection(db, 'notifications'),
+          where('userId', '==', 'ADMIN_GROUP'),
+          where('itemName', '==', itemName),
+          where('read', '==', false)
+        );
+        const existingSnap = await getDocs(existingNotifQuery);
+
+        if (existingSnap.empty) {
+          await createNotification(
+            'ADMIN_GROUP',
+            'Estoque Zerado',
+            `O material "${itemName}" atingiu estoque zero.`,
+            undefined,
+            'STOCK_ZERO',
+            itemName
+          );
+        }
+      }
+    } catch (error) {
+      console.error("Error checking stock for notification:", error);
     }
   };
   
@@ -575,6 +615,7 @@ export default function App() {
     }));
   };
   
+  const [modalSector, setModalSector] = useState<string>('');
   const [transactionQty, setTransactionQty] = useState(1);
   const [exitReason, setExitReason] = useState<'consumo' | 'doacao' | 'vencido' | 'perda'>('consumo');
   const [expiryReason, setExpiryReason] = useState('');
@@ -688,7 +729,9 @@ export default function App() {
         quantity: editingQuantity.quantity
       });
       showToast("Quantidade atualizada com sucesso!", "success");
+      const name = items.find(i => i.id === editingQuantity.id)?.name;
       setEditingQuantity(null);
+      if (name) await checkStockAndNotify(name);
     } catch (error: any) {
       handleFirestoreError(error, OperationType.UPDATE, `items/${editingQuantity.id}`);
       showToast(`Erro ao atualizar quantidade: ${error.message}`, "error");
@@ -957,14 +1000,28 @@ export default function App() {
       handleFirestoreError(error, OperationType.LIST, 'request_items');
     });
 
-    const unsubscribeNotifications = onSnapshot(
-      query(collection(db, 'notifications'), where('userId', '==', user.uid), orderBy('date', 'desc')),
-      (snapshot) => {
-        setNotifications(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Notification)));
-      }, (error) => {
-        handleFirestoreError(error, OperationType.LIST, 'notifications');
-      }
+    const notificationIds = [user.uid];
+    if (isAdmin) {
+      notificationIds.push('ADMIN_GROUP');
+    }
+
+    const qNotifications = query(
+      collection(db, 'notifications'), 
+      where('userId', 'in', notificationIds), 
+      orderBy('date', 'desc')
     );
+    
+    const unsubscribeNotifications = onSnapshot(qNotifications, (snapshot) => {
+      setNotifications(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Notification)));
+    }, (error) => {
+      // If error is permission denied, it might be because we added ADMIN_GROUP wrongly or rules haven't propagated
+      console.warn("Notification listener error:", error);
+      // Fallback to single user listener if needed
+      const fallbackQ = query(collection(db, 'notifications'), where('userId', '==', user.uid), orderBy('date', 'desc'));
+      onSnapshot(fallbackQ, (snapshot) => {
+        setNotifications(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Notification)));
+      });
+    });
 
     return () => {
       unsubscribeItems();
@@ -1100,6 +1157,17 @@ export default function App() {
           throw new Error("Esta movimentação já foi excluída.");
         }
 
+        // 5-hour rule for exit transactions
+        if (transData.type === 'exit') {
+          const transDate = new Date(transData.date).getTime();
+          const now = new Date().getTime();
+          const hoursDiff = (now - transDate) / (1000 * 60 * 60);
+
+          if (hoursDiff > 5) {
+            throw new Error("Uma saída só pode ser excluída em até 5 horas após a sua realização.");
+          }
+        }
+
         if (transData.item_id) {
           const itemRef = doc(db, 'items', transData.item_id);
           const itemSnap = await transaction.get(itemRef);
@@ -1131,7 +1199,9 @@ export default function App() {
       });
 
       setShowDeleteModal({ show: false });
+      const itemName = transactions.find(t => t.id === id)?.item_name;
       setDeletionReason('');
+      if (itemName) await checkStockAndNotify(itemName);
     } catch (error: any) {
       console.error("Error deleting transaction:", error);
       alert(`Erro ao excluir movimentação: ${error.message}`);
@@ -1743,6 +1813,11 @@ export default function App() {
         await createNotification(uSnap.docs[0].id, 'Entrega Realizada', `Sua solicitação #${requestId.slice(-5).toUpperCase()} foi entregue.`, requestId);
       }
 
+      // Stock Zero Notifications
+      for (const { reqItem } of itemsStockData) {
+        await checkStockAndNotify(reqItem.product_name);
+      }
+
       // Receipt
       const itemsForReceipt = requestItems.filter(i => i.quantity_approved > 0).map(i => ({
         product_name: i.product_name,
@@ -1998,13 +2073,17 @@ export default function App() {
               return `${nextCount.toString().padStart(2, '0')}/${currentYear}`;
             })() : null;
 
+            const sectorValue = (inventoryLocation === 'Farmácia' && exitReason === 'consumo' && (modalSector === 'Farmácia' || modalSector === SECTORS[0] || !modalSector)) 
+              ? 'Farmácia (Consumo Interno)' 
+              : modalSector;
+
             transaction.set(newTransRef, {
               item_id: currentItemData.id || itemRef.id,
               item_name: currentItemData.name,
               type: 'exit',
               origin: currentItemData.origin,
               quantity: quantity,
-              sector: inventoryLocation === 'Farmácia' && exitReason === 'consumo' ? 'Farmácia (Consumo Interno)' : selectedSector,
+              sector: sectorValue,
               location: inventoryLocation,
               date: new Date().toISOString(),
               responsible: user?.displayName || 'Sistema',
@@ -2173,6 +2252,14 @@ export default function App() {
       setDonationUnitCNPJ('');
       setDonationRevisionDate('');
       setLetterheadImage(null);
+
+      // Stock Zero Notifications check
+      if (showTransactionModal.type === 'exit') {
+        const itemNames = basket.map(b => items.find(i => i.id === b.item_id)?.name).filter(Boolean) as string[];
+        for (const name of itemNames) {
+          await checkStockAndNotify(name);
+        }
+      }
     } catch (error: any) {
       console.error('Erro na transação:', error);
       alert(`Erro na movimentação: ${error.message}`);
@@ -2466,6 +2553,26 @@ export default function App() {
       showToast("Erro ao exportar PDF.", "error");
     }
   };
+
+  useEffect(() => {
+    if (showTransactionModal.show) {
+      setTransactionQty(1);
+      setExitReason('consumo');
+      setExpiryReason('');
+      setDonationUnitName('');
+      setDonationUnitAddress('');
+      setDonationUnitCNPJ('');
+      setDonationRevisionDate('');
+      setBasket(showTransactionModal.item ? [{ item_id: showTransactionModal.item.id!, quantity: 1 }] : []);
+      
+      // Default to item's current location or parent sector
+      if (showTransactionModal.item) {
+        setModalSector(showTransactionModal.item.location === 'Farmácia' ? 'Farmácia' : 'Almoxarifado');
+      } else {
+        setModalSector(userProfile?.sector || SECTORS[0]);
+      }
+    }
+  }, [showTransactionModal.show, showTransactionModal.item, userProfile?.sector]);
 
   const handleExportPCA = () => {
     if (selectedSector !== 'Almoxarifado') {
@@ -3421,7 +3528,9 @@ export default function App() {
       if (t.deletedAt) return false;
       const d = new Date(t.date);
       const inRange = d >= start && d <= end;
-      const matchesSector = effectiveSectorFilter === 'all' || t.sector === effectiveSectorFilter;
+    const matchesSector = effectiveSectorFilter === 'all' || 
+                          t.sector === effectiveSectorFilter || 
+                          (effectiveSectorFilter === 'Farmácia' && t.sector === 'Farmácia (Consumo Interno)');
       return inRange && matchesSector;
     });
 
@@ -3477,12 +3586,14 @@ export default function App() {
     });
 
     // Group by date for line chart
-    const dailyData: Record<string, { date: string, entries: number, exits: number }> = {};
+    const dailyData: Record<string, { date: string, entries: number, exits: number, sortKey: string }> = {};
     filteredTrans.forEach(t => {
-      const dateKey = format(new Date(t.date), 'dd/MM');
-      if (!dailyData[dateKey]) dailyData[dateKey] = { date: dateKey, entries: 0, exits: 0 };
-      if (t.type === 'entry') dailyData[dateKey].entries += t.quantity;
-      else dailyData[dateKey].exits += t.quantity;
+      const dateObj = new Date(t.date);
+      const dateKey = format(dateObj, 'dd/MM');
+      const sortKey = format(dateObj, 'yyyy-MM-dd');
+      if (!dailyData[sortKey]) dailyData[sortKey] = { date: dateKey, entries: 0, exits: 0, sortKey };
+      if (t.type === 'entry') dailyData[sortKey].entries += t.quantity;
+      else dailyData[sortKey].exits += t.quantity;
     });
 
     // Group by category for pie chart (quantity)
@@ -3526,10 +3637,12 @@ export default function App() {
       const category = item?.category || 'Outros';
       categoriesInSector.add(category);
       
-      if (!sectorData[t.sector!]) {
-        sectorData[t.sector!] = { name: t.sector };
+      const sectorKey = (t.sector === 'Farmácia (Consumo Interno)') ? 'Farmácia' : t.sector!;
+      
+      if (!sectorData[sectorKey]) {
+        sectorData[sectorKey] = { name: sectorKey };
       }
-      sectorData[t.sector!][category] = (sectorData[t.sector!][category] || 0) + t.quantity;
+      sectorData[sectorKey][category] = (sectorData[sectorKey][category] || 0) + t.quantity;
     });
 
     // Consumption report with sector breakdown
@@ -3558,7 +3671,8 @@ export default function App() {
       const item = items.find(i => i.id === t.item_id);
       const price = Number(item?.unit_price) || 0;
       const value = t.quantity * price;
-      const sector = t.sector || 'Não Informado';
+      let sector = t.sector || 'Não Informado';
+      if (sector === 'Farmácia (Consumo Interno)') sector = 'Farmácia';
       
       if (!consumptionReport[t.item_name]) {
         consumptionReport[t.item_name] = { 
@@ -3631,7 +3745,8 @@ export default function App() {
     const exitsByReason: Record<string, number> = {
       'consumo': 0,
       'doacao': 0,
-      'vencido': 0
+      'vencido': 0,
+      'perda': 0
     };
     filteredTrans.filter(t => t.type === 'exit').forEach(t => {
       const reason = t.exitReason || 'consumo';
@@ -3645,7 +3760,7 @@ export default function App() {
       exits,
       entriesValue,
       exitsValue,
-      daily: Object.values(dailyData).sort((a, b) => a.date.localeCompare(b.date)),
+      daily: Object.values(dailyData).sort((a, b) => a.sortKey.localeCompare(b.sortKey)),
       categories: Object.entries(categoryData)
         .map(([name, value]) => ({ name, value }))
         .filter(c => c.value > 0)
@@ -3679,7 +3794,7 @@ export default function App() {
         .slice(0, 10),
       exitsByReason
     };
-  }, [transactions, items, reportRange, reportSectorFilter, allRequestItems, requests, userProfile, isAdmin]);
+  }, [transactions, items, reportRange, reportSectorFilter, allRequestItems, requests, userProfile, isAdmin, selectedSector]);
 
   if (loading) {
     return (
@@ -4112,58 +4227,99 @@ export default function App() {
             <div className="relative">
               <button 
                 onClick={() => setShowNotifications(!showNotifications)}
-                className="p-2 bg-white border border-[#E7E5E4] rounded-xl text-[#57534E] hover:bg-[#FAFAF9] relative transition-all"
+                className="relative p-2 text-[#57534E] hover:bg-white hover:shadow-sm rounded-xl transition-all"
+                title="Notificações"
               >
-                <Bell size={20} />
+                <Bell size={24} />
                 {notifications.filter(n => !n.read).length > 0 && (
-                  <span className="absolute -top-1 -right-1 w-5 h-5 bg-rose-600 text-white text-[10px] font-bold rounded-full flex items-center justify-center border-2 border-white">
+                  <span className="absolute top-1 right-1 w-5 h-5 bg-rose-600 text-white text-[10px] font-bold rounded-full flex items-center justify-center border-2 border-[#F5F5F4]">
                     {notifications.filter(n => !n.read).length}
                   </span>
                 )}
               </button>
-              
+
               <AnimatePresence>
                 {showNotifications && (
-                  <motion.div 
-                    initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                    className="absolute right-0 mt-2 w-80 bg-white border border-[#E7E5E4] rounded-2xl shadow-2xl z-50 overflow-hidden"
-                  >
-                    <div className="p-4 border-b border-[#E7E5E4] flex justify-between items-center bg-[#FAFAF9]">
-                      <h3 className="font-bold text-sm">Notificações</h3>
-                      <button onClick={() => setShowNotifications(false)} className="text-[#A8A29E] hover:text-[#1C1917]">
-                        <X size={16} />
-                      </button>
-                    </div>
-                    <div className="max-h-96 overflow-y-auto">
-                      {notifications.length === 0 ? (
-                        <div className="p-8 text-center">
-                          <p className="text-xs text-[#A8A29E] font-medium">Nenhuma notificação</p>
-                        </div>
-                      ) : (
-                        notifications.map(n => (
-                          <div 
-                            key={n.id} 
-                            className={`p-4 border-b border-[#F5F5F4] hover:bg-[#FAFAF9] transition-all cursor-pointer ${!n.read ? 'bg-blue-50/30' : ''}`}
-                            onClick={async () => {
+                  <>
+                    <div 
+                      className="fixed inset-0 z-40" 
+                      onClick={() => setShowNotifications(false)} 
+                    />
+                    <motion.div 
+                      initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                      className="absolute right-0 mt-2 w-80 bg-white rounded-3xl shadow-2xl border border-[#E7E5E4] z-50 overflow-hidden"
+                    >
+                      <div className="p-4 border-b border-[#E7E5E4] flex justify-between items-center bg-[#FAFAF9]">
+                        <h3 className="font-black text-sm">Notificações</h3>
+                        <button 
+                          onClick={async () => {
+                            const unreadSystem = notifications.filter(n => !n.read && n.userId !== 'ADMIN_GROUP');
+                            for (const n of unreadSystem) {
                               await updateDoc(doc(db, 'notifications', n.id), { read: true });
-                              if (n.requestId) {
-                                const req = requests.find(r => r.id === n.requestId);
-                                if (req) {
-                                  setShowRequestDetailModal({ show: true, request: req });
-                                }
-                              }
-                            }}
-                          >
-                            <p className={`text-xs font-bold mb-1 ${!n.read ? 'text-blue-600' : 'text-[#1C1917]'}`}>{n.title}</p>
-                            <p className="text-[11px] text-[#78716C] leading-relaxed mb-2">{n.message}</p>
-                            <p className="text-[10px] text-[#A8A29E] font-medium">{format(new Date(n.date), "dd MMM, HH:mm", { locale: ptBR })}</p>
+                            }
+                          }}
+                          className="text-[10px] font-bold text-blue-600 hover:underline uppercase tracking-wider"
+                        >
+                          Limpar Lidas
+                        </button>
+                      </div>
+                      <div className="max-h-[400px] overflow-y-auto">
+                        {notifications.length === 0 ? (
+                          <div className="p-10 text-center">
+                            <Bell size={40} className="mx-auto text-[#E7E5E4] mb-3" />
+                            <p className="text-xs text-[#A8A29E] font-medium">Nenhuma notificação</p>
                           </div>
-                        ))
-                      )}
-                    </div>
-                  </motion.div>
+                        ) : (
+                          <div className="divide-y divide-[#E7E5E4]">
+                            {notifications.filter(n => !n.read).map(n => (
+                              <div key={n.id} className={`p-4 hover:bg-[#FAFAF9] transition-colors ${n.type === 'STOCK_ZERO' ? 'bg-rose-50/30' : ''}`}>
+                                <div className="flex gap-3">
+                                  <div className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${
+                                    n.type === 'STOCK_ZERO' ? 'bg-rose-100 text-rose-600' : 
+                                    n.type === 'REQUEST' ? 'bg-blue-100 text-blue-600' : 'bg-[#F5F5F4] text-[#78716C]'
+                                  }`}>
+                                    {n.type === 'STOCK_ZERO' ? <AlertTriangle size={14} /> : <Info size={14} />}
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-xs font-bold text-[#1C1917] mb-0.5">{n.title}</p>
+                                    <p className="text-[11px] text-[#57534E] leading-relaxed mb-2">{n.message}</p>
+                                    <div className="flex items-center justify-between">
+                                      <span className="text-[9px] text-[#A8A29E] font-medium">
+                                        {new Date(n.date).toLocaleDateString('pt-BR')} {new Date(n.date).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                                      </span>
+                                      {n.type === 'STOCK_ZERO' ? (
+                                        <button 
+                                          onClick={() => setShowStockConfirm({ show: true, notificationId: n.id, itemName: n.itemName })}
+                                          className="text-[10px] font-bold text-rose-600 bg-rose-100 px-2 py-1 rounded-lg hover:bg-rose-200 transition-all border border-rose-200"
+                                        >
+                                          Confirmar Ciência
+                                        </button>
+                                      ) : (
+                                        <button 
+                                          onClick={() => updateDoc(doc(db, 'notifications', n.id), { read: true })}
+                                          className="text-[10px] font-bold text-blue-600 hover:bg-blue-50 px-2 py-1 rounded-lg transition-all"
+                                        >
+                                          Marcar como lida
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                            {notifications.filter(n => n.read).length > 0 && notifications.filter(n => !n.read).length === 0 && (
+                               <div className="p-10 text-center">
+                                 <CheckCircle size={40} className="mx-auto text-emerald-100 mb-3" />
+                                 <p className="text-xs text-[#A8A29E] font-medium">Tudo em dia!</p>
+                               </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </motion.div>
+                  </>
                 )}
               </AnimatePresence>
             </div>
@@ -4401,16 +4557,26 @@ export default function App() {
                         </div>
                       </div>
                       {isAdmin && !t.deletedAt && (
-                        <button 
-                          onClick={() => {
-                            setDeletionReason('');
-                            setShowDeleteModal({ show: true, transactionId: t.id });
-                          }}
-                          className="p-2 text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all self-center"
-                          title="Excluir Movimentação"
-                        >
-                          <Trash2 size={18} />
-                        </button>
+                        (() => {
+                          const isExit = t.type === 'exit';
+                          const hoursDiff = (new Date().getTime() - new Date(t.date).getTime()) / (1000 * 60 * 60);
+                          const canDelete = !isExit || hoursDiff <= 5;
+                          
+                          if (!canDelete) return null;
+
+                          return (
+                            <button 
+                              onClick={() => {
+                                setDeletionReason('');
+                                setShowDeleteModal({ show: true, transactionId: t.id });
+                              }}
+                              className="p-2 text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all self-center"
+                              title="Excluir Movimentação"
+                            >
+                              <Trash2 size={18} />
+                            </button>
+                          );
+                        })()
                       )}
                     </div>
                   ))}
@@ -4967,13 +5133,6 @@ export default function App() {
                                       date: t.date
                                     });
                                   }
-                                }}
-                                className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
-                                title={t.exitReason === 'doacao' ? 'Reimprimir Termo de Doação' : 'Reimprimir Recibo de Entrega'}
-                              >
-                                {t.exitReason === 'doacao' ? <FileText size={18} /> : <Printer size={18} />}
-                              </button>
-                            )}
                             {t.deletedAt ? (
                               <button 
                                 onClick={() => handleRecoverTransaction(t.id)}
@@ -4983,9 +5142,27 @@ export default function App() {
                                 <RotateCcw size={18} />
                               </button>
                             ) : (
-                              <button 
-                                onClick={() => {
-                                  setDeletionReason('');
+                              (() => {
+                                const isExit = t.type === 'exit';
+                                const hoursDiff = (new Date().getTime() - new Date(t.date).getTime()) / (1000 * 60 * 60);
+                                const canDelete = !isExit || hoursDiff <= 5;
+                                
+                                if (!canDelete) return null;
+
+                                return (
+                                  <button 
+                                    onClick={() => {
+                                      setDeletionReason('');
+                                      setShowDeleteModal({ show: true, transactionId: t.id });
+                                    }}
+                                    className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg transition-all"
+                                    title="Apagar Movimentação"
+                                  >
+                                    <Trash2 size={20} />
+                                  </button>
+                                );
+                              })()
+                            )}                 setDeletionReason('');
                                   setShowDeleteModal({ show: true, transactionId: t.id });
                                 }}
                                 className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg transition-all"
@@ -5376,7 +5553,8 @@ export default function App() {
                               data={[
                                 { name: 'Consumo', value: reportData.exitsByReason.consumo },
                                 { name: 'Doação', value: reportData.exitsByReason.doacao },
-                                { name: 'Vencimento', value: reportData.exitsByReason.vencido }
+                                { name: 'Vencimento', value: reportData.exitsByReason.vencido },
+                                { name: 'Perda/Avaria', value: reportData.exitsByReason.perda || 0 }
                               ]}
                               cx="50%"
                               cy="50%"
@@ -6871,7 +7049,7 @@ export default function App() {
                         type="button"
                         onClick={() => {
                           setExitReason('doacao');
-                          setSelectedSector('');
+                          setModalSector('');
                         }}
                         className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all ${exitReason === 'doacao' ? 'bg-[#1C1917] text-white border-[#1C1917]' : 'bg-white text-[#78716C] border-[#E7E5E4] hover:bg-[#F5F5F4]'}`}
                       >
@@ -6881,7 +7059,7 @@ export default function App() {
                         type="button"
                         onClick={() => {
                           setExitReason('vencido');
-                          setSelectedSector('Descarte/Vencimento');
+                          setModalSector('Descarte/Vencimento');
                           setExpiryReason('');
                         }}
                         className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all ${exitReason === 'vencido' ? 'bg-[#1C1917] text-white border-[#1C1917]' : 'bg-white text-[#78716C] border-[#E7E5E4] hover:bg-[#F5F5F4]'}`}
@@ -6892,7 +7070,7 @@ export default function App() {
                         type="button"
                         onClick={() => {
                           setExitReason('perda');
-                          setSelectedSector('Perda/Avaria');
+                          setModalSector('Perda/Avaria');
                           setExpiryReason('');
                         }}
                         className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all ${exitReason === 'perda' ? 'bg-[#1C1917] text-white border-[#1C1917]' : 'bg-white text-[#78716C] border-[#E7E5E4] hover:bg-[#F5F5F4]'}`}
@@ -6907,10 +7085,17 @@ export default function App() {
                       {exitReason === 'doacao' ? 'Destinatário da Doação' : 
                        (exitReason === 'vencido' || exitReason === 'perda') ? 'Classificação' : 'Setor de Destino'}
                     </label>
-                    {inventoryLocation === 'Farmácia' && exitReason === 'consumo' ? (
+                    {inventoryLocation === 'Farmácia' && exitReason === 'consumo' && (modalSector === 'Farmácia' || modalSector === SECTORS[0] || !modalSector) ? (
                       <div className="bg-emerald-50 p-4 rounded-2xl border border-emerald-100">
                         <p className="text-xs font-bold text-emerald-700 uppercase tracking-widest mb-1">Saída Interna Farmácia</p>
                         <p className="text-sm text-emerald-600">Esta movimentação será registrada como consumo interno da Farmácia.</p>
+                        <button 
+                          type="button"
+                          onClick={() => setModalSector(SECTORS[1])} // Force showing selector by picking another value
+                          className="mt-2 text-[10px] font-bold text-emerald-600 hover:underline"
+                        >
+                          Alterar Setor de Destino
+                        </button>
                       </div>
                     ) : exitReason === 'doacao' ? (
                       <div className="space-y-4">
@@ -6932,8 +7117,8 @@ export default function App() {
                             type="text"
                             placeholder="Nome da unidade receptora..."
                             className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
-                            value={selectedSector}
-                            onChange={e => setSelectedSector(e.target.value)}
+                            value={modalSector}
+                            onChange={e => setModalSector(e.target.value)}
                           />
                         </div>
                         <div className="grid grid-cols-2 gap-3">
@@ -7022,15 +7207,16 @@ export default function App() {
                     ) : (exitReason === 'vencido' || exitReason === 'perda') ? (
                       <div className="bg-rose-50 p-4 rounded-2xl border border-rose-100">
                         <p className="text-xs font-bold text-rose-700 uppercase tracking-widest mb-1">Descarte por {exitReason === 'vencido' ? 'Vencimento' : 'Perda/Avaria'}</p>
-                        <p className="text-sm text-rose-600">Esta movimentação será registrada como {selectedSector}.</p>
+                        <p className="text-sm text-rose-600">Esta movimentação será registrada como {modalSector}.</p>
                       </div>
                     ) : (
                       <select 
                         required
                         className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
-                        value={selectedSector}
-                        onChange={e => setSelectedSector(e.target.value)}
+                        value={modalSector}
+                        onChange={e => setModalSector(e.target.value)}
                       >
+                        <option value="">Selecione o setor...</option>
                         {SECTORS.map(sector => (
                           <option key={sector} value={sector}>{sector}</option>
                         ))}
@@ -7991,54 +8177,141 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#E7E5E4]">
-                    {allRequestItems.filter(ri => ri.request_id === showRequestDetailModal.request?.id).map(item => {
-                      // Calcular estoque atual deste item (somando todos os lotes)
-                      const totalStock = items
-                        .filter(i => !i.deletedAt && i.name === item.product_name)
-                        .reduce((sum, i) => sum + i.quantity, 0);
-                        
-                      return (
-                        <tr key={item.id} className="hover:bg-slate-50 transition-colors">
-                          <td className="px-4 py-3 text-sm font-bold text-[#1C1917]">{item.product_name}</td>
-                          <td className="px-4 py-3 text-sm font-bold text-center text-[#78716C] bg-slate-50/50">{item.quantity_requested}</td>
-                          {isAdmin && (
-                            <td className="px-4 py-3 text-center">
-                              <div className="flex flex-col items-center">
-                                <span className={`text-sm font-black ${totalStock <= 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
-                                  {totalStock}
-                                </span>
-                                {totalStock < item.quantity_requested && totalStock > 0 && (
-                                  <span className="text-[9px] text-amber-600 font-bold uppercase leading-none">Estoque Insuficiente</span>
-                                )}
-                              </div>
-                            </td>
+
+                    {transactions
+                      .filter(t => (showDeletedHistory ? !!t.deletedAt : !t.deletedAt) && (t.location || 'Almoxarifado') === inventoryLocation)
+                      .map(t => (
+                      <tr key={t.id} className={`hover:bg-[#FAFAF9] transition-all ${t.deletedAt ? 'opacity-60 grayscale-[0.5]' : ''}`}>
+                        <td className="px-6 py-5 text-sm text-[#57534E] whitespace-nowrap">
+                          {new Date(t.date).toLocaleString('pt-BR')}
+                        </td>
+                        <td className="px-6 py-5">
+                          <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${t.type === 'entry' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+                            {t.type === 'entry' ? <ArrowDownLeft size={14} /> : <ArrowUpRight size={14} />}
+                            {t.type === 'entry' ? 'Entrada' : 'Saída'}
+                          </span>
+                        </td>
+                        <td className="px-6 py-5">
+                          <div className="font-bold whitespace-nowrap">{t.item_name}</div>
+                          {t.exitReason && t.exitReason !== 'consumo' && (
+                            <div className="text-[10px] text-rose-500 font-bold mt-1 uppercase">
+                              Motivo: {t.exitReason === 'vencido' ? 'Vencimento' : t.exitReason === 'doacao' ? 'Doação' : t.exitReason === 'perda' ? 'Perda/Avaria' : t.exitReason}
+                              {t.expiryReason && <span className="text-[#78716C] lowercase font-normal ml-1">({t.expiryReason})</span>}
+                            </div>
                           )}
-                          <td className="px-4 py-3 text-center">
-                            {isAdmin && showRequestDetailModal.request?.status === 'PENDENTE' ? (
-                              <div className="flex justify-center">
-                                <input 
-                                  type="number" 
-                                  min="0"
-                                  value={item.quantity_approved}
-                                  onChange={(e) => {
-                                    const val = parseInt(e.target.value) || 0;
-                                    setAllRequestItems(allRequestItems.map(ri => ri.id === item.id ? { ...ri, quantity_approved: val } : ri));
-                                  }}
-                                  className={`w-20 px-3 py-2 border-2 rounded-xl text-center font-black text-sm transition-all outline-none ${
-                                    item.quantity_approved > totalStock 
-                                      ? 'bg-rose-50 border-rose-200 text-rose-700 focus:border-rose-500' 
-                                      : 'bg-white border-blue-100 text-blue-700 focus:border-blue-500'
-                                  }`}
-                                />
-                              </div>
-                            ) : (
-                              <span className="text-sm font-black text-[#1C1917]">{item.quantity_approved}</span>
-                            )}
+                          {t.deletionReason && (
+                            <div className="text-[10px] text-rose-500 font-bold mt-1">Exclusão: {t.deletionReason}</div>
+                          )}
+                          {t.deletedByEmail && (
+                            <div className="text-[10px] text-rose-400 mt-0.5 italic whitespace-nowrap">Por: {t.deletedByEmail}</div>
+                          )}
+                        </td>
+                        <td className="px-6 py-5 text-xs font-mono text-[#78716C] whitespace-nowrap">
+                          {t.batch_number || '---'}
+                        </td>
+                        <td className="px-6 py-5 text-xs text-[#78716C] whitespace-nowrap">
+                          {t.expiry_date ? new Date(t.expiry_date).toLocaleDateString('pt-BR') : '---'}
+                        </td>
+                        <td className="px-6 py-5 text-center">
+                          <span className={`text-[10px] font-bold px-2 py-1 rounded-md ${t.origin === 'contract' ? 'bg-blue-50 text-blue-600' : t.origin === 'donation' ? 'bg-emerald-50 text-emerald-600' : 'bg-purple-50 text-purple-600'}`}>
+                            {t.origin === 'contract' ? 'Contrato' : t.origin === 'donation' ? 'Doação' : 'Extra'}
+                          </span>
+                        </td>
+                        <td className="px-6 py-5 text-sm font-medium text-[#78716C]">
+                          {t.sector || '---'}
+                        </td>
+                        <td className="px-6 py-5 text-sm text-[#78716C]">
+                          <div className="font-medium">{t.responsible || '---'}</div>
+                          <div className="text-[10px] opacity-70">{t.responsibleEmail}</div>
+                        </td>
+                        <td className="px-6 py-5 text-right font-bold text-lg">
+                          {t.quantity}
+                        </td>
+                        {isAdmin && (
+                          <td className="px-6 py-5 text-right text-xs font-medium text-[#78716C]">
+                            {(() => {
+                              const item = items.find(i => i.id === t.item_id);
+                              const price = Number(item?.unit_price) || 0;
+                              return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(price);
+                            })()}
                           </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
+                        )}
+                        {isAdmin && (
+                          <td className="px-6 py-5 text-right text-sm font-black text-[#1C1917]">
+                            {(() => {
+                              const item = items.find(i => i.id === t.item_id);
+                              const price = Number(item?.unit_price) || 0;
+                              return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(t.quantity * price);
+                            })()}
+                          </td>
+                        )}
+                        <td className="px-6 py-5 text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            {t.type === 'exit' && !t.deletedAt && (
+                              <button 
+                                onClick={() => {
+                                  if (t.exitReason === 'doacao') {
+                                    handleExportDonationTermPDF({
+                                      donatingUnitName: t.donationUnitName,
+                                      receivingUnit: {
+                                        name: t.sector || 'Unidade Receptora',
+                                        address: t.donationUnitAddress || '',
+                                        cnpj: t.donationUnitCNPJ || ''
+                                      },
+                                      items: [{ product_name: t.item_name, quantity: t.quantity }],
+                                      revisionDate: t.donationRevisionDate || '',
+                                      donationNumber: t.donationNumber,
+                                      date: t.date
+                                    });
+                                  } else {
+                                    handleExportDeliveryReceiptPDF({
+                                      sector: t.sector || 'Sem Setor',
+                                      items: [{ product_name: t.item_name, quantity: t.quantity }],
+                                      date: t.date
+                                    });
+                                  }
+                                }}
+                                className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
+                                title={t.exitReason === 'doacao' ? 'Reimprimir Termo de Doação' : 'Reimprimir Recibo de Entrega'}
+                              >
+                                {t.exitReason === 'doacao' ? <FileText size={18} /> : <Printer size={18} />}
+                              </button>
+                            )}
+                            {t.deletedAt ? (
+                              <button 
+                                onClick={() => handleRecoverTransaction(t.id)}
+                                className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all"
+                                title="Recuperar Movimentação"
+                              >
+                                <RotateCcw size={18} />
+                              </button>
+                            ) : (
+                              (() => {
+                                const isExit = t.type === 'exit';
+                                const hoursDiff = (new Date().getTime() - new Date(t.date).getTime()) / (1000 * 60 * 60);
+                                const canDelete = !isExit || hoursDiff <= 5;
+                                
+                                if (!canDelete) return null;
+
+                                return (
+                                  <button 
+                                    onClick={() => {
+                                      setDeletionReason('');
+                                      setShowDeleteModal({ show: true, transactionId: t.id });
+                                    }}
+                                    className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg transition-all"
+                                    title="Apagar Movimentação"
+                                  >
+                                    <Trash2 size={20} />
+                                  </button>
+                                );
+                              })()
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+</tbody>
                 </table>
               </div>
             </div>
@@ -8158,6 +8431,56 @@ export default function App() {
                   className="flex-1 py-3 bg-rose-600 text-white rounded-xl font-bold hover:bg-rose-700 transition-all"
                 >
                   Sim, Excluir
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+      {/* Stock Zero Acknowledge Confirmation Modal */}
+      <AnimatePresence>
+        {showStockConfirm.show && (
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100] flex items-center justify-center p-6">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white w-full max-w-md rounded-[32px] p-8 shadow-2xl text-center"
+            >
+              <div className="w-16 h-16 bg-rose-100 text-rose-600 rounded-2xl flex items-center justify-center mx-auto mb-6">
+                <AlertTriangle size={32} />
+              </div>
+              <h3 className="text-xl font-black mb-2 uppercase tracking-tight text-[#1C1917]">Confirmar Ciência?</h3>
+              <p className="text-[#78716C] mb-8 font-medium">
+                Deseja confirmar que está ciente de que o material <strong>"{showStockConfirm.itemName}"</strong> está com estoque zero? 
+                Esta notificação será arquivada.
+              </p>
+              <div className="flex gap-3">
+                <button 
+                  onClick={() => setShowStockConfirm({ show: false })}
+                  className="flex-1 py-3 bg-[#F5F5F4] text-[#57534E] rounded-xl font-bold hover:bg-[#E7E5E4] transition-all"
+                >
+                  Voltar
+                </button>
+                <button 
+                  onClick={async () => {
+                    if (showStockConfirm.notificationId) {
+                      try {
+                        await updateDoc(doc(db, 'notifications', showStockConfirm.notificationId), { 
+                          read: true,
+                          confirmedAt: new Date().toISOString(),
+                          confirmedBy: user.displayName
+                        });
+                        showToast("Ciência confirmada!", "success");
+                      } catch (error: any) {
+                        showToast(`Erro ao confirmar: ${error.message}`, "error");
+                      }
+                      setShowStockConfirm({ show: false });
+                    }
+                  }}
+                  className="flex-[1.5] py-3 bg-rose-600 text-white rounded-xl font-bold hover:bg-rose-700 transition-all flex items-center justify-center gap-2 shadow-lg shadow-rose-200"
+                >
+                  <Check size={18} /> Sim, Confirmar
                 </button>
               </div>
             </motion.div>

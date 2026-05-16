@@ -37,6 +37,9 @@ export interface Notification {
   date: string;
   read: boolean;
   requestId?: string;
+  type?: 'STOCK_ZERO' | 'SYSTEM' | 'REQUEST';
+  itemName?: string;
+  confirmedByAdmins?: string[];
 }
 
 export interface Item {
