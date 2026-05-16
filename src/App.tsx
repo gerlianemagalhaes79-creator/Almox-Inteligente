@@ -1157,17 +1157,6 @@ export default function App() {
           throw new Error("Esta movimentação já foi excluída.");
         }
 
-        // 5-hour rule for exit transactions
-        if (transData.type === 'exit') {
-          const transDate = new Date(transData.date).getTime();
-          const now = new Date().getTime();
-          const hoursDiff = (now - transDate) / (1000 * 60 * 60);
-
-          if (hoursDiff > 5) {
-            throw new Error("Uma saída só pode ser excluída em até 5 horas após a sua realização.");
-          }
-        }
-
         if (transData.item_id) {
           const itemRef = doc(db, 'items', transData.item_id);
           const itemSnap = await transaction.get(itemRef);
@@ -4557,26 +4546,16 @@ export default function App() {
                         </div>
                       </div>
                       {isAdmin && !t.deletedAt && (
-                        (() => {
-                          const isExit = t.type === 'exit';
-                          const hoursDiff = (new Date().getTime() - new Date(t.date).getTime()) / (1000 * 60 * 60);
-                          const canDelete = !isExit || hoursDiff <= 5;
-                          
-                          if (!canDelete) return null;
-
-                          return (
-                            <button 
-                              onClick={() => {
-                                setDeletionReason('');
-                                setShowDeleteModal({ show: true, transactionId: t.id });
-                              }}
-                              className="p-2 text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all self-center"
-                              title="Excluir Movimentação"
-                            >
-                              <Trash2 size={18} />
-                            </button>
-                          );
-                        })()
+                        <button 
+                          onClick={() => {
+                            setDeletionReason('');
+                            setShowDeleteModal({ show: true, transactionId: t.id });
+                          }}
+                          className="p-2 text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all self-center"
+                          title="Excluir Movimentação"
+                        >
+                          <Trash2 size={18} />
+                        </button>
                       )}
                     </div>
                   ))}
@@ -5133,6 +5112,13 @@ export default function App() {
                                       date: t.date
                                     });
                                   }
+                                }}
+                                className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
+                                title={t.exitReason === 'doacao' ? 'Reimprimir Termo de Doação' : 'Reimprimir Recibo de Entrega'}
+                              >
+                                {t.exitReason === 'doacao' ? <FileText size={18} /> : <Printer size={18} />}
+                              </button>
+                            )}
                             {t.deletedAt ? (
                               <button 
                                 onClick={() => handleRecoverTransaction(t.id)}
@@ -5142,27 +5128,9 @@ export default function App() {
                                 <RotateCcw size={18} />
                               </button>
                             ) : (
-                              (() => {
-                                const isExit = t.type === 'exit';
-                                const hoursDiff = (new Date().getTime() - new Date(t.date).getTime()) / (1000 * 60 * 60);
-                                const canDelete = !isExit || hoursDiff <= 5;
-                                
-                                if (!canDelete) return null;
-
-                                return (
-                                  <button 
-                                    onClick={() => {
-                                      setDeletionReason('');
-                                      setShowDeleteModal({ show: true, transactionId: t.id });
-                                    }}
-                                    className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg transition-all"
-                                    title="Apagar Movimentação"
-                                  >
-                                    <Trash2 size={20} />
-                                  </button>
-                                );
-                              })()
-                            )}                 setDeletionReason('');
+                              <button 
+                                onClick={() => {
+                                  setDeletionReason('');
                                   setShowDeleteModal({ show: true, transactionId: t.id });
                                 }}
                                 className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg transition-all"
@@ -8177,141 +8145,54 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#E7E5E4]">
-
-                    {transactions
-                      .filter(t => (showDeletedHistory ? !!t.deletedAt : !t.deletedAt) && (t.location || 'Almoxarifado') === inventoryLocation)
-                      .map(t => (
-                      <tr key={t.id} className={`hover:bg-[#FAFAF9] transition-all ${t.deletedAt ? 'opacity-60 grayscale-[0.5]' : ''}`}>
-                        <td className="px-6 py-5 text-sm text-[#57534E] whitespace-nowrap">
-                          {new Date(t.date).toLocaleString('pt-BR')}
-                        </td>
-                        <td className="px-6 py-5">
-                          <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${t.type === 'entry' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
-                            {t.type === 'entry' ? <ArrowDownLeft size={14} /> : <ArrowUpRight size={14} />}
-                            {t.type === 'entry' ? 'Entrada' : 'Saída'}
-                          </span>
-                        </td>
-                        <td className="px-6 py-5">
-                          <div className="font-bold whitespace-nowrap">{t.item_name}</div>
-                          {t.exitReason && t.exitReason !== 'consumo' && (
-                            <div className="text-[10px] text-rose-500 font-bold mt-1 uppercase">
-                              Motivo: {t.exitReason === 'vencido' ? 'Vencimento' : t.exitReason === 'doacao' ? 'Doação' : t.exitReason === 'perda' ? 'Perda/Avaria' : t.exitReason}
-                              {t.expiryReason && <span className="text-[#78716C] lowercase font-normal ml-1">({t.expiryReason})</span>}
-                            </div>
+                    {allRequestItems.filter(ri => ri.request_id === showRequestDetailModal.request?.id).map(item => {
+                      // Calcular estoque atual deste item (somando todos os lotes)
+                      const totalStock = items
+                        .filter(i => !i.deletedAt && i.name === item.product_name)
+                        .reduce((sum, i) => sum + i.quantity, 0);
+                        
+                      return (
+                        <tr key={item.id} className="hover:bg-slate-50 transition-colors">
+                          <td className="px-4 py-3 text-sm font-bold text-[#1C1917]">{item.product_name}</td>
+                          <td className="px-4 py-3 text-sm font-bold text-center text-[#78716C] bg-slate-50/50">{item.quantity_requested}</td>
+                          {isAdmin && (
+                            <td className="px-4 py-3 text-center">
+                              <div className="flex flex-col items-center">
+                                <span className={`text-sm font-black ${totalStock <= 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                                  {totalStock}
+                                </span>
+                                {totalStock < item.quantity_requested && totalStock > 0 && (
+                                  <span className="text-[9px] text-amber-600 font-bold uppercase leading-none">Estoque Insuficiente</span>
+                                )}
+                              </div>
+                            </td>
                           )}
-                          {t.deletionReason && (
-                            <div className="text-[10px] text-rose-500 font-bold mt-1">Exclusão: {t.deletionReason}</div>
-                          )}
-                          {t.deletedByEmail && (
-                            <div className="text-[10px] text-rose-400 mt-0.5 italic whitespace-nowrap">Por: {t.deletedByEmail}</div>
-                          )}
-                        </td>
-                        <td className="px-6 py-5 text-xs font-mono text-[#78716C] whitespace-nowrap">
-                          {t.batch_number || '---'}
-                        </td>
-                        <td className="px-6 py-5 text-xs text-[#78716C] whitespace-nowrap">
-                          {t.expiry_date ? new Date(t.expiry_date).toLocaleDateString('pt-BR') : '---'}
-                        </td>
-                        <td className="px-6 py-5 text-center">
-                          <span className={`text-[10px] font-bold px-2 py-1 rounded-md ${t.origin === 'contract' ? 'bg-blue-50 text-blue-600' : t.origin === 'donation' ? 'bg-emerald-50 text-emerald-600' : 'bg-purple-50 text-purple-600'}`}>
-                            {t.origin === 'contract' ? 'Contrato' : t.origin === 'donation' ? 'Doação' : 'Extra'}
-                          </span>
-                        </td>
-                        <td className="px-6 py-5 text-sm font-medium text-[#78716C]">
-                          {t.sector || '---'}
-                        </td>
-                        <td className="px-6 py-5 text-sm text-[#78716C]">
-                          <div className="font-medium">{t.responsible || '---'}</div>
-                          <div className="text-[10px] opacity-70">{t.responsibleEmail}</div>
-                        </td>
-                        <td className="px-6 py-5 text-right font-bold text-lg">
-                          {t.quantity}
-                        </td>
-                        {isAdmin && (
-                          <td className="px-6 py-5 text-right text-xs font-medium text-[#78716C]">
-                            {(() => {
-                              const item = items.find(i => i.id === t.item_id);
-                              const price = Number(item?.unit_price) || 0;
-                              return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(price);
-                            })()}
-                          </td>
-                        )}
-                        {isAdmin && (
-                          <td className="px-6 py-5 text-right text-sm font-black text-[#1C1917]">
-                            {(() => {
-                              const item = items.find(i => i.id === t.item_id);
-                              const price = Number(item?.unit_price) || 0;
-                              return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(t.quantity * price);
-                            })()}
-                          </td>
-                        )}
-                        <td className="px-6 py-5 text-right">
-                          <div className="flex items-center justify-end gap-2">
-                            {t.type === 'exit' && !t.deletedAt && (
-                              <button 
-                                onClick={() => {
-                                  if (t.exitReason === 'doacao') {
-                                    handleExportDonationTermPDF({
-                                      donatingUnitName: t.donationUnitName,
-                                      receivingUnit: {
-                                        name: t.sector || 'Unidade Receptora',
-                                        address: t.donationUnitAddress || '',
-                                        cnpj: t.donationUnitCNPJ || ''
-                                      },
-                                      items: [{ product_name: t.item_name, quantity: t.quantity }],
-                                      revisionDate: t.donationRevisionDate || '',
-                                      donationNumber: t.donationNumber,
-                                      date: t.date
-                                    });
-                                  } else {
-                                    handleExportDeliveryReceiptPDF({
-                                      sector: t.sector || 'Sem Setor',
-                                      items: [{ product_name: t.item_name, quantity: t.quantity }],
-                                      date: t.date
-                                    });
-                                  }
-                                }}
-                                className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
-                                title={t.exitReason === 'doacao' ? 'Reimprimir Termo de Doação' : 'Reimprimir Recibo de Entrega'}
-                              >
-                                {t.exitReason === 'doacao' ? <FileText size={18} /> : <Printer size={18} />}
-                              </button>
-                            )}
-                            {t.deletedAt ? (
-                              <button 
-                                onClick={() => handleRecoverTransaction(t.id)}
-                                className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all"
-                                title="Recuperar Movimentação"
-                              >
-                                <RotateCcw size={18} />
-                              </button>
+                          <td className="px-4 py-3 text-center">
+                            {isAdmin && showRequestDetailModal.request?.status === 'PENDENTE' ? (
+                              <div className="flex justify-center">
+                                <input 
+                                  type="number" 
+                                  min="0"
+                                  value={item.quantity_approved}
+                                  onChange={(e) => {
+                                    const val = parseInt(e.target.value) || 0;
+                                    setAllRequestItems(allRequestItems.map(ri => ri.id === item.id ? { ...ri, quantity_approved: val } : ri));
+                                  }}
+                                  className={`w-20 px-3 py-2 border-2 rounded-xl text-center font-black text-sm transition-all outline-none ${
+                                    item.quantity_approved > totalStock 
+                                      ? 'bg-rose-50 border-rose-200 text-rose-700 focus:border-rose-500' 
+                                      : 'bg-white border-blue-100 text-blue-700 focus:border-blue-500'
+                                  }`}
+                                />
+                              </div>
                             ) : (
-                              (() => {
-                                const isExit = t.type === 'exit';
-                                const hoursDiff = (new Date().getTime() - new Date(t.date).getTime()) / (1000 * 60 * 60);
-                                const canDelete = !isExit || hoursDiff <= 5;
-                                
-                                if (!canDelete) return null;
-
-                                return (
-                                  <button 
-                                    onClick={() => {
-                                      setDeletionReason('');
-                                      setShowDeleteModal({ show: true, transactionId: t.id });
-                                    }}
-                                    className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg transition-all"
-                                    title="Apagar Movimentação"
-                                  >
-                                    <Trash2 size={20} />
-                                  </button>
-                                );
-                              })()
+                              <span className="text-sm font-black text-[#1C1917]">{item.quantity_approved}</span>
                             )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-</tbody>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
                 </table>
               </div>
             </div>
