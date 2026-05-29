@@ -85,6 +85,16 @@
         "requestId": { "type": "string" }
       },
       "required": ["userId", "title", "message", "date", "read"]
+    },
+    "DismissedStockAlert": {
+      "title": "DismissedStockAlert",
+      "description": "Dismissed zero stock Alerts",
+      "type": "object",
+      "properties": {
+        "itemName": { "type": "string" },
+        "dismissedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["itemName", "dismissedAt"]
     }
   },
   "firestore": {
@@ -111,6 +121,10 @@
     "/notifications": {
       "schema": "Notification",
       "description": "Collection of system notifications"
+    },
+    "/dismissed_stock_alerts": {
+      "schema": "DismissedStockAlert",
+      "description": "Collection of dismissed zero stock alerts"
     }
   }
 }

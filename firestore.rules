@@ -96,5 +96,10 @@ service cloud.firestore {
       );
       allow delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || (resource.data.userId == 'ADMIN_GROUP' && isAdmin()));
     }
+
+    match /dismissed_stock_alerts/{id} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isAdmin();
+    }
   }
 }

@@ -112,6 +112,11 @@ interface ItemGroup {
 const normalizeString = (str: string | null | undefined) => 
   (str || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 
+const getSafeDocId = (name: string | null | undefined) => {
+  const normalized = normalizeString(name);
+  return normalized.replace(/[^a-z0-9]/gi, '_');
+};
+
 const SECTORS = [
   'Imagem', 'Ilha', 'Pé Diabético', 'Direção', 'Setor Pessoal', 
   'CER', 'Setor de Terapias', 'SSVV', 'Recepção', 
@@ -496,6 +501,7 @@ export default function App() {
       if (!itemName) return;
       
       const normalizedName = normalizeString(itemName);
+      const safeId = getSafeDocId(itemName);
       
       // Get all active batches for this product by scanning items and filtering in memory
       const itemsSnapshot = await getDocs(collection(db, 'items'));
@@ -506,6 +512,12 @@ export default function App() {
       const totalQuantity = batches.reduce((sum, b) => sum + (Number(b.quantity) || 0), 0);
 
       if (totalQuantity === 0) {
+        // Check if user already acknowledged this zero stock alert
+        const dismissalDoc = await getDoc(doc(db, 'dismissed_stock_alerts', safeId));
+        if (dismissalDoc.exists()) {
+          return;
+        }
+
         // Check if an unconfirmed notification for this item already exists
         const existingNotifQuery = query(
           collection(db, 'notifications'),
@@ -529,6 +541,13 @@ export default function App() {
             'STOCK_ZERO',
             itemName.toUpperCase()
           );
+        }
+      } else {
+        // If stock goes back up, clear the dismissal entry to enable future zero alerts
+        try {
+          await deleteDoc(doc(db, 'dismissed_stock_alerts', safeId));
+        } catch (e) {
+          // Ignore
         }
       }
     } catch (error) {
@@ -1075,14 +1094,40 @@ export default function App() {
           groupedByName[normName].totalQty += (Number(item.quantity) || 0);
         });
 
-        const zeroStockItems = Object.values(groupedByName).filter(g => g.totalQty === 0);
+        // Fetch currently dismissed alerts once to perform in-memory checks
+        const dismissedSnap = await getDocs(collection(db, 'dismissed_stock_alerts'));
+        const dismissedMap = new Set(dismissedSnap.docs.map(d => d.id));
+
+        // 1. Clean up dismissal records for items that now have stock > 0
+        const activeGrouped = Object.values(groupedByName);
+        const withStock = activeGrouped.filter(g => g.totalQty > 0);
+        for (const itemWithStock of withStock) {
+          const safeId = getSafeDocId(itemWithStock.name);
+          if (dismissedMap.has(safeId)) {
+            try {
+              await deleteDoc(doc(db, 'dismissed_stock_alerts', safeId));
+              dismissedMap.delete(safeId);
+            } catch (e) {
+              // Ignore if doc doesn't exist or deletion fails
+            }
+          }
+        }
+
+        // 2. Identify and notify about zero stock items that haven't been dismissed or notified yet
+        const zeroStockItems = activeGrouped.filter(g => g.totalQty === 0);
         const unreadStockZeroNotifications = notifications.filter(n => !n.read && n.type === 'STOCK_ZERO');
 
         for (const zeroItem of zeroStockItems) {
           const normZeroName = normalizeString(zeroItem.name);
+          const safeId = getSafeDocId(zeroItem.name);
           const alreadyNotified = unreadStockZeroNotifications.some(n => normalizeString(n.itemName) === normZeroName);
 
           if (!alreadyNotified) {
+            // Check if administrators have already confirmed science for this zero stock event
+            if (dismissedMap.has(safeId)) {
+              continue;
+            }
+
             const existingNotifQuery = query(
               collection(db, 'notifications'),
               where('userId', '==', 'ADMIN_GROUP'),
@@ -8437,6 +8482,14 @@ export default function App() {
                   onClick={async () => {
                     if (showStockConfirm.notificationId) {
                       try {
+                        const itemName = showStockConfirm.itemName;
+                        if (itemName) {
+                          const safeId = getSafeDocId(itemName);
+                          await setDoc(doc(db, 'dismissed_stock_alerts', safeId), {
+                            itemName: itemName,
+                            dismissedAt: new Date().toISOString()
+                          });
+                        }
                         await deleteDoc(doc(db, 'notifications', showStockConfirm.notificationId));
                         showToast("Ciência confirmada! Notificação excluída.", "success");
                       } catch (error: any) {
