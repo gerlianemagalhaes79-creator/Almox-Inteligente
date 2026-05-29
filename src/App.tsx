@@ -469,16 +469,23 @@ export default function App() {
   
   const createNotification = async (userId: string, title: string, message: string, requestId?: string, type: 'STOCK_ZERO' | 'SYSTEM' | 'REQUEST' = 'SYSTEM', itemName?: string) => {
     try {
-      await addDoc(collection(db, 'notifications'), {
+      const data: any = {
         userId,
         title,
         message,
         date: new Date().toISOString(),
         read: false,
-        requestId,
         type,
-        itemName
-      });
+      };
+      
+      if (requestId !== undefined) {
+        data.requestId = requestId;
+      }
+      if (itemName !== undefined) {
+        data.itemName = itemName;
+      }
+
+      await addDoc(collection(db, 'notifications'), data);
     } catch (error) {
       console.error("Error creating notification:", error);
     }
@@ -486,12 +493,15 @@ export default function App() {
 
   const checkStockAndNotify = async (itemName: string) => {
     try {
-      // Get all active batches for this product
+      if (!itemName) return;
+      
       const normalizedName = normalizeString(itemName);
-      const itemsSnapshot = await getDocs(query(collection(db, 'items'), where('deletedAt', '==', null)));
+      
+      // Get all active batches for this product by scanning items and filtering in memory
+      const itemsSnapshot = await getDocs(collection(db, 'items'));
       const batches = itemsSnapshot.docs
         .map(d => ({ id: d.id, ...d.data() } as Item))
-        .filter(i => normalizeString(i.name) === normalizedName);
+        .filter(i => !i.deletedAt && normalizeString(i.name) === normalizedName);
 
       const totalQuantity = batches.reduce((sum, b) => sum + (Number(b.quantity) || 0), 0);
 
@@ -500,19 +510,24 @@ export default function App() {
         const existingNotifQuery = query(
           collection(db, 'notifications'),
           where('userId', '==', 'ADMIN_GROUP'),
-          where('itemName', '==', itemName),
           where('read', '==', false)
         );
         const existingSnap = await getDocs(existingNotifQuery);
+        
+        // In-memory robust check to cover casing & spacing variations
+        const alreadyNotified = existingSnap.docs.some(d => {
+          const data = d.data();
+          return data.type === 'STOCK_ZERO' && normalizeString(data.itemName) === normalizedName;
+        });
 
-        if (existingSnap.empty) {
+        if (!alreadyNotified) {
           await createNotification(
             'ADMIN_GROUP',
             'Estoque Zerado',
-            `O material "${itemName}" atingiu estoque zero.`,
+            `O material "${itemName.toUpperCase()}" atingiu estoque zero.`,
             undefined,
             'STOCK_ZERO',
-            itemName
+            itemName.toUpperCase()
           );
         }
       }
@@ -1000,6 +1015,20 @@ export default function App() {
       handleFirestoreError(error, OperationType.LIST, 'request_items');
     });
 
+    return () => {
+      unsubscribeItems();
+      unsubscribeTrans();
+      unsubscribeRequests();
+      unsubscribeReqItems();
+    };
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) {
+      setNotifications([]);
+      return;
+    }
+
     const notificationIds = [user.uid];
     if (isAdmin) {
       notificationIds.push('ADMIN_GROUP');
@@ -1018,19 +1047,76 @@ export default function App() {
       console.warn("Notification listener error:", error);
       // Fallback to single user listener if needed
       const fallbackQ = query(collection(db, 'notifications'), where('userId', '==', user.uid), orderBy('date', 'desc'));
-      onSnapshot(fallbackQ, (snapshot) => {
+      const unsubFallback = onSnapshot(fallbackQ, (snapshot) => {
         setNotifications(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Notification)));
       });
+      return () => unsubFallback();
     });
 
     return () => {
-      unsubscribeItems();
-      unsubscribeTrans();
-      unsubscribeRequests();
-      unsubscribeReqItems();
       unsubscribeNotifications();
     };
-  }, [user]);
+  }, [user, isAdmin]);
+
+  // Retroactive check to sync materials that are currently with zero stock as notifications for administrators
+  useEffect(() => {
+    if (!isAdmin || items.length === 0) return;
+
+    const runRetroactiveStockCheck = async () => {
+      try {
+        const activeItems = items.filter(i => !i.deletedAt);
+        const groupedByName: { [key: string]: { name: string, totalQty: number } } = {};
+        
+        activeItems.forEach(item => {
+          const normName = normalizeString(item.name);
+          if (!groupedByName[normName]) {
+            groupedByName[normName] = { name: item.name, totalQty: 0 };
+          }
+          groupedByName[normName].totalQty += (Number(item.quantity) || 0);
+        });
+
+        const zeroStockItems = Object.values(groupedByName).filter(g => g.totalQty === 0);
+        const unreadStockZeroNotifications = notifications.filter(n => !n.read && n.type === 'STOCK_ZERO');
+
+        for (const zeroItem of zeroStockItems) {
+          const normZeroName = normalizeString(zeroItem.name);
+          const alreadyNotified = unreadStockZeroNotifications.some(n => normalizeString(n.itemName) === normZeroName);
+
+          if (!alreadyNotified) {
+            const existingNotifQuery = query(
+              collection(db, 'notifications'),
+              where('userId', '==', 'ADMIN_GROUP'),
+              where('read', '==', false)
+            );
+            const existingSnap = await getDocs(existingNotifQuery);
+            const alreadyInFirestore = existingSnap.docs.some(d => {
+              const data = d.data();
+              return data.type === 'STOCK_ZERO' && normalizeString(data.itemName) === normZeroName;
+            });
+
+            if (!alreadyInFirestore) {
+              await createNotification(
+                'ADMIN_GROUP',
+                'Estoque Zerado',
+                `O material "${zeroItem.name.toUpperCase()}" atingiu estoque zero.`,
+                undefined,
+                'STOCK_ZERO',
+                zeroItem.name.toUpperCase()
+              );
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Error executing retroactive zero stock synchronization:", err);
+      }
+    };
+
+    const timer = setTimeout(() => {
+      runRetroactiveStockCheck();
+    }, 2500);
+
+    return () => clearTimeout(timer);
+  }, [items, notifications, isAdmin]);
 
   useEffect(() => {
     if (!user || !userProfile) return;
@@ -2013,10 +2099,14 @@ export default function App() {
                 collection(db, 'items'),
                 where('name', '==', currentItemData.name),
                 where('batch_number', '==', currentItemData.batch_number || ''),
-                where('location', '==', 'Farmácia'),
-                where('deletedAt', '==', null)
+                where('location', '==', 'Farmácia')
               );
-              pharmacyItemSnap = await getDocs(pharmacyItemsQuery);
+              const fullSnap = await getDocs(pharmacyItemsQuery);
+              const activeDocs = fullSnap.docs.filter(d => !d.data().deletedAt);
+              pharmacyItemSnap = {
+                empty: activeDocs.length === 0,
+                docs: activeDocs
+              };
             }
 
             processedItems.push({
