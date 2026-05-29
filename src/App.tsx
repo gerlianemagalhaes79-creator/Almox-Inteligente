@@ -8424,7 +8424,7 @@ export default function App() {
               <h3 className="text-xl font-black mb-2 uppercase tracking-tight text-[#1C1917]">Confirmar Ciência?</h3>
               <p className="text-[#78716C] mb-8 font-medium">
                 Deseja confirmar que está ciente de que o material <strong>"{showStockConfirm.itemName}"</strong> está com estoque zero? 
-                Esta notificação será arquivada.
+                Esta notificação será excluída.
               </p>
               <div className="flex gap-3">
                 <button 
@@ -8437,12 +8437,8 @@ export default function App() {
                   onClick={async () => {
                     if (showStockConfirm.notificationId) {
                       try {
-                        await updateDoc(doc(db, 'notifications', showStockConfirm.notificationId), { 
-                          read: true,
-                          confirmedAt: new Date().toISOString(),
-                          confirmedBy: user.displayName
-                        });
-                        showToast("Ciência confirmada!", "success");
+                        await deleteDoc(doc(db, 'notifications', showStockConfirm.notificationId));
+                        showToast("Ciência confirmada! Notificação excluída.", "success");
                       } catch (error: any) {
                         showToast(`Erro ao confirmar: ${error.message}`, "error");
                       }
