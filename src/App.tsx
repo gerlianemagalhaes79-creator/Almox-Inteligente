@@ -4549,107 +4549,129 @@ export default function App() {
             >
               {/* Stats Cards */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 lg:gap-6">
-                <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
-                  <div className="flex justify-between items-start mb-4">
-                    <div className="bg-emerald-100 p-3 rounded-2xl text-emerald-600">
-                      <Package size={24} />
+                <div className="bg-white p-6 rounded-2xl border border-stone-200/60 shadow-sm hover:border-stone-300 hover:shadow-md transition-all duration-300">
+                  <div className="flex items-center justify-between mb-4">
+                    <span className="text-xs font-bold text-stone-500 uppercase tracking-widest">Volume em Estoque</span>
+                    <div className="bg-emerald-50 text-emerald-600 p-2.5 rounded-xl border border-emerald-100/50">
+                      <Package size={18} />
                     </div>
                   </div>
-                  <p className="text-[#78716C] font-medium mb-1">Volume em Estoque</p>
-                  <h3 className="text-4xl font-bold">{totalVolume}</h3>
-                  <p className="text-xs text-[#A8A29E] mt-2 font-bold uppercase tracking-wider">{groupedArray.length} tipos de itens</p>
+                  <h3 className="text-3xl font-black text-stone-800 tracking-tight">{totalVolume}</h3>
+                  <div className="text-[10px] text-stone-500 mt-3 font-semibold flex items-center gap-1.5 uppercase tracking-wider">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                    {groupedArray.length} tipos de itens
+                  </div>
                 </div>
 
                 {(isAdmin || selectedSector === 'Farmácia') && (
-                  <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
-                    <div className="flex justify-between items-start mb-4">
-                      <div className="bg-blue-100 p-3 rounded-2xl text-blue-600">
-                        <DollarSign size={24} />
+                  <div className="bg-white p-6 rounded-2xl border border-stone-200/60 shadow-sm hover:border-stone-300 hover:shadow-md transition-all duration-300">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-bold text-stone-500 uppercase tracking-widest">Patrimônio</span>
+                      <div className="bg-blue-50 text-blue-600 p-2.5 rounded-xl border border-blue-100/50">
+                        <DollarSign size={18} />
                       </div>
                     </div>
-                    <p className="text-[#78716C] font-medium mb-1">Patrimônio em Estoque</p>
-                    <h3 className="text-4xl font-bold">
+                    <h3 className="text-2xl font-black text-stone-800 tracking-tight select-all">
                       {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalInventoryValue)}
                     </h3>
-                    <p className="text-xs text-[#A8A29E] mt-2 font-bold uppercase tracking-wider">Valor total investido</p>
+                    <div className="text-[10px] text-stone-500 mt-3 font-semibold flex items-center gap-1.5 uppercase tracking-wider">
+                      <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+                      Valor total investido
+                    </div>
                   </div>
                 )}
 
                 <div 
                   onClick={() => lowStockItems.length > 0 && setShowDetailModal({ show: true, type: 'low_stock', items: lowStockItems as any })}
-                  className={`p-6 rounded-3xl border shadow-sm transition-all cursor-pointer ${lowStockItems.length > 0 ? 'bg-orange-50 border-orange-200 hover:bg-orange-100' : 'bg-white border-[#E7E5E4]'}`}
+                  className={`p-6 rounded-2xl border transition-all duration-300 cursor-pointer ${lowStockItems.length > 0 ? 'bg-amber-50/30 border-amber-200/70 hover:border-amber-300' : 'bg-white border-stone-200/60 hover:border-stone-300'}`}
                 >
-                  <div className="flex justify-between items-start mb-4">
-                    <div className={`p-3 rounded-2xl ${lowStockItems.length > 0 ? 'bg-orange-100 text-orange-600' : 'bg-gray-100 text-gray-600'}`}>
-                      <AlertTriangle size={24} />
+                  <div className="flex items-center justify-between mb-4">
+                    <span className="text-xs font-bold text-stone-500 uppercase tracking-widest">Estoque Baixo</span>
+                    <div className={`p-2.5 rounded-xl border ${lowStockItems.length > 0 ? 'bg-amber-100/50 text-amber-600 border-amber-200/50' : 'bg-stone-50 text-stone-500 border-stone-200/50'}`}>
+                      <AlertTriangle size={18} />
                     </div>
                   </div>
-                  <p className="text-[#78716C] font-medium mb-1">Estoque Baixo</p>
-                  <h3 className={`text-4xl font-bold ${lowStockItems.length > 0 ? 'text-orange-600' : ''}`}>{lowStockItems.length}</h3>
+                  <h3 className={`text-3xl font-black tracking-tight ${lowStockItems.length > 0 ? 'text-amber-600 animate-pulse' : 'text-stone-800'}`}>{lowStockItems.length}</h3>
+                  <div className="text-[10px] text-stone-500 mt-3 font-semibold flex items-center gap-1.5 uppercase tracking-wider">
+                    <span className={`w-1.5 h-1.5 rounded-full ${lowStockItems.length > 0 ? 'bg-amber-500' : 'bg-stone-300'}`} />
+                    {lowStockItems.length > 0 ? 'Necessita de reposição' : 'Estoque saudável'}
+                  </div>
                 </div>
 
                 <div 
                   onClick={() => nearExpiryItems.length > 0 && setShowDetailModal({ show: true, type: 'expiry', items: nearExpiryItems })}
-                  className={`p-6 rounded-3xl border shadow-sm transition-all cursor-pointer ${nearExpiryItems.length > 0 ? 'bg-red-50 border-red-200 hover:bg-red-100' : 'bg-white border-[#E7E5E4]'}`}
+                  className={`p-6 rounded-2xl border transition-all duration-300 cursor-pointer ${nearExpiryItems.length > 0 ? 'bg-rose-50/30 border-rose-200/70 hover:border-rose-300' : 'bg-white border-stone-200/60 hover:border-stone-300'}`}
                 >
-                  <div className="flex justify-between items-start mb-4">
-                    <div className={`p-3 rounded-2xl ${nearExpiryItems.length > 0 ? 'bg-red-100 text-red-600' : 'bg-gray-100 text-gray-600'}`}>
-                      <Calendar size={24} />
+                  <div className="flex items-center justify-between mb-4">
+                    <span className="text-xs font-bold text-stone-500 uppercase tracking-widest">Vencimento</span>
+                    <div className={`p-2.5 rounded-xl border ${nearExpiryItems.length > 0 ? 'bg-rose-100/50 text-rose-600 border-rose-200/50' : 'bg-stone-50 text-stone-500 border-stone-200/50'}`}>
+                      <Calendar size={18} />
                     </div>
                   </div>
-                  <p className="text-[#78716C] font-medium mb-1">Vencimento Próximo</p>
-                  <h3 className={`text-4xl font-bold ${nearExpiryItems.length > 0 ? 'text-red-600' : ''}`}>{nearExpiryItems.length}</h3>
+                  <h3 className={`text-3xl font-black tracking-tight ${nearExpiryItems.length > 0 ? 'text-rose-600 animate-pulse' : 'text-stone-800'}`}>{nearExpiryItems.length}</h3>
+                  <div className="text-[10px] text-stone-500 mt-3 font-semibold flex items-center gap-1.5 uppercase tracking-wider">
+                    <span className={`w-1.5 h-1.5 rounded-full ${nearExpiryItems.length > 0 ? 'bg-rose-500' : 'bg-stone-300'}`} />
+                    {nearExpiryItems.length > 0 ? 'Material perto do vencimento' : 'Prazos de validade ok'}
+                  </div>
                 </div>
               </div>
 
-              {/* Alerts Section */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="bg-white p-8 rounded-3xl border border-[#E7E5E4] shadow-sm">
-                  <h4 className="text-xl font-bold mb-6 flex items-center gap-2">
-                    <AlertTriangle className="text-orange-500" size={20} /> Alertas Críticos
+              {/* Split Bento Block */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                {/* Left Column: Alertas Críticos (takes 5/12 cols) */}
+                <div className="lg:col-span-5 bg-white p-6 rounded-2xl border border-stone-200/60 shadow-sm space-y-4">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-stone-500 flex items-center gap-2">
+                    <AlertTriangle className="text-amber-500" size={16} /> Alertas Críticos ({lowStockItems.length + nearExpiryItems.length})
                   </h4>
-                  <div className="space-y-4">
+                  
+                  <div className="space-y-3 max-h-[460px] overflow-y-auto pr-1">
                     {lowStockItems.length === 0 && nearExpiryItems.length === 0 && (
-                      <p className="text-[#A8A29E] italic">Nenhum alerta no momento.</p>
+                      <div className="py-12 text-center">
+                        <CheckCircle size={36} className="mx-auto text-emerald-400 mb-3" />
+                        <p className="text-xs text-stone-500 font-bold mb-1">Tudo em conformidade</p>
+                        <p className="text-[10px] text-[#A8A29E]">Não há itens com estoque crítico ou vencimentos.</p>
+                      </div>
                     )}
+                    
                     {lowStockItems.map(group => (
-                      <div key={`low-${group.name}`} className="flex items-center justify-between p-4 bg-orange-50 rounded-2xl border border-orange-100">
-                        <div className="flex items-center gap-4">
-                          <div className="w-10 h-10 bg-orange-200 rounded-full flex items-center justify-center text-orange-700 font-bold">
+                      <div key={`low-${group.name}`} className="flex items-center justify-between p-3 bg-amber-50/40 rounded-xl border border-amber-100/40 hover:bg-amber-50 transition-all duration-200">
+                        <div className="flex items-center gap-3">
+                          <div className="w-8 h-8 bg-amber-100 text-amber-800 rounded-lg flex items-center justify-center font-black text-xs">
                             {group.total_quantity}
                           </div>
-                          <div>
-                            <p className="font-bold">{group.name}</p>
-                            <p className="text-sm text-orange-700">Estoque total abaixo do mínimo ({group.min_quantity})</p>
+                          <div className="min-w-0 flex-1">
+                            <p className="font-bold text-xs text-stone-800 truncate leading-tight">{group.name}</p>
+                            <p className="text-[9px] text-amber-700 font-medium">Estoque abaixo de {group.min_quantity}</p>
                           </div>
                         </div>
                         <button 
                           onClick={() => setShowTransactionModal({ show: true, type: 'entry', item: group.batches[0] })}
-                          className="bg-orange-600 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-orange-700 transition-all"
+                          className="bg-amber-600 text-white px-2.5 py-1.5 rounded-lg text-xs font-bold hover:bg-amber-700 transition-all shadow-sm shrink-0"
                         >
                           Repor
                         </button>
                       </div>
                     ))}
+
                     {nearExpiryItems.map(item => {
                       const isExpired = new Date(item.expiry_date!) < new Date();
                       return (
-                        <div key={`exp-${item.id}`} className={`flex items-center justify-between p-4 rounded-2xl border ${isExpired ? 'bg-red-100 border-red-200' : 'bg-red-50 border-red-100'}`}>
-                          <div className="flex items-center gap-4">
-                            <div className={`w-10 h-10 rounded-full flex items-center justify-center ${isExpired ? 'bg-red-600 text-white' : 'bg-red-200 text-red-700'}`}>
-                              <Calendar size={20} />
+                        <div key={`exp-${item.id}`} className={`flex items-center justify-between p-3 rounded-xl border transition-all duration-200 ${isExpired ? 'bg-rose-50/50 border-rose-100/50' : 'bg-stone-50/50 border-stone-100/50'}`}>
+                          <div className="flex items-center gap-3 min-w-0 flex-1">
+                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${isExpired ? 'bg-rose-100 text-rose-600' : 'bg-amber-100 text-amber-600'}`}>
+                              <Calendar size={14} />
                             </div>
-                            <div>
-                              <p className="font-bold">{item.name}</p>
-                              <p className={`text-sm font-bold ${isExpired ? 'text-red-700' : 'text-red-700'}`}>
-                                {isExpired ? 'VENCIDO EM: ' : 'Vence em: '}
+                            <div className="min-w-0 flex-1">
+                              <p className="font-bold text-xs text-stone-800 truncate leading-tight">{item.name}</p>
+                              <p className={`text-[9px] font-bold ${isExpired ? 'text-rose-600' : 'text-stone-500'}`}>
+                                {isExpired ? 'Expirou em: ' : 'Vence em: '}
                                 {new Date(item.expiry_date!).toLocaleDateString('pt-BR')}
                               </p>
                             </div>
                           </div>
                           <button 
                             onClick={() => setShowTransactionModal({ show: true, type: 'exit', item })}
-                            className="bg-red-600 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-red-700 transition-all"
+                            className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm shrink-0 ${isExpired ? 'bg-rose-600 text-white hover:bg-rose-700' : 'bg-stone-700 text-white hover:bg-stone-800'}`}
                           >
                             Retirar
                           </button>
@@ -4658,43 +4680,72 @@ export default function App() {
                     })}
                   </div>
                 </div>
-              </div>
 
-              {/* Recent Activity */}
-              <div className="bg-white p-8 rounded-3xl border border-[#E7E5E4] shadow-sm">
-                <h4 className="text-xl font-bold mb-6">Atividade Recente</h4>
-                <div className="space-y-6">
-                  {recentTransactions.map(t => (
-                    <div key={t.id} className="flex gap-4">
-                      <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${t.type === 'entry' ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'}`}>
-                        {t.type === 'entry' ? <ArrowDownLeft size={18} /> : <ArrowUpRight size={18} />}
+                {/* Right Column: Atividade Recente (takes 7/12 cols) */}
+                <div className="lg:col-span-7 bg-white p-6 rounded-2xl border border-stone-200/60 shadow-sm space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-stone-500 flex items-center gap-2">
+                      <History size={16} /> Movimentações Recentes
+                    </h4>
+                    <span className="text-[9px] text-stone-400 font-bold uppercase tracking-wider bg-stone-100 px-2 py-0.5 rounded-md">Últimos 5 registros</span>
+                  </div>
+
+                  <div className="space-y-3 max-h-[460px] overflow-y-auto pr-1">
+                    {recentTransactions.length === 0 && (
+                      <div className="py-12 text-center">
+                        <History size={36} className="mx-auto text-stone-300 mb-3" />
+                        <p className="text-xs text-stone-500 font-bold">Sem registros no momento</p>
                       </div>
-                      <div className="flex-1">
-                        <p className="font-bold text-sm">{t.item_name}</p>
-                        <p className="text-xs text-[#78716C]">
-                          {t.type === 'entry' ? 'Entrada' : `Saída para ${t.sector || '---'}`} de {t.quantity} unidades
-                        </p>
-                        <div className="flex flex-wrap gap-2 mt-1">
-                          <p className="text-[10px] text-[#A8A29E]">{new Date(t.date).toLocaleString('pt-BR')}</p>
-                          {t.responsible && <p className="text-[10px] text-blue-600 font-bold">Por: {t.responsible}</p>}
-                          {t.supplier && <p className="text-[10px] text-amber-600 font-bold">De: {t.supplier}</p>}
+                    )}
+
+                    {recentTransactions.map(t => (
+                      <div key={t.id} className="group flex gap-3 p-2.5 hover:bg-stone-50/80 rounded-xl transition-all duration-200 border border-transparent hover:border-stone-100/50">
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border ${t.type === 'entry' ? 'bg-emerald-50/50 text-emerald-600 border-emerald-100/30' : 'bg-rose-50/50 text-rose-600 border-rose-100/30'}`}>
+                          {t.type === 'entry' ? <ArrowDownLeft size={14} /> : <ArrowUpRight size={14} />}
                         </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-start justify-between gap-2">
+                            <p className="font-bold text-xs text-stone-800 truncate leading-tight" title={t.item_name}>
+                              {t.item_name}
+                            </p>
+                            <span className={`text-xs font-black shrink-0 ${t.type === 'entry' ? 'text-emerald-600' : 'text-rose-600'}`}>
+                              {t.type === 'entry' ? '+' : '-'}{t.quantity} un
+                            </span>
+                          </div>
+                          <p className="text-[9px] text-stone-500 mt-0.5">
+                            {t.type === 'entry' ? 'Entrada em estoque' : `Saída p/ ${t.sector || '---'}`}
+                          </p>
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-1 pt-1 border-t border-dashed border-stone-100">
+                            <span className="text-[9px] text-stone-400 font-medium">
+                              {new Date(t.date).toLocaleDateString('pt-BR')} {new Date(t.date).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                            {t.responsible && (
+                              <span className="text-[8px] text-stone-600 font-semibold bg-stone-100/80 px-1.5 py-0.5 rounded">
+                                {t.responsible.split('@')[0]}
+                              </span>
+                            )}
+                            {t.supplier && (
+                              <span className="text-[8px] text-amber-700 font-semibold bg-amber-50 px-1.5 py-0.5 rounded">
+                                Forn: {t.supplier}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        {isAdmin && !t.deletedAt && (
+                          <button 
+                            onClick={() => {
+                              setDeletionReason('');
+                              setShowDeleteModal({ show: true, transactionId: t.id });
+                            }}
+                            className="p-1 text-stone-400 hover:text-rose-600 hover:bg-rose-50/50 rounded-lg transition-all self-center opacity-0 group-hover:opacity-100 focus:opacity-100 shrink-0"
+                            title="Excluir Movimentação"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
                       </div>
-                      {isAdmin && !t.deletedAt && (
-                        <button 
-                          onClick={() => {
-                            setDeletionReason('');
-                            setShowDeleteModal({ show: true, transactionId: t.id });
-                          }}
-                          className="p-2 text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all self-center"
-                          title="Excluir Movimentação"
-                        >
-                          <Trash2 size={18} />
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                  {recentTransactions.length === 0 && <p className="text-[#A8A29E] text-sm italic">Nenhuma movimentação.</p>}
+                    ))}
+                  </div>
                 </div>
               </div>
             </motion.div>
