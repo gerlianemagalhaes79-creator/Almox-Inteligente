@@ -56,6 +56,7 @@ export interface Item {
   batch_number: string | null;
   location?: 'Almoxarifado' | 'Farmácia';
   room?: string;
+  medication_type?: string;
   deletedAt?: string;
   deletedBy?: string;
 }

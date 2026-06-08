@@ -569,12 +569,35 @@ export default function App() {
       batch_number: '',
       expiry_date: '',
       is_indeterminate_expiry: false,
-      unit_price: 0
+      unit_price: 0,
+      medication_type: ''
     }]
   });
   const [categories, setCategories] = useState<string[]>(['Médico Hospitalar', 'Alimentício', 'Expediente', 'Higiene', 'Radiológico', 'Saneante', 'Copa & Cozinha', 'Papelaria', 'EPI', 'Gráfica', 'Informática', 'Limpeza', 'Anestésico', 'Medicamentos', 'Manutenção']);
   const [showNewCategoryInput, setShowNewCategoryInput] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
+
+  useEffect(() => {
+    if (showAddModal) {
+      setBulkEntry({
+        supplier: '',
+        category: inventoryLocation === 'Farmácia' ? 'Medicamentos' : 'Expediente',
+        origin: 'extra' as 'contract' | 'extra' | 'donation',
+        room: inventoryLocation === 'Farmácia' ? 'Farmácia' : 'Almoxarifado Principal',
+        items: [{
+          id: Math.random().toString(36).substr(2, 9),
+          name: '',
+          initial_quantity: 1,
+          min_quantity: NaN,
+          batch_number: '',
+          expiry_date: '',
+          is_indeterminate_expiry: false,
+          unit_price: 0,
+          medication_type: ''
+        }]
+      });
+    }
+  }, [showAddModal, inventoryLocation]);
 
   const addBulkItemRow = () => {
     setBulkEntry(prev => ({
@@ -587,7 +610,8 @@ export default function App() {
         batch_number: '',
         expiry_date: '',
         is_indeterminate_expiry: false,
-        unit_price: 0
+        unit_price: 0,
+        medication_type: ''
       }]
     }));
   };
@@ -611,7 +635,8 @@ export default function App() {
           id: Math.random().toString(36).substr(2, 9),
           batch_number: '',
           initial_quantity: 1,
-          expiry_date: ''
+          expiry_date: '',
+          medication_type: itemToDuplicate.medication_type || ''
         }]
       }));
     }
@@ -2031,6 +2056,7 @@ export default function App() {
               unit_price: price || currentItemData.unit_price,
               supplier: bulkEntry.supplier || currentItemData.supplier,
               category: bulkEntry.category || currentItemData.category,
+              medication_type: bulkEntry.category === 'Medicamentos' ? (itemData.medication_type || currentItemData.medication_type || '') : '',
               room: bulkEntry.room || currentItemData.room,
               updatedAt: serverTimestamp()
             });
@@ -2049,7 +2075,8 @@ export default function App() {
               responsibleEmail: user?.email || '',
               supplier: bulkEntry.supplier || currentItemData.supplier,
               batch_number: itemData.batch_number,
-              expiry_date: expiryValue
+              expiry_date: expiryValue,
+              medication_type: bulkEntry.category === 'Medicamentos' ? (itemData.medication_type || '') : ''
             });
           });
         } else {
@@ -2066,6 +2093,7 @@ export default function App() {
             unit_price: price,
             supplier: bulkEntry.supplier,
             category: bulkEntry.category,
+            medication_type: bulkEntry.category === 'Medicamentos' ? (itemData.medication_type || '') : '',
             room: bulkEntry.room,
             batch_number: itemData.batch_number,
             quantity: initial_qty,
@@ -2086,7 +2114,8 @@ export default function App() {
             responsibleEmail: user?.email || '',
             supplier: bulkEntry.supplier,
             batch_number: itemData.batch_number,
-            expiry_date: expiryValue
+            expiry_date: expiryValue,
+            medication_type: bulkEntry.category === 'Medicamentos' ? (itemData.medication_type || '') : ''
           });
         }
       }
@@ -2105,7 +2134,8 @@ export default function App() {
           batch_number: '',
           expiry_date: '',
           is_indeterminate_expiry: false,
-          unit_price: 0
+          unit_price: 0,
+          medication_type: ''
         }]
       });
     } catch (error: any) {
@@ -4847,8 +4877,13 @@ export default function App() {
                               </div>
                             ) : (
                               <div className="flex flex-col">
-                                <div className="flex items-center gap-2 group/name">
+                                <div className="flex items-center gap-2 group/name flex-wrap">
                                   <p className="font-bold text-lg">{group.name}</p>
+                                  {Array.from(new Set(group.batches.map(b => b.medication_type).filter(Boolean))).map(type => (
+                                    <span key={type} className="text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-50 text-rose-600 border border-rose-100 uppercase tracking-wider">
+                                      {type}
+                                    </span>
+                                  ))}
                                   {isAdmin && (
                                     <button 
                                       onClick={(e) => { e.stopPropagation(); setEditingMaterialName({ oldName: group.name, newName: group.name }); }}
@@ -4960,8 +4995,15 @@ export default function App() {
                       {expandedItems.has(group.name) && group.batches.map(item => (
                         <tr key={item.id} className="bg-white hover:bg-[#FAFAF9] transition-all border-l-4 border-emerald-500">
                           <td className="px-12 py-4">
-                            <p className="text-sm font-mono font-bold text-[#57534E]">Lote: {item.batch_number || '---'}</p>
-                            {item.description && <p className="text-[10px] text-[#A8A29E] italic">{item.description}</p>}
+                            <div className="flex items-center gap-2">
+                              <p className="text-sm font-mono font-bold text-[#57534E]">Lote: {item.batch_number || '---'}</p>
+                              {item.medication_type && (
+                                <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-[#F5F5F4] text-[#78716C] border border-[#E7E5E4] uppercase tracking-wide">
+                                  {item.medication_type}
+                                </span>
+                              )}
+                            </div>
+                            {item.description && <p className="text-[10px] text-[#A8A29E] italic mt-0.5">{item.description}</p>}
                           </td>
                           <td className="px-6 py-4">
                             {isAdmin ? (
@@ -6878,6 +6920,9 @@ export default function App() {
                     <thead>
                       <tr className="text-left">
                         <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest">Nome do Item</th>
+                        {bulkEntry.category === 'Medicamentos' && (
+                          <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-40">Tipo de Material</th>
+                        )}
                         <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-24">Qtd</th>
                         <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-24">Mín</th>
                         <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-32">Lote</th>
@@ -6900,6 +6945,26 @@ export default function App() {
                               onChange={e => updateBulkItem(item.id, 'name', e.target.value)}
                             />
                           </td>
+                          {bulkEntry.category === 'Medicamentos' && (
+                            <td className="px-2">
+                              <select 
+                                required
+                                className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 text-xs font-bold"
+                                value={item.medication_type || ''}
+                                onChange={e => updateBulkItem(item.id, 'medication_type', e.target.value)}
+                              >
+                                <option value="">Selecione...</option>
+                                <option value="PORTARIA 344">PORTARIA 344</option>
+                                <option value="COMPRIMIDO">COMPRIMIDO</option>
+                                <option value="AMPOLA">AMPOLA</option>
+                                <option value="SOLUÇÃO">SOLUÇÃO</option>
+                                <option value="SOLUÇÃO SPRAY">SOLUÇÃO SPRAY</option>
+                                <option value="POMADA">POMADA</option>
+                                <option value="GOTA">GOTA</option>
+                                <option value="COLÍRIO">COLÍRIO</option>
+                              </select>
+                            </td>
+                          )}
                           <td className="px-2">
                             <input 
                               required
