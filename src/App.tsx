@@ -6919,9 +6919,9 @@ export default function App() {
                   <table className="w-full border-separate border-spacing-y-2">
                     <thead>
                       <tr className="text-left">
-                        <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest">Nome do Item</th>
+                        <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest min-w-[320px] md:min-w-[450px]">Nome do Item</th>
                         {bulkEntry.category === 'Medicamentos' && (
-                          <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-40">Tipo de Material</th>
+                          <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-40 min-w-[160px]">Tipo de Material</th>
                         )}
                         <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-24">Qtd</th>
                         <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-24">Mín</th>
@@ -6934,22 +6934,22 @@ export default function App() {
                     <tbody>
                       {bulkEntry.items.map((item, index) => (
                         <tr key={item.id} className="group">
-                          <td className="px-2">
+                          <td className="px-2 min-w-[320px] md:min-w-[450px]">
                             <input 
                               required
                               list="item-suggestions"
                               type="text"
                               placeholder="Nome do produto"
-                              className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 text-sm font-bold"
+                              className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 text-sm text-stone-900 font-bold"
                               value={item.name}
                               onChange={e => updateBulkItem(item.id, 'name', e.target.value)}
                             />
                           </td>
                           {bulkEntry.category === 'Medicamentos' && (
-                            <td className="px-2">
+                            <td className="px-2 min-w-[160px]">
                               <select 
                                 required
-                                className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 text-xs font-bold"
+                                className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 text-xs text-stone-900 font-bold"
                                 value={item.medication_type || ''}
                                 onChange={e => updateBulkItem(item.id, 'medication_type', e.target.value)}
                               >
@@ -6970,7 +6970,7 @@ export default function App() {
                               required
                               type="number"
                               min="1"
-                              className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 text-sm font-bold"
+                              className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 text-sm text-stone-900 font-bold"
                               value={isNaN(item.initial_quantity) ? '' : item.initial_quantity}
                               onChange={e => updateBulkItem(item.id, 'initial_quantity', e.target.value === '' ? NaN : parseInt(e.target.value))}
                             />
@@ -6980,7 +6980,7 @@ export default function App() {
                               required
                               type="number"
                               min="0"
-                              className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 text-sm font-bold"
+                              className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 text-sm text-stone-900 font-bold"
                               value={isNaN(item.min_quantity) ? '' : item.min_quantity}
                               onChange={e => updateBulkItem(item.id, 'min_quantity', e.target.value === '' ? NaN : parseInt(e.target.value))}
                             />
@@ -6989,7 +6989,7 @@ export default function App() {
                             <input 
                               type="text"
                               placeholder="Lote"
-                              className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 text-sm font-bold"
+                              className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 text-sm text-stone-900 font-bold"
                               value={item.batch_number}
                               onChange={e => updateBulkItem(item.id, 'batch_number', e.target.value)}
                             />
@@ -6999,7 +6999,7 @@ export default function App() {
                               <input 
                                 type="date"
                                 disabled={item.is_indeterminate_expiry}
-                                className="w-full px-4 py-2 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 text-xs font-bold disabled:opacity-30"
+                                className="w-full px-4 py-2 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 text-xs text-stone-900 font-bold disabled:opacity-30"
                                 value={item.expiry_date}
                                 onChange={e => updateBulkItem(item.id, 'expiry_date', e.target.value)}
                               />
@@ -7019,7 +7019,7 @@ export default function App() {
                               type="number"
                               step="0.01"
                               placeholder="0,00"
-                              className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 text-sm font-bold"
+                              className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 text-sm text-stone-900 font-bold"
                               value={isNaN(item.unit_price) ? '' : item.unit_price}
                               onChange={e => updateBulkItem(item.id, 'unit_price', e.target.value === '' ? NaN : parseFloat(e.target.value))}
                             />
