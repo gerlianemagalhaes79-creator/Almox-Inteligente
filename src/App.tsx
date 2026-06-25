@@ -1664,35 +1664,32 @@ export default function App() {
         <head>
           <title>Impressão de Solicitações - ${periodStr}</title>
           <style>
-            body { font-family: sans-serif; padding: 20px; color: #1C1917; }
+            body { font-family: sans-serif; padding: 10px; color: #1C1917; font-size: 11px; }
             .request-card { 
-              border: 1px solid #E7E5E4; 
-              border-radius: 12px; 
-              padding: 20px; 
-              margin-bottom: 40px; 
+              border: 1px dashed #A8A29E; 
+              border-radius: 8px; 
+              padding: 12px; 
+              margin-bottom: 20px; 
+              page-break-inside: avoid;
             }
-            .header-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
-            .header-table td { padding: 8px; border: 1px solid #E7E5E4; font-size: 13px; }
-            h1 { text-align: center; margin-bottom: 20px; font-size: 20px; text-transform: uppercase; border-bottom: 3px double #1C1917; padding-bottom: 10px; }
-            .items-table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-            .items-table th, .items-table td { border: 1px solid #1C1917; padding: 10px; text-align: left; font-size: 13px; }
+            .header-table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+            .header-table td { padding: 4px 6px; border: 1px solid #E7E5E4; font-size: 11px; }
+            h1 { text-align: left; margin: 0 0 10px 0; font-size: 14px; text-transform: uppercase; border-bottom: 2px solid #1C1917; padding-bottom: 4px; }
+            .items-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+            .items-table th, .items-table td { border: 1px solid #1C1917; padding: 6px; text-align: left; font-size: 11px; }
             .items-table th { background-color: #FAFAF9; }
-            .blank-col { width: 120px; text-align: center; }
-            .signature-section { margin-top: 50px; display: flex; justify-content: space-between; }
-            .signature-box { width: 45%; text-align: center; border-top: 1px solid #1C1917; padding-top: 5px; font-size: 11px; }
-            .footer { margin-top: 40px; text-align: center; font-size: 10px; color: #78716C; border-top: 1px solid #E7E5E4; padding-top: 10px; }
+            .blank-col { width: 90px; text-align: center; }
+            .footer { margin-top: 15px; text-align: center; font-size: 8px; color: #78716C; border-top: 1px dashed #E7E5E4; padding-top: 5px; }
             @media print {
               .no-print { display: none; }
-              .page-break { page-break-after: always; }
             }
           </style>
         </head>
         <body>
           ${filteredRequests.map((req, idx) => {
             const items = allRequestItems.filter(ri => ri.request_id === req.id);
-            const isLast = idx === filteredRequests.length - 1;
             return `
-              <div class="request-card ${isLast ? '' : 'page-break'}">
+              <div class="request-card">
                 <h1>Solicitação de Material</h1>
                 <table class="header-table">
                   <tr>
@@ -1706,43 +1703,30 @@ export default function App() {
                   <tr>
                     <td colspan="2"><strong>Solicitante:</strong> ${req.requesterEmail}</td>
                   </tr>
-                  ${req.observation ? `<tr><td colspan="2"><strong>Observações do Solicitante:</strong> ${req.observation}</td></tr>` : ''}
+                  ${req.observation ? `<tr><td colspan="2"><strong>Observações:</strong> ${req.observation}</td></tr>` : ''}
                 </table>
 
-                <h3 style="margin-top: 25px; font-size: 15px; border-bottom: 1px solid #1C1917; padding-bottom: 5px;">ITENS DA SOLICITAÇÃO (Para separação física)</h3>
+                <h3 style="margin: 10px 0 5px 0; font-size: 11px; border-bottom: 1px solid #1C1917; padding-bottom: 2px;">ITENS DA SOLICITAÇÃO (Para separação física)</h3>
                 <table class="items-table">
                   <thead>
                     <tr>
                       <th>Produto / Descrição</th>
-                      <th style="width: 100px; text-align: center;">Qtd Solicitada</th>
-                      <th class="blank-col">Qtd Separada (Anotar)</th>
+                      <th style="width: 85px; text-align: center;">Qtd Solicitada</th>
+                      <th class="blank-col">Qtd Separada</th>
                       <th>Obs. / Lote do Material</th>
                     </tr>
                   </thead>
                   <tbody>
                     ${items.map(item => `
                       <tr>
-                        <td style="font-weight: bold;">${item.product_name}</td>
-                        <td style="text-align: center; font-size: 14px; font-weight: bold;">${item.quantity_requested}</td>
+                        <td style="font-weight: bold; font-size: 11px;">${item.product_name}</td>
+                        <td style="text-align: center; font-size: 11px; font-weight: bold;">${item.quantity_requested}</td>
                         <td class="blank-col" style="border-bottom: 1px solid #1C1917;"></td>
                         <td style="border-bottom: 1px solid #1C1917;"></td>
                       </tr>
                     `).join('')}
                   </tbody>
                 </table>
-
-                <div class="signature-section">
-                  <div class="signature-box" style="margin-top: 40px;">
-                    <br/><br/>
-                    ________________________________________<br/>
-                    Setor Solicitante (Assinatura de Recebimento)
-                  </div>
-                  <div class="signature-box" style="margin-top: 40px;">
-                    <br/><br/>
-                    ________________________________________<br/>
-                    Responsável pela Separação (Almoxarifado)
-                  </div>
-                </div>
 
                 <div class="footer">Gerado em ${new Date().toLocaleString('pt-BR')}</div>
               </div>
