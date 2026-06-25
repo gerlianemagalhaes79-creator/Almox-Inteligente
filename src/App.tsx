@@ -1617,16 +1617,36 @@ export default function App() {
     }
   };
 
-  const handlePrintRequests = () => {
+  const handlePrintRequests = async () => {
     const filteredRequests = requests.filter(req => {
-      if (req.deletedAt || req.status !== 'APROVADO') return false;
+      if (req.deletedAt || (req.status !== 'PENDENTE' && req.status !== 'EM_SEPARACAO')) return false;
       const reqDate = req.date.split('T')[0];
       return reqDate >= printRange.start && reqDate <= printRange.end;
     });
 
     if (filteredRequests.length === 0) {
-      showToast("Nenhuma solicitação aprovada encontrada para este período.", "info");
+      showToast("Nenhuma solicitação pendente ou em separação encontrada para este período.", "info");
       return;
+    }
+
+    try {
+      const batch = writeBatch(db);
+      let updatedAny = false;
+      filteredRequests.forEach(req => {
+        if (req.status === 'PENDENTE') {
+          batch.update(doc(db, 'requests', req.id), {
+            status: 'EM_SEPARACAO',
+            updatedAt: serverTimestamp()
+          });
+          updatedAny = true;
+        }
+      });
+      if (updatedAny) {
+        await batch.commit();
+        showToast("Status das solicitações atualizado para 'Em Separação'!", "success");
+      }
+    } catch (error) {
+      console.error("Erro ao atualizar status para EM_SEPARACAO:", error);
     }
 
     const printWindow = window.open('', '_blank');
@@ -1642,58 +1662,92 @@ export default function App() {
     const content = `
       <html>
         <head>
-          <title>Solicitações Aprovadas - ${periodStr}</title>
+          <title>Impressão de Solicitações - ${periodStr}</title>
           <style>
             body { font-family: sans-serif; padding: 20px; color: #1C1917; }
-            h1 { text-align: center; border-bottom: 2px solid #1C1917; padding-bottom: 10px; font-size: 20px; }
-            .request-card { border: 1px solid #E7E5E4; border-radius: 12px; padding: 15px; margin-bottom: 20px; page-break-inside: avoid; }
-            .request-header { display: flex; justify-content: space-between; margin-bottom: 10px; font-weight: bold; border-bottom: 1px solid #F5F5F4; padding-bottom: 5px; font-size: 14px; }
-            .items-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-            .items-table th, .items-table td { border: 1px solid #E7E5E4; padding: 8px; text-align: left; font-size: 12px; }
+            .request-card { 
+              border: 1px solid #E7E5E4; 
+              border-radius: 12px; 
+              padding: 20px; 
+              margin-bottom: 40px; 
+            }
+            .header-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+            .header-table td { padding: 8px; border: 1px solid #E7E5E4; font-size: 13px; }
+            h1 { text-align: center; margin-bottom: 20px; font-size: 20px; text-transform: uppercase; border-bottom: 3px double #1C1917; padding-bottom: 10px; }
+            .items-table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            .items-table th, .items-table td { border: 1px solid #1C1917; padding: 10px; text-align: left; font-size: 13px; }
             .items-table th { background-color: #FAFAF9; }
-            .justification { margin-top: 10px; font-style: italic; font-size: 12px; color: #57534E; background: #FAFAF9; padding: 8px; border-radius: 8px; border-left: 3px solid #E7E5E4; }
-            .footer { margin-top: 40px; text-align: center; font-size: 10px; color: #A8A29E; }
+            .blank-col { width: 120px; text-align: center; }
+            .signature-section { margin-top: 50px; display: flex; justify-content: space-between; }
+            .signature-box { width: 45%; text-align: center; border-top: 1px solid #1C1917; padding-top: 5px; font-size: 11px; }
+            .footer { margin-top: 40px; text-align: center; font-size: 10px; color: #78716C; border-top: 1px solid #E7E5E4; padding-top: 10px; }
             @media print {
               .no-print { display: none; }
+              .page-break { page-break-after: always; }
             }
           </style>
         </head>
         <body>
-          <h1>Solicitações Aprovadas - ${periodStr}</h1>
-          ${filteredRequests.map(req => {
+          ${filteredRequests.map((req, idx) => {
             const items = allRequestItems.filter(ri => ri.request_id === req.id);
+            const isLast = idx === filteredRequests.length - 1;
             return `
-              <div class="request-card">
-                <div class="request-header">
-                  <span>Solicitação: #${req.id.slice(-5).toUpperCase()}</span>
-                  <span>Setor: ${req.sector}</span>
-                </div>
-                <div style="font-size: 11px; margin-bottom: 10px; color: #78716C;">Solicitante: ${req.requesterEmail}</div>
+              <div class="request-card ${isLast ? '' : 'page-break'}">
+                <h1>Solicitação de Material</h1>
+                <table class="header-table">
+                  <tr>
+                    <td><strong>Número:</strong> #${req.id.slice(-5).toUpperCase()}</td>
+                    <td><strong>Data de Criação:</strong> ${new Date(req.date).toLocaleDateString('pt-BR')}</td>
+                  </tr>
+                  <tr>
+                    <td><strong>Setor Solicitante:</strong> ${req.sector}</td>
+                    <td><strong>Status:</strong> EM SEPARAÇÃO</td>
+                  </tr>
+                  <tr>
+                    <td colspan="2"><strong>Solicitante:</strong> ${req.requesterEmail}</td>
+                  </tr>
+                  ${req.observation ? `<tr><td colspan="2"><strong>Observações do Solicitante:</strong> ${req.observation}</td></tr>` : ''}
+                </table>
+
+                <h3 style="margin-top: 25px; font-size: 15px; border-bottom: 1px solid #1C1917; padding-bottom: 5px;">ITENS DA SOLICITAÇÃO (Para separação física)</h3>
                 <table class="items-table">
                   <thead>
                     <tr>
-                      <th>Produto</th>
-                      <th style="width: 80px; text-align: center;">Qtd Solicitada</th>
-                      <th style="width: 80px; text-align: center;">Qtd Aprovada</th>
-                      <th style="width: 100px; text-align: center;">Status</th>
+                      <th>Produto / Descrição</th>
+                      <th style="width: 100px; text-align: center;">Qtd Solicitada</th>
+                      <th class="blank-col">Qtd Separada (Anotar)</th>
+                      <th>Obs. / Lote do Material</th>
                     </tr>
                   </thead>
                   <tbody>
                     ${items.map(item => `
                       <tr>
-                        <td>${item.product_name}</td>
-                        <td style="text-align: center;">${item.quantity_requested}</td>
-                        <td style="text-align: center;">${item.quantity_approved !== undefined ? item.quantity_approved : item.quantity_requested}</td>
-                        <td style="text-align: center;">${item.quantity_approved !== undefined && item.quantity_approved !== item.quantity_requested ? 'Alterado' : 'Original'}</td>
+                        <td style="font-weight: bold;">${item.product_name}</td>
+                        <td style="text-align: center; font-size: 14px; font-weight: bold;">${item.quantity_requested}</td>
+                        <td class="blank-col" style="border-bottom: 1px solid #1C1917;"></td>
+                        <td style="border-bottom: 1px solid #1C1917;"></td>
                       </tr>
                     `).join('')}
                   </tbody>
                 </table>
-                ${req.adminObservation ? `<div class="justification"><strong>Justificativa:</strong> ${req.adminObservation}</div>` : ''}
+
+                <div class="signature-section">
+                  <div class="signature-box" style="margin-top: 40px;">
+                    <br/><br/>
+                    ________________________________________<br/>
+                    Setor Solicitante (Assinatura de Recebimento)
+                  </div>
+                  <div class="signature-box" style="margin-top: 40px;">
+                    <br/><br/>
+                    ________________________________________<br/>
+                    Responsável pela Separação (Almoxarifado)
+                  </div>
+                </div>
+
+                <div class="footer">Gerado em ${new Date().toLocaleString('pt-BR')}</div>
               </div>
             `;
           }).join('')}
-          <div class="footer">Gerado em ${new Date().toLocaleString('pt-BR')}</div>
           <script>
             window.onload = () => {
               window.print();
@@ -5740,7 +5794,7 @@ export default function App() {
                       </div>
                       <div>
                         <h3 className="text-xl font-black text-[#1C1917]">Impressão de Solicitações</h3>
-                        <p className="text-[#78716C] text-sm font-medium">Imprima as solicitações aprovadas por data</p>
+                        <p className="text-[#78716C] text-sm font-medium">Imprima as solicitações pendentes e em separação por período</p>
                       </div>
                     </div>
                     <div className="flex flex-col sm:flex-row items-center gap-4">
@@ -5769,7 +5823,7 @@ export default function App() {
                         onClick={handlePrintRequests}
                         className="w-full sm:w-auto mt-4 sm:mt-0 bg-[#1C1917] text-white px-8 py-3 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-[#292524] transition-all shadow-lg"
                       >
-                        <Printer size={18} /> Imprimir Aprovadas
+                        <Printer size={18} /> Imprimir Solicitações
                       </button>
                     </div>
                   </div>
@@ -8768,16 +8822,6 @@ export default function App() {
 
             {isAdmin && (
               <div className="flex flex-col gap-3 w-full">
-                {/* Print button available for PENDENTE or EM_SEPARACAO */}
-                {(showRequestDetailModal.request.status === 'PENDENTE' || showRequestDetailModal.request.status === 'EM_SEPARACAO') && (
-                  <button 
-                    onClick={() => handlePrintSingleRequest(showRequestDetailModal.request!)}
-                    className="w-full py-3 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-bold transition-all flex items-center justify-center gap-2 shadow-sm"
-                  >
-                    <Printer size={18} /> Imprimir Solicitação
-                  </button>
-                )}
-
                 <div className="flex gap-3 w-full">
                   {/* PENDENTE or EM_SEPARACAO Actions */}
                   {(showRequestDetailModal.request.status === 'PENDENTE' || showRequestDetailModal.request.status === 'EM_SEPARACAO') && (
