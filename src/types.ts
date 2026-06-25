@@ -11,13 +11,14 @@ export interface MaterialRequest {
   id: string;
   sector: string;
   date: string;
-  status: 'PENDENTE' | 'APROVADO' | 'SEPARADO' | 'ENTREGUE' | 'RECUSADO';
+  status: 'PENDENTE' | 'APROVADO' | 'SEPARADO' | 'ENTREGUE' | 'RECUSADO' | 'EM_SEPARACAO';
   observation?: string;
   adminObservation?: string;
   requesterEmail: string;
   deliveredAt?: string;
   deletedAt?: string;
   deletedBy?: string;
+  isNewFlow?: boolean;
 }
 
 export interface RequestItem {

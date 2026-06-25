@@ -1482,7 +1482,8 @@ export default function App() {
         status: 'PENDENTE',
         observation: requestObservation || '',
         requesterEmail: user?.email || '',
-        updatedAt: serverTimestamp()
+        updatedAt: serverTimestamp(),
+        isNewFlow: editingRequest ? (editingRequest.isNewFlow || false) : true
       };
 
       if (editingRequest) {
@@ -1757,6 +1758,319 @@ export default function App() {
     } catch (error: any) {
       console.error("Error updating observation:", error);
       showToast(`Erro ao atualizar observação: ${error.message}`, "error");
+    }
+  };
+
+  const handlePrintSingleRequest = async (request: MaterialRequest) => {
+    // 1. If the request is in PENDENTE state, transition it to EM_SEPARACAO
+    if (request.isNewFlow && request.status === 'PENDENTE') {
+      try {
+        await updateDoc(doc(db, 'requests', request.id), {
+          status: 'EM_SEPARACAO',
+          updatedAt: serverTimestamp()
+        });
+        showToast("Status alterado para 'Em Separação'!", "success");
+        // Update local modal state immediately
+        if (showRequestDetailModal.show && showRequestDetailModal.request?.id === request.id) {
+          setShowRequestDetailModal({
+            ...showRequestDetailModal,
+            request: { ...showRequestDetailModal.request, status: 'EM_SEPARACAO' }
+          });
+        }
+      } catch (error) {
+        console.error("Erro ao atualizar status para EM_SEPARACAO:", error);
+      }
+    }
+
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      showToast("Por favor, permita popups para imprimir.", "error");
+      return;
+    }
+
+    const items = allRequestItems.filter(ri => ri.request_id === request.id);
+    const dateStr = new Date(request.date).toLocaleDateString('pt-BR');
+
+    const content = `
+      <html>
+        <head>
+          <title>Solicitação de Material - #${request.id.slice(-5).toUpperCase()}</title>
+          <style>
+            body { font-family: sans-serif; padding: 20px; color: #1C1917; }
+            .header-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+            .header-table td { padding: 8px; border: 1px solid #E7E5E4; }
+            h1 { text-align: center; margin-bottom: 20px; font-size: 22px; text-transform: uppercase; border-bottom: 3px double #1C1917; padding-bottom: 10px; }
+            .items-table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            .items-table th, .items-table td { border: 1px solid #1C1917; padding: 10px; text-align: left; font-size: 13px; }
+            .items-table th { background-color: #FAFAF9; }
+            .blank-col { width: 120px; text-align: center; }
+            .signature-section { margin-top: 60px; display: flex; justify-content: space-between; }
+            .signature-box { width: 45%; text-align: center; border-top: 1px solid #1C1917; padding-top: 5px; font-size: 12px; }
+            .footer { margin-top: 50px; text-align: center; font-size: 10px; color: #78716C; border-top: 1px solid #E7E5E4; padding-top: 10px; }
+            @media print {
+              .no-print { display: none; }
+            }
+          </style>
+        </head>
+        <body>
+          <h1>Solicitação de Material</h1>
+          <table class="header-table">
+            <tr>
+              <td><strong>Número:</strong> #${request.id.slice(-5).toUpperCase()}</td>
+              <td><strong>Data:</strong> ${dateStr}</td>
+            </tr>
+            <tr>
+              <td><strong>Setor Solicitante:</strong> ${request.sector}</td>
+              <td><strong>Status:</strong> ${request.status === 'PENDENTE' ? 'PENDENTE' : 'EM SEPARAÇÃO'}</td>
+            </tr>
+            <tr>
+              <td colspan="2"><strong>Solicitante:</strong> ${request.requesterEmail}</td>
+            </tr>
+            ${request.observation ? `<tr><td colspan="2"><strong>Observações do Solicitante:</strong> ${request.observation}</td></tr>` : ''}
+          </table>
+
+          <h3 style="margin-top: 30px; font-size: 16px; border-bottom: 1px solid #1C1917; padding-bottom: 5px;">ITENS DA SOLICITAÇÃO (Para separação física)</h3>
+          <table class="items-table">
+            <thead>
+              <tr>
+                <th>Produto / Descrição</th>
+                <th style="width: 100px; text-align: center;">Qtd Solicitada</th>
+                <th class="blank-col">Qtd Separada (Anotar)</th>
+                <th>Obs. / Lote do Material</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${items.map(item => `
+                <tr>
+                  <td style="font-weight: bold;">${item.product_name}</td>
+                  <td style="text-align: center; font-size: 14px; font-weight: bold;">${item.quantity_requested}</td>
+                  <td class="blank-col" style="border-bottom: 1px solid #1C1917;"></td>
+                  <td style="border-bottom: 1px solid #1C1917;"></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+
+          <div class="signature-section">
+            <div class="signature-box" style="margin-top: 40px;">
+              <br/><br/>
+              ________________________________________<br/>
+              Setor Solicitante (Assinatura de Recebimento)
+            </div>
+            <div class="signature-box" style="margin-top: 40px;">
+              <br/><br/>
+              ________________________________________<br/>
+              Responsável pela Separação (Almoxarifado)
+            </div>
+          </div>
+
+          <div class="footer">Gerado via Sistema de Almoxarifado em ${new Date().toLocaleString('pt-BR')}</div>
+          <script>
+            window.onload = () => {
+              window.print();
+            };
+          </script>
+        </body>
+      </html>
+    `;
+
+    printWindow.document.write(content);
+    printWindow.document.close();
+  };
+
+  const handleApproveAndDeliverNewRequest = async (requestId: string, currentRequestItems: RequestItem[]) => {
+    try {
+      showToast("Processando aprovação e baixa no estoque...", "info");
+      
+      const requestRef = doc(db, 'requests', requestId);
+      const requestSnap = await getDoc(requestRef);
+      if (!requestSnap.exists()) throw new Error("Solicitação não encontrada.");
+      const requestData = requestSnap.data() as MaterialRequest;
+
+      if (requestData.status === 'ENTREGUE') {
+        showToast("Esta solicitação já foi entregue.", "info");
+        return;
+      }
+
+      // Pre-fetch all necessary stock data with normalized name matching
+      const itemsSnapshot = await getDocs(collection(db, 'items'));
+      const allActiveItems = itemsSnapshot.docs
+        .map(d => ({ id: d.id, ...d.data() } as Item))
+        .filter(i => !i.deletedAt);
+
+      const itemsStockData: any[] = [];
+      for (const reqItem of currentRequestItems) {
+        if (reqItem.quantity_approved <= 0) continue;
+
+        const normalizedReqName = normalizeString(reqItem.product_name);
+        
+        // Find all batches that represent this product (same normalized name)
+        let batches = allActiveItems.filter(item => 
+          normalizeString(item.name) === normalizedReqName && (item.quantity || 0) > 0
+        );
+
+        batches.sort((a, b) => {
+          if (a.expiry_date === 'Indeterminada' || !a.expiry_date) return 1;
+          if (b.expiry_date === 'Indeterminada' || !b.expiry_date) return -1;
+          return new Date(a.expiry_date).getTime() - new Date(b.expiry_date).getTime();
+        });
+
+        let pharmItems: any[] = [];
+        if (requestData.sector === 'Farmácia') {
+          pharmItems = allActiveItems
+            .filter(item => normalizeString(item.name) === normalizedReqName && item.location === 'Farmácia')
+            .map(item => ({ id: item.id, batch_number: item.batch_number, ref: doc(db, 'items', item.id) }));
+        }
+
+        itemsStockData.push({ reqItem, batches, pharmItems });
+      }
+
+      await runTransaction(db, async (transaction) => {
+        // Collect all batch and pharmacy refs to read them all first
+        const batchRefs = itemsStockData.flatMap(d => d.batches.map(b => doc(db, 'items', b.id)));
+        const pharmRefs = itemsStockData.flatMap(d => d.pharmItems.map(p => p.ref));
+        
+        // 1. Perform ALL reads first
+        const [tRequestSnap, ...itemSnaps] = await Promise.all([
+          transaction.get(requestRef),
+          ...batchRefs.map(ref => transaction.get(ref)),
+          ...pharmRefs.map(ref => transaction.get(ref))
+        ]);
+
+        const tRequestData = tRequestSnap.data() as MaterialRequest | undefined;
+        if (!tRequestData || tRequestData.status === 'ENTREGUE') return;
+
+        // Map snapshots for easy access by path
+        const snapMap = new Map();
+        itemSnaps.forEach(snap => snapMap.set(snap.ref.path, snap));
+
+        // 2. Perform ALL writes
+        // First update the main request document
+        transaction.update(requestRef, { 
+          status: 'ENTREGUE',
+          adminObservation: adminObservation,
+          deliveredAt: new Date().toISOString(),
+          deliveredBy: user?.email,
+          updatedAt: serverTimestamp()
+        });
+
+        // Also update all the request_items quantity_approved in the database
+        currentRequestItems.forEach(item => {
+          const itemRef = doc(db, 'request_items', item.id);
+          transaction.update(itemRef, { quantity_approved: item.quantity_approved });
+        });
+
+        for (const { reqItem, batches, pharmItems } of itemsStockData) {
+          let remaining = reqItem.quantity_approved;
+          
+          for (const batch of batches) {
+            if (remaining <= 0) break;
+
+            const tBatchRef = doc(db, 'items', batch.id);
+            const tBatchSnap = snapMap.get(tBatchRef.path);
+            if (!tBatchSnap || !tBatchSnap.exists()) continue;
+            
+            const tBatchData = tBatchSnap.data() as Item;
+            const currentQty = tBatchData.quantity || 0;
+            if (currentQty <= 0) continue;
+
+            const toTake = Math.min(currentQty, remaining);
+            
+            transaction.update(tBatchRef, {
+              quantity: currentQty - toTake,
+              updatedAt: serverTimestamp()
+            });
+
+            // Log Transaction
+            const transRef = doc(collection(db, 'transactions'));
+            transaction.set(transRef, {
+              item_id: batch.id,
+              item_name: reqItem.product_name,
+              type: 'exit',
+              origin: batch.origin || 'extra',
+              quantity: toTake,
+              sector: requestData.sector,
+              location: batch.location || 'Almoxarifado',
+              date: new Date().toISOString(),
+              responsible: user?.displayName || user?.email,
+              responsibleEmail: user?.email,
+              exitReason: 'consumo',
+              batch_number: batch.batch_number,
+              expiry_date: batch.expiry_date
+            });
+
+            if (requestData.sector === 'Farmácia' && batch.location !== 'Farmácia') {
+              const existingPharm = pharmItems.find((p: any) => p.batch_number === batch.batch_number);
+              if (existingPharm) {
+                const tPharmRef = existingPharm.ref;
+                const tPharmSnap = snapMap.get(tPharmRef.path);
+                const tPharmData = tPharmSnap?.data() as Item | undefined;
+                transaction.update(tPharmRef, {
+                  quantity: (tPharmData?.quantity || 0) + toTake,
+                  updatedAt: serverTimestamp()
+                });
+              } else {
+                const newItemRef = doc(collection(db, 'items'));
+                transaction.set(newItemRef, {
+                  name: reqItem.product_name,
+                  description: batch.description || '',
+                  category: batch.category || 'Outros',
+                  supplier: batch.supplier || 'Transferência',
+                  batch_number: batch.batch_number || '',
+                  expiry_date: batch.expiry_date || 'Indeterminada',
+                  initial_quantity: toTake,
+                  quantity: toTake,
+                  min_quantity: batch.min_quantity || 0,
+                  unit_price: batch.unit_price || 0,
+                  location: 'Farmácia',
+                  origin: batch.origin || 'extra',
+                  date: new Date().toISOString(),
+                  createdAt: serverTimestamp(),
+                  updatedAt: serverTimestamp()
+                });
+              }
+            }
+            remaining -= toTake;
+          }
+
+          if (remaining > 0) {
+            throw new Error(`Estoque insuficiente para "${reqItem.product_name}".`);
+          }
+        }
+      });
+
+      // Cleanup and UI updates
+      showToast("Solicitação aprovada, entregue e estoque baixado automaticamente!", "success");
+      setShowRequestDetailModal({ show: false });
+
+      // Notifications
+      const uSnap = await getDocs(query(collection(db, 'users'), where('email', '==', requestData.requesterEmail)));
+      if (!uSnap.empty) {
+        await createNotification(uSnap.docs[0].id, 'Solicitação Entregue', `Sua solicitação #${requestId.slice(-5).toUpperCase()} foi aprovada e entregue.`, requestId);
+      }
+
+      // Stock Zero Notifications
+      for (const { reqItem } of itemsStockData) {
+        await checkStockAndNotify(reqItem.product_name);
+      }
+
+      // Receipt
+      const itemsForReceipt = currentRequestItems.filter(i => i.quantity_approved > 0).map(i => ({
+        product_name: i.product_name,
+        quantity: i.quantity_approved
+      }));
+      if (itemsForReceipt.length > 0) {
+        handleExportDeliveryReceiptPDF({
+          sector: requestData.sector,
+          items: itemsForReceipt,
+          requestId: requestId,
+          date: new Date().toISOString()
+        });
+      }
+
+    } catch (error: any) {
+      console.error("Erro ao aprovar e entregar:", error);
+      showToast(`Erro no processo: ${error.message}`, "error");
     }
   };
 
@@ -6420,12 +6734,13 @@ export default function App() {
                         <td className="px-6 py-4">
                           <span className={`text-[10px] font-black px-2 py-1 rounded-full uppercase tracking-widest ${
                             req.status === 'PENDENTE' ? 'bg-amber-100 text-amber-600' :
+                            req.status === 'EM_SEPARACAO' ? 'bg-purple-100 text-purple-600' :
                             req.status === 'APROVADO' ? 'bg-blue-100 text-blue-600' :
                             req.status === 'ENTREGUE' ? 'bg-emerald-100 text-emerald-600' :
                             req.status === 'RECUSADO' ? 'bg-rose-100 text-rose-600' :
                             'bg-gray-100 text-gray-600'
                           }`}>
-                            {req.status}
+                            {req.status === 'EM_SEPARACAO' ? 'EM SEPARAÇÃO' : req.status}
                           </span>
                         </td>
                         <td className="px-6 py-4">
@@ -6494,12 +6809,13 @@ export default function App() {
                         <td className="px-6 py-4">
                           <span className={`text-[10px] font-black px-2 py-1 rounded-full uppercase tracking-widest ${
                             req.status === 'PENDENTE' ? 'bg-amber-100 text-amber-600' :
+                            req.status === 'EM_SEPARACAO' ? 'bg-purple-100 text-purple-600' :
                             req.status === 'APROVADO' ? 'bg-blue-100 text-blue-600' :
                             req.status === 'ENTREGUE' ? 'bg-emerald-100 text-emerald-600' :
                             req.status === 'RECUSADO' ? 'bg-rose-100 text-rose-600' :
                             'bg-gray-100 text-gray-600'
                           }`}>
-                            {req.status}
+                            {req.status === 'EM_SEPARACAO' ? 'EM SEPARAÇÃO' : req.status}
                           </span>
                         </td>
                         <td className="px-6 py-4">
@@ -8233,12 +8549,13 @@ export default function App() {
                 <p className="text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest mb-1">Status Atual</p>
                 <span className={`text-[10px] font-black px-2 py-1 rounded-full uppercase tracking-widest ${
                   showRequestDetailModal.request.status === 'PENDENTE' ? 'bg-amber-100 text-amber-600' :
+                  showRequestDetailModal.request.status === 'EM_SEPARACAO' ? 'bg-purple-100 text-purple-600' :
                   showRequestDetailModal.request.status === 'APROVADO' ? 'bg-blue-100 text-blue-600' :
                   showRequestDetailModal.request.status === 'ENTREGUE' ? 'bg-emerald-100 text-emerald-600' :
                   showRequestDetailModal.request.status === 'RECUSADO' ? 'bg-rose-100 text-rose-600' :
                   'bg-gray-100 text-gray-600'
                 }`}>
-                  {showRequestDetailModal.request.status}
+                  {showRequestDetailModal.request.status === 'EM_SEPARACAO' ? 'EM SEPARAÇÃO' : showRequestDetailModal.request.status}
                 </span>
               </div>
             </div>
@@ -8322,7 +8639,7 @@ export default function App() {
               </div>
             )}
 
-            {isAdmin && showRequestDetailModal.request.status === 'PENDENTE' && (
+            {isAdmin && (showRequestDetailModal.request.status === 'PENDENTE' || showRequestDetailModal.request.status === 'EM_SEPARACAO') && (
               <div className="mb-8 p-6 bg-blue-50/50 border border-blue-100 rounded-3xl">
                 <label className="block text-[10px] font-bold text-blue-600 uppercase tracking-widest mb-3">Adicionar Material Esquecido</label>
                 <div className="relative">
@@ -8420,7 +8737,7 @@ export default function App() {
                             </td>
                           )}
                           <td className="px-4 py-3 text-center">
-                            {isAdmin && showRequestDetailModal.request?.status === 'PENDENTE' ? (
+                            {isAdmin && (showRequestDetailModal.request?.status === 'PENDENTE' || showRequestDetailModal.request?.status === 'EM_SEPARACAO') ? (
                               <div className="flex justify-center">
                                 <input 
                                   type="number" 
@@ -8450,31 +8767,56 @@ export default function App() {
             </div>
 
             {isAdmin && (
-              <div className="flex gap-3">
-                {showRequestDetailModal.request.status === 'PENDENTE' && (
-                  <>
-                    <button 
-                      onClick={() => handleRejectRequest(showRequestDetailModal.request!.id)}
-                      className="flex-1 py-3 bg-rose-100 text-rose-600 rounded-xl font-bold hover:bg-rose-200 transition-all"
-                    >
-                      Recusar
-                    </button>
-                    <button 
-                      onClick={() => handleApproveRequest(showRequestDetailModal.request!.id, allRequestItems.filter(ri => ri.request_id === showRequestDetailModal.request?.id))}
-                      className="flex-1 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all"
-                    >
-                      Aprovar Solicitação
-                    </button>
-                  </>
-                )}
-                {showRequestDetailModal.request.status === 'APROVADO' && (
+              <div className="flex flex-col gap-3 w-full">
+                {/* Print button available for PENDENTE or EM_SEPARACAO */}
+                {(showRequestDetailModal.request.status === 'PENDENTE' || showRequestDetailModal.request.status === 'EM_SEPARACAO') && (
                   <button 
-                    onClick={() => handleDeliverRequest(showRequestDetailModal.request!.id, allRequestItems.filter(ri => ri.request_id === showRequestDetailModal.request?.id))}
-                    className="w-full py-4 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 transition-all flex items-center justify-center gap-2 shadow-lg"
+                    onClick={() => handlePrintSingleRequest(showRequestDetailModal.request!)}
+                    className="w-full py-3 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-bold transition-all flex items-center justify-center gap-2 shadow-sm"
                   >
-                    <CheckCircle size={20} /> Confirmar Entrega e Baixar Estoque
+                    <Printer size={18} /> Imprimir Solicitação
                   </button>
                 )}
+
+                <div className="flex gap-3 w-full">
+                  {/* PENDENTE or EM_SEPARACAO Actions */}
+                  {(showRequestDetailModal.request.status === 'PENDENTE' || showRequestDetailModal.request.status === 'EM_SEPARACAO') && (
+                    <>
+                      <button 
+                        onClick={() => handleRejectRequest(showRequestDetailModal.request!.id)}
+                        className="flex-1 py-3 bg-rose-100 text-rose-600 rounded-xl font-bold hover:bg-rose-200 transition-all"
+                      >
+                        Recusar
+                      </button>
+
+                      {showRequestDetailModal.request.isNewFlow ? (
+                        <button 
+                          onClick={() => handleApproveAndDeliverNewRequest(showRequestDetailModal.request!.id, allRequestItems.filter(ri => ri.request_id === showRequestDetailModal.request?.id))}
+                          className="flex-1 py-3 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 transition-all shadow-md flex items-center justify-center gap-2"
+                        >
+                          <CheckCircle size={18} /> Aprovar e Entregar
+                        </button>
+                      ) : (
+                        <button 
+                          onClick={() => handleApproveRequest(showRequestDetailModal.request!.id, allRequestItems.filter(ri => ri.request_id === showRequestDetailModal.request?.id))}
+                          className="flex-1 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all"
+                        >
+                          Aprovar Solicitação
+                        </button>
+                      )}
+                    </>
+                  )}
+
+                  {/* Old flow APROVADO delivery action */}
+                  {!showRequestDetailModal.request.isNewFlow && showRequestDetailModal.request.status === 'APROVADO' && (
+                    <button 
+                      onClick={() => handleDeliverRequest(showRequestDetailModal.request!.id, allRequestItems.filter(ri => ri.request_id === showRequestDetailModal.request?.id))}
+                      className="w-full py-4 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 transition-all flex items-center justify-center gap-2 shadow-lg"
+                    >
+                      <CheckCircle size={20} /> Confirmar Entrega e Baixar Estoque
+                    </button>
+                  )}
+                </div>
               </div>
             )}
 
