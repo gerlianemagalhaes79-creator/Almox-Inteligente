@@ -355,6 +355,11 @@ export default function App() {
   const [showUserDeleteConfirm, setShowUserDeleteConfirm] = useState<{show: boolean, user?: UserProfile}>({ show: false });
   const [toast, setToast] = useState<{show: boolean, message: string, type: 'success' | 'error' | 'info'}>({ show: false, message: '', type: 'info' });
   const [showRequestDetailModal, setShowRequestDetailModal] = useState<{show: boolean, request?: MaterialRequest}>({ show: false });
+  const [showDevolutionModal, setShowDevolutionModal] = useState<{show: boolean, request?: MaterialRequest}>({ show: false });
+  const [devolutionItemsData, setDevolutionItemsData] = useState<Record<string, { quantity: number, selectedBatchId: string }>>({});
+  const [devolutionReason, setDevolutionReason] = useState('Não teve uso');
+  const [devolutionObservation, setDevolutionObservation] = useState('');
+  const [isProcessingDevolution, setIsProcessingDevolution] = useState(false);
   const [adminAddItemSearch, setAdminAddItemSearch] = useState('');
   const [isAdminAddingItem, setIsAdminAddingItem] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -1664,22 +1669,22 @@ export default function App() {
         <head>
           <title>Impressão de Solicitações - ${periodStr}</title>
           <style>
-            body { font-family: sans-serif; padding: 10px; color: #1C1917; font-size: 11px; }
+            body { font-family: sans-serif; padding: 5px; color: #1C1917; font-size: 9px; line-height: 1.2; }
             .request-card { 
-              border: 1px dashed #A8A29E; 
-              border-radius: 8px; 
-              padding: 12px; 
-              margin-bottom: 20px; 
+              border: 1px dashed #78716C; 
+              border-radius: 6px; 
+              padding: 8px; 
+              margin-bottom: 12px; 
               page-break-inside: avoid;
             }
-            .header-table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
-            .header-table td { padding: 4px 6px; border: 1px solid #E7E5E4; font-size: 11px; }
-            h1 { text-align: left; margin: 0 0 10px 0; font-size: 14px; text-transform: uppercase; border-bottom: 2px solid #1C1917; padding-bottom: 4px; }
-            .items-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-            .items-table th, .items-table td { border: 1px solid #1C1917; padding: 6px; text-align: left; font-size: 11px; }
+            .header-table { width: 100%; border-collapse: collapse; margin-bottom: 6px; }
+            .header-table td { padding: 3px 5px; border: 1px solid #E7E5E4; font-size: 8.5px; }
+            h1 { text-align: left; margin: 0 0 5px 0; font-size: 11px; text-transform: uppercase; border-bottom: 1.5px solid #1C1917; padding-bottom: 2px; }
+            .items-table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+            .items-table th, .items-table td { border: 1px solid #1C1917; padding: 4px; text-align: left; font-size: 8.5px; }
             .items-table th { background-color: #FAFAF9; }
-            .blank-col { width: 90px; text-align: center; }
-            .footer { margin-top: 15px; text-align: center; font-size: 8px; color: #78716C; border-top: 1px dashed #E7E5E4; padding-top: 5px; }
+            .blank-col { width: 70px; text-align: center; }
+            .footer { margin-top: 8px; text-align: center; font-size: 7px; color: #78716C; border-top: 1px dashed #E7E5E4; padding-top: 3px; }
             @media print {
               .no-print { display: none; }
             }
@@ -1706,12 +1711,12 @@ export default function App() {
                   ${req.observation ? `<tr><td colspan="2"><strong>Observações:</strong> ${req.observation}</td></tr>` : ''}
                 </table>
 
-                <h3 style="margin: 10px 0 5px 0; font-size: 11px; border-bottom: 1px solid #1C1917; padding-bottom: 2px;">ITENS DA SOLICITAÇÃO (Para separação física)</h3>
+                <h3 style="margin: 6px 0 3px 0; font-size: 9px; border-bottom: 1px solid #1C1917; padding-bottom: 2px; text-transform: uppercase;">ITENS DA SOLICITAÇÃO (Para separação física)</h3>
                 <table class="items-table">
                   <thead>
                     <tr>
                       <th>Produto / Descrição</th>
-                      <th style="width: 85px; text-align: center;">Qtd Solicitada</th>
+                      <th style="width: 70px; text-align: center;">Qtd Solicitada</th>
                       <th class="blank-col">Qtd Separada</th>
                       <th>Obs. / Lote do Material</th>
                     </tr>
@@ -1719,8 +1724,8 @@ export default function App() {
                   <tbody>
                     ${items.map(item => `
                       <tr>
-                        <td style="font-weight: bold; font-size: 11px;">${item.product_name}</td>
-                        <td style="text-align: center; font-size: 11px; font-weight: bold;">${item.quantity_requested}</td>
+                        <td style="font-weight: bold; font-size: 8.5px;">${item.product_name}</td>
+                        <td style="text-align: center; font-size: 8.5px; font-weight: bold;">${item.quantity_requested}</td>
                         <td class="blank-col" style="border-bottom: 1px solid #1C1917;"></td>
                         <td style="border-bottom: 1px solid #1C1917;"></td>
                       </tr>
@@ -2109,6 +2114,176 @@ export default function App() {
     } catch (error: any) {
       console.error("Erro ao aprovar e entregar:", error);
       showToast(`Erro no processo: ${error.message}`, "error");
+    }
+  };
+
+  const handleExecuteDevolution = async () => {
+    if (!showDevolutionModal.request) return;
+    const request = showDevolutionModal.request;
+    
+    // Filter items of this request
+    const reqItems = allRequestItems.filter(ri => ri.request_id === request.id);
+    
+    // Check if at least one item has return quantity > 0
+    let totalReturning = 0;
+    for (const reqItem of reqItems) {
+      const devData = devolutionItemsData[reqItem.id];
+      const returnQty = devData?.quantity || 0;
+      if (returnQty < 0) {
+        showToast("A quantidade de devolução não pode ser negativa.", "error");
+        return;
+      }
+      const maxQty = reqItem.quantity_approved - (reqItem.quantity_returned || 0);
+      if (returnQty > maxQty) {
+        showToast(`Quantidade inválida para ${reqItem.product_name}. Máximo permitido: ${maxQty}`, "error");
+        return;
+      }
+      if (returnQty > 0) {
+        if (!devData?.selectedBatchId) {
+          showToast(`Por favor, selecione o lote para o item ${reqItem.product_name}.`, "error");
+          return;
+        }
+        totalReturning += returnQty;
+      }
+    }
+
+    if (totalReturning === 0) {
+      showToast("Insira uma quantidade de devolução maior que zero para pelo menos um item.", "info");
+      return;
+    }
+
+    try {
+      setIsProcessingDevolution(true);
+      showToast("Processando devolução de materiais...", "info");
+
+      await runTransaction(db, async (transaction) => {
+        // Collect all target items (batches) to read them first
+        const batchRefsToFetch: any[] = [];
+        const pharmRefsToFetch: any[] = [];
+
+        for (const reqItem of reqItems) {
+          const devData = devolutionItemsData[reqItem.id];
+          const returnQty = devData?.quantity || 0;
+          if (returnQty <= 0) continue;
+
+          // Almoxarifado batch ref
+          const batchRef = doc(db, 'items', devData.selectedBatchId);
+          batchRefsToFetch.push(batchRef);
+
+          // If the sector is Farmácia, we also need to fetch and decrease the Farmácia stock of this batch
+          if (request.sector === 'Farmácia') {
+            const batchObj = items.find(i => i.id === devData.selectedBatchId);
+            if (batchObj) {
+              const pharmItem = items.find(i => 
+                !i.deletedAt && 
+                i.name === reqItem.product_name && 
+                i.location === 'Farmácia' && 
+                i.batch_number === batchObj.batch_number
+              );
+              if (pharmItem) {
+                pharmRefsToFetch.push({ ref: doc(db, 'items', pharmItem.id), reqItemId: reqItem.id });
+              }
+            }
+          }
+        }
+
+        // 1. Perform ALL reads first (required by Firestore transactions)
+        const [requestSnap, ...fetchedSnaps] = await Promise.all([
+          transaction.get(doc(db, 'requests', request.id)),
+          ...batchRefsToFetch.map(ref => transaction.get(ref)),
+          ...pharmRefsToFetch.map(p => transaction.get(p.ref))
+        ]);
+
+        const requestData = requestSnap.data() as MaterialRequest | undefined;
+        if (!requestData) throw new Error("Solicitação não encontrada.");
+
+        // Map snapshots for easy lookup
+        const snapMap = new Map();
+        fetchedSnaps.forEach(snap => snapMap.set(snap.ref.path, snap));
+
+        // 2. Perform ALL writes
+        // Update each item and create transaction logs
+        for (const reqItem of reqItems) {
+          const devData = devolutionItemsData[reqItem.id];
+          const returnQty = devData?.quantity || 0;
+          if (returnQty <= 0) continue;
+
+          const batchRef = doc(db, 'items', devData.selectedBatchId);
+          const batchSnap = snapMap.get(batchRef.path);
+          if (!batchSnap || !batchSnap.exists()) {
+            throw new Error(`Item de estoque de origem não encontrado.`);
+          }
+
+          const batchData = batchSnap.data() as Item;
+          const currentAlmoxQty = batchData.quantity || 0;
+
+          // If sector is Farmácia, we must decrease the Farmácia stock
+          if (request.sector === 'Farmácia') {
+            const pharmItemInfo = pharmRefsToFetch.find(p => p.reqItemId === reqItem.id);
+            if (pharmItemInfo) {
+              const pharmSnap = snapMap.get(pharmItemInfo.ref.path);
+              if (pharmSnap && pharmSnap.exists()) {
+                const pharmData = pharmSnap.data() as Item;
+                const currentPharmQty = pharmData.quantity || 0;
+                if (currentPharmQty < returnQty) {
+                  throw new Error(`Estoque insuficiente na Farmácia para devolver ${reqItem.product_name} (Possui: ${currentPharmQty}, Devolvendo: ${returnQty})`);
+                }
+                transaction.update(pharmItemInfo.ref, {
+                  quantity: currentPharmQty - returnQty,
+                  updatedAt: serverTimestamp()
+                });
+              }
+            }
+          }
+
+          // Increase Almoxarifado stock
+          transaction.update(batchRef, {
+            quantity: currentAlmoxQty + returnQty,
+            updatedAt: serverTimestamp()
+          });
+
+          // Update RequestItem
+          const reqItemRef = doc(db, 'request_items', reqItem.id);
+          const currentReturned = reqItem.quantity_returned || 0;
+          transaction.update(reqItemRef, {
+            quantity_returned: currentReturned + returnQty
+          });
+
+          // Create Entry/Devolution Transaction Log
+          const transRef = doc(collection(db, 'transactions'));
+          transaction.set(transRef, {
+            item_id: devData.selectedBatchId,
+            item_name: reqItem.product_name,
+            type: 'entry',
+            origin: batchData.origin || 'extra',
+            quantity: returnQty,
+            sector: request.sector,
+            location: batchData.location || 'Almoxarifado',
+            date: new Date().toISOString(),
+            responsible: userProfile?.name || user?.displayName || user?.email,
+            responsibleEmail: user?.email,
+            batch_number: batchData.batch_number,
+            expiry_date: batchData.expiry_date,
+            isReturn: true,
+            returnReason: devolutionReason,
+            observation: devolutionObservation
+          });
+        }
+      });
+
+      showToast("Devolução realizada com sucesso!", "success");
+      setShowDevolutionModal({ show: false });
+      
+      // Also update showRequestDetailModal if it's open, so quantities refresh
+      if (showRequestDetailModal.show && showRequestDetailModal.request?.id === request.id) {
+        setShowRequestDetailModal({ show: false });
+      }
+
+    } catch (error: any) {
+      console.error("Erro ao processar devolução:", error);
+      showToast(`Erro ao processar devolução: ${error.message}`, "error");
+    } finally {
+      setIsProcessingDevolution(false);
     }
   };
 
@@ -4041,15 +4216,22 @@ export default function App() {
       return inRange && matchesSector;
     });
 
-    const entries = filteredTrans.filter(t => t.type === 'entry').reduce((sum, t) => sum + t.quantity, 0);
-    const exits = filteredTrans.filter(t => t.type === 'exit').reduce((sum, t) => sum + t.quantity, 0);
+    const regularEntriesTrans = filteredTrans.filter(t => t.type === 'entry' && !t.isReturn);
+    const returnTrans = filteredTrans.filter(t => t.type === 'entry' && t.isReturn === true);
+    const exitTrans = filteredTrans.filter(t => t.type === 'exit');
+
+    const entries = regularEntriesTrans.reduce((sum, t) => sum + t.quantity, 0);
+    const exits = exitTrans.reduce((sum, t) => sum + t.quantity, 0) - returnTrans.reduce((sum, t) => sum + t.quantity, 0);
     
-    const entriesValue = filteredTrans.filter(t => t.type === 'entry').reduce((sum, t) => {
+    const entriesValue = regularEntriesTrans.reduce((sum, t) => {
       const item = items.find(i => i.id === t.item_id);
       return sum + (t.quantity * (Number(item?.unit_price) || 0));
     }, 0);
     
-    const exitsValue = filteredTrans.filter(t => t.type === 'exit').reduce((sum, t) => {
+    const exitsValue = exitTrans.reduce((sum, t) => {
+      const item = items.find(i => i.id === t.item_id);
+      return sum + (t.quantity * (Number(item?.unit_price) || 0));
+    }, 0) - returnTrans.reduce((sum, t) => {
       const item = items.find(i => i.id === t.item_id);
       return sum + (t.quantity * (Number(item?.unit_price) || 0));
     }, 0);
@@ -4063,8 +4245,15 @@ export default function App() {
 
     filteredTrans.forEach(t => {
       const origin = t.origin || 'contract';
-      if (t.type === 'entry') originStats[origin].entries += t.quantity;
-      else originStats[origin].exits += t.quantity;
+      if (t.type === 'entry') {
+        if (t.isReturn) {
+          originStats[origin].exits -= t.quantity;
+        } else {
+          originStats[origin].entries += t.quantity;
+        }
+      } else {
+        originStats[origin].exits += t.quantity;
+      }
     });
 
     const filteredItems = items.filter(item => {
@@ -4099,8 +4288,15 @@ export default function App() {
       const dateKey = format(dateObj, 'dd/MM');
       const sortKey = format(dateObj, 'yyyy-MM-dd');
       if (!dailyData[sortKey]) dailyData[sortKey] = { date: dateKey, entries: 0, exits: 0, sortKey };
-      if (t.type === 'entry') dailyData[sortKey].entries += t.quantity;
-      else dailyData[sortKey].exits += t.quantity;
+      if (t.type === 'entry') {
+        if (t.isReturn) {
+          dailyData[sortKey].exits -= t.quantity;
+        } else {
+          dailyData[sortKey].entries += t.quantity;
+        }
+      } else {
+        dailyData[sortKey].exits += t.quantity;
+      }
     });
 
     // Group by category for pie chart (quantity)
@@ -4152,6 +4348,19 @@ export default function App() {
       sectorData[sectorKey][category] = (sectorData[sectorKey][category] || 0) + t.quantity;
     });
 
+    filteredTrans.filter(t => t.type === 'entry' && t.isReturn && t.sector).forEach(t => {
+      const item = items.find(i => i.id === t.item_id);
+      const category = item?.category || 'Outros';
+      categoriesInSector.add(category);
+      
+      const sectorKey = (t.sector === 'Farmácia (Consumo Interno)') ? 'Farmácia' : t.sector!;
+      
+      if (!sectorData[sectorKey]) {
+        sectorData[sectorKey] = { name: sectorKey };
+      }
+      sectorData[sectorKey][category] = (sectorData[sectorKey][category] || 0) - t.quantity;
+    });
+
     // Consumption report with sector breakdown
     const consumptionReport: Record<string, { 
       name: string, 
@@ -4174,6 +4383,7 @@ export default function App() {
       }>
     }> = {};
 
+    // Process exits
     filteredTrans.filter(t => t.type === 'exit').forEach(t => {
       const item = items.find(i => i.id === t.item_id);
       const price = Number(item?.unit_price) || 0;
@@ -4216,6 +4426,51 @@ export default function App() {
       consumptionBySector[sector].totalValue += value;
       consumptionBySector[sector].items[t.item_name].quantity += t.quantity;
       consumptionBySector[sector].items[t.item_name].value += value;
+    });
+
+    // Subtract returns
+    filteredTrans.filter(t => t.type === 'entry' && t.isReturn).forEach(t => {
+      const item = items.find(i => i.id === t.item_id);
+      const price = Number(item?.unit_price) || 0;
+      const value = t.quantity * price;
+      let sector = t.sector || 'Não Informado';
+      if (sector === 'Farmácia (Consumo Interno)') sector = 'Farmácia';
+      
+      if (!consumptionReport[t.item_name]) {
+        consumptionReport[t.item_name] = { 
+          name: t.item_name, 
+          totalQuantity: 0, 
+          totalValue: 0, 
+          category: item?.category || 'Outros',
+          supplier: item?.supplier || 'N/A',
+          sectors: {}
+        };
+      }
+      consumptionReport[t.item_name].totalQuantity -= t.quantity;
+      consumptionReport[t.item_name].totalValue -= value;
+      consumptionReport[t.item_name].sectors[sector] = (consumptionReport[t.item_name].sectors[sector] || 0) - t.quantity;
+
+      // Group by Sector
+      if (!consumptionBySector[sector]) {
+        consumptionBySector[sector] = {
+          sector,
+          totalValue: 0,
+          items: {}
+        };
+      }
+      
+      if (!consumptionBySector[sector].items[t.item_name]) {
+        consumptionBySector[sector].items[t.item_name] = {
+          name: t.item_name,
+          quantity: 0,
+          value: 0,
+          category: item?.category || 'Outros'
+        };
+      }
+      
+      consumptionBySector[sector].totalValue -= value;
+      consumptionBySector[sector].items[t.item_name].quantity -= t.quantity;
+      consumptionBySector[sector].items[t.item_name].value -= value;
     });
 
     // Group by supplier for value chart
@@ -4273,12 +4528,19 @@ export default function App() {
         .filter(c => c.value > 0)
         .sort((a, b) => b.value - a.value),
       consumptionCategories: Object.entries(
-        filteredTrans.filter(t => t.type === 'exit').reduce((acc, t) => {
-          const item = items.find(i => i.id === t.item_id);
-          const cat = item?.category || 'Outros';
-          acc[cat] = (acc[cat] || 0) + t.quantity;
+        (() => {
+          const acc: Record<string, number> = {};
+          filteredTrans.forEach(t => {
+            const item = items.find(i => i.id === t.item_id);
+            const cat = item?.category || 'Outros';
+            if (t.type === 'exit') {
+              acc[cat] = (acc[cat] || 0) + t.quantity;
+            } else if (t.type === 'entry' && t.isReturn) {
+              acc[cat] = (acc[cat] || 0) - t.quantity;
+            }
+          });
           return acc;
-        }, {} as Record<string, number>)
+        })()
       ).map(([name, value]) => ({ name, value })),
       categoryValues: Object.entries(categoryValueData)
         .map(([name, value]) => ({ name, value }))
@@ -5205,28 +5467,76 @@ export default function App() {
                               <ChevronRight size={18} className="text-[#A8A29E]" />
                             </div>
                             {isAdmin && editingMaterialName?.oldName === group.name ? (
-                              <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                                <input 
-                                  type="text" 
-                                  value={editingMaterialName.newName}
-                                  onChange={(e) => setEditingMaterialName({ ...editingMaterialName, newName: e.target.value })}
-                                  className="px-3 py-1 bg-white border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-lg"
-                                  autoFocus
-                                />
-                                <button 
-                                  onClick={handleUpdateMaterialName}
-                                  className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-xl"
-                                  title="Salvar"
-                                >
-                                  <Check size={20} />
-                                </button>
-                                <button 
-                                  onClick={() => setEditingMaterialName(null)}
-                                  className="p-2 text-rose-600 hover:bg-rose-50 rounded-xl"
-                                  title="Cancelar"
-                                >
-                                  <X size={20} />
-                                </button>
+                              <div className="flex flex-col gap-2 p-3 bg-[#FAFAF9] border border-[#E7E5E4] rounded-2xl" onClick={(e) => e.stopPropagation()}>
+                                <div className="flex items-center gap-2">
+                                  <input 
+                                    type="text" 
+                                    value={editingMaterialName.newName}
+                                    onChange={(e) => setEditingMaterialName({ ...editingMaterialName, newName: e.target.value })}
+                                    className="px-3 py-1 bg-white border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-lg"
+                                    autoFocus
+                                  />
+                                  <button 
+                                    onClick={handleUpdateMaterialName}
+                                    className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-xl"
+                                    title="Salvar"
+                                  >
+                                    <Check size={20} />
+                                  </button>
+                                  <button 
+                                    onClick={() => setEditingMaterialName(null)}
+                                    className="p-2 text-rose-600 hover:bg-rose-50 rounded-xl"
+                                    title="Cancelar"
+                                  >
+                                    <X size={20} />
+                                  </button>
+                                </div>
+                                <div className="flex flex-col gap-1 bg-white p-2 rounded-xl border border-[#E7E5E4]">
+                                  <div className="flex flex-wrap gap-1 items-center">
+                                    <span className="text-[8px] font-black text-[#78716C] uppercase tracking-wider mr-1">Unidades:</span>
+                                    {['mg', 'mcg', 'UI', 'g', 'ml', '%'].map(unit => (
+                                      <button
+                                        key={unit}
+                                        type="button"
+                                        onClick={() => {
+                                          let currentName = editingMaterialName.newName.trim();
+                                          if (currentName) {
+                                            if (!currentName.endsWith(' ')) {
+                                              currentName += ' ';
+                                            }
+                                            currentName += unit;
+                                            setEditingMaterialName({ ...editingMaterialName, newName: currentName });
+                                          }
+                                        }}
+                                        className="px-1.5 py-0.5 bg-stone-200 hover:bg-[#1C1917] hover:text-white text-stone-700 rounded text-[9px] font-bold transition-all uppercase"
+                                      >
+                                        +{unit}
+                                      </button>
+                                    ))}
+                                  </div>
+                                  <div className="flex flex-wrap gap-1 items-center">
+                                    <span className="text-[8px] font-black text-[#78716C] uppercase tracking-wider mr-1">Dosagem:</span>
+                                    {['500 mg', '1000 mg', '1000 UI', '5000 UI', '10.000 UI', '50.000 UI'].map(dose => (
+                                      <button
+                                        key={dose}
+                                        type="button"
+                                        onClick={() => {
+                                          let currentName = editingMaterialName.newName.trim();
+                                          if (currentName) {
+                                            if (!currentName.endsWith(' ')) {
+                                              currentName += ' ';
+                                            }
+                                            currentName += dose;
+                                            setEditingMaterialName({ ...editingMaterialName, newName: currentName });
+                                          }
+                                        }}
+                                        className="px-1.5 py-0.5 bg-emerald-50 hover:bg-emerald-600 hover:text-white text-emerald-600 rounded text-[9px] font-bold transition-all uppercase"
+                                      >
+                                        +{dose}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
                               </div>
                             ) : (
                               <div className="flex flex-col">
@@ -7299,6 +7609,59 @@ export default function App() {
                               value={item.name}
                               onChange={e => updateBulkItem(item.id, 'name', e.target.value)}
                             />
+                            {/* Quick unit helpers for medications/vitamins/etc */}
+                            {(bulkEntry.category === 'Medicamentos' || 
+                              bulkEntry.category === 'Fisioterápicos' || 
+                              bulkEntry.category === 'Anestésico' || 
+                              bulkEntry.category === 'Médico Hospitalar' || 
+                              item.name.toLowerCase().includes('vit')) && (
+                              <div className="mt-1.5 flex flex-col gap-1 bg-[#FAFAF9] p-2 rounded-lg border border-[#E7E5E4] max-w-[280px]">
+                                <div className="flex flex-wrap gap-1 items-center">
+                                  <span className="text-[8px] font-black text-[#78716C] uppercase tracking-wider mr-1">Unidades:</span>
+                                  {['mg', 'mcg', 'UI', 'g', 'ml', '%'].map(unit => (
+                                    <button
+                                      key={unit}
+                                      type="button"
+                                      onClick={() => {
+                                        let currentName = item.name.trim();
+                                        if (currentName) {
+                                          if (!currentName.endsWith(' ')) {
+                                            currentName += ' ';
+                                          }
+                                          currentName += unit;
+                                          updateBulkItem(item.id, 'name', currentName);
+                                        }
+                                      }}
+                                      className="px-1.5 py-0.5 bg-stone-200 hover:bg-[#1C1917] hover:text-white text-stone-700 rounded text-[9px] font-bold transition-all uppercase"
+                                    >
+                                      +{unit}
+                                    </button>
+                                  ))}
+                                </div>
+                                <div className="flex flex-wrap gap-1 items-center">
+                                  <span className="text-[8px] font-black text-[#78716C] uppercase tracking-wider mr-1">Dosagem:</span>
+                                  {['500 mg', '1000 mg', '1000 UI', '5000 UI', '10.000 UI', '50.000 UI'].map(dose => (
+                                    <button
+                                      key={dose}
+                                      type="button"
+                                      onClick={() => {
+                                        let currentName = item.name.trim();
+                                        if (currentName) {
+                                          if (!currentName.endsWith(' ')) {
+                                            currentName += ' ';
+                                          }
+                                          currentName += dose;
+                                          updateBulkItem(item.id, 'name', currentName);
+                                        }
+                                      }}
+                                      className="px-1.5 py-0.5 bg-emerald-50 hover:bg-emerald-600 hover:text-white text-emerald-600 rounded text-[9px] font-bold transition-all uppercase"
+                                    >
+                                      +{dose}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
                           </td>
                           {bulkEntry.category === 'Medicamentos' && (
                             <td className="px-2 min-w-[110px]">
@@ -8628,29 +8991,54 @@ export default function App() {
             )}
 
             {showRequestDetailModal.request.status === 'ENTREGUE' && (
-              <button 
-                onClick={() => {
-                  const itemsForReceipt = allRequestItems
-                    .filter(ri => ri.request_id === showRequestDetailModal.request?.id)
-                    .map(i => ({
-                      product_name: i.product_name,
-                      quantity: i.quantity_approved || 0
-                    }));
-                  
-                  if (itemsForReceipt.length > 0 && showRequestDetailModal.request) {
-                    handleExportDeliveryReceiptPDF({
-                      sector: showRequestDetailModal.request.sector,
-                      items: itemsForReceipt,
-                      requestId: showRequestDetailModal.request.id,
-                      date: showRequestDetailModal.request.deliveredAt || showRequestDetailModal.request.date
-                    });
-                  }
-                }}
-                className="flex-[2] py-4 px-6 bg-emerald-600 text-white rounded-2xl text-sm font-black uppercase tracking-widest hover:bg-emerald-700 transition-all shadow-xl shadow-emerald-200 flex items-center justify-center gap-3"
-              >
-                <Printer size={18} />
-                Reimprimir Comprovante
-              </button>
+              <div className="flex flex-col sm:flex-row gap-4 w-full">
+                <button 
+                  onClick={() => {
+                    const itemsForReceipt = allRequestItems
+                      .filter(ri => ri.request_id === showRequestDetailModal.request?.id)
+                      .map(i => ({
+                        product_name: i.product_name,
+                        quantity: i.quantity_approved || 0
+                      }));
+                    
+                    if (itemsForReceipt.length > 0 && showRequestDetailModal.request) {
+                      handleExportDeliveryReceiptPDF({
+                        sector: showRequestDetailModal.request.sector,
+                        items: itemsForReceipt,
+                        requestId: showRequestDetailModal.request.id,
+                        date: showRequestDetailModal.request.deliveredAt || showRequestDetailModal.request.date
+                      });
+                    }
+                  }}
+                  className="flex-1 py-4 px-6 bg-emerald-600 text-white rounded-2xl text-sm font-black uppercase tracking-widest hover:bg-emerald-700 transition-all shadow-xl shadow-emerald-200 flex items-center justify-center gap-3"
+                >
+                  <Printer size={18} />
+                  Reimprimir Comprovante
+                </button>
+                {(isAdmin || userProfile?.sector === showRequestDetailModal.request.sector || showRequestDetailModal.request.requesterEmail === user?.email) && (
+                  <button 
+                    onClick={() => {
+                      const reqItems = allRequestItems.filter(ri => ri.request_id === showRequestDetailModal.request!.id);
+                      const initialDevData: Record<string, { quantity: number, selectedBatchId: string }> = {};
+                      reqItems.forEach(ri => {
+                        const productBatches = items.filter(item => !item.deletedAt && item.name === ri.product_name);
+                        initialDevData[ri.id] = {
+                          quantity: 0,
+                          selectedBatchId: productBatches[0]?.id || ''
+                        };
+                      });
+                      setDevolutionItemsData(initialDevData);
+                      setDevolutionReason('Não teve uso');
+                      setDevolutionObservation('');
+                      setShowDevolutionModal({ show: true, request: showRequestDetailModal.request });
+                    }}
+                    className="flex-1 py-4 px-6 bg-amber-600 text-white rounded-2xl text-sm font-black uppercase tracking-widest hover:bg-amber-700 transition-all shadow-xl shadow-amber-200 flex items-center justify-center gap-3"
+                  >
+                    <RotateCcw size={18} />
+                    Devolver Materiais
+                  </button>
+                )}
+              </div>
             )}
 
             {isAdmin && showRequestDetailModal.request.status !== 'ENTREGUE' && (
@@ -8822,7 +9210,7 @@ export default function App() {
                           onClick={() => handleApproveAndDeliverNewRequest(showRequestDetailModal.request!.id, allRequestItems.filter(ri => ri.request_id === showRequestDetailModal.request?.id))}
                           className="flex-1 py-3 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 transition-all shadow-md flex items-center justify-center gap-2"
                         >
-                          <CheckCircle size={18} /> Aprovar e Entregar
+                          <CheckCircle size={18} /> Dar Baixa no Estoque
                         </button>
                       ) : (
                         <button 
@@ -8870,6 +9258,174 @@ export default function App() {
                 </button>
               </div>
             )}
+          </motion.div>
+        </div>
+      )}
+
+      {showDevolutionModal.show && showDevolutionModal.request && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-white rounded-[32px] border border-[#E7E5E4] shadow-2xl w-full max-w-3xl p-8 relative max-h-[90vh] overflow-y-auto"
+          >
+            <button 
+              onClick={() => setShowDevolutionModal({ show: false })}
+              className="absolute right-6 top-6 p-2 rounded-full hover:bg-[#FAFAF9] transition-colors text-[#A8A29E] hover:text-[#1C1917]"
+            >
+              <X size={20} />
+            </button>
+
+            <div className="flex items-center gap-3 mb-6">
+              <div className="bg-amber-100 p-3 rounded-2xl text-amber-700">
+                <RotateCcw size={24} />
+              </div>
+              <div>
+                <h3 className="text-xl font-black text-[#1C1917]">Devolução de Materiais</h3>
+                <p className="text-[#78716C] text-sm font-medium">Solicitação #{showDevolutionModal.request.id.slice(-5).toUpperCase()} - {showDevolutionModal.request.sector}</p>
+              </div>
+            </div>
+
+            <div className="bg-amber-50 border border-amber-100 p-4 rounded-2xl mb-6 text-amber-900 text-xs font-medium space-y-1">
+              <p className="font-bold uppercase tracking-wider text-amber-700">Atenção</p>
+              <p>A devolução de materiais irá retornar as quantidades informadas diretamente para os lotes correspondentes e subtrairá do consumo dos relatórios.</p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+              <div>
+                <label className="block text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Motivo da Devolução</label>
+                <select 
+                  value={devolutionReason}
+                  onChange={(e) => setDevolutionReason(e.target.value)}
+                  className="w-full p-4 bg-[#FAFAF9] border border-[#E7E5E4] rounded-2xl text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold"
+                >
+                  <option value="Não teve uso">Não teve uso</option>
+                  <option value="Validade próxima">Validade próxima</option>
+                  <option value="Material danificado">Material danificado</option>
+                  <option value="Erro na solicitação">Erro na solicitação</option>
+                  <option value="Outros">Outros</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Observações / Detalhes</label>
+                <textarea 
+                  value={devolutionObservation}
+                  onChange={(e) => setDevolutionObservation(e.target.value)}
+                  placeholder="Descreva detalhes sobre a devolução..."
+                  className="w-full p-4 bg-[#FAFAF9] border border-[#E7E5E4] rounded-2xl text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all font-medium h-[52px] resize-none"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-4 mb-8">
+              <h4 className="font-bold text-[#1C1917] flex items-center gap-2">
+                <Package size={18} /> Selecione os Itens e Lotes para Devolver
+              </h4>
+              <div className="bg-white rounded-2xl border border-[#E7E5E4] overflow-hidden">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
+                      <th className="px-4 py-3 font-bold text-xs text-[#78716C]">Item</th>
+                      <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Entregue</th>
+                      <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Devolvido</th>
+                      <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center w-36">Lote de Origem</th>
+                      <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center w-32">Qtd a Devolver</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#E7E5E4]">
+                    {allRequestItems
+                      .filter(ri => ri.request_id === showDevolutionModal.request?.id)
+                      .map(item => {
+                        const maxQty = item.quantity_approved - (item.quantity_returned || 0);
+                        const productBatches = items.filter(i => !i.deletedAt && i.name === item.product_name);
+                        const selectedData = devolutionItemsData[item.id] || { quantity: 0, selectedBatchId: '' };
+
+                        return (
+                          <tr key={item.id} className="hover:bg-slate-50 transition-colors">
+                            <td className="px-4 py-3 text-sm font-bold text-[#1C1917]">{item.product_name}</td>
+                            <td className="px-4 py-3 text-sm font-bold text-center text-[#78716C] bg-slate-50/50">{item.quantity_approved}</td>
+                            <td className="px-4 py-3 text-sm font-bold text-center text-amber-600 bg-amber-50/20">{item.quantity_returned || 0}</td>
+                            <td className="px-4 py-3">
+                              {productBatches.length > 0 ? (
+                                <select 
+                                  value={selectedData.selectedBatchId}
+                                  onChange={(e) => {
+                                    setDevolutionItemsData({
+                                      ...devolutionItemsData,
+                                      [item.id]: {
+                                        ...selectedData,
+                                        selectedBatchId: e.target.value
+                                      }
+                                    });
+                                  }}
+                                  disabled={maxQty <= 0}
+                                  className="w-full px-2 py-1 bg-[#FAFAF9] border border-[#E7E5E4] rounded-lg text-xs font-bold outline-none focus:ring-1 focus:ring-blue-500"
+                                >
+                                  {productBatches.map(b => (
+                                    <option key={b.id} value={b.id}>
+                                      Lote: {b.batch_number || 'S/N'} {b.expiry_date !== 'Indeterminada' ? `(${new Date(b.expiry_date).toLocaleDateString('pt-BR')})` : ''}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <span className="text-[10px] text-rose-500 font-bold block text-center">Nenhum lote ativo no estoque</span>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-center">
+                              <input 
+                                type="number" 
+                                min="0"
+                                max={maxQty}
+                                value={selectedData.quantity}
+                                onChange={(e) => {
+                                  const val = Math.min(maxQty, Math.max(0, parseInt(e.target.value) || 0));
+                                  setDevolutionItemsData({
+                                    ...devolutionItemsData,
+                                    [item.id]: {
+                                      ...selectedData,
+                                      quantity: val
+                                    }
+                                  });
+                                }}
+                                disabled={maxQty <= 0 || productBatches.length === 0}
+                                className={`w-20 px-3 py-1.5 border-2 rounded-xl text-center font-black text-sm transition-all outline-none ${
+                                  selectedData.quantity > 0 
+                                    ? 'bg-amber-50 border-amber-300 text-amber-700 focus:border-amber-500' 
+                                    : 'bg-white border-[#E7E5E4] text-[#1C1917] focus:border-blue-500'
+                                }`}
+                              />
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="flex gap-4">
+              <button 
+                onClick={() => setShowDevolutionModal({ show: false })}
+                className="flex-1 py-4 bg-[#FAFAF9] hover:bg-[#F5F5F4] text-[#78716C] rounded-2xl font-black text-sm uppercase tracking-widest transition-all border border-[#E7E5E4]"
+              >
+                Cancelar
+              </button>
+              <button 
+                onClick={handleExecuteDevolution}
+                disabled={isProcessingDevolution}
+                className="flex-1 py-4 bg-amber-600 hover:bg-amber-700 text-white rounded-2xl font-black text-sm uppercase tracking-widest transition-all shadow-xl shadow-amber-200 flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                {isProcessingDevolution ? (
+                  <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+                ) : (
+                  <>
+                    <RotateCcw size={18} />
+                    Confirmar Devolução
+                  </>
+                )}
+              </button>
+            </div>
           </motion.div>
         </div>
       )}

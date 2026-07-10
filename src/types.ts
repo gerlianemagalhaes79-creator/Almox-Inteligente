@@ -28,6 +28,7 @@ export interface RequestItem {
   product_name: string;
   quantity_requested: number;
   quantity_approved: number;
+  quantity_returned?: number;
 }
 
 export interface Notification {
@@ -88,4 +89,7 @@ export interface Transaction {
   donationNumber?: string;
   batch_number?: string;
   expiry_date?: string;
+  isReturn?: boolean;
+  returnReason?: string;
+  observation?: string;
 }
