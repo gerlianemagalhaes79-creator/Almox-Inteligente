@@ -11,7 +11,7 @@ export interface MaterialRequest {
   id: string;
   sector: string;
   date: string;
-  status: 'PENDENTE' | 'APROVADO' | 'SEPARADO' | 'ENTREGUE' | 'RECUSADO' | 'EM_SEPARACAO';
+  status: 'PENDENTE' | 'APROVADO' | 'SEPARADO' | 'ENTREGUE' | 'RECUSADO' | 'EM_SEPARACAO' | 'DEVOLUCAO_PENDENTE' | 'DEVOLUCAO_APROVADA' | 'DEVOLUCAO_RECUSADA';
   observation?: string;
   adminObservation?: string;
   requesterEmail: string;
@@ -19,6 +19,9 @@ export interface MaterialRequest {
   deletedAt?: string;
   deletedBy?: string;
   isNewFlow?: boolean;
+  isReturn?: boolean;
+  returnReason?: string;
+  originalRequestId?: string;
 }
 
 export interface RequestItem {
@@ -29,6 +32,7 @@ export interface RequestItem {
   quantity_requested: number;
   quantity_approved: number;
   quantity_returned?: number;
+  batch_id?: string;
 }
 
 export interface Notification {

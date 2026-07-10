@@ -308,7 +308,7 @@ export default function App() {
   const [donationRevisionDate, setDonationRevisionDate] = useState('');
   const [letterheadImage, setLetterheadImage] = useState<string | null>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'inventory' | 'history' | 'requests' | 'reports' | 'my-requests' | 'new-request' | 'users' | 'trash' | 'leader-stats'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'inventory' | 'history' | 'requests' | 'reports' | 'my-requests' | 'new-request' | 'devolution' | 'users' | 'trash' | 'leader-stats'>('dashboard');
   const leaderStatistics = useMemo(() => {
     if (userProfile?.role !== 'LÍDER' && userProfile?.role !== 'SETOR') return { topRequested: [], topDelivered: [] };
 
@@ -2117,7 +2117,7 @@ export default function App() {
     }
   };
 
-  const handleExecuteDevolution = async () => {
+  const handleRequestDevolution = async () => {
     if (!showDevolutionModal.request) return;
     const request = showDevolutionModal.request;
     
@@ -2126,6 +2126,8 @@ export default function App() {
     
     // Check if at least one item has return quantity > 0
     let totalReturning = 0;
+    const itemsToSubmit: Array<{ reqItem: RequestItem, quantity: number, selectedBatchId: string }> = [];
+
     for (const reqItem of reqItems) {
       const devData = devolutionItemsData[reqItem.id];
       const returnQty = devData?.quantity || 0;
@@ -2144,6 +2146,11 @@ export default function App() {
           return;
         }
         totalReturning += returnQty;
+        itemsToSubmit.push({
+          reqItem,
+          quantity: returnQty,
+          selectedBatchId: devData.selectedBatchId
+        });
       }
     }
 
@@ -2154,82 +2161,155 @@ export default function App() {
 
     try {
       setIsProcessingDevolution(true);
-      showToast("Processando devolução de materiais...", "info");
+      showToast("Enviando solicitação de devolução...", "info");
+
+      const batch = writeBatch(db);
+      const newReqRef = doc(collection(db, 'requests'));
+      
+      const requestData = {
+        sector: request.sector,
+        date: new Date().toISOString(),
+        status: 'DEVOLUCAO_PENDENTE',
+        isReturn: true,
+        originalRequestId: request.id,
+        returnReason: devolutionReason,
+        observation: devolutionObservation || '',
+        requesterEmail: user?.email || '',
+        requesterName: userProfile?.name || user?.displayName || user?.email || 'Usuário',
+        isNewFlow: true,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      };
+
+      batch.set(newReqRef, requestData);
+
+      itemsToSubmit.forEach(({ reqItem, quantity, selectedBatchId }) => {
+        const itemRef = doc(collection(db, 'request_items'));
+        batch.set(itemRef, {
+          request_id: newReqRef.id,
+          product_id: reqItem.product_id,
+          product_name: reqItem.product_name,
+          quantity_requested: quantity,
+          quantity_approved: quantity,
+          batch_id: selectedBatchId
+        });
+      });
+
+      // Notify administrators
+      const adminSnap = await getDocs(query(collection(db, 'users'), where('role', '==', 'ADMIN')));
+      adminSnap.forEach(adminDoc => {
+        const notifRef = doc(collection(db, 'notifications'));
+        batch.set(notifRef, {
+          userId: adminDoc.id,
+          title: 'Solicitação de Devolução',
+          message: `Setor ${request.sector} solicitou devolução de materiais.`,
+          date: new Date().toISOString(),
+          read: false,
+          requestId: newReqRef.id,
+          type: 'REQUEST'
+        });
+      });
+
+      await batch.commit();
+
+      showToast("Solicitação de devolução enviada para o almoxarifado!", "success");
+      setShowDevolutionModal({ show: false });
+      
+      if (showRequestDetailModal.show && showRequestDetailModal.request?.id === request.id) {
+        setShowRequestDetailModal({ show: false });
+      }
+
+    } catch (error: any) {
+      console.error("Erro ao solicitar devolução:", error);
+      showToast(`Erro ao solicitar devolução: ${error.message}`, "error");
+    } finally {
+      setIsProcessingDevolution(false);
+    }
+  };
+
+  const handleApproveDevolution = async (requestId: string, devItems: RequestItem[]) => {
+    try {
+      setIsProcessingDevolution(true);
+      showToast("Aprovando devolução e retornando ao estoque...", "info");
 
       await runTransaction(db, async (transaction) => {
-        // Collect all target items (batches) to read them first
+        // Fetch the devolution request first
+        const requestSnap = await transaction.get(doc(db, 'requests', requestId));
+        const requestData = requestSnap.data() as MaterialRequest | undefined;
+        if (!requestData) throw new Error("Solicitação de devolução não encontrada.");
+
+        // Read all target batch items
         const batchRefsToFetch: any[] = [];
         const pharmRefsToFetch: any[] = [];
 
-        for (const reqItem of reqItems) {
-          const devData = devolutionItemsData[reqItem.id];
-          const returnQty = devData?.quantity || 0;
-          if (returnQty <= 0) continue;
+        for (const item of devItems) {
+          let batchId = item.batch_id;
+          if (!batchId) {
+            const fb = items.find(i => !i.deletedAt && i.name === item.product_name);
+            if (fb) {
+              batchId = fb.id;
+              item.batch_id = fb.id;
+            }
+          }
 
-          // Almoxarifado batch ref
-          const batchRef = doc(db, 'items', devData.selectedBatchId);
-          batchRefsToFetch.push(batchRef);
+          if (batchId) {
+            const batchRef = doc(db, 'items', batchId);
+            batchRefsToFetch.push(batchRef);
 
-          // If the sector is Farmácia, we also need to fetch and decrease the Farmácia stock of this batch
-          if (request.sector === 'Farmácia') {
-            const batchObj = items.find(i => i.id === devData.selectedBatchId);
-            if (batchObj) {
-              const pharmItem = items.find(i => 
-                !i.deletedAt && 
-                i.name === reqItem.product_name && 
-                i.location === 'Farmácia' && 
-                i.batch_number === batchObj.batch_number
-              );
-              if (pharmItem) {
-                pharmRefsToFetch.push({ ref: doc(db, 'items', pharmItem.id), reqItemId: reqItem.id });
+            // Decrement Farmácia if returning from Farmácia sector
+            if (requestData.sector === 'Farmácia') {
+              const batchObj = items.find(i => i.id === batchId);
+              if (batchObj) {
+                const pharmItem = items.find(i => 
+                  !i.deletedAt && 
+                  i.name === item.product_name && 
+                  i.location === 'Farmácia' && 
+                  i.batch_number === batchObj.batch_number
+                );
+                if (pharmItem) {
+                  pharmRefsToFetch.push({ ref: doc(db, 'items', pharmItem.id), devItemId: item.id });
+                }
               }
             }
           }
         }
 
-        // 1. Perform ALL reads first (required by Firestore transactions)
-        const [requestSnap, ...fetchedSnaps] = await Promise.all([
-          transaction.get(doc(db, 'requests', request.id)),
+        // Perform ALL reads
+        const fetchedSnaps = await Promise.all([
           ...batchRefsToFetch.map(ref => transaction.get(ref)),
           ...pharmRefsToFetch.map(p => transaction.get(p.ref))
         ]);
 
-        const requestData = requestSnap.data() as MaterialRequest | undefined;
-        if (!requestData) throw new Error("Solicitação não encontrada.");
-
-        // Map snapshots for easy lookup
         const snapMap = new Map();
         fetchedSnaps.forEach(snap => snapMap.set(snap.ref.path, snap));
 
-        // 2. Perform ALL writes
-        // Update each item and create transaction logs
-        for (const reqItem of reqItems) {
-          const devData = devolutionItemsData[reqItem.id];
-          const returnQty = devData?.quantity || 0;
+        // Perform ALL writes
+        for (const item of devItems) {
+          const returnQty = item.quantity_approved || item.quantity_requested || 0;
           if (returnQty <= 0) continue;
 
-          const batchRef = doc(db, 'items', devData.selectedBatchId);
+          const batchId = item.batch_id;
+          if (!batchId) continue;
+
+          const batchRef = doc(db, 'items', batchId);
           const batchSnap = snapMap.get(batchRef.path);
           if (!batchSnap || !batchSnap.exists()) {
-            throw new Error(`Item de estoque de origem não encontrado.`);
+            throw new Error(`Lote de destino para o item ${item.product_name} não encontrado.`);
           }
 
           const batchData = batchSnap.data() as Item;
           const currentAlmoxQty = batchData.quantity || 0;
 
-          // If sector is Farmácia, we must decrease the Farmácia stock
-          if (request.sector === 'Farmácia') {
-            const pharmItemInfo = pharmRefsToFetch.find(p => p.reqItemId === reqItem.id);
+          // If sector is Farmácia, decrease Farmácia stock
+          if (requestData.sector === 'Farmácia') {
+            const pharmItemInfo = pharmRefsToFetch.find(p => p.devItemId === item.id);
             if (pharmItemInfo) {
               const pharmSnap = snapMap.get(pharmItemInfo.ref.path);
               if (pharmSnap && pharmSnap.exists()) {
                 const pharmData = pharmSnap.data() as Item;
                 const currentPharmQty = pharmData.quantity || 0;
-                if (currentPharmQty < returnQty) {
-                  throw new Error(`Estoque insuficiente na Farmácia para devolver ${reqItem.product_name} (Possui: ${currentPharmQty}, Devolvendo: ${returnQty})`);
-                }
                 transaction.update(pharmItemInfo.ref, {
-                  quantity: currentPharmQty - returnQty,
+                  quantity: Math.max(0, currentPharmQty - returnQty),
                   updatedAt: serverTimestamp()
                 });
               }
@@ -2242,46 +2322,115 @@ export default function App() {
             updatedAt: serverTimestamp()
           });
 
-          // Update RequestItem
-          const reqItemRef = doc(db, 'request_items', reqItem.id);
-          const currentReturned = reqItem.quantity_returned || 0;
-          transaction.update(reqItemRef, {
-            quantity_returned: currentReturned + returnQty
-          });
-
-          // Create Entry/Devolution Transaction Log
+          // Create entry transaction log
           const transRef = doc(collection(db, 'transactions'));
           transaction.set(transRef, {
-            item_id: devData.selectedBatchId,
-            item_name: reqItem.product_name,
+            item_id: batchId,
+            item_name: item.product_name,
             type: 'entry',
             origin: batchData.origin || 'extra',
             quantity: returnQty,
-            sector: request.sector,
+            sector: requestData.sector,
             location: batchData.location || 'Almoxarifado',
             date: new Date().toISOString(),
-            responsible: userProfile?.name || user?.displayName || user?.email,
+            responsible: userProfile?.name || user?.displayName || user?.email || 'Administrador',
             responsibleEmail: user?.email,
             batch_number: batchData.batch_number,
             expiry_date: batchData.expiry_date,
             isReturn: true,
-            returnReason: devolutionReason,
-            observation: devolutionObservation
+            returnReason: requestData.returnReason || 'Não especificado',
+            observation: requestData.observation || ''
           });
         }
+
+        // Update main request status
+        transaction.update(doc(db, 'requests', requestId), {
+          status: 'DEVOLUCAO_APROVADA',
+          adminObservation: adminObservation || '',
+          updatedAt: serverTimestamp()
+        });
       });
 
-      showToast("Devolução realizada com sucesso!", "success");
-      setShowDevolutionModal({ show: false });
-      
-      // Also update showRequestDetailModal if it's open, so quantities refresh
-      if (showRequestDetailModal.show && showRequestDetailModal.request?.id === request.id) {
-        setShowRequestDetailModal({ show: false });
+      // Post-transaction updates:
+      const requestSnap = await getDoc(doc(db, 'requests', requestId));
+      const requestData = requestSnap.data() as MaterialRequest | undefined;
+      if (requestData && requestData.originalRequestId) {
+        const origItemsSnap = await getDocs(query(collection(db, 'request_items'), where('request_id', '==', requestData.originalRequestId)));
+        const batch = writeBatch(db);
+        origItemsSnap.docs.forEach(d => {
+          const origItem = d.data() as RequestItem;
+          const matchedDevItem = devItems.find(di => di.product_name === origItem.product_name);
+          if (matchedDevItem) {
+            const returnQty = matchedDevItem.quantity_approved || matchedDevItem.quantity_requested || 0;
+            const currentReturned = origItem.quantity_returned || 0;
+            batch.update(d.ref, {
+              quantity_returned: currentReturned + returnQty
+            });
+          }
+        });
+        await batch.commit();
       }
 
+      // Notify the requester
+      if (requestData && requestData.requesterEmail) {
+        const userSnap = await getDocs(query(collection(db, 'users'), where('email', '==', requestData.requesterEmail)));
+        if (!userSnap.empty) {
+          await addDoc(collection(db, 'notifications'), {
+            userId: userSnap.docs[0].id,
+            title: 'Devolução Aprovada',
+            message: `Sua solicitação de devolução para o setor ${requestData.sector} foi aprovada. Os materiais retornaram ao estoque.`,
+            date: new Date().toISOString(),
+            read: false,
+            requestId: requestId,
+            type: 'REQUEST'
+          });
+        }
+      }
+
+      showToast("Devolução aprovada e estoque atualizado!", "success");
+      setShowRequestDetailModal({ show: false });
     } catch (error: any) {
-      console.error("Erro ao processar devolução:", error);
-      showToast(`Erro ao processar devolução: ${error.message}`, "error");
+      console.error("Erro ao aprovar devolução:", error);
+      showToast(`Erro ao aprovar devolução: ${error.message}`, "error");
+    } finally {
+      setIsProcessingDevolution(false);
+    }
+  };
+
+  const handleRejectDevolution = async (requestId: string) => {
+    try {
+      setIsProcessingDevolution(true);
+      showToast("Recusando devolução...", "info");
+
+      await updateDoc(doc(db, 'requests', requestId), {
+        status: 'DEVOLUCAO_RECUSADA',
+        adminObservation: adminObservation || '',
+        updatedAt: serverTimestamp()
+      });
+
+      // Notify requester
+      const requestSnap = await getDoc(doc(db, 'requests', requestId));
+      const requestData = requestSnap.data() as MaterialRequest | undefined;
+      if (requestData && requestData.requesterEmail) {
+        const userSnap = await getDocs(query(collection(db, 'users'), where('email', '==', requestData.requesterEmail)));
+        if (!userSnap.empty) {
+          await addDoc(collection(db, 'notifications'), {
+            userId: userSnap.docs[0].id,
+            title: 'Devolução Recusada',
+            message: `Sua solicitação de devolução para o setor ${requestData.sector} foi recusada pelo almoxarifado.`,
+            date: new Date().toISOString(),
+            read: false,
+            requestId: requestId,
+            type: 'REQUEST'
+          });
+        }
+      }
+
+      showToast("Devolução recusada com sucesso.", "success");
+      setShowRequestDetailModal({ show: false });
+    } catch (error: any) {
+      console.error("Erro ao recusar devolução:", error);
+      showToast(`Erro ao recusar devolução: ${error.message}`, "error");
     } finally {
       setIsProcessingDevolution(false);
     }
@@ -4828,6 +4977,12 @@ export default function App() {
                     <Plus size={20} /> Nova Solicitação
                   </button>
                   <button 
+                    onClick={() => { setActiveTab('devolution'); setIsMobileMenuOpen(false); }}
+                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'devolution' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                  >
+                    <RotateCcw size={20} /> Devolução de Materiais
+                  </button>
+                  <button 
                     onClick={() => { setActiveTab('my-requests'); setIsMobileMenuOpen(false); }}
                     className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'my-requests' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
                   >
@@ -4900,6 +5055,7 @@ export default function App() {
               {activeTab === 'trash' && 'Lixeira (Exclusão em 3 dias)'}
               {activeTab === 'my-requests' && `Minhas Solicitações - ${selectedSector || ''}`}
               {activeTab === 'new-request' && `Nova Solicitação - ${selectedSector || ''}`}
+              {activeTab === 'devolution' && `Devolução de Materiais - ${selectedSector || ''}`}
               {editingRequest && ' - Editando Solicitação'}
               {activeTab === 'reports' && 'Relatórios e Análises'}
               {activeTab === 'leader-stats' && 'Estatísticas do Almoxarifado'}
@@ -7462,6 +7618,113 @@ export default function App() {
               </div>
             </motion.div>
           )}
+
+          {activeTab === 'devolution' && (
+            <motion.div 
+              key="devolution"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="max-w-4xl mx-auto space-y-6"
+            >
+              <div className="bg-amber-50 border border-amber-200 rounded-3xl p-6 text-amber-900 flex items-start gap-4 shadow-sm">
+                <RotateCcw size={24} className="text-amber-600 shrink-0 mt-1" />
+                <div>
+                  <h3 className="font-black text-lg mb-1">Como funciona a Devolução de Materiais?</h3>
+                  <p className="text-sm opacity-90">
+                    Selecione abaixo uma das solicitações já entregues ao seu setor. Você poderá especificar quais itens deseja devolver ao almoxarifado, as quantidades exatas e o motivo da devolução (por exemplo: "não uso" ou "material vencido"). A devolução passará pela conferência e aprovação dos administradores.
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-white rounded-3xl border border-[#E7E5E4] shadow-sm overflow-hidden">
+                <div className="p-6 border-b border-[#E7E5E4]">
+                  <h3 className="text-xl font-black">Solicitações Disponíveis para Devolução</h3>
+                  <p className="text-sm text-[#78716C]">Mostrando solicitações com status "ENTREGUE" pertencentes ao seu setor.</p>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-[#FAFAF9] border-b border-[#E7E5E4]">
+                        <th className="px-6 py-4 font-bold text-xs text-[#78716C] uppercase tracking-wider">Nº / Data Entrega</th>
+                        <th className="px-6 py-4 font-bold text-xs text-[#78716C] uppercase tracking-wider">Itens Entregues</th>
+                        <th className="px-6 py-4 font-bold text-xs text-[#78716C] uppercase tracking-wider text-right">Ações</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#E7E5E4]">
+                      {requests
+                        .filter(r => r.sector === selectedSector && r.status === 'ENTREGUE' && !r.deletedAt)
+                        .map(req => {
+                          const reqItems = allRequestItems.filter(ri => ri.request_id === req.id);
+                          return (
+                            <tr key={req.id} className="hover:bg-[#FAFAF9] transition-all">
+                              <td className="px-6 py-4">
+                                <p className="font-bold text-sm">#{req.id.slice(-5).toUpperCase()}</p>
+                                <p className="text-xs text-[#A8A29E]">
+                                  {req.deliveredAt 
+                                    ? `Entregue em: ${new Date(req.deliveredAt).toLocaleDateString('pt-BR')}` 
+                                    : `Criada em: ${new Date(req.date).toLocaleDateString('pt-BR')}`}
+                                </p>
+                              </td>
+                              <td className="px-6 py-4">
+                                <div className="flex flex-wrap gap-1">
+                                  {reqItems.map(item => {
+                                    const alreadyReturned = item.quantity_returned || 0;
+                                    const remaining = item.quantity_approved - alreadyReturned;
+                                    return (
+                                      <span 
+                                        key={item.id} 
+                                        className={`text-[10px] font-bold px-2.5 py-1 rounded-lg ${
+                                          remaining <= 0 
+                                            ? 'bg-gray-100 text-gray-400 line-through' 
+                                            : 'bg-stone-100 text-stone-700'
+                                        }`}
+                                      >
+                                        {item.product_name} ({remaining}/{item.quantity_approved})
+                                      </span>
+                                    );
+                                  })}
+                                </div>
+                              </td>
+                              <td className="px-6 py-4 text-right">
+                                <button 
+                                  onClick={() => {
+                                    const initialDevData: Record<string, { quantity: number, selectedBatchId: string }> = {};
+                                    reqItems.forEach(ri => {
+                                      const productBatches = items.filter(item => !item.deletedAt && item.name === ri.product_name);
+                                      initialDevData[ri.id] = {
+                                        quantity: 0,
+                                        selectedBatchId: productBatches[0]?.id || ''
+                                      };
+                                    });
+                                    setDevolutionItemsData(initialDevData);
+                                    setDevolutionReason('Não teve uso');
+                                    setDevolutionObservation('');
+                                    setShowDevolutionModal({ show: true, request: req });
+                                  }}
+                                  className="bg-amber-600 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-amber-700 transition-all shadow-md shadow-amber-100 whitespace-nowrap"
+                                >
+                                  Devolver Materiais
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+
+                {requests.filter(r => r.sector === selectedSector && r.status === 'ENTREGUE' && !r.deletedAt).length === 0 && (
+                  <div className="p-16 text-center text-[#78716C]">
+                    <RotateCcw className="mx-auto text-[#E7E5E4] mb-4" size={48} />
+                    <p className="font-bold mb-1">Nenhuma entrega elegível encontrada.</p>
+                    <p className="text-xs">Você precisa ter solicitações com status "ENTREGUE" para poder solicitar devoluções.</p>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          )}
         </AnimatePresence>
       </main>
 
@@ -8929,7 +9192,7 @@ export default function App() {
           >
             <div className="flex justify-between items-center mb-6">
               <div>
-                <h3 className="text-2xl font-black text-[#1C1917]">Detalhes da Solicitação</h3>
+                <h3 className="text-2xl font-black text-[#1C1917]">{showRequestDetailModal.request.isReturn ? 'Detalhes da Devolução' : 'Detalhes da Solicitação'}</h3>
                 <p className="text-sm text-[#78716C] font-bold">#{showRequestDetailModal.request.id.slice(-5).toUpperCase()} - {new Date(showRequestDetailModal.request.date).toLocaleDateString('pt-BR')}</p>
               </div>
               <button 
@@ -8954,16 +9217,32 @@ export default function App() {
                   showRequestDetailModal.request.status === 'APROVADO' ? 'bg-blue-100 text-blue-600' :
                   showRequestDetailModal.request.status === 'ENTREGUE' ? 'bg-emerald-100 text-emerald-600' :
                   showRequestDetailModal.request.status === 'RECUSADO' ? 'bg-rose-100 text-rose-600' :
+                  showRequestDetailModal.request.status === 'DEVOLUCAO_PENDENTE' ? 'bg-amber-100 text-amber-700 border border-amber-200' :
+                  showRequestDetailModal.request.status === 'DEVOLUCAO_APROVADA' ? 'bg-emerald-100 text-emerald-700' :
+                  showRequestDetailModal.request.status === 'DEVOLUCAO_RECUSADA' ? 'bg-rose-100 text-rose-700' :
                   'bg-gray-100 text-gray-600'
                 }`}>
-                  {showRequestDetailModal.request.status === 'EM_SEPARACAO' ? 'EM SEPARAÇÃO' : showRequestDetailModal.request.status}
+                  {showRequestDetailModal.request.status === 'EM_SEPARACAO' ? 'EM SEPARAÇÃO' : 
+                   showRequestDetailModal.request.status === 'DEVOLUCAO_PENDENTE' ? 'DEVOLUÇÃO PENDENTE' :
+                   showRequestDetailModal.request.status === 'DEVOLUCAO_APROVADA' ? 'DEVOLUÇÃO APROVADA' :
+                   showRequestDetailModal.request.status === 'DEVOLUCAO_RECUSADA' ? 'DEVOLUÇÃO RECUSADA' :
+                   showRequestDetailModal.request.status}
                 </span>
               </div>
             </div>
 
+            {showRequestDetailModal.request.isReturn && showRequestDetailModal.request.returnReason && (
+              <div className="mb-4 p-4 bg-amber-50 rounded-2xl border border-amber-100">
+                <p className="text-[10px] font-bold text-amber-600 uppercase tracking-widest mb-1">Motivo da Devolução</p>
+                <p className="text-sm font-black text-amber-900">{showRequestDetailModal.request.returnReason}</p>
+              </div>
+            )}
+
             {showRequestDetailModal.request.observation && (
               <div className="mb-4 p-4 bg-amber-50 rounded-2xl border border-amber-100">
-                <p className="text-[10px] font-bold text-amber-600 uppercase tracking-widest mb-1">Observação do Solicitante</p>
+                <p className="text-[10px] font-bold text-amber-600 uppercase tracking-widest mb-1">
+                  {showRequestDetailModal.request.isReturn ? 'Observação da Devolução' : 'Observação do Solicitante'}
+                </p>
                 <p className="text-sm text-amber-800 italic">"{showRequestDetailModal.request.observation}"</p>
               </div>
             )}
@@ -9127,16 +9406,17 @@ export default function App() {
 
             <div className="space-y-4 mb-8">
               <h4 className="font-bold text-[#1C1917] flex items-center gap-2">
-                <Package size={18} /> Itens Solicitados
+                <Package size={18} /> {showRequestDetailModal.request.isReturn ? 'Itens a Devolver' : 'Itens Solicitados'}
               </h4>
               <div className="bg-white rounded-2xl border border-[#E7E5E4] overflow-hidden">
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
                       <th className="px-4 py-3 font-bold text-xs text-[#78716C]">Item</th>
-                      <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Qtd. Solicitada</th>
-                      {isAdmin && <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Saldo em Estoque</th>}
-                      <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Qtd. Liberada</th>
+                      <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">{showRequestDetailModal.request.isReturn ? 'Qtd. Devolvida' : 'Qtd. Solicitada'}</th>
+                      {!showRequestDetailModal.request.isReturn && isAdmin && <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Saldo em Estoque</th>}
+                      {!showRequestDetailModal.request.isReturn && <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Qtd. Liberada</th>}
+                      {showRequestDetailModal.request.isReturn && <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Lote de Destino</th>}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#E7E5E4]">
@@ -9145,12 +9425,16 @@ export default function App() {
                       const totalStock = items
                         .filter(i => !i.deletedAt && i.name === item.product_name)
                         .reduce((sum, i) => sum + i.quantity, 0);
+
+                      const matchedBatch = items.find(i => i.id === item.batch_id);
                         
                       return (
                         <tr key={item.id} className="hover:bg-slate-50 transition-colors">
                           <td className="px-4 py-3 text-sm font-bold text-[#1C1917]">{item.product_name}</td>
-                          <td className="px-4 py-3 text-sm font-bold text-center text-[#78716C] bg-slate-50/50">{item.quantity_requested}</td>
-                          {isAdmin && (
+                          <td className="px-4 py-3 text-sm font-bold text-center text-[#78716C] bg-slate-50/50">
+                            {showRequestDetailModal.request.isReturn ? item.quantity_approved : item.quantity_requested}
+                          </td>
+                          {!showRequestDetailModal.request.isReturn && isAdmin && (
                             <td className="px-4 py-3 text-center">
                               <div className="flex flex-col items-center">
                                 <span className={`text-sm font-black ${totalStock <= 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
@@ -9162,28 +9446,35 @@ export default function App() {
                               </div>
                             </td>
                           )}
-                          <td className="px-4 py-3 text-center">
-                            {isAdmin && (showRequestDetailModal.request?.status === 'PENDENTE' || showRequestDetailModal.request?.status === 'EM_SEPARACAO') ? (
-                              <div className="flex justify-center">
-                                <input 
-                                  type="number" 
-                                  min="0"
-                                  value={item.quantity_approved}
-                                  onChange={(e) => {
-                                    const val = parseInt(e.target.value) || 0;
-                                    setAllRequestItems(allRequestItems.map(ri => ri.id === item.id ? { ...ri, quantity_approved: val } : ri));
-                                  }}
-                                  className={`w-20 px-3 py-2 border-2 rounded-xl text-center font-black text-sm transition-all outline-none ${
-                                    item.quantity_approved > totalStock 
-                                      ? 'bg-rose-50 border-rose-200 text-rose-700 focus:border-rose-500' 
-                                      : 'bg-white border-blue-100 text-blue-700 focus:border-blue-500'
-                                  }`}
-                                />
-                              </div>
-                            ) : (
-                              <span className="text-sm font-black text-[#1C1917]">{item.quantity_approved}</span>
-                            )}
-                          </td>
+                          {!showRequestDetailModal.request.isReturn && (
+                            <td className="px-4 py-3 text-center">
+                              {isAdmin && (showRequestDetailModal.request?.status === 'PENDENTE' || showRequestDetailModal.request?.status === 'EM_SEPARACAO') ? (
+                                <div className="flex justify-center">
+                                  <input 
+                                    type="number" 
+                                    min="0"
+                                    value={item.quantity_approved}
+                                    onChange={(e) => {
+                                      const val = parseInt(e.target.value) || 0;
+                                      setAllRequestItems(allRequestItems.map(ri => ri.id === item.id ? { ...ri, quantity_approved: val } : ri));
+                                    }}
+                                    className={`w-20 px-3 py-2 border-2 rounded-xl text-center font-black text-sm transition-all outline-none ${
+                                      item.quantity_approved > totalStock 
+                                        ? 'bg-rose-50 border-rose-200 text-rose-700 focus:border-rose-500' 
+                                        : 'bg-white border-blue-100 text-blue-700 focus:border-blue-500'
+                                    }`}
+                                  />
+                                </div>
+                              ) : (
+                                <span className="text-sm font-black text-[#1C1917]">{item.quantity_approved}</span>
+                              )}
+                            </td>
+                          )}
+                          {showRequestDetailModal.request.isReturn && (
+                            <td className="px-4 py-3 text-center text-xs font-bold text-[#57534E]">
+                              {matchedBatch ? `Lote: ${matchedBatch.batch_number}` : 'Qualquer Lote Ativo'}
+                            </td>
+                          )}
                         </tr>
                       );
                     })}
@@ -9196,7 +9487,7 @@ export default function App() {
               <div className="flex flex-col gap-3 w-full">
                 <div className="flex gap-3 w-full">
                   {/* PENDENTE or EM_SEPARACAO Actions */}
-                  {(showRequestDetailModal.request.status === 'PENDENTE' || showRequestDetailModal.request.status === 'EM_SEPARACAO') && (
+                  {!showRequestDetailModal.request.isReturn && (showRequestDetailModal.request.status === 'PENDENTE' || showRequestDetailModal.request.status === 'EM_SEPARACAO') && (
                     <>
                       <button 
                         onClick={() => handleRejectRequest(showRequestDetailModal.request!.id)}
@@ -9223,8 +9514,35 @@ export default function App() {
                     </>
                   )}
 
+                  {/* DEVOLUCAO_PENDENTE Actions */}
+                  {showRequestDetailModal.request.isReturn && showRequestDetailModal.request.status === 'DEVOLUCAO_PENDENTE' && (
+                    <>
+                      <button 
+                        onClick={() => handleRejectDevolution(showRequestDetailModal.request!.id)}
+                        disabled={isProcessingDevolution}
+                        className="flex-1 py-4 bg-rose-100 hover:bg-rose-200 text-rose-600 rounded-2xl font-black text-sm uppercase tracking-widest transition-all"
+                      >
+                        Recusar Devolução
+                      </button>
+                      <button 
+                        onClick={() => handleApproveDevolution(showRequestDetailModal.request!.id, allRequestItems.filter(ri => ri.request_id === showRequestDetailModal.request?.id))}
+                        disabled={isProcessingDevolution}
+                        className="flex-1 py-4 bg-amber-600 hover:bg-amber-700 text-white rounded-2xl font-black text-sm uppercase tracking-widest transition-all shadow-lg flex items-center justify-center gap-2"
+                      >
+                        {isProcessingDevolution ? (
+                          <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+                        ) : (
+                          <>
+                            <CheckCircle size={18} />
+                            Aprovar Devolução
+                          </>
+                        )}
+                      </button>
+                    </>
+                  )}
+
                   {/* Old flow APROVADO delivery action */}
-                  {!showRequestDetailModal.request.isNewFlow && showRequestDetailModal.request.status === 'APROVADO' && (
+                  {!showRequestDetailModal.request.isReturn && !showRequestDetailModal.request.isNewFlow && showRequestDetailModal.request.status === 'APROVADO' && (
                     <button 
                       onClick={() => handleDeliverRequest(showRequestDetailModal.request!.id, allRequestItems.filter(ri => ri.request_id === showRequestDetailModal.request?.id))}
                       className="w-full py-4 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 transition-all flex items-center justify-center gap-2 shadow-lg"
@@ -9288,7 +9606,7 @@ export default function App() {
 
             <div className="bg-amber-50 border border-amber-100 p-4 rounded-2xl mb-6 text-amber-900 text-xs font-medium space-y-1">
               <p className="font-bold uppercase tracking-wider text-amber-700">Atenção</p>
-              <p>A devolução de materiais irá retornar as quantidades informadas diretamente para os lotes correspondentes e subtrairá do consumo dos relatórios.</p>
+              <p>A solicitação de devolução passará pela aprovação do almoxarifado. Após aprovada, as quantidades retornarão ao estoque.</p>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
@@ -9300,6 +9618,7 @@ export default function App() {
                   className="w-full p-4 bg-[#FAFAF9] border border-[#E7E5E4] rounded-2xl text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold"
                 >
                   <option value="Não teve uso">Não teve uso</option>
+                  <option value="Vencido">Vencido</option>
                   <option value="Validade próxima">Validade próxima</option>
                   <option value="Material danificado">Material danificado</option>
                   <option value="Erro na solicitação">Erro na solicitação</option>
@@ -9412,7 +9731,7 @@ export default function App() {
                 Cancelar
               </button>
               <button 
-                onClick={handleExecuteDevolution}
+                onClick={handleRequestDevolution}
                 disabled={isProcessingDevolution}
                 className="flex-1 py-4 bg-amber-600 hover:bg-amber-700 text-white rounded-2xl font-black text-sm uppercase tracking-widest transition-all shadow-xl shadow-amber-200 flex items-center justify-center gap-2 disabled:opacity-50"
               >
