@@ -348,6 +348,7 @@ export default function App() {
   const [showDeleteModal, setShowDeleteModal] = useState<{show: boolean, transactionId?: string}>({ show: false });
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [settingsTab, setSettingsTab] = useState<'logo' | 'tools' | 'info'>('logo');
+  const [distribViewMode, setDistribViewMode] = useState<'types' | 'units'>('types');
   const [showMergeSuppliers, setShowMergeSuppliers] = useState(false);
   const [showMergeItems, setShowMergeItems] = useState(false);
   const [sourceSupplier, setSourceSupplier] = useState('');
@@ -4861,16 +4862,19 @@ export default function App() {
         map[cat].totalQty += (Number(i.quantity) || 0);
         map[cat].value += ((Number(i.quantity) || 0) * (Number(i.unit_price) || 0));
       });
+    const maxCount = Math.max(...Object.values(map).map(m => m.count), 1);
     const maxQty = Math.max(...Object.values(map).map(m => m.totalQty), 1);
+
     return Object.entries(map)
       .map(([category, data]) => ({
         category,
         ...data,
-        percentage: Math.min(100, Math.round((data.totalQty / maxQty) * 100))
+        typePercentage: Math.min(100, Math.round((data.count / maxCount) * 100)),
+        unitPercentage: Math.min(100, Math.round((data.totalQty / maxQty) * 100))
       }))
-      .sort((a, b) => b.totalQty - a.totalQty)
-      .slice(0, 6);
-  }, [items, inventoryLocation]);
+      .sort((a, b) => distribViewMode === 'types' ? b.count - a.count : b.totalQty - a.totalQty)
+      .slice(0, 8);
+  }, [items, inventoryLocation, distribViewMode]);
 
   if (loading) {
     return (
@@ -4882,22 +4886,28 @@ export default function App() {
 
   if (!user) {
     return (
-      <div className="min-h-screen bg-[#F5F5F4] flex items-center justify-center p-6">
+      <div className="min-h-screen bg-slate-100 flex items-center justify-center p-6">
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="bg-white p-10 rounded-[40px] shadow-2xl max-w-md w-full border border-[#E7E5E4]"
+          className="bg-white p-10 rounded-[40px] shadow-2xl max-w-md w-full border border-slate-200"
         >
           <div className="text-center mb-8">
-            <div className="bg-[#1C1917] w-24 h-24 rounded-3xl flex items-center justify-center mx-auto mb-6 shadow-xl overflow-hidden border-4 border-white">
-              <Package className="text-white w-12 h-12" />
-            </div>
-            <h1 className="text-3xl font-black tracking-tighter mb-1">Policlínica</h1>
-            <p className="text-[#78716C] text-xs font-bold uppercase tracking-[0.2em] mb-4">
+            {appLogo ? (
+              <div className="w-28 h-28 rounded-3xl overflow-hidden bg-white border border-blue-200/80 p-2 shadow-xl mx-auto mb-6 flex items-center justify-center ring-4 ring-blue-500/10">
+                <img src={appLogo} alt="Logo Policlínica" className="w-full h-full object-contain" />
+              </div>
+            ) : (
+              <div className="bg-gradient-to-br from-blue-700 via-blue-800 to-indigo-900 w-24 h-24 rounded-3xl flex items-center justify-center mx-auto mb-6 shadow-xl overflow-hidden border-4 border-white ring-4 ring-blue-500/10 text-white">
+                <Package className="w-12 h-12" />
+              </div>
+            )}
+            <h1 className="text-3xl font-black tracking-tighter text-slate-900 mb-1">Policlínica</h1>
+            <p className="text-blue-700 text-xs font-black uppercase tracking-[0.2em] mb-4">
               Bernardo Félix da Silva
             </p>
-            <div className="h-px w-12 bg-[#E7E5E4] mx-auto mb-4" />
-            <p className="text-[#A8A29E] text-[10px] font-black uppercase tracking-widest">
+            <div className="h-0.5 w-12 bg-blue-100 mx-auto mb-4 rounded-full" />
+            <p className="text-slate-500 text-[10px] font-black uppercase tracking-widest bg-blue-50 border border-blue-100/80 px-3 py-1 rounded-full w-fit mx-auto">
               Almoxarifado Inteligente
             </p>
           </div>
@@ -4906,24 +4916,24 @@ export default function App() {
             <button 
               onClick={handleGoogleLogin}
               disabled={loginLoading}
-              className="w-full bg-white border border-[#E7E5E4] text-[#1C1917] py-4 rounded-2xl font-bold flex items-center justify-center gap-3 hover:bg-[#FAFAF9] transition-all shadow-sm active:scale-[0.98] disabled:opacity-50"
+              className="w-full bg-white border border-slate-200 text-slate-800 py-4 rounded-2xl font-extrabold flex items-center justify-center gap-3 hover:bg-slate-50 hover:border-blue-300 transition-all shadow-sm active:scale-[0.98] disabled:opacity-50 group"
             >
               {loginLoading ? (
-                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-[#1C1917]"></div>
+                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-700"></div>
               ) : (
                 <>
-                  <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5" alt="Google" />
-                  Entrar com Google
+                  <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5 group-hover:scale-110 transition-transform" alt="Google" />
+                  <span>Entrar com Google</span>
                 </>
               )}
             </button>
-            <p className="text-[10px] text-[#A8A29E] text-center font-bold uppercase tracking-widest mt-4">
+            <p className="text-[10px] text-slate-400 text-center font-extrabold uppercase tracking-widest mt-4">
               Apenas e-mails autorizados pelo administrador
             </p>
           </div>
 
-          <div className="mt-8 text-center">
-            <p className="text-[10px] text-[#A8A29E] uppercase tracking-widest font-bold">Acesso restrito a funcionários autorizados</p>
+          <div className="mt-8 text-center pt-4 border-t border-slate-100">
+            <p className="text-[10px] text-slate-400 uppercase tracking-widest font-extrabold">Acesso restrito a funcionários autorizados</p>
           </div>
         </motion.div>
       </div>
@@ -5803,7 +5813,7 @@ export default function App() {
               {/* Category Volume Distribution Bar Chart Section */}
               {categoryDistribution.length > 0 && (
                 <div className="bg-white rounded-3xl border border-blue-100 p-6 shadow-sm space-y-4">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-blue-50 pb-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-blue-50 pb-4">
                     <div className="flex items-center gap-3">
                       <div className="p-2.5 bg-blue-50 text-blue-700 rounded-2xl border border-blue-100">
                         <BarChart3 size={20} />
@@ -5813,36 +5823,67 @@ export default function App() {
                           Distribuição de Estoque por Categoria
                         </h4>
                         <p className="text-xs text-slate-500">
-                          Volume acumulado dos principais grupos de insumos cadastrados
+                          {distribViewMode === 'types' 
+                            ? 'Variedade e diversidade por tipo de produto cadastrado (prioridade)' 
+                            : 'Volume acumulado por quantidade total de unidades em estoque'}
                         </p>
                       </div>
                     </div>
-                    <span className="text-xs font-bold text-blue-700 bg-blue-50 px-3 py-1 rounded-full border border-blue-100 self-start sm:self-auto">
-                      Top {categoryDistribution.length} Categorias
-                    </span>
+
+                    <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-2xl border border-slate-200/80 self-start sm:self-auto">
+                      <button
+                        type="button"
+                        onClick={() => setDistribViewMode('types')}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all ${
+                          distribViewMode === 'types'
+                            ? 'bg-white text-blue-700 shadow-xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        Por Tipos de Produto
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDistribViewMode('units')}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all ${
+                          distribViewMode === 'units'
+                            ? 'bg-white text-blue-700 shadow-xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        Por Unidades
+                      </button>
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pt-2">
-                    {categoryDistribution.map((cat) => (
-                      <div key={cat.category} className="p-4 rounded-2xl bg-slate-50/70 border border-slate-100 hover:border-blue-200 hover:bg-blue-50/30 transition-all">
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-xs font-bold text-slate-800 truncate max-w-[180px]">{cat.category}</span>
-                          <span className="text-xs font-black text-blue-700 bg-blue-100/60 px-2 py-0.5 rounded-md">
-                            {cat.totalQty.toLocaleString('pt-BR')} un
-                          </span>
+                    {categoryDistribution.map((cat) => {
+                      const displayPercentage = distribViewMode === 'types' ? cat.typePercentage : cat.unitPercentage;
+                      return (
+                        <div key={cat.category} className="p-4 rounded-2xl bg-slate-50/70 border border-slate-100 hover:border-blue-200 hover:bg-blue-50/30 transition-all">
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-xs font-bold text-slate-800 truncate max-w-[170px]">{cat.category}</span>
+                            <span className="text-xs font-black text-blue-700 bg-blue-100/70 px-2.5 py-0.5 rounded-md">
+                              {distribViewMode === 'types' ? `${cat.count} tipos` : `${cat.totalQty.toLocaleString('pt-BR')} un`}
+                            </span>
+                          </div>
+                          <div className="w-full bg-slate-200/80 rounded-full h-2.5 overflow-hidden">
+                            <div 
+                              className="bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-500 h-2.5 rounded-full transition-all duration-500"
+                              style={{ width: `${displayPercentage}%` }}
+                            />
+                          </div>
+                          <div className="flex justify-between items-center mt-2.5 text-[10px] text-slate-600 font-medium">
+                            <span className="font-extrabold text-slate-700">
+                              {distribViewMode === 'types' 
+                                ? `${cat.totalQty.toLocaleString('pt-BR')} un em estoque` 
+                                : `${cat.count} tipos de produtos`}
+                            </span>
+                            <span>{cat.value > 0 ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(cat.value) : ''}</span>
+                          </div>
                         </div>
-                        <div className="w-full bg-slate-200/80 rounded-full h-2.5 overflow-hidden">
-                          <div 
-                            className="bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-500 h-2.5 rounded-full transition-all duration-500"
-                            style={{ width: `${cat.percentage}%` }}
-                          />
-                        </div>
-                        <div className="flex justify-between items-center mt-2 text-[10px] text-slate-500 font-medium">
-                          <span>{cat.count} tipos de produtos</span>
-                          <span>{cat.value > 0 ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(cat.value) : ''}</span>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}
