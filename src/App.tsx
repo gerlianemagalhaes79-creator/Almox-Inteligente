@@ -4902,10 +4902,14 @@ export default function App() {
                 <Package className="w-12 h-12" />
               </div>
             )}
-            <h1 className="text-3xl font-black tracking-tighter text-slate-900 mb-1">Policlínica</h1>
-            <p className="text-blue-700 text-xs font-black uppercase tracking-[0.2em] mb-4">
-              Bernardo Félix da Silva
-            </p>
+            <div className="mb-4 text-center">
+              <h1 className="text-2xl font-black tracking-tight text-slate-900 uppercase leading-tight">
+                Policlínica
+              </h1>
+              <h2 className="text-sm font-black text-blue-700 uppercase tracking-wider mt-0.5">
+                Bernardo Félix da Silva
+              </h2>
+            </div>
             <div className="h-0.5 w-12 bg-blue-100 mx-auto mb-4 rounded-full" />
             <p className="text-slate-500 text-[10px] font-black uppercase tracking-widest bg-blue-50 border border-blue-100/80 px-3 py-1 rounded-full w-fit mx-auto">
               Almoxarifado Inteligente
