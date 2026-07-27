@@ -95,6 +95,14 @@
         "dismissedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["itemName", "dismissedAt"]
+    },
+    "Setting": {
+      "title": "Setting",
+      "description": "System configuration and settings like appLogo",
+      "type": "object",
+      "properties": {
+        "appLogo": { "type": "string" }
+      }
     }
   },
   "firestore": {
@@ -125,6 +133,10 @@
     "/dismissed_stock_alerts": {
       "schema": "DismissedStockAlert",
       "description": "Collection of dismissed zero stock alerts"
+    },
+    "/settings": {
+      "schema": "Setting",
+      "description": "Collection of system global settings"
     }
   }
 }

@@ -347,6 +347,7 @@ export default function App() {
   const [showDetailModal, setShowDetailModal] = useState<{show: boolean, type: 'low_stock' | 'expiry', items: (Item | ItemGroup)[]}>({ show: false, type: 'low_stock', items: [] });
   const [showDeleteModal, setShowDeleteModal] = useState<{show: boolean, transactionId?: string}>({ show: false });
   const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<'logo' | 'tools' | 'info'>('logo');
   const [showMergeSuppliers, setShowMergeSuppliers] = useState(false);
   const [showMergeItems, setShowMergeItems] = useState(false);
   const [sourceSupplier, setSourceSupplier] = useState('');
@@ -4071,13 +4072,25 @@ export default function App() {
 
   const [appLogo, setAppLogo] = useState<string | null>(null);
 
-  // Load app logo from localStorage on mount
+  // Load app logo from localStorage & Firestore on mount
   useEffect(() => {
     const savedLogo = localStorage.getItem('app_logo_base64');
     if (savedLogo) setAppLogo(savedLogo);
+
+    const unsubscribe = onSnapshot(doc(db, 'settings', 'general'), (snapshot) => {
+      if (snapshot.exists() && snapshot.data().appLogo) {
+        const remoteLogo = snapshot.data().appLogo;
+        setAppLogo(remoteLogo);
+        localStorage.setItem('app_logo_base64', remoteLogo);
+      }
+    }, (err) => {
+      console.warn("Could not listen to settings/general:", err);
+    });
+
+    return () => unsubscribe();
   }, []);
 
-  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       if (file.size > 2 * 1024 * 1024) {
@@ -4085,13 +4098,31 @@ export default function App() {
         return;
       }
       const reader = new FileReader();
-      reader.onloadend = () => {
+      reader.onloadend = async () => {
         const base64 = reader.result as string;
         setAppLogo(base64);
         localStorage.setItem('app_logo_base64', base64);
-        showToast("Logo atualizada!", "success");
+        try {
+          await setDoc(doc(db, 'settings', 'general'), { appLogo: base64 }, { merge: true });
+          showToast("Logo do sistema atualizada com sucesso!", "success");
+        } catch (err) {
+          console.error("Erro ao salvar no Firestore:", err);
+          showToast("Logo atualizada!", "success");
+        }
       };
       reader.readAsDataURL(file);
+    }
+  };
+
+  const handleRemoveLogo = async () => {
+    setAppLogo(null);
+    localStorage.removeItem('app_logo_base64');
+    try {
+      await setDoc(doc(db, 'settings', 'general'), { appLogo: deleteField() }, { merge: true });
+      showToast("Logo removida com sucesso!", "success");
+    } catch (err) {
+      console.error("Erro ao remover logo do Firestore:", err);
+      showToast("Logo removida!", "success");
     }
   };
 
@@ -5009,9 +5040,15 @@ export default function App() {
       {/* Mobile Header */}
       <header className="lg:hidden fixed top-0 left-0 right-0 h-16 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-4 z-20 text-white shadow-md">
         <div className="flex items-center gap-2.5">
-          <div className="bg-gradient-to-br from-blue-600 to-indigo-800 p-2 rounded-xl text-white shadow-sm">
-            <Package className="w-5 h-5" />
-          </div>
+          {appLogo ? (
+            <div className="w-9 h-9 rounded-xl overflow-hidden bg-white p-0.5 border border-slate-700 shadow-sm flex items-center justify-center shrink-0">
+              <img src={appLogo} alt="Logo Policlínica" className="w-full h-full object-contain" />
+            </div>
+          ) : (
+            <div className="bg-gradient-to-br from-blue-600 to-indigo-800 p-2 rounded-xl text-white shadow-sm shrink-0">
+              <Package className="w-5 h-5" />
+            </div>
+          )}
           <div className="flex items-baseline gap-1.5">
             <h1 className="font-black text-lg tracking-tight text-white">Policlínica</h1>
             <span className="text-[10px] font-black text-blue-300 tracking-wider uppercase">Almoxarifado</span>
@@ -5042,9 +5079,15 @@ export default function App() {
       <aside className={`fixed lg:left-0 top-0 h-full w-64 bg-white border-r border-blue-100/80 p-5 flex flex-col gap-6 z-40 shadow-sm transition-transform duration-300 transform ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
         <div className="flex items-center justify-between lg:justify-start gap-3 px-1 pt-1">
           <div className="flex items-center gap-3">
-            <div className="bg-gradient-to-br from-blue-700 via-blue-800 to-indigo-900 p-2.5 rounded-2xl shadow-md shadow-blue-500/20 text-white ring-2 ring-blue-500/20">
-              <Package className="w-6 h-6" />
-            </div>
+            {appLogo ? (
+              <div className="w-11 h-11 rounded-2xl overflow-hidden bg-white border border-blue-200/80 p-1 shadow-md shadow-blue-500/10 flex items-center justify-center shrink-0 ring-2 ring-blue-500/10">
+                <img src={appLogo} alt="Logo Policlínica" className="w-full h-full object-contain" />
+              </div>
+            ) : (
+              <div className="bg-gradient-to-br from-blue-700 via-blue-800 to-indigo-900 p-2.5 rounded-2xl shadow-md shadow-blue-500/20 text-white ring-2 ring-blue-500/20 shrink-0">
+                <Package className="w-6 h-6" />
+              </div>
+            )}
             <div className="flex flex-col">
               <h1 className="font-black text-xl tracking-tight text-slate-900 leading-none">Policlínica</h1>
               <span className="text-[10px] font-black text-blue-700 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-md uppercase tracking-widest leading-none block w-fit mt-1">
@@ -9552,104 +9595,192 @@ export default function App() {
           <motion.div 
             initial={{ scale: 0.9, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
-            className="bg-white w-full max-w-md rounded-[32px] p-8 shadow-2xl"
+            className="bg-white w-full max-w-lg rounded-[32px] p-8 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
           >
             <div className="flex justify-between items-center mb-6">
-              <h3 className="text-2xl font-black text-[#1C1917]">Configurações</h3>
+              <div>
+                <h3 className="text-2xl font-black text-slate-900">Configurações do Sistema</h3>
+                <p className="text-xs font-bold text-slate-500 mt-0.5">Gerenciamento de logo e ferramentas administrativas</p>
+              </div>
               <button 
                 onClick={() => setShowSettingsModal(false)}
-                className="p-2 hover:bg-[#F5F5F4] rounded-full transition-all"
+                className="p-2 hover:bg-slate-100 rounded-full transition-all text-slate-500 hover:text-slate-800"
               >
                 <X size={24} />
               </button>
             </div>
 
-            <div className="space-y-6">
+            {/* Navigation Tabs */}
+            <div className="flex gap-2 p-1.5 bg-slate-100/80 rounded-2xl mb-6">
+              <button
+                type="button"
+                onClick={() => setSettingsTab('logo')}
+                className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-extrabold transition-all flex items-center justify-center gap-2 ${
+                  settingsTab === 'logo'
+                    ? 'bg-white text-blue-700 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <ImageIcon size={16} />
+                <span>Logo do Sistema</span>
+              </button>
+
               {isAdmin && (
-                <div className="p-6 bg-blue-50 rounded-2xl border border-blue-100">
-                  <div className="flex items-center gap-3 mb-3 text-blue-600">
-                    <Users size={24} />
-                    <h4 className="font-bold">Ferramentas de Dados</h4>
+                <button
+                  type="button"
+                  onClick={() => setSettingsTab('tools')}
+                  className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-extrabold transition-all flex items-center justify-center gap-2 ${
+                    settingsTab === 'tools'
+                      ? 'bg-white text-blue-700 shadow-sm'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Users size={16} />
+                  <span>Ferramentas Admin</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setSettingsTab('info')}
+                className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-extrabold transition-all flex items-center justify-center gap-2 ${
+                  settingsTab === 'info'
+                    ? 'bg-white text-blue-700 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Info size={16} />
+                <span>Sobre</span>
+              </button>
+            </div>
+
+            <div className="space-y-6 overflow-y-auto pr-1">
+              {settingsTab === 'logo' && (
+                <div className="space-y-5">
+                  <div className="p-4 bg-blue-50/80 rounded-2xl border border-blue-100 text-blue-900">
+                    <h4 className="text-xs font-black uppercase tracking-wider text-blue-800 mb-1 flex items-center gap-2">
+                      <ImageIcon size={16} className="text-blue-600" />
+                      Substituir Logo de Caixa do Sistema
+                    </h4>
+                    <p className="text-xs leading-relaxed text-blue-700 font-medium">
+                      Faça o upload do logotipo oficial da unidade para substituir o ícone de caixa do menu principal, topo do sistema e documentos em PDF (Recibos e Termos).
+                    </p>
                   </div>
-                  <p className="text-sm text-blue-700 mb-4 leading-relaxed">
-                    Corrija inconsistências unificando fornecedores cadastrados com nomes diferentes.
+
+                  {/* Live Preview Card */}
+                  <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block mb-2">Pré-visualização no Menu</span>
+                    <div className="flex items-center gap-3 bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
+                      {appLogo ? (
+                        <div className="w-10 h-10 rounded-xl overflow-hidden bg-white border border-blue-100 p-1 shadow-xs flex items-center justify-center shrink-0">
+                          <img src={appLogo} alt="Preview Logo" className="w-full h-full object-contain" />
+                        </div>
+                      ) : (
+                        <div className="bg-gradient-to-br from-blue-700 via-blue-800 to-indigo-900 p-2 rounded-xl text-white shadow-xs shrink-0">
+                          <Package className="w-6 h-6" />
+                        </div>
+                      )}
+                      <div>
+                        <h1 className="font-black text-base text-slate-900 leading-none">Policlínica</h1>
+                        <span className="text-[9px] font-black text-blue-700 bg-blue-50 border border-blue-100 px-1.5 py-0.5 rounded-md uppercase tracking-widest block w-fit mt-0.5">
+                          Almoxarifado
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Upload Box */}
+                  <div className="p-5 bg-white rounded-2xl border border-slate-200 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h4 className="font-extrabold text-sm text-slate-900">Upload do Logotipo</h4>
+                      {appLogo && (
+                        <button 
+                          onClick={handleRemoveLogo}
+                          className="text-xs font-extrabold text-rose-600 hover:text-rose-700 hover:underline flex items-center gap-1"
+                        >
+                          <Trash2 size={13} /> Remover Logo
+                        </button>
+                      )}
+                    </div>
+
+                    <label className="block w-full cursor-pointer group">
+                      <div className={`overflow-hidden rounded-2xl border-2 border-dashed transition-all flex flex-col items-center justify-center gap-2 p-6 ${appLogo ? 'border-blue-300 bg-blue-50/20 hover:bg-blue-50/40' : 'border-slate-300 hover:border-blue-500 hover:bg-slate-50'}`}>
+                        {appLogo ? (
+                          <div className="flex flex-col items-center gap-3">
+                            <img src={appLogo} alt="Logo do Sistema" className="max-h-24 object-contain" />
+                            <span className="text-xs font-bold text-blue-700 bg-blue-100/80 px-3 py-1 rounded-full flex items-center gap-1.5">
+                              <Upload size={13} /> Clique para alterar a logo
+                            </span>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="p-3.5 bg-blue-50 text-blue-600 rounded-full shadow-xs group-hover:scale-110 transition-transform">
+                              <Upload size={22} />
+                            </div>
+                            <div className="text-center">
+                              <p className="text-xs font-black text-slate-800">Clique aqui para selecionar uma imagem</p>
+                              <p className="text-[10px] font-bold text-slate-400 mt-0.5">Formatos aceitos: PNG, JPG ou SVG (Máx. 2MB)</p>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                      <input type="file" accept="image/*" className="hidden" onChange={handleLogoUpload} />
+                    </label>
+                  </div>
+                </div>
+              )}
+
+              {settingsTab === 'tools' && isAdmin && (
+                <div className="p-6 bg-blue-50/80 rounded-2xl border border-blue-100">
+                  <div className="flex items-center gap-3 mb-3 text-blue-700">
+                    <Users size={22} />
+                    <h4 className="font-extrabold text-base">Ferramentas de Dados do Admin</h4>
+                  </div>
+                  <p className="text-xs text-blue-800 mb-5 leading-relaxed font-medium">
+                    Corrija inconsistências unificando fornecedores cadastrados com nomes diferentes ou mesclando itens duplicados no estoque.
                   </p>
-                  <div className="grid grid-cols-1 gap-4">
+                  <div className="grid grid-cols-1 gap-3">
                     <button 
                       onClick={() => {
                         setShowSettingsModal(false);
                         setShowMergeSuppliers(true);
                       }}
-                      className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all flex items-center justify-center gap-2"
+                      className="w-full py-3.5 bg-blue-700 text-white rounded-xl font-extrabold text-xs uppercase tracking-wider hover:bg-blue-800 transition-all flex items-center justify-center gap-2 shadow-md shadow-blue-700/20"
                     >
-                      <RotateCcw size={18} /> Mesclar Fornecedores
+                      <RotateCcw size={16} /> Mesclar Fornecedores
                     </button>
                     <button 
                       onClick={() => {
                         setShowSettingsModal(false);
                         setShowMergeItems(true);
                       }}
-                      className="w-full py-3 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 transition-all flex items-center justify-center gap-2"
+                      className="w-full py-3.5 bg-emerald-700 text-white rounded-xl font-extrabold text-xs uppercase tracking-wider hover:bg-emerald-800 transition-all flex items-center justify-center gap-2 shadow-md shadow-emerald-700/20"
                     >
-                      <Package size={18} /> Mesclar Itens Duplicados
+                      <Package size={16} /> Mesclar Itens Duplicados
                     </button>
                   </div>
                 </div>
               )}
 
-              <div className="p-6 bg-[#FAFAF9] rounded-2xl border border-[#E7E5E4]">
-                <div className="flex items-center justify-between mb-4">
-                  <h4 className="font-bold text-[#1C1917]">Logotipo da Unidade</h4>
-                  {appLogo && (
-                    <button 
-                      onClick={() => {
-                        setAppLogo(null);
-                        localStorage.removeItem('app_logo_base64');
-                      }}
-                      className="text-[10px] font-bold text-rose-600 hover:underline"
-                    >
-                      Remover
-                    </button>
-                  )}
-                </div>
-                
-                <label className="block w-full cursor-pointer group">
-                  <div className={`overflow-hidden rounded-xl border-2 border-dashed transition-all flex flex-col items-center justify-center gap-2 ${appLogo ? 'h-32 border-transparent' : 'h-32 border-[#E7E5E4] hover:border-[#1C1917]/20 hover:bg-[#F5F5F4]'}`}>
-                    {appLogo ? (
-                      <img src={appLogo} alt="Logo" className="w-full h-full object-contain" />
-                    ) : (
-                      <>
-                        <div className="p-3 bg-white rounded-full shadow-sm">
-                          <Upload size={20} className="text-[#A8A29E]" />
-                        </div>
-                        <p className="text-xs font-bold text-[#78716C]">Upload Logo JPG/PNG</p>
-                      </>
-                    )}
-                  </div>
-                  <input type="file" accept="image/*" className="hidden" onChange={handleLogoUpload} />
-                </label>
-                <p className="text-[10px] text-[#A8A29E] mt-3 leading-relaxed">
-                  Esta logo será usada no cabeçalho de todos os documentos (Recibos e Termos de Doação).
-                </p>
-              </div>
-
-              <div className="p-6 bg-[#FAFAF9] rounded-2xl border border-[#E7E5E4]">
-                <h4 className="font-bold text-[#1C1917] mb-2">Informações do Sistema</h4>
-                <div className="space-y-2 text-sm text-[#78716C]">
-                  <div className="flex justify-between">
-                    <span>Versão</span>
-                    <span className="font-mono">1.2.0</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Total de Itens</span>
-                    <span className="font-bold">{items.length}</span>
-                  </div>
-                  <div className="pt-2 border-t border-[#E7E5E4] mt-2">
-                    <p className="text-[10px] font-bold uppercase tracking-wider text-[#A8A29E] mb-1">Suporte e Desenvolvimento</p>
-                    <p className="font-bold text-[#1C1917]">gerlianemagalhaes79@gmail.com</p>
+              {settingsTab === 'info' && (
+                <div className="p-6 bg-slate-50 rounded-2xl border border-slate-200">
+                  <h4 className="font-extrabold text-slate-900 mb-3 text-sm">Informações do Sistema</h4>
+                  <div className="space-y-2.5 text-xs text-slate-600 font-medium">
+                    <div className="flex justify-between items-center pb-2 border-b border-slate-200">
+                      <span>Versão</span>
+                      <span className="font-mono font-bold text-slate-900 bg-slate-200/80 px-2 py-0.5 rounded">1.2.0</span>
+                    </div>
+                    <div className="flex justify-between items-center pb-2 border-b border-slate-200">
+                      <span>Total de Itens em Estoque</span>
+                      <span className="font-extrabold text-slate-900">{items.length}</span>
+                    </div>
+                    <div className="pt-2">
+                      <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">Suporte e Desenvolvimento</p>
+                      <p className="font-extrabold text-slate-900">gerlianemagalhaes79@gmail.com</p>
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
             </div>
           </motion.div>
         </div>
