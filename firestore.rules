@@ -7,21 +7,24 @@ service cloud.firestore {
     }
     
     function isAdmin() {
-      let email = request.auth.token.email;
-      let userDocPath = /databases/$(database)/documents/users/$(email);
       return isAuthenticated() && (
-        (exists(userDocPath) && (get(userDocPath).data.role == 'ADMIN' || get(userDocPath).data.sector == 'Almoxarifado')) ||
-        (email == "gerlianemagalhaes79@gmail.com" || email == "poli.almoxarifado@gmail.com")
+        (request.auth.token.email == "gerlianemagalhaes79@gmail.com" || request.auth.token.email == "poli.almoxarifado@gmail.com") ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.token.email)) && 
+          (get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.role == 'ADMIN' || 
+           get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.sector == 'Almoxarifado'))
       );
     }
 
     function isPharmacyUser() {
-      let userDocPath = /databases/$(database)/documents/users/$(request.auth.token.email);
-      return isAuthenticated() && exists(userDocPath) && get(userDocPath).data.sector == 'Farmácia';
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.token.email)) && 
+             get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.sector == 'Farmácia';
     }
 
     function isSetor() {
-      return isAuthenticated() && get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.role == 'SETOR';
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.token.email)) && 
+             get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.role == 'SETOR';
     }
 
     function isValidRequest(data) {
@@ -80,10 +83,9 @@ service cloud.firestore {
     }
 
     match /users/{email} {
-      allow read: if isAuthenticated();
-      allow create: if isAdmin() || (isAuthenticated() && request.auth.token.email == email);
-      allow update: if isAdmin() || (isAuthenticated() && request.auth.token.email == email && 
-                    request.resource.data.role == resource.data.role);
+      allow read: if true;
+      allow create: if isAuthenticated() && (request.auth.token.email == email || isAdmin());
+      allow update: if isAuthenticated() && (request.auth.token.email == email || isAdmin());
       allow delete: if isAdmin();
     }
 

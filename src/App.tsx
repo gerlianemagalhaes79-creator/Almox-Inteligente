@@ -67,6 +67,7 @@ import {
 } from 'firebase/firestore';
 import { 
   signInWithPopup, 
+  signInWithRedirect,
   GoogleAuthProvider, 
   onAuthStateChanged, 
   signOut,
@@ -1242,10 +1243,17 @@ export default function App() {
       await signInWithPopup(auth, provider);
     } catch (error: any) {
       console.error("Login error:", error);
-      if (error.code === 'auth/unauthorized-domain') {
-        showToast("Erro: Domínio não autorizado. Você precisa adicionar o domínio do Vercel nas configurações do Firebase.", "error");
-      } else if (error.code === 'auth/popup-blocked') {
-        showToast("Erro: O popup de login foi bloqueado pelo seu navegador.", "error");
+      if (error.code === 'auth/popup-blocked' || error.code === 'auth/popup-closed-by-user') {
+        try {
+          showToast("Redirecionando para login do Google...", "info");
+          await signInWithRedirect(auth, provider);
+          return;
+        } catch (redirectErr: any) {
+          console.error("Redirect login error:", redirectErr);
+          showToast("O popup foi bloqueado pelo seu navegador. Por favor, permita janelas pop-up ou abra o sistema em uma nova aba.", "error");
+        }
+      } else if (error.code === 'auth/unauthorized-domain') {
+        showToast("Erro: Domínio não autorizado no Firebase Auth.", "error");
       } else {
         showToast(`Erro ao entrar: ${error.message}`, "error");
       }
