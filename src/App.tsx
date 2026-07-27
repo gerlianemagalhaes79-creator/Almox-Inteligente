@@ -5673,45 +5673,41 @@ export default function App() {
               exit={{ opacity: 0, y: -12 }}
               className="space-y-8"
             >
-              {/* Executive Welcome Hero Banner - Deep Blue Gradient Theme */}
-              <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-slate-900 via-blue-950 to-indigo-950 border border-blue-900/50 p-6 sm:p-8 shadow-xl shadow-blue-950/20 text-white">
-                {/* Decorative glowing background elements */}
-                <div className="absolute -right-16 -top-16 w-80 h-80 bg-blue-600/20 rounded-full blur-3xl pointer-events-none" />
-                <div className="absolute right-1/3 -bottom-20 w-64 h-64 bg-indigo-500/10 rounded-full blur-2xl pointer-events-none" />
-
-                <div className="relative z-10 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
-                  <div className="space-y-2 max-w-2xl">
-                    <div className="flex flex-wrap items-center gap-2.5">
-                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-blue-500/20 text-blue-300 border border-blue-400/30 backdrop-blur-sm">
-                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              {/* Executive Welcome Hero Banner - Light Clean Minimalist Theme */}
+              <div className="rounded-3xl bg-white border border-blue-100 p-6 sm:p-8 shadow-sm text-slate-900">
+                <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
+                  <div className="space-y-2.5 max-w-2xl">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-extrabold bg-emerald-50 text-emerald-700 border border-emerald-200/80">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
                         Sistema Operacional em Tempo Real
                       </span>
-                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-white/10 text-slate-200 border border-white/10">
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-extrabold bg-blue-50 text-blue-700 border border-blue-200/80">
                         {inventoryLocation}
                       </span>
                     </div>
 
-                    <h2 className="text-2xl sm:text-3xl font-black tracking-tight text-white">
+                    <h2 className="text-2xl sm:text-3xl font-black tracking-tight text-slate-900">
                       Painel de Gestão & Operação
                     </h2>
-                    <p className="text-sm text-slate-300 leading-relaxed">
+                    <p className="text-sm text-slate-500 leading-relaxed font-medium">
                       Monitoramento contínuo de saldos, movimentações, alertas críticos de validade e requisições do almoxarifado.
                     </p>
                   </div>
 
-                  {/* Header Quick Stats Pill Group */}
-                  <div className="flex items-center gap-3 bg-slate-900/80 backdrop-blur-md p-3 sm:p-4 rounded-2xl border border-blue-800/40 divide-x divide-blue-800/40 shrink-0">
-                    <div className="px-3 text-center">
-                      <p className="text-[10px] uppercase font-bold text-blue-300 tracking-wider">Itens Ativos</p>
-                      <p className="text-xl font-black text-white">{groupedArray.length}</p>
+                  {/* Header Quick Stats Group */}
+                  <div className="grid grid-cols-3 gap-2 sm:gap-4 bg-slate-50 p-3.5 sm:p-4 rounded-2xl border border-slate-200/80 shrink-0">
+                    <div className="px-3 sm:px-4 text-center">
+                      <p className="text-[10px] uppercase font-extrabold text-slate-500 tracking-wider">Itens Ativos</p>
+                      <p className="text-xl sm:text-2xl font-black text-slate-900 mt-0.5">{groupedArray.length}</p>
                     </div>
-                    <div className="px-3 text-center">
-                      <p className="text-[10px] uppercase font-bold text-sky-300 tracking-wider">Pendências</p>
-                      <p className="text-xl font-black text-amber-400">{pendingRequestsCount}</p>
+                    <div className="px-3 sm:px-4 text-center border-l border-slate-200/80">
+                      <p className="text-[10px] uppercase font-extrabold text-amber-600 tracking-wider">Pendências</p>
+                      <p className="text-xl sm:text-2xl font-black text-amber-600 mt-0.5">{pendingRequestsCount}</p>
                     </div>
-                    <div className="px-3 text-center">
-                      <p className="text-[10px] uppercase font-bold text-indigo-300 tracking-wider">Alertas</p>
-                      <p className="text-xl font-black text-rose-400">{lowStockItems.length + nearExpiryItems.length}</p>
+                    <div className="px-3 sm:px-4 text-center border-l border-slate-200/80">
+                      <p className="text-[10px] uppercase font-extrabold text-rose-600 tracking-wider">Alertas</p>
+                      <p className="text-xl sm:text-2xl font-black text-rose-600 mt-0.5">{lowStockItems.length + nearExpiryItems.length}</p>
                     </div>
                   </div>
                 </div>
