@@ -310,6 +310,7 @@ export default function App() {
   const [donationUnitCNPJ, setDonationUnitCNPJ] = useState('');
   const [donationRevisionDate, setDonationRevisionDate] = useState('');
   const [letterheadImage, setLetterheadImage] = useState<string | null>(null);
+  const [reportsTab, setReportsTab] = useState<'overview' | 'letterhead'>('overview');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'inventory' | 'history' | 'requests' | 'admin-devolutions' | 'reports' | 'my-requests' | 'new-request' | 'devolution' | 'users' | 'trash' | 'leader-stats'>('dashboard');
   const leaderStatistics = useMemo(() => {
@@ -345,7 +346,7 @@ export default function App() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [showTransactionModal, setShowTransactionModal] = useState<{show: boolean, type: 'entry' | 'exit', item?: Item}>({ show: false, type: 'entry' });
   const [transactionMinStock, setTransactionMinStock] = useState<number>(NaN);
-  const [showDetailModal, setShowDetailModal] = useState<{show: boolean, type: 'low_stock' | 'expiry', items: (Item | ItemGroup)[]}>({ show: false, type: 'low_stock', items: [] });
+  const [showDetailModal, setShowDetailModal] = useState<{show: boolean, type: 'low_stock' | 'expiry' | 'all_alerts', items: (Item | ItemGroup)[]}>({ show: false, type: 'low_stock', items: [] });
   const [showDeleteModal, setShowDeleteModal] = useState<{show: boolean, transactionId?: string}>({ show: false });
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [settingsTab, setSettingsTab] = useState<'logo' | 'tools' | 'info'>('logo');
@@ -3292,16 +3293,12 @@ export default function App() {
   const handleExportInventoryPDF = () => {
     try {
       const doc = new jsPDF();
-      
-      // Add title
-      doc.setFontSize(18);
-      doc.setTextColor(28, 25, 23); // #1C1917
-      doc.text('Relatório de Estoque Atual', 14, 22);
-      
-      doc.setFontSize(11);
-      doc.setTextColor(120, 113, 108); // #78716C
-      doc.text(`Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 14, 30);
-      
+      const startY = drawPDFLetterhead(
+        doc,
+        'Relatório de Estoque Atual',
+        `Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`
+      );
+
       // Prepare data for table
       const tableData = groupedArray.map(group => {
         let status = group.total_quantity <= group.min_quantity ? 'BAIXO' : 'OK';
@@ -3322,7 +3319,7 @@ export default function App() {
       
       // Generate table
       autoTable(doc, {
-        startY: 40,
+        startY: startY + 4,
         head: [['Item', 'Categoria', 'Estoque', 'Duração (Sem)', 'Mínimo', 'Status']],
         body: tableData,
         theme: 'striped',
@@ -3364,17 +3361,11 @@ export default function App() {
       const doc = new jsPDF();
       const pageWidth = doc.internal.pageSize.width;
       
-      // Title
-      doc.setFontSize(18);
-      doc.setTextColor(28, 25, 23); // #1C1917
-      doc.setFont('helvetica', 'bold');
-      doc.text('Catálogo de Materiais em Estoque', 14, 22);
-      
-      doc.setFontSize(11);
-      doc.setTextColor(120, 113, 108); // #78716C
-      doc.setFont('helvetica', 'normal');
-      doc.text('Policlínica Bernardo Félix da Silva', 14, 30);
-      doc.text(`Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 14, 36);
+      const startY = drawPDFLetterhead(
+        doc,
+        'Catálogo de Materiais em Estoque',
+        `Policlínica Bernardo Félix da Silva • Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`
+      );
       
       // Filter unique items across all batches and locations
       const uniqueItems: Record<string, { name: string, category: string, supplier: string }> = {};
@@ -3399,7 +3390,7 @@ export default function App() {
       
       // Generate table (NO Stock, NO Batch, NO Expiry)
       autoTable(doc, {
-        startY: 45,
+        startY: startY + 4,
         head: [['Material / Produto', 'Categoria', 'Fornecedor']],
         body: tableData,
         theme: 'striped',
@@ -3439,14 +3430,11 @@ export default function App() {
     try {
       const doc = new jsPDF();
       
-      // Add title
-      doc.setFontSize(18);
-      doc.setTextColor(28, 25, 23); // #1C1917
-      doc.text('Relatório de Solicitações de Materiais', 14, 22);
-      
-      doc.setFontSize(11);
-      doc.setTextColor(120, 113, 108); // #78716C
-      doc.text(`Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 14, 30);
+      const startY = drawPDFLetterhead(
+        doc,
+        'Relatório de Solicitações de Materiais',
+        `Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`
+      );
       
       // Determine which requests to export based on current tab
       let requestsToExport = [];
@@ -3476,7 +3464,7 @@ export default function App() {
       
       // Generate table
       autoTable(doc, {
-        startY: 40,
+        startY: startY + 4,
         head: [['Nº', 'Data', 'Setor', 'Status', 'Itens']],
         body: tableData,
         theme: 'striped',
@@ -4079,18 +4067,68 @@ export default function App() {
     }
   };
 
+  const drawPDFLetterhead = (doc: any, title?: string, subtitle?: string): number => {
+    const pageWidth = doc.internal.pageSize.width;
+    let startY = 20;
+
+    if (letterheadImage) {
+      try {
+        const format = letterheadImage.includes('image/png') ? 'PNG' : 'JPEG';
+        doc.addImage(letterheadImage, format, 14, 8, pageWidth - 28, 28, undefined, 'FAST');
+        startY = 42;
+      } catch (e) {
+        console.warn("Could not render letterheadImage on PDF report:", e);
+      }
+    } else if (appLogo) {
+      try {
+        const format = appLogo.includes('image/png') ? 'PNG' : 'JPEG';
+        doc.addImage(appLogo, format, 14, 10, 40, 18, undefined, 'FAST');
+        startY = 34;
+      } catch (e) {
+        console.warn("Could not render appLogo on PDF report:", e);
+      }
+    }
+
+    if (title) {
+      doc.setFontSize(16);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(28, 25, 23);
+      doc.text(title, 14, startY);
+      startY += 7;
+    }
+
+    if (subtitle) {
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(120, 113, 108);
+      doc.text(subtitle, 14, startY);
+      startY += 8;
+    }
+
+    return startY;
+  };
+
   const [appLogo, setAppLogo] = useState<string | null>(null);
 
-  // Load app logo from localStorage & Firestore on mount
+  // Load app logo & letterhead from localStorage & Firestore on mount
   useEffect(() => {
     const savedLogo = localStorage.getItem('app_logo_base64');
     if (savedLogo) setAppLogo(savedLogo);
 
+    const savedLetterhead = localStorage.getItem('letterhead_image_base64');
+    if (savedLetterhead) setLetterheadImage(savedLetterhead);
+
     const unsubscribe = onSnapshot(doc(db, 'settings', 'general'), (snapshot) => {
-      if (snapshot.exists() && snapshot.data().appLogo) {
-        const remoteLogo = snapshot.data().appLogo;
-        setAppLogo(remoteLogo);
-        localStorage.setItem('app_logo_base64', remoteLogo);
+      if (snapshot.exists()) {
+        const data = snapshot.data();
+        if (data.appLogo) {
+          setAppLogo(data.appLogo);
+          localStorage.setItem('app_logo_base64', data.appLogo);
+        }
+        if (data.letterheadImage) {
+          setLetterheadImage(data.letterheadImage);
+          localStorage.setItem('letterhead_image_base64', data.letterheadImage);
+        }
       }
     }, (err) => {
       console.warn("Could not listen to settings/general:", err);
@@ -4098,6 +4136,39 @@ export default function App() {
 
     return () => unsubscribe();
   }, []);
+
+  const handleLetterheadUpload = async (file: File) => {
+    if (file.size > 5 * 1024 * 1024) {
+      showToast("Imagem muito grande. Máximo 5MB.", "error");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onloadend = async () => {
+      const base64 = reader.result as string;
+      setLetterheadImage(base64);
+      localStorage.setItem('letterhead_image_base64', base64);
+      try {
+        await setDoc(doc(db, 'settings', 'general'), { letterheadImage: base64 }, { merge: true });
+        showToast("Papel timbrado atualizado e salvo com sucesso!", "success");
+      } catch (err) {
+        console.error("Erro ao salvar papel timbrado no Firestore:", err);
+        showToast("Papel timbrado atualizado!", "success");
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleRemoveLetterhead = async () => {
+    setLetterheadImage(null);
+    localStorage.removeItem('letterhead_image_base64');
+    try {
+      await setDoc(doc(db, 'settings', 'general'), { letterheadImage: deleteField() }, { merge: true });
+      showToast("Papel timbrado removido com sucesso!", "success");
+    } catch (err) {
+      console.error("Erro ao remover papel timbrado do Firestore:", err);
+      showToast("Papel timbrado removido!", "success");
+    }
+  };
 
   const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -4952,16 +5023,26 @@ export default function App() {
     );
   }
 
+  const isExpired = (item: Item) => {
+    if (item.quantity <= 0) return false;
+    const dateStr = item.expiry_date;
+    if (!dateStr || dateStr === 'Indeterminada') return false;
+    const expiry = new Date(dateStr);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return expiry < today;
+  };
+
   const isNearExpiry = (item: Item) => {
     if (item.quantity <= 0) return false;
     const dateStr = item.expiry_date;
     if (!dateStr || dateStr === 'Indeterminada') return false;
     const expiry = new Date(dateStr);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
     const oneMonthFromNow = new Date();
-    const now = new Date();
-    oneMonthFromNow.setMonth(now.getMonth() + 1);
-    // Include items that are already expired or expiring within a month
-    return expiry <= oneMonthFromNow;
+    oneMonthFromNow.setMonth(today.getMonth() + 1);
+    return expiry >= today && expiry <= oneMonthFromNow;
   };
 
   const filteredItems = items.filter(i => {
@@ -5010,7 +5091,9 @@ export default function App() {
     group.total_quantity <= group.min_quantity
   );
 
-  const nearExpiryItems = items.filter(i => (i.location || 'Almoxarifado') === inventoryLocation && isNearExpiry(i));
+  const expiredItems = items.filter(i => !i.deletedAt && (i.location || 'Almoxarifado') === inventoryLocation && isExpired(i));
+  const nearExpiryItems = items.filter(i => !i.deletedAt && (i.location || 'Almoxarifado') === inventoryLocation && isNearExpiry(i));
+  const totalAlertsCount = lowStockItems.length + expiredItems.length + nearExpiryItems.length;
   const totalVolume = items
     .filter(i => !i.deletedAt && (i.location || 'Almoxarifado') === inventoryLocation)
     .reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
@@ -5679,7 +5762,7 @@ export default function App() {
                   <div className="space-y-2.5 max-w-2xl">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-extrabold bg-emerald-50 text-emerald-700 border border-emerald-200/80">
-                        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                        <span className="w-2 h-2 rounded-full bg-emerald-500" />
                         Sistema Operacional em Tempo Real
                       </span>
                       <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-extrabold bg-blue-50 text-blue-700 border border-blue-200/80">
@@ -5707,7 +5790,7 @@ export default function App() {
                     </div>
                     <div className="px-3 sm:px-4 text-center border-l border-slate-200/80">
                       <p className="text-[10px] uppercase font-extrabold text-rose-600 tracking-wider">Alertas</p>
-                      <p className="text-xl sm:text-2xl font-black text-rose-600 mt-0.5">{lowStockItems.length + nearExpiryItems.length}</p>
+                      <p className="text-xl sm:text-2xl font-black text-rose-600 mt-0.5">{totalAlertsCount}</p>
                     </div>
                   </div>
                 </div>
@@ -5777,7 +5860,7 @@ export default function App() {
                     </h3>
                     <div className="mt-4 flex items-center gap-2">
                       <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 ${pendingRequestsCount > 0 ? 'bg-sky-50 text-sky-800 border border-sky-200' : 'bg-slate-50 text-slate-600 border border-slate-100'}`}>
-                        <span className={`w-1.5 h-1.5 rounded-full ${pendingRequestsCount > 0 ? 'bg-sky-500 animate-pulse' : 'bg-slate-400'}`} />
+                        <span className={`w-1.5 h-1.5 rounded-full ${pendingRequestsCount > 0 ? 'bg-sky-500' : 'bg-slate-400'}`} />
                         {pendingRequestsCount > 0 ? 'Aguardando atendimento' : 'Nenhuma pendência'}
                       </span>
                     </div>
@@ -5786,33 +5869,58 @@ export default function App() {
 
                 {/* Card 4: Nível Crítico / Alertas */}
                 <div 
-                  onClick={() => lowStockItems.length > 0 && setShowDetailModal({ show: true, type: 'low_stock', items: lowStockItems as any })}
+                  onClick={() => totalAlertsCount > 0 && setShowDetailModal({ 
+                    show: true, 
+                    type: 'all_alerts', 
+                    items: [...expiredItems, ...lowStockItems, ...nearExpiryItems] as any 
+                  })}
                   className={`bg-white rounded-2xl border transition-all duration-300 overflow-hidden group cursor-pointer relative ${
-                    (lowStockItems.length > 0 || nearExpiryItems.length > 0)
+                    totalAlertsCount > 0
                       ? 'border-amber-200/80 shadow-sm hover:border-amber-300 hover:shadow-md'
                       : 'border-blue-100/80 shadow-sm hover:border-blue-200'
                   }`}
                 >
-                  <div className={`h-1.5 w-full ${lowStockItems.length > 0 ? 'bg-gradient-to-r from-amber-500 to-rose-500' : 'bg-gradient-to-r from-emerald-500 to-blue-500'}`} />
+                  <div className={`h-1.5 w-full ${expiredItems.length > 0 ? 'bg-gradient-to-r from-rose-600 to-amber-500' : lowStockItems.length > 0 ? 'bg-gradient-to-r from-amber-500 to-rose-500' : 'bg-gradient-to-r from-emerald-500 to-blue-500'}`} />
                   <div className="p-6">
                     <div className="flex items-center justify-between mb-4">
                       <span className="text-xs font-black text-slate-500 uppercase tracking-widest">Atenção Necessária</span>
                       <div className={`p-3 rounded-2xl shadow-md group-hover:scale-105 transition-transform text-white ${
-                        lowStockItems.length > 0 ? 'bg-gradient-to-br from-amber-500 to-rose-500 shadow-amber-500/20' : 'bg-gradient-to-br from-emerald-500 to-blue-600 shadow-emerald-500/20'
+                        expiredItems.length > 0 ? 'bg-gradient-to-br from-rose-600 to-amber-600 shadow-rose-500/20' : lowStockItems.length > 0 ? 'bg-gradient-to-br from-amber-500 to-rose-500 shadow-amber-500/20' : 'bg-gradient-to-br from-emerald-500 to-blue-600 shadow-emerald-500/20'
                       }`}>
                         <AlertTriangle size={20} />
                       </div>
                     </div>
-                    <h3 className={`text-3xl font-black tracking-tight ${lowStockItems.length > 0 ? 'text-amber-600' : 'text-slate-900'}`}>
-                      {lowStockItems.length + nearExpiryItems.length}
+                    <h3 className={`text-3xl font-black tracking-tight ${expiredItems.length > 0 ? 'text-rose-600' : lowStockItems.length > 0 ? 'text-amber-600' : 'text-slate-900'}`}>
+                      {totalAlertsCount}
                     </h3>
-                    <div className="mt-4 flex items-center gap-2">
-                      <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 ${
-                        lowStockItems.length > 0 ? 'bg-amber-50 text-amber-800 border border-amber-200' : 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-                      }`}>
-                        <span className={`w-1.5 h-1.5 rounded-full ${lowStockItems.length > 0 ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`} />
-                        {lowStockItems.length} baixo estoque • {nearExpiryItems.length} próx. vencer
-                      </span>
+                    <div className="mt-4 flex flex-wrap items-center gap-1.5">
+                      {totalAlertsCount === 0 ? (
+                        <span className="px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 bg-emerald-50 text-emerald-800 border border-emerald-200">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                          Tudo em dia
+                        </span>
+                      ) : (
+                        <>
+                          {expiredItems.length > 0 && (
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-rose-100 text-rose-800 border border-rose-300 flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full bg-rose-600" />
+                              {expiredItems.length} vencido{expiredItems.length > 1 ? 's' : ''}
+                            </span>
+                          )}
+                          {lowStockItems.length > 0 && (
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-amber-100 text-amber-800 border border-amber-300 flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                              {lowStockItems.length} baixo estoque
+                            </span>
+                          )}
+                          {nearExpiryItems.length > 0 && (
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-sky-100 text-sky-800 border border-sky-300 flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full bg-sky-500" />
+                              {nearExpiryItems.length} próx. vencer
+                            </span>
+                          )}
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -5910,26 +6018,53 @@ export default function App() {
                           Central de Alertas Críticos
                         </h4>
                         <p className="text-[10px] text-blue-200 font-medium">
-                          Itens abaixo do limite mínimo ou próximos ao vencimento
+                          Itens vencidos, com estoque baixo ou próximos ao vencimento
                         </p>
                       </div>
                     </div>
                     <span className="px-2.5 py-1 rounded-full text-xs font-black bg-amber-500/20 text-amber-300 border border-amber-400/30">
-                      {lowStockItems.length + nearExpiryItems.length}
+                      {totalAlertsCount}
                     </span>
                   </div>
 
                   <div className="p-5 space-y-3 max-h-[480px] overflow-y-auto">
-                    {lowStockItems.length === 0 && nearExpiryItems.length === 0 && (
+                    {totalAlertsCount === 0 && (
                       <div className="py-14 text-center">
                         <CheckCircle size={40} className="mx-auto text-emerald-500 mb-3" />
                         <p className="text-sm text-slate-800 font-bold mb-1">Estoque 100% em Conformidade</p>
                         <p className="text-xs text-slate-500 max-w-xs mx-auto">
-                          Nenhum insumo apresentou nível crítico de reposição ou data de expiração próxima.
+                          Nenhum insumo apresentou nível crítico de reposição, vencimento ultrapassado ou data de expiração próxima.
                         </p>
                       </div>
                     )}
 
+                    {/* Expired Items - High Urgency Red */}
+                    {expiredItems.map(item => (
+                      <div key={`expired-${item.id}`} className="flex items-center justify-between p-3.5 bg-rose-50/90 rounded-2xl border border-rose-200 hover:bg-rose-100/80 transition-all duration-200">
+                        <div className="flex items-center gap-3 min-w-0 flex-1">
+                          <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 border bg-rose-100 text-rose-700 border-rose-300 font-black">
+                            <Calendar size={16} />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5">
+                              <p className="font-extrabold text-xs text-slate-900 truncate leading-tight">{item.name}</p>
+                              <span className="text-[9px] font-black uppercase px-1.5 py-0.2 rounded bg-rose-200 text-rose-800 border border-rose-300">Vencido</span>
+                            </div>
+                            <p className="text-[10px] font-bold mt-0.5 text-rose-700">
+                              Expirou em: {new Date(item.expiry_date!).toLocaleDateString('pt-BR')} ({item.quantity} un em estoque)
+                            </p>
+                          </div>
+                        </div>
+                        <button 
+                          onClick={() => setShowTransactionModal({ show: true, type: 'exit', item })}
+                          className="px-3 py-1.5 rounded-xl text-xs font-bold bg-rose-600 text-white hover:bg-rose-700 transition-all shadow-sm shrink-0 ml-2"
+                        >
+                          Retirar
+                        </button>
+                      </div>
+                    ))}
+
+                    {/* Low Stock Items */}
                     {lowStockItems.map(group => (
                       <div key={`low-${group.name}`} className="flex items-center justify-between p-3.5 bg-amber-50/50 rounded-2xl border border-amber-200/60 hover:bg-amber-50 transition-all duration-200">
                         <div className="flex items-center gap-3 min-w-0">
@@ -5937,7 +6072,10 @@ export default function App() {
                             {group.total_quantity}
                           </div>
                           <div className="min-w-0 flex-1">
-                            <p className="font-extrabold text-xs text-slate-900 truncate leading-tight">{group.name}</p>
+                            <div className="flex items-center gap-1.5">
+                              <p className="font-extrabold text-xs text-slate-900 truncate leading-tight">{group.name}</p>
+                              <span className="text-[9px] font-black uppercase px-1.5 py-0.2 rounded bg-amber-200 text-amber-900">Estoque Baixo</span>
+                            </div>
                             <p className="text-[10px] text-amber-800 font-semibold mt-0.5">
                               Abaixo do mínimo recomendado ({group.min_quantity} un)
                             </p>
@@ -5952,31 +6090,31 @@ export default function App() {
                       </div>
                     ))}
 
-                    {nearExpiryItems.map(item => {
-                      const isExpired = new Date(item.expiry_date!) < new Date();
-                      return (
-                        <div key={`exp-${item.id}`} className={`flex items-center justify-between p-3.5 rounded-2xl border transition-all duration-200 ${isExpired ? 'bg-rose-50/60 border-rose-200/80' : 'bg-slate-50 border-slate-200/80'}`}>
-                          <div className="flex items-center gap-3 min-w-0 flex-1">
-                            <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 border ${isExpired ? 'bg-rose-100 text-rose-700 border-rose-200' : 'bg-amber-100 text-amber-800 border-amber-200'}`}>
-                              <Calendar size={16} />
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <p className="font-extrabold text-xs text-slate-900 truncate leading-tight">{item.name}</p>
-                              <p className={`text-[10px] font-bold mt-0.5 ${isExpired ? 'text-rose-700' : 'text-slate-600'}`}>
-                                {isExpired ? 'Expirou em: ' : 'Vence em: '}
-                                {new Date(item.expiry_date!).toLocaleDateString('pt-BR')}
-                              </p>
-                            </div>
+                    {/* Near Expiry Items */}
+                    {nearExpiryItems.map(item => (
+                      <div key={`exp-${item.id}`} className="flex items-center justify-between p-3.5 bg-sky-50/60 rounded-2xl border border-sky-200/80 hover:bg-sky-50 transition-all duration-200">
+                        <div className="flex items-center gap-3 min-w-0 flex-1">
+                          <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 border bg-sky-100 text-sky-800 border-sky-200">
+                            <Calendar size={16} />
                           </div>
-                          <button 
-                            onClick={() => setShowTransactionModal({ show: true, type: 'exit', item })}
-                            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all shadow-sm shrink-0 ml-2 ${isExpired ? 'bg-rose-600 text-white hover:bg-rose-700' : 'bg-slate-800 text-white hover:bg-slate-900'}`}
-                          >
-                            Retirar
-                          </button>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5">
+                              <p className="font-extrabold text-xs text-slate-900 truncate leading-tight">{item.name}</p>
+                              <span className="text-[9px] font-black uppercase px-1.5 py-0.2 rounded bg-sky-200 text-sky-900">Próx. Vencer</span>
+                            </div>
+                            <p className="text-[10px] font-bold mt-0.5 text-sky-800">
+                              Vence em: {new Date(item.expiry_date!).toLocaleDateString('pt-BR')} ({item.quantity} un)
+                            </p>
+                          </div>
                         </div>
-                      );
-                    })}
+                        <button 
+                          onClick={() => setShowTransactionModal({ show: true, type: 'exit', item })}
+                          className="px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-800 text-white hover:bg-slate-900 transition-all shadow-sm shrink-0 ml-2"
+                        >
+                          Retirar
+                        </button>
+                      </div>
+                    ))}
                   </div>
                 </div>
 
@@ -6727,44 +6865,43 @@ export default function App() {
               exit={{ opacity: 0, scale: 0.98 }}
               className="space-y-8"
             >
-              {/* Executive Reports Hero Banner - Deep Blue Gradient Theme */}
-              <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-slate-900 via-blue-950 to-indigo-950 border border-blue-900/50 p-6 sm:p-8 shadow-xl shadow-blue-950/20 text-white">
-                <div className="absolute -right-16 -top-16 w-80 h-80 bg-blue-600/20 rounded-full blur-3xl pointer-events-none" />
-                <div className="absolute right-1/3 -bottom-20 w-64 h-64 bg-indigo-500/10 rounded-full blur-2xl pointer-events-none" />
-
-                <div className="relative z-10 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
-                  <div className="space-y-2 max-w-2xl">
-                    <div className="flex flex-wrap items-center gap-2.5">
-                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-blue-500/20 text-blue-300 border border-blue-400/30 backdrop-blur-sm">
-                        <BarChart3 size={13} className="text-blue-400" />
+              {/* Executive Reports Banner - Minimalist & Clean Light Theme */}
+              <div className="bg-white p-6 sm:p-7 rounded-2xl border border-slate-200/80 shadow-xs text-slate-900">
+                <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
+                  <div className="space-y-1.5 max-w-2xl">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-extrabold bg-blue-50 text-blue-700 border border-blue-200/80">
+                        <BarChart3 size={13} className="text-blue-600" />
                         Inteligência Analítica de Estoque
                       </span>
-                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-white/10 text-slate-200 border border-white/10">
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 border border-slate-200/80">
                         {reportSectorFilter === 'all' ? 'Todos os Setores' : reportSectorFilter}
                       </span>
                     </div>
 
-                    <h2 className="text-2xl sm:text-3xl font-black tracking-tight text-white">
+                    <h2 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
                       Relatórios & Gestão de Consumo
                     </h2>
-                    <p className="text-sm text-slate-300 leading-relaxed">
+                    <p className="text-xs sm:text-sm text-slate-500 font-medium leading-relaxed">
                       Projeções orçamentárias, histórico de saídas, curva de movimentação física e relatórios fiscais do almoxarifado.
                     </p>
                   </div>
 
-                  {/* Quick Indicator Bar */}
-                  <div className="flex items-center gap-3 bg-slate-900/80 backdrop-blur-md p-3 sm:p-4 rounded-2xl border border-blue-800/40 divide-x divide-blue-800/40 shrink-0">
-                    <div className="px-3 text-center">
-                      <p className="text-[10px] uppercase font-bold text-emerald-400 tracking-wider">Entradas</p>
-                      <p className="text-xl font-black text-white">{reportData.entries}</p>
+                  {/* Minimalist Summary Badges */}
+                  <div className="flex items-center gap-3 sm:gap-4 bg-slate-50 p-2.5 sm:p-3 rounded-2xl border border-slate-200/80 shrink-0">
+                    <div className="px-3 py-1 text-center">
+                      <p className="text-[10px] uppercase font-extrabold text-emerald-600 tracking-wider">Entradas</p>
+                      <p className="text-lg font-black text-slate-900 mt-0.5">{reportData.entries}</p>
                     </div>
-                    <div className="px-3 text-center">
-                      <p className="text-[10px] uppercase font-bold text-rose-400 tracking-wider">Saídas</p>
-                      <p className="text-xl font-black text-white">{reportData.exits}</p>
+                    <div className="h-8 w-px bg-slate-200" />
+                    <div className="px-3 py-1 text-center">
+                      <p className="text-[10px] uppercase font-extrabold text-rose-600 tracking-wider">Saídas</p>
+                      <p className="text-lg font-black text-slate-900 mt-0.5">{reportData.exits}</p>
                     </div>
-                    <div className="px-3 text-center">
-                      <p className="text-[10px] uppercase font-bold text-sky-300 tracking-wider">Período</p>
-                      <p className="text-xs font-bold text-slate-300 mt-1">
+                    <div className="h-8 w-px bg-slate-200" />
+                    <div className="px-3 py-1 text-center">
+                      <p className="text-[10px] uppercase font-extrabold text-slate-500 tracking-wider">Período</p>
+                      <p className="text-xs font-bold text-slate-700 mt-1">
                         {new Date(reportRange.start + 'T00:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })} - {new Date(reportRange.end + 'T00:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}
                       </p>
                     </div>
@@ -6772,7 +6909,41 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Special Utility Cards Section */}
+              {/* Reports Navigation Sub-Tabs */}
+              <div className="flex items-center gap-3 bg-white p-2 rounded-2xl border border-slate-200/80 shadow-sm">
+                <button
+                  onClick={() => setReportsTab('overview')}
+                  className={`px-5 py-2.5 rounded-xl text-xs sm:text-sm font-black flex items-center gap-2 transition-all ${
+                    reportsTab === 'overview'
+                      ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-md shadow-blue-600/20'
+                      : 'text-slate-600 hover:text-blue-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <BarChart3 size={17} /> Relatórios & Gráficos
+                </button>
+                <button
+                  onClick={() => setReportsTab('letterhead')}
+                  className={`px-5 py-2.5 rounded-xl text-xs sm:text-sm font-black flex items-center gap-2 transition-all relative ${
+                    reportsTab === 'letterhead'
+                      ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-md shadow-blue-600/20'
+                      : 'text-slate-600 hover:text-blue-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <FileText size={17} /> Papel Timbrado
+                  {letterheadImage ? (
+                    <span className="flex items-center gap-1 text-[10px] bg-emerald-500 text-white px-2 py-0.5 rounded-full font-bold">
+                      Anexado
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1 text-[10px] bg-amber-500 text-white px-2 py-0.5 rounded-full font-bold">
+                      Anexar
+                    </span>
+                  )}
+                </button>
+              </div>
+
+              {reportsTab === 'overview' && (
+                <div className="space-y-8">
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {/* Print Requests Section - Only for Admin */}
                 {isAdmin && (
@@ -7470,6 +7641,183 @@ export default function App() {
                   </div>
                 </div>
               )}
+              </div>
+              )}
+
+              {reportsTab === 'letterhead' && (
+                <div className="space-y-6">
+                  <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-200/90 shadow-sm space-y-6">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-slate-100">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="px-3 py-1 rounded-full text-xs font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                            Personalização Institucional
+                          </span>
+                          {letterheadImage ? (
+                            <span className="px-3 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1.5">
+                              <span className="w-2 h-2 rounded-full bg-emerald-500" /> Timbrado Ativo
+                            </span>
+                          ) : (
+                            <span className="px-3 py-1 rounded-full text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200 flex items-center gap-1.5">
+                              <span className="w-2 h-2 rounded-full bg-amber-500" /> Sem Timbrado Anexado
+                            </span>
+                          )}
+                        </div>
+                        <h3 className="text-xl sm:text-2xl font-black text-slate-900 mt-2">
+                          Anexo de Papel Timbrado dos Relatórios
+                        </h3>
+                        <p className="text-xs sm:text-sm text-slate-500 font-medium mt-1 max-w-2xl">
+                          Anexe a imagem oficial do papel timbrado do órgão ou instituição (contendo cabeçalho, logomarcas e rodapé). A imagem anexada será inserida automaticamente no topo de <strong>todos os relatórios exportados em PDF</strong> (Estoque, Catálogo, Solicitações, PCA, Termos de Doação e Recibos).
+                        </p>
+                      </div>
+
+                      {letterheadImage && (
+                        <button
+                          onClick={() => handleExportInventoryPDF()}
+                          className="px-4 py-2.5 rounded-xl bg-slate-900 text-white font-extrabold text-xs flex items-center gap-2 hover:bg-slate-800 transition-all shadow-sm shrink-0"
+                        >
+                          <Download size={15} /> Testar Exportação PDF
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+                      {/* Upload Zone */}
+                      <div className="lg:col-span-5 space-y-4">
+                        <label className="block text-xs font-extrabold text-slate-700 uppercase tracking-wider">
+                          Selecione ou Arraste o Arquivo de Imagem
+                        </label>
+                        
+                        <div className="relative group cursor-pointer">
+                          <input 
+                            type="file" 
+                            accept="image/*" 
+                            className="absolute inset-0 w-full h-full opacity-0 z-20 cursor-pointer"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) handleLetterheadUpload(file);
+                            }}
+                          />
+                          <div className={`p-8 rounded-2xl border-2 border-dashed transition-all text-center flex flex-col items-center justify-center gap-3 ${
+                            letterheadImage 
+                              ? 'border-blue-300 bg-blue-50/40 hover:bg-blue-50/80' 
+                              : 'border-slate-300 bg-slate-50 hover:border-blue-400 hover:bg-slate-100/80'
+                          }`}>
+                            <div className={`p-4 rounded-2xl shadow-sm ${letterheadImage ? 'bg-blue-600 text-white' : 'bg-white text-slate-600 border border-slate-200'}`}>
+                              <Upload size={28} />
+                            </div>
+                            <div>
+                              <p className="font-extrabold text-sm text-slate-900">
+                                {letterheadImage ? 'Clique para Substituir a Imagem' : 'Clique ou arraste o Papel Timbrado'}
+                              </p>
+                              <p className="text-xs text-slate-500 font-medium mt-1">
+                                Formatos recomendados: PNG, JPG ou WEBP (Max: 5MB)
+                              </p>
+                            </div>
+                            <span className="mt-2 px-4 py-1.5 rounded-xl bg-white border border-slate-200 text-slate-700 text-xs font-bold shadow-xs group-hover:border-blue-400">
+                              {letterheadImage ? 'Escolher Novo Arquivo' : 'Selecionar do Computador'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {letterheadImage && (
+                          <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-200/80">
+                            <div className="flex items-center gap-3">
+                              <div className="p-2 bg-emerald-100 text-emerald-700 rounded-xl">
+                                <CheckCircle size={18} />
+                              </div>
+                              <div>
+                                <p className="text-xs font-extrabold text-slate-900">Papel Timbrado Armazenado</p>
+                                <p className="text-[10px] text-slate-500 font-medium">Sincronizado e pronto para emissão</p>
+                              </div>
+                            </div>
+                            <button
+                              onClick={handleRemoveLetterhead}
+                              className="px-3 py-1.5 rounded-xl bg-rose-50 text-rose-600 hover:bg-rose-100 text-xs font-extrabold transition-colors flex items-center gap-1.5"
+                              title="Remover papel timbrado"
+                            >
+                              <Trash2 size={14} /> Remover
+                            </button>
+                          </div>
+                        )}
+
+                        <div className="p-4 bg-blue-50/60 rounded-2xl border border-blue-100 space-y-2">
+                          <p className="text-xs font-bold text-blue-900 flex items-center gap-1.5">
+                            <ImageIcon size={16} className="text-blue-600" /> Dicas para melhor resultado
+                          </p>
+                          <ul className="text-xs text-blue-800/80 space-y-1 list-disc list-inside font-medium leading-relaxed">
+                            <li>Utilize imagens em alta resolução com fundo branco ou transparente.</li>
+                            <li>O timbrado é posicionado no cabeçalho superior de cada página gerada.</li>
+                            <li>Sua alteração é salva imediatamente para todos os administradores.</li>
+                          </ul>
+                        </div>
+                      </div>
+
+                      {/* Live A4 Preview Simulation */}
+                      <div className="lg:col-span-7 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <label className="text-xs font-extrabold text-slate-700 uppercase tracking-wider">
+                            Pré-visualização da Folha A4 com Timbrado
+                          </label>
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest bg-slate-100 px-2.5 py-0.5 rounded-md">
+                            Proporção A4
+                          </span>
+                        </div>
+
+                        <div className="bg-slate-200/70 p-4 sm:p-6 rounded-3xl border border-slate-300/80 flex justify-center shadow-inner">
+                          {/* A4 Sheet Container */}
+                          <div className="bg-white w-full max-w-[480px] aspect-[1/1.414] rounded-lg shadow-xl border border-slate-300 p-4 sm:p-6 flex flex-col justify-between relative overflow-hidden">
+                            {/* Top Letterhead Area */}
+                            <div className="w-full h-16 sm:h-20 bg-slate-50 border border-dashed border-slate-200 rounded-md flex items-center justify-center overflow-hidden relative">
+                              {letterheadImage ? (
+                                <img 
+                                  src={letterheadImage} 
+                                  alt="Papel Timbrado" 
+                                  className="w-full h-full object-contain"
+                                />
+                              ) : (
+                                <div className="text-center p-2">
+                                  <p className="text-xs font-extrabold text-slate-400 uppercase tracking-wider">
+                                    Cabeçalho do Timbrado Oficial
+                                  </p>
+                                  <p className="text-[10px] text-slate-300">Nenhuma imagem anexada ainda</p>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Simulated Report Body Content */}
+                            <div className="my-4 space-y-3 flex-1 opacity-70">
+                              <div className="h-4 bg-slate-800 rounded-md w-3/4" />
+                              <div className="h-2 bg-slate-200 rounded w-1/2" />
+                              
+                              <div className="space-y-1.5 pt-3">
+                                <div className="h-6 bg-slate-100 rounded-md border border-slate-200 w-full flex items-center px-2">
+                                  <div className="h-2 bg-slate-300 rounded w-1/4" />
+                                </div>
+                                <div className="h-5 bg-slate-50 rounded-md border border-slate-100 w-full flex items-center px-2">
+                                  <div className="h-2 bg-slate-200 rounded w-1/3" />
+                                </div>
+                                <div className="h-5 bg-slate-50 rounded-md border border-slate-100 w-full flex items-center px-2">
+                                  <div className="h-2 bg-slate-200 rounded w-1/2" />
+                                </div>
+                                <div className="h-5 bg-slate-50 rounded-md border border-slate-100 w-full flex items-center px-2">
+                                  <div className="h-2 bg-slate-200 rounded w-2/3" />
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Footer Indicator */}
+                            <div className="pt-2 border-t border-slate-100 flex justify-between items-center text-[8px] text-slate-400">
+                              <span>Relatório Oficial do Sistema</span>
+                              <span>Página 1 de 1</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
             </motion.div>
           )}
 
@@ -7852,7 +8200,7 @@ export default function App() {
                             req.status === 'APROVADO' ? 'bg-blue-50 text-blue-600 border-blue-200' :
                             req.status === 'ENTREGUE' ? 'bg-emerald-50 text-emerald-600 border-emerald-200' :
                             req.status === 'RECUSADO' ? 'bg-rose-50 text-rose-600 border-rose-200' :
-                            req.status === 'DEVOLUCAO_PENDENTE' ? 'bg-amber-50 text-amber-700 border-amber-200 animate-pulse' :
+                            req.status === 'DEVOLUCAO_PENDENTE' ? 'bg-amber-50 text-amber-700 border-amber-200' :
                             req.status === 'DEVOLUCAO_APROVADA' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
                             req.status === 'DEVOLUCAO_RECUSADA' ? 'bg-rose-50 text-rose-700 border-rose-200' :
                             'bg-gray-50 text-gray-600 border-gray-200'
@@ -7940,7 +8288,7 @@ export default function App() {
                         </td>
                         <td className="px-6 py-4">
                           <span className={`text-[10px] font-black px-2 py-1 rounded-full uppercase tracking-widest border ${
-                            req.status === 'DEVOLUCAO_PENDENTE' ? 'bg-amber-50 text-amber-700 border-amber-200 animate-pulse' :
+                            req.status === 'DEVOLUCAO_PENDENTE' ? 'bg-amber-50 text-amber-700 border-amber-200' :
                             req.status === 'DEVOLUCAO_APROVADA' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
                             req.status === 'DEVOLUCAO_RECUSADA' ? 'bg-rose-50 text-rose-700 border-rose-200' :
                             'bg-gray-50 text-gray-600 border-gray-200'
@@ -8026,7 +8374,7 @@ export default function App() {
                             req.status === 'APROVADO' ? 'bg-blue-50 text-blue-600 border-blue-200' :
                             req.status === 'ENTREGUE' ? 'bg-emerald-50 text-emerald-600 border-emerald-200' :
                             req.status === 'RECUSADO' ? 'bg-rose-50 text-rose-600 border-rose-200' :
-                            req.status === 'DEVOLUCAO_PENDENTE' ? 'bg-amber-50 text-amber-700 border-amber-200 animate-pulse' :
+                            req.status === 'DEVOLUCAO_PENDENTE' ? 'bg-amber-50 text-amber-700 border-amber-200' :
                             req.status === 'DEVOLUCAO_APROVADA' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
                             req.status === 'DEVOLUCAO_RECUSADA' ? 'bg-rose-50 text-rose-700 border-rose-200' :
                             'bg-gray-50 text-gray-600 border-gray-200'
@@ -9583,54 +9931,98 @@ export default function App() {
             className="bg-white w-[95vw] lg:w-full lg:max-w-2xl rounded-3xl p-4 sm:p-8 shadow-2xl max-h-[85vh] overflow-y-auto"
           >
             <div className="flex justify-between items-center mb-6">
-              <h3 className="text-2xl font-bold">
-                {showDetailModal.type === 'low_stock' ? 'Itens com Estoque Baixo' : 'Itens com Vencimento Próximo'}
-              </h3>
+              <div>
+                <h3 className="text-xl sm:text-2xl font-bold text-slate-900">
+                  {showDetailModal.type === 'low_stock' 
+                    ? 'Itens com Estoque Baixo' 
+                    : showDetailModal.type === 'expiry'
+                    ? 'Itens Próximos ao Vencimento'
+                    : 'Atenção Necessária — Central de Alertas'}
+                </h3>
+                <p className="text-xs text-slate-500 font-medium mt-1">
+                  Listagem de insumos que requerem providência imediata
+                </p>
+              </div>
               <button 
                 onClick={() => setShowDetailModal({ show: false, type: 'low_stock', items: [] })}
-                className="p-2 hover:bg-[#F5F5F4] rounded-full transition-all"
+                className="p-2 hover:bg-slate-100 rounded-full transition-all text-slate-500"
               >
                 <X size={24} />
               </button>
             </div>
 
-            <div className="space-y-4">
+            <div className="space-y-3">
               {showDetailModal.items.map((item, idx) => {
                 const isGroup = 'total_quantity' in item;
                 const quantity = isGroup ? (item as ItemGroup).total_quantity : (item as Item).quantity;
                 const minQuantity = isGroup ? (item as ItemGroup).min_quantity : (item as Item).min_quantity;
                 const name = item.name;
                 const id = isGroup ? `group-${idx}` : (item as Item).id;
-                
+
+                const itemIsExpired = !isGroup && isExpired(item as Item);
+                const itemIsNearExpiry = !isGroup && isNearExpiry(item as Item);
+
+                let cardBg = 'bg-amber-50 border-amber-200';
+                let tagLabel = 'Estoque Baixo';
+                let tagColor = 'bg-amber-100 text-amber-900 font-bold';
+                let actionType: 'entry' | 'exit' = 'entry';
+                let actionLabel = 'Repor';
+                let buttonStyle = 'bg-amber-600 hover:bg-amber-700';
+
+                if (itemIsExpired) {
+                  cardBg = 'bg-rose-50 border-rose-200';
+                  tagLabel = 'VENCIDO';
+                  tagColor = 'bg-rose-200 text-rose-800 font-black';
+                  actionType = 'exit';
+                  actionLabel = 'Retirar';
+                  buttonStyle = 'bg-rose-600 hover:bg-rose-700';
+                } else if (itemIsNearExpiry) {
+                  cardBg = 'bg-sky-50 border-sky-200';
+                  tagLabel = 'PRÓX. VENCER';
+                  tagColor = 'bg-sky-200 text-sky-900 font-black';
+                  actionType = 'exit';
+                  actionLabel = 'Retirar';
+                  buttonStyle = 'bg-sky-700 hover:bg-sky-800';
+                }
+
                 return (
                   <div 
                     key={`modal-${id}`} 
-                    className={`flex items-center justify-between p-5 rounded-2xl border ${showDetailModal.type === 'low_stock' ? 'bg-orange-50 border-orange-100' : 'bg-red-50 border-red-100'}`}
+                    className={`flex items-center justify-between p-4 sm:p-5 rounded-2xl border ${cardBg}`}
                   >
-                    <div className="flex items-center gap-4">
-                      <div className={`w-12 h-12 rounded-full flex items-center justify-center font-bold ${showDetailModal.type === 'low_stock' ? 'bg-orange-200 text-orange-700' : 'bg-red-200 text-red-700'}`}>
-                        {showDetailModal.type === 'low_stock' ? quantity : <Calendar size={20} />}
+                    <div className="flex items-center gap-3 sm:gap-4 min-w-0 flex-1">
+                      <div className={`w-10 h-10 sm:w-12 sm:h-12 rounded-2xl flex items-center justify-center font-extrabold text-sm shrink-0 border ${itemIsExpired ? 'bg-rose-100 text-rose-800 border-rose-200' : itemIsNearExpiry ? 'bg-sky-100 text-sky-900 border-sky-200' : 'bg-amber-100 text-amber-900 border-amber-200'}`}>
+                        {!isGroup && (itemIsExpired || itemIsNearExpiry) ? <Calendar size={20} /> : quantity}
                       </div>
-                      <div>
-                        <p className="font-bold text-lg">{name}</p>
-                        <p className={`text-sm ${showDetailModal.type === 'low_stock' ? 'text-orange-700' : 'text-red-700'}`}>
-                          {showDetailModal.type === 'low_stock' 
-                            ? `Estoque total: ${quantity} (Mínimo: ${minQuantity})` 
-                            : `Vencimento: ${new Date((item as Item).expiry_date!).toLocaleDateString('pt-BR')}`}
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <p className="font-extrabold text-sm sm:text-base text-slate-900 truncate">{name}</p>
+                          <span className={`text-[9px] px-2 py-0.5 rounded-full uppercase ${tagColor}`}>
+                            {tagLabel}
+                          </span>
+                        </div>
+                        <p className="text-xs font-semibold mt-0.5 text-slate-700">
+                          {!isGroup && itemIsExpired ? (
+                            <span className="text-rose-700 font-bold">Expirou em: {new Date((item as Item).expiry_date!).toLocaleDateString('pt-BR')} ({quantity} un)</span>
+                          ) : !isGroup && itemIsNearExpiry ? (
+                            <span className="text-sky-800 font-bold">Vence em: {new Date((item as Item).expiry_date!).toLocaleDateString('pt-BR')} ({quantity} un)</span>
+                          ) : (
+                            <span>Estoque total: {quantity} un (Mínimo: {minQuantity} un)</span>
+                          )}
                         </p>
-                        {!isGroup && <p className="text-xs text-[#78716C] mt-1">Lote: {(item as Item).batch_number || 'N/A'} | Fornecedor: {(item as Item).supplier || 'N/A'}</p>}
-                        {isGroup && <p className="text-xs text-[#78716C] mt-1">{(item as ItemGroup).batches.length} lotes ativos</p>}
+                        {!isGroup && <p className="text-[11px] text-slate-500 mt-1">Lote: {(item as Item).batch_number || 'N/A'} | Fornecedor: {(item as Item).supplier || 'N/A'}</p>}
+                        {isGroup && <p className="text-[11px] text-slate-500 mt-1">{(item as ItemGroup).batches.length} lotes ativos</p>}
                       </div>
                     </div>
                     <button 
                       onClick={() => {
                         setShowDetailModal({ show: false, type: 'low_stock', items: [] });
                         const targetItem = isGroup ? (item as ItemGroup).batches[0] : (item as Item);
-                        setShowTransactionModal({ show: true, type: showDetailModal.type === 'low_stock' ? 'entry' : 'exit', item: targetItem });
+                        setShowTransactionModal({ show: true, type: actionType, item: targetItem });
                       }}
-                      className={`px-5 py-2 rounded-xl text-sm font-bold text-white transition-all ${showDetailModal.type === 'low_stock' ? 'bg-orange-600 hover:bg-orange-700' : 'bg-red-600 hover:bg-red-700'}`}
+                      className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold text-white transition-all shadow-sm shrink-0 ml-3 ${buttonStyle}`}
                     >
-                      {showDetailModal.type === 'low_stock' ? 'Repor' : 'Retirar'}
+                      {actionLabel}
                     </button>
                   </div>
                 );
