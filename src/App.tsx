@@ -8249,16 +8249,22 @@ export default function App() {
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -10 }}
-              className="max-w-4xl mx-auto space-y-6"
+              className="max-w-5xl mx-auto space-y-6"
             >
-              {/* Header with clear button */}
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
-                <div>
-                  <h2 className="text-2xl font-black text-[#1C1917] flex items-center gap-2">
-                    <RotateCcw className="text-amber-600 animate-pulse" size={24} />
-                    Devolução de Materiais
-                  </h2>
-                  <p className="text-sm text-[#78716C] font-semibold mt-1">Gerencie e acompanhe as solicitações de retorno ao almoxarifado.</p>
+              {/* Refined Banner Header */}
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-5 bg-gradient-to-r from-amber-500/10 via-orange-500/5 to-transparent p-6 sm:p-8 rounded-3xl border border-amber-200/80 shadow-xs relative overflow-hidden">
+                <div className="space-y-1.5 z-10">
+                  <div className="flex items-center gap-2">
+                    <span className="p-2 rounded-xl bg-amber-600 text-white shadow-md shadow-amber-500/20">
+                      <RotateCcw size={20} />
+                    </span>
+                    <h2 className="text-2xl font-black text-slate-900 tracking-tight">
+                      Devolução de Materiais
+                    </h2>
+                  </div>
+                  <p className="text-xs sm:text-sm text-slate-600 font-medium max-w-xl">
+                    Gerencie o retorno de materiais do setor <strong className="text-amber-700">{selectedSector}</strong> ao almoxarifado de forma simples e organizada.
+                  </p>
                 </div>
                 <button
                   onClick={() => {
@@ -8268,14 +8274,14 @@ export default function App() {
                     setDevolutionObservation('');
                     setShowDevolutionModal({ show: true });
                   }}
-                  className="bg-amber-600 text-white px-6 py-3.5 rounded-2xl text-sm font-black uppercase tracking-wider hover:bg-amber-700 transition-all shadow-lg shadow-amber-200 flex items-center justify-center gap-2 whitespace-nowrap self-start md:self-auto hover:-translate-y-0.5 active:translate-y-0"
+                  className="z-10 bg-gradient-to-r from-amber-600 to-amber-700 text-white px-6 py-3.5 rounded-2xl text-xs font-black uppercase tracking-wider hover:from-amber-700 hover:to-amber-800 transition-all shadow-md shadow-amber-600/20 flex items-center justify-center gap-2 whitespace-nowrap self-start md:self-auto hover:-translate-y-0.5 active:translate-y-0"
                 >
                   <RotateCcw size={16} />
                   Solicitar Devolução
                 </button>
               </div>
 
-              {/* Statistics Cards */}
+              {/* Statistics KPI Row */}
               {(() => {
                 const devRequests = requests.filter(r => r.sector === selectedSector && r.isReturn && !r.deletedAt);
                 const pendingCount = devRequests.filter(r => r.status === 'DEVOLUCAO_PENDENTE').length;
@@ -8283,254 +8289,239 @@ export default function App() {
                 const rejectedCount = devRequests.filter(r => r.status === 'DEVOLUCAO_RECUSADA').length;
 
                 return (
-                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-                    <div className="bg-white border border-[#E7E5E4] rounded-2xl p-4 shadow-sm flex items-center gap-3">
-                      <div className="p-2.5 bg-amber-50 text-amber-600 rounded-xl">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
+                    <div className="bg-white border border-slate-100/80 rounded-2xl p-4 shadow-xs flex items-center gap-3 hover:shadow-md transition-all">
+                      <div className="p-3 bg-amber-50 text-amber-600 rounded-xl">
                         <RotateCcw size={18} />
                       </div>
                       <div>
-                        <p className="text-[10px] font-black text-[#A8A29E] uppercase tracking-wider">Total Enviadas</p>
-                        <p className="text-lg font-black text-[#1C1917]">{devRequests.length}</p>
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Total Enviadas</p>
+                        <p className="text-xl font-black text-slate-900">{devRequests.length}</p>
                       </div>
                     </div>
-                    <div className="bg-white border border-[#E7E5E4] rounded-2xl p-4 shadow-sm flex items-center gap-3">
-                      <div className="p-2.5 bg-yellow-50 text-yellow-600 rounded-xl">
+                    <div className="bg-white border border-slate-100/80 rounded-2xl p-4 shadow-xs flex items-center gap-3 hover:shadow-md transition-all">
+                      <div className="p-3 bg-yellow-50 text-yellow-600 rounded-xl">
                         <Clock size={18} />
                       </div>
                       <div>
-                        <p className="text-[10px] font-black text-[#A8A29E] uppercase tracking-wider">Pendentes</p>
-                        <p className="text-lg font-black text-yellow-600">{pendingCount}</p>
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Pendentes</p>
+                        <p className="text-xl font-black text-yellow-600">{pendingCount}</p>
                       </div>
                     </div>
-                    <div className="bg-white border border-[#E7E5E4] rounded-2xl p-4 shadow-sm flex items-center gap-3">
-                      <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl">
+                    <div className="bg-white border border-slate-100/80 rounded-2xl p-4 shadow-xs flex items-center gap-3 hover:shadow-md transition-all">
+                      <div className="p-3 bg-emerald-50 text-emerald-600 rounded-xl">
                         <CheckCircle size={18} />
                       </div>
                       <div>
-                        <p className="text-[10px] font-black text-[#A8A29E] uppercase tracking-wider">Aprovadas</p>
-                        <p className="text-lg font-black text-emerald-600">{approvedCount}</p>
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Aprovadas</p>
+                        <p className="text-xl font-black text-emerald-600">{approvedCount}</p>
                       </div>
                     </div>
-                    <div className="bg-white border border-[#E7E5E4] rounded-2xl p-4 shadow-sm flex items-center gap-3">
-                      <div className="p-2.5 bg-rose-50 text-rose-600 rounded-xl">
+                    <div className="bg-white border border-slate-100/80 rounded-2xl p-4 shadow-xs flex items-center gap-3 hover:shadow-md transition-all">
+                      <div className="p-3 bg-rose-50 text-rose-600 rounded-xl">
                         <X size={18} />
                       </div>
                       <div>
-                        <p className="text-[10px] font-black text-[#A8A29E] uppercase tracking-wider">Recusadas</p>
-                        <p className="text-lg font-black text-rose-600">{rejectedCount}</p>
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Recusadas</p>
+                        <p className="text-xl font-black text-rose-600">{rejectedCount}</p>
                       </div>
                     </div>
                   </div>
                 );
               })()}
 
-              {/* Sub-tabs Toggle Pills */}
-              <div className="flex border-b border-[#E7E5E4] gap-6">
+              {/* Modern Segmented Controller */}
+              <div className="bg-slate-100/80 p-1.5 rounded-2xl inline-flex gap-1 w-full sm:w-auto border border-slate-200/60">
                 <button
                   onClick={() => setDevolutionSubTab('my_returns')}
-                  className={`pb-4 text-sm font-bold border-b-2 transition-all relative ${
+                  className={`flex-1 sm:flex-none px-5 py-2.5 rounded-xl text-xs font-black transition-all ${
                     devolutionSubTab === 'my_returns'
-                      ? 'border-amber-600 text-amber-600 font-black'
-                      : 'border-transparent text-[#78716C] hover:text-[#1C1917]'
+                      ? 'bg-white text-amber-700 shadow-sm border border-amber-100/80'
+                      : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
                   Minhas Devoluções
-                  {devolutionSubTab === 'my_returns' && (
-                    <motion.div layoutId="activeDevTab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-amber-600" />
-                  )}
                 </button>
                 <button
                   onClick={() => setDevolutionSubTab('eligible_deliveries')}
-                  className={`pb-4 text-sm font-bold border-b-2 transition-all relative ${
+                  className={`flex-1 sm:flex-none px-5 py-2.5 rounded-xl text-xs font-black transition-all ${
                     devolutionSubTab === 'eligible_deliveries'
-                      ? 'border-amber-600 text-amber-600 font-black'
-                      : 'border-transparent text-[#78716C] hover:text-[#1C1917]'
+                      ? 'bg-white text-amber-700 shadow-sm border border-amber-100/80'
+                      : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
                   Entregas Elegíveis para Devolução
-                  {devolutionSubTab === 'eligible_deliveries' && (
-                    <motion.div layoutId="activeDevTab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-amber-600" />
-                  )}
                 </button>
               </div>
 
-              {/* Tab Content rendering */}
+              {/* Subtab Content */}
               {devolutionSubTab === 'my_returns' ? (
-                <div className="bg-white rounded-3xl border border-[#E7E5E4] shadow-sm overflow-hidden">
-                  <div className="p-6 border-b border-[#E7E5E4]">
-                    <h3 className="text-lg font-black">Histórico de Solicitações de Devolução</h3>
-                    <p className="text-xs text-[#78716C]">Acompanhe o andamento das devoluções enviadas pelo seu setor ao almoxarifado.</p>
+                <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">
+                  <div className="p-6 border-b border-slate-100">
+                    <h3 className="text-base font-black text-slate-900">Histórico de Solicitações de Devolução</h3>
+                    <p className="text-xs text-slate-500 font-medium">Acompanhe o andamento e o parecer das solicitações de devolução do seu setor.</p>
                   </div>
 
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse">
-                      <thead>
-                        <tr className="bg-[#FAFAF9] border-b border-[#E7E5E4]">
-                          <th className="px-6 py-4 font-bold text-xs text-[#78716C] uppercase tracking-wider">Cód / Data</th>
-                          <th className="px-6 py-4 font-bold text-xs text-[#78716C] uppercase tracking-wider">Status</th>
-                          <th className="px-6 py-4 font-bold text-xs text-[#78716C] uppercase tracking-wider">Motivo</th>
-                          <th className="px-6 py-4 font-bold text-xs text-[#78716C] uppercase tracking-wider">Itens</th>
-                          <th className="px-6 py-4 font-bold text-xs text-[#78716C] uppercase tracking-wider text-right">Ações</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-[#E7E5E4]">
-                        {requests
-                          .filter(r => r.sector === selectedSector && r.isReturn && !r.deletedAt)
-                          .map(req => {
-                            const reqItems = allRequestItems.filter(ri => ri.request_id === req.id);
-                            return (
-                              <tr key={req.id} className="hover:bg-[#FAFAF9] transition-all">
-                                <td className="px-6 py-4 whitespace-nowrap">
-                                  <p className="font-bold text-sm">#{req.id.slice(-5).toUpperCase()}</p>
-                                  <p className="text-xs text-[#A8A29E]">
-                                    {new Date(req.date).toLocaleDateString('pt-BR')}
-                                  </p>
-                                </td>
-                                <td className="px-6 py-4 whitespace-nowrap">
-                                  <span className={`text-[10px] font-black px-2.5 py-1 rounded-full uppercase tracking-widest border ${
-                                    req.status === 'DEVOLUCAO_PENDENTE' ? 'bg-amber-50 text-amber-700 border-amber-200' :
-                                    req.status === 'DEVOLUCAO_APROVADA' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                                    req.status === 'DEVOLUCAO_RECUSADA' ? 'bg-rose-50 text-rose-700 border-rose-200' :
-                                    'bg-gray-50 text-gray-700 border-gray-200'
-                                  }`}>
-                                    {req.status === 'DEVOLUCAO_PENDENTE' ? 'PENDENTE' :
-                                     req.status === 'DEVOLUCAO_APROVADA' ? 'CONCLUÍDO' :
-                                     req.status === 'DEVOLUCAO_RECUSADA' ? 'RECUSADO' :
-                                     req.status}
+                  <div className="p-4 sm:p-6 space-y-3">
+                    {requests
+                      .filter(r => r.sector === selectedSector && r.isReturn && !r.deletedAt)
+                      .map(req => {
+                        const reqItems = allRequestItems.filter(ri => ri.request_id === req.id);
+                        return (
+                          <div 
+                            key={req.id} 
+                            className="bg-slate-50/60 border border-slate-200/60 hover:border-amber-200 rounded-2xl p-4 sm:p-5 transition-all hover:bg-amber-50/10 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+                          >
+                            <div className="space-y-2 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-black text-xs text-slate-900 bg-white px-2.5 py-1 rounded-lg border border-slate-200">
+                                  #{req.id.slice(-5).toUpperCase()}
+                                </span>
+                                <span className="text-xs text-slate-500 font-semibold">
+                                  • {new Date(req.date).toLocaleDateString('pt-BR')}
+                                </span>
+                                <span className={`text-[10px] font-black px-3 py-1 rounded-full uppercase tracking-wider border ${
+                                  req.status === 'DEVOLUCAO_PENDENTE' ? 'bg-amber-50 text-amber-700 border-amber-200' :
+                                  req.status === 'DEVOLUCAO_APROVADA' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                                  req.status === 'DEVOLUCAO_RECUSADA' ? 'bg-rose-50 text-rose-700 border-rose-200' :
+                                  'bg-slate-100 text-slate-700 border-slate-200'
+                                }`}>
+                                  {req.status === 'DEVOLUCAO_PENDENTE' ? 'PENDENTE' :
+                                   req.status === 'DEVOLUCAO_APROVADA' ? 'APROVADO' :
+                                   req.status === 'DEVOLUCAO_RECUSADA' ? 'RECUSADO' :
+                                   req.status}
+                                </span>
+                                {req.returnReason && (
+                                  <span className="text-[10px] font-bold text-amber-800 bg-amber-100/80 px-2.5 py-0.5 rounded-md">
+                                    Motivo: {req.returnReason}
                                   </span>
-                                </td>
-                                <td className="px-6 py-4">
-                                  <p className="text-xs font-black text-amber-900 bg-amber-50 px-2 py-1 rounded-lg inline-block">{req.returnReason || 'Não teve uso'}</p>
-                                  {req.observation && <p className="text-xs text-[#78716C] italic mt-1 line-clamp-1">"{req.observation}"</p>}
-                                </td>
-                                <td className="px-6 py-4">
-                                  <div className="flex flex-wrap gap-1 max-w-xs">
-                                    {reqItems.map(item => (
-                                      <span key={item.id} className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-stone-100 text-stone-700 whitespace-nowrap">
-                                        {item.product_name} ({item.quantity_requested})
-                                      </span>
-                                    ))}
-                                  </div>
-                                </td>
-                                <td className="px-6 py-4 text-right whitespace-nowrap">
-                                  <button 
-                                    onClick={() => setShowRequestDetailModal({ show: true, request: req })}
-                                    className="bg-[#1C1917] text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-[#292524] transition-all shadow-sm"
-                                  >
-                                    Detalhes
-                                  </button>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                      </tbody>
-                    </table>
-                  </div>
+                                )}
+                              </div>
 
-                  {requests.filter(r => r.sector === selectedSector && r.isReturn && !r.deletedAt).length === 0 && (
-                    <div className="p-16 text-center text-[#78716C]">
-                      <RotateCcw className="mx-auto text-[#E7E5E4] mb-4" size={48} />
-                      <p className="font-bold mb-1">Nenhuma solicitação de devolução enviada.</p>
-                      <p className="text-xs">Utilize o botão <strong className="text-amber-700">"Solicitar Devolução"</strong> acima para criar uma nova solicitação.</p>
-                    </div>
-                  )}
+                              <div className="flex flex-wrap gap-1.5 pt-1">
+                                {reqItems.map(item => (
+                                  <span key={item.id} className="text-xs font-bold px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-slate-800 shadow-2xs">
+                                    {item.product_name} <strong className="text-amber-700">({item.quantity_requested})</strong>
+                                  </span>
+                                ))}
+                              </div>
+
+                              {req.observation && (
+                                <p className="text-xs text-slate-500 italic bg-white/60 p-2 rounded-xl border border-slate-100">
+                                  "{req.observation}"
+                                </p>
+                              )}
+                            </div>
+
+                            <button 
+                              onClick={() => setShowRequestDetailModal({ show: true, request: req })}
+                              className="bg-slate-900 text-white px-4 py-2.5 rounded-xl text-xs font-bold hover:bg-slate-800 transition-all shadow-xs self-end sm:self-center whitespace-nowrap"
+                            >
+                              Ver Detalhes
+                            </button>
+                          </div>
+                        );
+                      })}
+
+                    {requests.filter(r => r.sector === selectedSector && r.isReturn && !r.deletedAt).length === 0 && (
+                      <div className="p-12 text-center text-slate-500 space-y-2">
+                        <RotateCcw className="mx-auto text-slate-300" size={40} />
+                        <p className="font-bold text-sm text-slate-700">Nenhuma solicitação de devolução enviada.</p>
+                        <p className="text-xs text-slate-500">Utilize o botão acima "Solicitar Devolução" para registrar o retorno de algum material ao almoxarifado.</p>
+                      </div>
+                    )}
+                  </div>
                 </div>
               ) : (
-                <div className="bg-white rounded-3xl border border-[#E7E5E4] shadow-sm overflow-hidden">
-                  <div className="p-6 border-b border-[#E7E5E4]">
-                    <h3 className="text-lg font-black">Entregas Realizadas ao Setor</h3>
-                    <p className="text-xs text-[#78716C]">Selecione uma das entregas recebidas para detalhar e solicitar o retorno de seus itens.</p>
+                <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">
+                  <div className="p-6 border-b border-slate-100">
+                    <h3 className="text-base font-black text-slate-900">Entregas Realizadas ao Setor</h3>
+                    <p className="text-xs text-slate-500 font-medium">Selecione uma das entregas recebidas abaixo para selecionar itens e devolver.</p>
                   </div>
 
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse">
-                      <thead>
-                        <tr className="bg-[#FAFAF9] border-b border-[#E7E5E4]">
-                          <th className="px-6 py-4 font-bold text-xs text-[#78716C] uppercase tracking-wider">Nº / Data Entrega</th>
-                          <th className="px-6 py-4 font-bold text-xs text-[#78716C] uppercase tracking-wider">Itens Entregues</th>
-                          <th className="px-6 py-4 font-bold text-xs text-[#78716C] uppercase tracking-wider text-right">Ações</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-[#E7E5E4]">
-                        {requests
-                          .filter(r => r.sector === selectedSector && r.status === 'ENTREGUE' && !r.deletedAt)
-                          .map(req => {
-                            const reqItems = allRequestItems.filter(ri => ri.request_id === req.id);
-                            return (
-                              <tr key={req.id} className="hover:bg-[#FAFAF9] transition-all">
-                                <td className="px-6 py-4 whitespace-nowrap">
-                                  <p className="font-bold text-sm">#{req.id.slice(-5).toUpperCase()}</p>
-                                  <p className="text-xs text-[#A8A29E]">
-                                    {req.deliveredAt 
-                                      ? `Entregue em: ${new Date(req.deliveredAt).toLocaleDateString('pt-BR')}` 
-                                      : `Criada em: ${new Date(req.date).toLocaleDateString('pt-BR')}`}
-                                  </p>
-                                </td>
-                                <td className="px-6 py-4">
-                                  <div className="flex flex-wrap gap-1">
-                                    {reqItems.map(item => {
-                                      const alreadyReturned = item.quantity_returned || 0;
-                                      const remaining = item.quantity_approved - alreadyReturned;
-                                      return (
-                                        <span 
-                                          key={item.id} 
-                                          className={`text-[10px] font-bold px-2.5 py-1 rounded-lg ${
-                                            remaining <= 0 
-                                              ? 'bg-gray-100 text-gray-400 line-through' 
-                                              : 'bg-stone-100 text-stone-700'
-                                          }`}
-                                        >
-                                          {item.product_name} ({remaining}/{item.quantity_approved})
-                                        </span>
-                                      );
-                                    })}
-                                  </div>
-                                </td>
-                                <td className="px-6 py-4 text-right whitespace-nowrap">
-                                  <button 
-                                    onClick={() => {
-                                      const basketItems = reqItems.map(ri => {
-                                        const alreadyReturned = ri.quantity_returned || 0;
-                                        const remaining = ri.quantity_approved - alreadyReturned;
-                                        const productBatches = items.filter(item => !item.deletedAt && item.name === ri.product_name);
-                                        return {
-                                          product_id: ri.product_id,
-                                          product_name: ri.product_name,
-                                          quantity: remaining,
-                                          maxQty: remaining,
-                                          selectedBatchId: ri.batch_id || productBatches[0]?.id || ''
-                                        };
-                                      }).filter(item => item.quantity > 0);
+                  <div className="p-4 sm:p-6 space-y-3">
+                    {requests
+                      .filter(r => r.sector === selectedSector && r.status === 'ENTREGUE' && !r.deletedAt)
+                      .map(req => {
+                        const reqItems = allRequestItems.filter(ri => ri.request_id === req.id);
+                        return (
+                          <div 
+                            key={req.id} 
+                            className="bg-slate-50/60 border border-slate-200/60 hover:border-amber-200 rounded-2xl p-4 sm:p-5 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+                          >
+                            <div className="space-y-2 flex-1">
+                              <div className="flex items-center gap-2">
+                                <span className="font-black text-xs text-slate-900 bg-white px-2.5 py-1 rounded-lg border border-slate-200">
+                                  Entrega #{req.id.slice(-5).toUpperCase()}
+                                </span>
+                                <span className="text-xs text-slate-500 font-semibold">
+                                  • {req.deliveredAt 
+                                    ? `Entregue em: ${new Date(req.deliveredAt).toLocaleDateString('pt-BR')}` 
+                                    : `Criada em: ${new Date(req.date).toLocaleDateString('pt-BR')}`}
+                                </span>
+                              </div>
 
-                                      if (basketItems.length === 0) {
-                                        showToast("Todos os itens desta entrega já foram totalmente devolvidos.", "info");
-                                        return;
-                                      }
+                              <div className="flex flex-wrap gap-1.5 pt-1">
+                                {reqItems.map(item => {
+                                  const alreadyReturned = item.quantity_returned || 0;
+                                  const remaining = item.quantity_approved - alreadyReturned;
+                                  return (
+                                    <span 
+                                      key={item.id} 
+                                      className={`text-xs font-bold px-2.5 py-1 rounded-lg border ${
+                                        remaining <= 0 
+                                          ? 'bg-slate-100 text-slate-400 line-through border-slate-200' 
+                                          : 'bg-white text-slate-800 border-amber-200/80 shadow-2xs'
+                                      }`}
+                                    >
+                                      {item.product_name} ({remaining}/{item.quantity_approved} disp.)
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            </div>
 
-                                      setDevolutionBasket(basketItems);
-                                      setDevolutionReason('Não teve uso');
-                                      setDevolutionObservation('');
-                                      setShowDevolutionModal({ show: true, request: req });
-                                    }}
-                                    className="bg-amber-600 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-amber-700 transition-all shadow-md shadow-amber-100 whitespace-nowrap hover:-translate-y-0.5 active:translate-y-0"
-                                  >
-                                    Devolver Materiais
-                                  </button>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                      </tbody>
-                    </table>
+                            <button 
+                              onClick={() => {
+                                const basketItems = reqItems.map(ri => {
+                                  const alreadyReturned = ri.quantity_returned || 0;
+                                  const remaining = ri.quantity_approved - alreadyReturned;
+                                  const productBatches = items.filter(item => !item.deletedAt && item.name === ri.product_name);
+                                  return {
+                                    product_id: ri.product_id,
+                                    product_name: ri.product_name,
+                                    quantity: remaining,
+                                    maxQty: remaining,
+                                    selectedBatchId: ri.batch_id || productBatches[0]?.id || ''
+                                  };
+                                }).filter(item => item.quantity > 0);
+
+                                if (basketItems.length === 0) {
+                                  showToast("Todos os itens desta entrega já foram totalmente devolvidos.", "info");
+                                  return;
+                                }
+
+                                setDevolutionBasket(basketItems);
+                                setDevolutionReason('Não teve uso');
+                                setDevolutionObservation('');
+                                setShowDevolutionModal({ show: true, request: req });
+                              }}
+                              className="bg-amber-600 text-white px-4 py-2.5 rounded-xl text-xs font-black hover:bg-amber-700 transition-all shadow-sm whitespace-nowrap self-end sm:self-center"
+                            >
+                              Devolver Materiais
+                            </button>
+                          </div>
+                        );
+                      })}
+
+                    {requests.filter(r => r.sector === selectedSector && r.status === 'ENTREGUE' && !r.deletedAt).length === 0 && (
+                      <div className="p-12 text-center text-slate-500 space-y-2">
+                        <RotateCcw className="mx-auto text-slate-300" size={40} />
+                        <p className="font-bold text-sm text-slate-700">Nenhuma entrega elegível encontrada.</p>
+                        <p className="text-xs text-slate-500">Seu setor precisa ter entregas concluídas ("ENTREGUE") no sistema para devolvê-las ao estoque.</p>
+                      </div>
+                    )}
                   </div>
-
-                  {requests.filter(r => r.sector === selectedSector && r.status === 'ENTREGUE' && !r.deletedAt).length === 0 && (
-                    <div className="p-16 text-center text-[#78716C]">
-                      <RotateCcw className="mx-auto text-[#E7E5E4] mb-4" size={48} />
-                      <p className="font-bold mb-1">Nenhuma entrega elegível encontrada.</p>
-                      <p className="text-xs">Você precisa ter solicitações com status "ENTREGUE" para poder solicitar devoluções.</p>
-                    </div>
-                  )}
                 </div>
               )}
             </motion.div>
@@ -10402,37 +10393,80 @@ export default function App() {
       )}
 
       {showDevolutionModal.show && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 sm:p-6 overflow-y-auto">
           <motion.div 
-            initial={{ opacity: 0, scale: 0.95 }}
+            initial={{ opacity: 0, scale: 0.96 }}
             animate={{ opacity: 1, scale: 1 }}
-            className="bg-white rounded-[32px] border border-[#E7E5E4] shadow-2xl w-full max-w-3xl p-8 relative max-h-[90vh] overflow-y-auto"
+            className="bg-white rounded-3xl border border-slate-200/80 shadow-2xl w-full max-w-3xl p-6 sm:p-8 relative max-h-[92vh] overflow-y-auto space-y-6"
           >
+            {/* Close Button */}
             <button 
               onClick={() => setShowDevolutionModal({ show: false })}
-              className="absolute right-6 top-6 p-2 rounded-full hover:bg-[#FAFAF9] transition-colors text-[#A8A29E] hover:text-[#1C1917]"
+              className="absolute right-6 top-6 p-2 rounded-full bg-slate-100 hover:bg-slate-200 transition-colors text-slate-500 hover:text-slate-800"
             >
-              <X size={20} />
+              <X size={18} />
             </button>
 
-            <div className="flex items-center gap-3 mb-6">
-              <div className="bg-amber-100 p-3 rounded-2xl text-amber-700">
-                <RotateCcw size={24} />
+            {/* Header */}
+            <div className="flex items-center gap-3.5 pb-2 border-b border-slate-100">
+              <div className="bg-amber-500/10 p-3 rounded-2xl text-amber-700 border border-amber-200/50">
+                <RotateCcw size={22} />
               </div>
               <div>
-                <h3 className="text-xl font-black text-[#1C1917]">Solicitação de Devolução de Materiais</h3>
-                <p className="text-[#78716C] text-sm font-medium">Setor: {selectedSector}</p>
+                <h3 className="text-xl font-black text-slate-900 tracking-tight">Nova Devolução de Materiais</h3>
+                <p className="text-slate-500 text-xs sm:text-sm font-medium">Setor de origem: <span className="font-bold text-amber-700">{selectedSector}</span></p>
               </div>
             </div>
 
-            <div className="bg-amber-50 border border-amber-100 p-4 rounded-2xl mb-6 text-amber-900 text-xs font-medium space-y-1">
-              <p className="font-bold uppercase tracking-wider text-amber-700">Atenção</p>
-              <p>A solicitação de devolução passará pela aprovação do almoxarifado. Após aprovada, as quantidades retornarão ao estoque de origem.</p>
+            {/* Notice Callout */}
+            <div className="bg-amber-50/70 border border-amber-200/70 p-4 rounded-2xl text-slate-700 text-xs font-medium flex gap-3 items-start">
+              <div className="p-1 text-amber-600 shrink-0 mt-0.5">
+                <RotateCcw size={16} />
+              </div>
+              <div className="space-y-0.5">
+                <p className="font-bold text-amber-900">Como funciona a devolução?</p>
+                <p className="text-slate-600 leading-relaxed">
+                  Os itens adicionados nesta solicitação serão avaliados pelo almoxarifado. Após a aprovação, as quantidades indicadas retornarão automaticamente ao saldo do estoque.
+                </p>
+              </div>
             </div>
 
-            {/* Selector to add items in direct flow */}
+            {/* Form Fields: Motivo & Observações */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-[11px] font-black text-slate-500 uppercase tracking-wider mb-2">
+                  Motivo da Devolução <span className="text-rose-500">*</span>
+                </label>
+                <select 
+                  value={devolutionReason}
+                  onChange={(e) => setDevolutionReason(e.target.value)}
+                  className="w-full px-4 py-3 bg-slate-50/80 border border-slate-200 rounded-xl text-xs sm:text-sm focus:bg-white focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 outline-none transition-all font-bold text-slate-800"
+                >
+                  <option value="Não teve uso">Não teve uso</option>
+                  <option value="Vencido">Vencido</option>
+                  <option value="Validade próxima">Validade próxima</option>
+                  <option value="Material danificado">Material danificado</option>
+                  <option value="Erro na solicitação">Erro na solicitação</option>
+                  <option value="Outros">Outros</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-black text-slate-500 uppercase tracking-wider mb-2">
+                  Observações / Detalhes
+                </label>
+                <input 
+                  type="text"
+                  value={devolutionObservation}
+                  onChange={(e) => setDevolutionObservation(e.target.value)}
+                  placeholder="Ex: Material sobrou após procedimento..."
+                  className="w-full px-4 py-3 bg-slate-50/80 border border-slate-200 rounded-xl text-xs sm:text-sm focus:bg-white focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 outline-none transition-all font-medium text-slate-800"
+                />
+              </div>
+            </div>
+
+            {/* Add Item Selector Section */}
             {(() => {
-              // Calculate all delivered items for selectedSector
               const deliveredReqs = requests.filter(r => r.sector === selectedSector && r.status === 'ENTREGUE' && !r.deletedAt);
               const reqIds = new Set(deliveredReqs.map(r => r.id));
               
@@ -10463,22 +10497,22 @@ export default function App() {
               })).filter(p => p.available > 0);
 
               return (
-                <div className="bg-[#FAFAF9] p-5 rounded-2xl border border-[#E7E5E4] space-y-4 mb-6">
-                  <h4 className="text-xs font-black uppercase tracking-wider text-[#78716C] flex items-center gap-1.5">
-                    <Plus size={14} /> Adicionar Material Recebido à Devolução
+                <div className="bg-slate-50/80 p-4.5 sm:p-5 rounded-2xl border border-slate-200/80 space-y-3">
+                  <h4 className="text-xs font-black uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                    <Plus size={15} className="text-amber-600" /> Adicionar Material do Setor à Devolução
                   </h4>
-                  <div className="flex gap-3">
+                  <div className="flex flex-col sm:flex-row gap-2.5">
                     <select
                       value={selectedDevProduct}
                       onChange={(e) => setSelectedDevProduct(e.target.value)}
-                      className="flex-1 p-3 bg-white border border-[#E7E5E4] rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-amber-500 font-bold"
+                      className="flex-1 p-3 bg-white border border-slate-200 rounded-xl text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 font-bold text-slate-800"
                     >
-                      <option value="">-- Selecione o Material --</option>
+                      <option value="">-- Selecione o Material Recebido --</option>
                       {sectorDeliveredItems
                         .filter(p => !devolutionBasket.some(b => b.product_name === p.product_name))
                         .map(p => (
                           <option key={p.product_id} value={p.product_name}>
-                            {p.product_name} (Disponível: {p.available})
+                            {p.product_name} (Disponível no setor: {p.available})
                           </option>
                         ))}
                     </select>
@@ -10501,90 +10535,69 @@ export default function App() {
                         }
                       }}
                       disabled={!selectedDevProduct}
-                      className="bg-[#1C1917] text-white px-5 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-[#292524] transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+                      className="bg-slate-900 text-white px-5 py-3 rounded-xl text-xs font-black uppercase tracking-wider hover:bg-slate-800 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 whitespace-nowrap"
                     >
-                      <Plus size={16} /> Adicionar
+                      <Plus size={16} /> Adicionar Item
                     </button>
                   </div>
                 </div>
               );
             })()}
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-              <div>
-                <label className="block text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Motivo da Devolução</label>
-                <select 
-                  value={devolutionReason}
-                  onChange={(e) => setDevolutionReason(e.target.value)}
-                  className="w-full p-4 bg-[#FAFAF9] border border-[#E7E5E4] rounded-2xl text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all font-bold"
-                >
-                  <option value="Não teve uso">Não teve uso</option>
-                  <option value="Vencido">Vencido</option>
-                  <option value="Validade próxima">Validade próxima</option>
-                  <option value="Material danificado">Material danificado</option>
-                  <option value="Erro na solicitação">Erro na solicitação</option>
-                  <option value="Outros">Outros</option>
-                </select>
+            {/* List of items in devolution basket */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="font-black text-xs uppercase tracking-wider text-slate-700 flex items-center gap-2">
+                  <Package size={16} className="text-amber-600" /> Itens na Lista de Devolução
+                </h4>
+                {devolutionBasket.length > 0 && (
+                  <span className="text-xs font-bold text-amber-700 bg-amber-50 px-2.5 py-0.5 rounded-full border border-amber-200">
+                    {devolutionBasket.length} {devolutionBasket.length === 1 ? 'item' : 'itens'}
+                  </span>
+                )}
               </div>
 
-              <div>
-                <label className="block text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Observações / Detalhes</label>
-                <textarea 
-                  value={devolutionObservation}
-                  onChange={(e) => setDevolutionObservation(e.target.value)}
-                  placeholder="Descreva detalhes sobre a devolução..."
-                  className="w-full p-4 bg-[#FAFAF9] border border-[#E7E5E4] rounded-2xl text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all font-medium h-[52px] resize-none"
-                />
-              </div>
-            </div>
-
-            <div className="space-y-4 mb-8">
-              <h4 className="font-bold text-[#1C1917] flex items-center gap-2">
-                <Package size={18} /> Itens a Devolver
-              </h4>
-              <div className="bg-white rounded-2xl border border-[#E7E5E4] overflow-hidden">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="bg-[#FAFAF9] border-b border-[#E7E5E4]">
-                      <th className="px-4 py-3 font-bold text-xs text-[#78716C]">Item</th>
-                      <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center w-28">Máximo</th>
-                      <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center w-48">Lote de Destino</th>
-                      <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center w-36">Qtd a Devolver</th>
-                      <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center w-16">Remover</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#E7E5E4]">
+              <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-2xs">
+                {devolutionBasket.length > 0 ? (
+                  <div className="divide-y divide-slate-100">
                     {devolutionBasket.map((item, idx) => {
                       const productBatches = items.filter(i => !i.deletedAt && i.name === item.product_name);
                       return (
-                        <tr key={item.product_name} className="hover:bg-slate-50 transition-colors">
-                          <td className="px-4 py-3 text-sm font-bold text-[#1C1917]">{item.product_name}</td>
-                          <td className="px-4 py-3 text-sm font-bold text-center text-[#78716C] bg-slate-50/50">
-                            {item.maxQty}
-                          </td>
-                          <td className="px-4 py-3">
-                            {productBatches.length > 0 ? (
-                              <select 
-                                value={item.selectedBatchId}
-                                onChange={(e) => {
-                                  const updated = [...devolutionBasket];
-                                  updated[idx].selectedBatchId = e.target.value;
-                                  setDevolutionBasket(updated);
-                                }}
-                                className="w-full px-2 py-1.5 bg-[#FAFAF9] border border-[#E7E5E4] rounded-lg text-xs font-bold outline-none focus:ring-1 focus:ring-amber-500"
-                              >
-                                {productBatches.map(b => (
-                                  <option key={b.id} value={b.id}>
-                                    Lote: {b.batch_number || 'S/N'} {b.expiry_date !== 'Indeterminada' ? `(${new Date(b.expiry_date).toLocaleDateString('pt-BR')})` : ''}
-                                  </option>
-                                ))}
-                              </select>
-                            ) : (
-                              <span className="text-[10px] text-rose-500 font-bold block text-center">Nenhum lote ativo</span>
-                            )}
-                          </td>
-                          <td className="px-4 py-3 text-center">
-                            <div className="flex items-center justify-center gap-1.5">
+                        <div key={item.product_name} className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-slate-50/50 transition-colors">
+                          <div className="space-y-1.5 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="font-black text-sm text-slate-900">{item.product_name}</span>
+                              <span className="text-[10px] font-extrabold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
+                                Máx. {item.maxQty}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-semibold text-slate-400">Lote:</span>
+                              {productBatches.length > 0 ? (
+                                <select 
+                                  value={item.selectedBatchId}
+                                  onChange={(e) => {
+                                    const updated = [...devolutionBasket];
+                                    updated[idx].selectedBatchId = e.target.value;
+                                    setDevolutionBasket(updated);
+                                  }}
+                                  className="px-2.5 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                                >
+                                  {productBatches.map(b => (
+                                    <option key={b.id} value={b.id}>
+                                      {b.batch_number || 'S/N'} {b.expiry_date !== 'Indeterminada' ? `(val: ${new Date(b.expiry_date).toLocaleDateString('pt-BR')})` : ''}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <span className="text-xs text-rose-500 font-bold">Sem lote cadastrado</span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center justify-between sm:justify-end gap-4 border-t sm:border-t-0 pt-3 sm:pt-0 border-slate-100">
+                            <div className="flex items-center gap-2 bg-slate-100/80 p-1 rounded-xl border border-slate-200/60">
                               <button
                                 type="button"
                                 onClick={() => {
@@ -10593,7 +10606,7 @@ export default function App() {
                                   setDevolutionBasket(updated);
                                 }}
                                 disabled={item.quantity <= 1}
-                                className="w-8 h-8 flex items-center justify-center rounded-lg bg-stone-100 hover:bg-stone-200 text-stone-600 disabled:opacity-40 transition-all font-black text-sm select-none cursor-pointer"
+                                className="w-8 h-8 flex items-center justify-center rounded-lg bg-white shadow-2xs hover:bg-slate-200 text-slate-700 disabled:opacity-30 transition-all font-black text-base cursor-pointer"
                               >
                                 -
                               </button>
@@ -10608,7 +10621,7 @@ export default function App() {
                                   updated[idx].quantity = val;
                                   setDevolutionBasket(updated);
                                 }}
-                                className="w-12 h-8 border-2 border-[#E7E5E4] rounded-lg text-center font-black text-xs transition-all outline-none bg-white text-[#1C1917]"
+                                className="w-12 h-8 text-center font-black text-sm outline-none bg-transparent text-slate-900"
                               />
                               <button
                                 type="button"
@@ -10618,55 +10631,56 @@ export default function App() {
                                   setDevolutionBasket(updated);
                                 }}
                                 disabled={item.quantity >= item.maxQty}
-                                className="w-8 h-8 flex items-center justify-center rounded-lg bg-stone-100 hover:bg-stone-200 text-stone-600 disabled:opacity-40 transition-all font-black text-sm select-none cursor-pointer"
+                                className="w-8 h-8 flex items-center justify-center rounded-lg bg-white shadow-2xs hover:bg-slate-200 text-slate-700 disabled:opacity-30 transition-all font-black text-base cursor-pointer"
                               >
                                 +
                               </button>
                             </div>
-                          </td>
-                          <td className="px-4 py-3 text-center">
+
                             <button
                               type="button"
                               onClick={() => {
                                 const updated = devolutionBasket.filter((_, i) => i !== idx);
                                 setDevolutionBasket(updated);
                               }}
-                              className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg transition-all"
-                              title="Remover"
+                              className="p-2 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-xl transition-all"
+                              title="Remover da lista"
                             >
-                              <Trash2 size={16} />
+                              <Trash2 size={18} />
                             </button>
-                          </td>
-                        </tr>
+                          </div>
+                        </div>
                       );
                     })}
-                  </tbody>
-                </table>
-                {devolutionBasket.length === 0 && (
-                  <div className="p-8 text-center text-stone-400 text-xs font-bold">
-                    Nenhum item adicionado à devolução. Adicione no seletor acima.
+                  </div>
+                ) : (
+                  <div className="p-8 text-center text-slate-400 text-xs font-semibold space-y-1">
+                    <Package className="mx-auto text-slate-300 mb-2" size={32} />
+                    <p className="font-bold text-slate-600">Nenhum item selecionado para devolução.</p>
+                    <p>Selecione um material no seletor acima para adicionar a esta solicitação.</p>
                   </div>
                 )}
               </div>
             </div>
 
-            <div className="flex gap-4">
+            {/* Action Buttons */}
+            <div className="flex flex-col sm:flex-row gap-3 pt-3 border-t border-slate-100">
               <button 
                 onClick={() => setShowDevolutionModal({ show: false })}
-                className="flex-1 py-4 bg-[#FAFAF9] hover:bg-[#F5F5F4] text-[#78716C] rounded-2xl font-black text-sm uppercase tracking-widest transition-all border border-[#E7E5E4]"
+                className="order-2 sm:order-1 flex-1 py-3.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-2xl font-black text-xs uppercase tracking-wider transition-all"
               >
                 Cancelar
               </button>
               <button 
                 onClick={handleRequestDevolution}
                 disabled={isProcessingDevolution || devolutionBasket.length === 0}
-                className="flex-1 py-4 bg-amber-600 hover:bg-amber-700 text-white rounded-2xl font-black text-sm uppercase tracking-widest transition-all shadow-xl shadow-amber-200 flex items-center justify-center gap-2 disabled:opacity-50"
+                className="order-1 sm:order-2 flex-1 py-3.5 bg-amber-600 hover:bg-amber-700 text-white rounded-2xl font-black text-xs uppercase tracking-wider transition-all shadow-md shadow-amber-600/20 flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {isProcessingDevolution ? (
                   <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
                 ) : (
                   <>
-                    <RotateCcw size={18} />
+                    <RotateCcw size={16} />
                     Confirmar Devolução
                   </>
                 )}
