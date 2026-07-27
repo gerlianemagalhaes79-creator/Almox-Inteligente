@@ -62,7 +62,8 @@ import {
   getDocs,
   writeBatch,
   deleteDoc,
-  deleteField
+  deleteField,
+  DocumentReference
 } from 'firebase/firestore';
 import { 
   signInWithPopup, 
@@ -2136,10 +2137,6 @@ export default function App() {
         showToast(`Quantidade inválida para ${item.product_name}. Máximo permitido: ${item.maxQty}`, "error");
         return;
       }
-      if (!item.selectedBatchId) {
-        showToast(`Por favor, selecione o lote para o item ${item.product_name}.`, "error");
-        return;
-      }
     }
 
     try {
@@ -2168,13 +2165,18 @@ export default function App() {
 
       devolutionBasket.forEach((item) => {
         const itemRef = doc(collection(db, 'request_items'));
+        const productBatches = items.filter(i => !i.deletedAt && i.name.trim().toLowerCase() === item.product_name.trim().toLowerCase());
+        const validBatchId = (item.selectedBatchId && productBatches.some(b => b.id === item.selectedBatchId))
+          ? item.selectedBatchId
+          : (productBatches[0]?.id || '');
+
         batch.set(itemRef, {
           request_id: newReqRef.id,
           product_id: item.product_id,
           product_name: item.product_name,
           quantity_requested: item.quantity,
           quantity_approved: item.quantity,
-          batch_id: item.selectedBatchId
+          batch_id: validBatchId
         });
       });
 
@@ -2217,111 +2219,186 @@ export default function App() {
       setIsProcessingDevolution(true);
       showToast("Aprovando devolução e retornando ao estoque...", "info");
 
+      // Fetch active stock items
+      const itemsSnapshot = await getDocs(collection(db, 'items'));
+      const allActiveItems = itemsSnapshot.docs
+        .map(d => ({ id: d.id, ...d.data() } as Item))
+        .filter(i => !i.deletedAt);
+
       await runTransaction(db, async (transaction) => {
-        // Fetch the devolution request first
-        const requestSnap = await transaction.get(doc(db, 'requests', requestId));
-        const requestData = requestSnap.data() as MaterialRequest | undefined;
-        if (!requestData) throw new Error("Solicitação de devolução não encontrada.");
+        const requestRef = doc(db, 'requests', requestId);
+        const requestSnap = await transaction.get(requestRef);
+        if (!requestSnap.exists()) throw new Error("Solicitação de devolução não encontrada.");
+        const requestData = requestSnap.data() as MaterialRequest;
 
-        // Read all target batch items
-        const batchRefsToFetch: any[] = [];
-        const pharmRefsToFetch: any[] = [];
-
-        for (const item of devItems) {
-          let batchId = item.batch_id;
-          if (!batchId) {
-            const fb = items.find(i => !i.deletedAt && i.name === item.product_name);
-            if (fb) {
-              batchId = fb.id;
-              item.batch_id = fb.id;
-            }
-          }
-
-          if (batchId) {
-            const batchRef = doc(db, 'items', batchId);
-            batchRefsToFetch.push(batchRef);
-
-            // Decrement Farmácia if returning from Farmácia sector
-            if (requestData.sector === 'Farmácia') {
-              const batchObj = items.find(i => i.id === batchId);
-              if (batchObj) {
-                const pharmItem = items.find(i => 
-                  !i.deletedAt && 
-                  i.name === item.product_name && 
-                  i.location === 'Farmácia' && 
-                  i.batch_number === batchObj.batch_number
-                );
-                if (pharmItem) {
-                  pharmRefsToFetch.push({ ref: doc(db, 'items', pharmItem.id), devItemId: item.id });
-                }
-              }
-            }
-          }
+        if (requestData.status === 'DEVOLUCAO_APROVADA') {
+          throw new Error("Esta devolução já foi aprovada anteriormente.");
         }
 
-        // Perform ALL reads
-        const fetchedSnaps = await Promise.all([
-          ...batchRefsToFetch.map(ref => transaction.get(ref)),
-          ...pharmRefsToFetch.map(p => transaction.get(p.ref))
-        ]);
+        // Collect unique batch IDs to fetch inside transaction
+        const targetBatchIdsToRead = new Set<string>();
 
-        const snapMap = new Map();
-        fetchedSnaps.forEach(snap => snapMap.set(snap.ref.path, snap));
-
-        // Perform ALL writes
         for (const item of devItems) {
           const returnQty = item.quantity_approved || item.quantity_requested || 0;
           if (returnQty <= 0) continue;
 
-          const batchId = item.batch_id;
-          if (!batchId) continue;
-
-          const batchRef = doc(db, 'items', batchId);
-          const batchSnap = snapMap.get(batchRef.path);
-          if (!batchSnap || !batchSnap.exists()) {
-            throw new Error(`Lote de destino para o item ${item.product_name} não encontrado.`);
+          let targetBatch: Item | undefined;
+          if (item.batch_id) {
+            targetBatch = allActiveItems.find(i => i.id === item.batch_id);
+          }
+          if (!targetBatch) {
+            targetBatch = allActiveItems.find(i => 
+              i.name.trim().toLowerCase() === item.product_name.trim().toLowerCase() && 
+              (!i.location || i.location === 'Almoxarifado')
+            );
+          }
+          if (!targetBatch) {
+            targetBatch = allActiveItems.find(i => 
+              i.name.trim().toLowerCase() === item.product_name.trim().toLowerCase()
+            );
           }
 
-          const batchData = batchSnap.data() as Item;
-          const currentAlmoxQty = batchData.quantity || 0;
+          if (targetBatch) {
+            targetBatchIdsToRead.add(targetBatch.id);
+          }
+        }
 
-          // If sector is Farmácia, decrease Farmácia stock
-          if (requestData.sector === 'Farmácia') {
-            const pharmItemInfo = pharmRefsToFetch.find(p => p.devItemId === item.id);
-            if (pharmItemInfo) {
-              const pharmSnap = snapMap.get(pharmItemInfo.ref.path);
-              if (pharmSnap && pharmSnap.exists()) {
-                const pharmData = pharmSnap.data() as Item;
-                const currentPharmQty = pharmData.quantity || 0;
-                transaction.update(pharmItemInfo.ref, {
-                  quantity: Math.max(0, currentPharmQty - returnQty),
-                  updatedAt: serverTimestamp()
-                });
+        // Farmácia sector location check
+        const pharmBatchIdsToRead = new Set<string>();
+        if (requestData.sector === 'Farmácia') {
+          for (const item of devItems) {
+            const pharmItem = allActiveItems.find(i => 
+              i.name.trim().toLowerCase() === item.product_name.trim().toLowerCase() && 
+              i.location === 'Farmácia'
+            );
+            if (pharmItem) {
+              pharmBatchIdsToRead.add(pharmItem.id);
+            }
+          }
+        }
+
+        // Execute sequential reads inside transaction
+        const snapMap = new Map<string, any>();
+
+        for (const bId of targetBatchIdsToRead) {
+          const bRef = doc(db, 'items', bId);
+          const bSnap = await transaction.get(bRef);
+          snapMap.set(bId, bSnap);
+        }
+
+        for (const pId of pharmBatchIdsToRead) {
+          if (!snapMap.has(pId)) {
+            const pRef = doc(db, 'items', pId);
+            const pSnap = await transaction.get(pRef);
+            snapMap.set(pId, pSnap);
+          }
+        }
+
+        // Execute writes inside transaction
+        for (const item of devItems) {
+          const returnQty = item.quantity_approved || item.quantity_requested || 0;
+          if (returnQty <= 0) continue;
+
+          let targetBatchId: string | undefined;
+          let targetBatchData: Item | undefined;
+
+          if (item.batch_id && snapMap.has(item.batch_id)) {
+            const snap = snapMap.get(item.batch_id);
+            if (snap && snap.exists()) {
+              targetBatchId = item.batch_id;
+              targetBatchData = snap.data() as Item;
+            }
+          }
+
+          if (!targetBatchData) {
+            for (const [id, snap] of snapMap.entries()) {
+              if (snap.exists()) {
+                const data = snap.data() as Item;
+                if (data.name.trim().toLowerCase() === item.product_name.trim().toLowerCase()) {
+                  targetBatchId = id;
+                  targetBatchData = data;
+                  break;
+                }
               }
             }
           }
 
-          // Increase Almoxarifado stock
-          transaction.update(batchRef, {
-            quantity: currentAlmoxQty + returnQty,
-            updatedAt: serverTimestamp()
-          });
+          let batchRef: DocumentReference;
+          let currentQty = 0;
+          let batchNumber = 'Devolução';
+          let expiryDate = 'Indeterminada';
+          let origin = 'extra';
+
+          if (targetBatchId && targetBatchData) {
+            batchRef = doc(db, 'items', targetBatchId);
+            currentQty = targetBatchData.quantity || 0;
+            batchNumber = targetBatchData.batch_number || 'Devolução';
+            expiryDate = targetBatchData.expiry_date || 'Indeterminada';
+            origin = targetBatchData.origin || 'extra';
+
+            const newQty = currentQty + returnQty;
+            transaction.update(batchRef, {
+              quantity: newQty,
+              updatedAt: serverTimestamp()
+            });
+
+            // Update in-memory snapMap data
+            targetBatchData.quantity = newQty;
+          } else {
+            // If item does not exist in stock, create a new stock item in Almoxarifado
+            const newStockRef = doc(collection(db, 'items'));
+            batchRef = newStockRef;
+            transaction.set(newStockRef, {
+              name: item.product_name,
+              quantity: returnQty,
+              min_quantity: 10,
+              category: 'Geral',
+              unit: 'unid',
+              location: 'Almoxarifado',
+              origin: 'extra',
+              batch_number: 'Devolução',
+              expiry_date: 'Indeterminada',
+              entry_date: new Date().toISOString(),
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp()
+            });
+          }
+
+          // If sector is Farmácia, decrease Farmácia stock
+          if (requestData.sector === 'Farmácia') {
+            for (const [pId, pSnap] of snapMap.entries()) {
+              if (pSnap.exists()) {
+                const pData = pSnap.data() as Item;
+                if (pData.location === 'Farmácia' && pData.name.trim().toLowerCase() === item.product_name.trim().toLowerCase()) {
+                  const pRef = doc(db, 'items', pId);
+                  const pCurrentQty = pData.quantity || 0;
+                  const pNewQty = Math.max(0, pCurrentQty - returnQty);
+                  transaction.update(pRef, {
+                    quantity: pNewQty,
+                    updatedAt: serverTimestamp()
+                  });
+                  pData.quantity = pNewQty;
+                  break;
+                }
+              }
+            }
+          }
 
           // Create entry transaction log
           const transRef = doc(collection(db, 'transactions'));
           transaction.set(transRef, {
-            item_id: batchId,
+            item_id: batchRef.id,
             item_name: item.product_name,
             type: 'entry',
-            origin: batchData.origin || 'extra',
+            origin: origin,
             quantity: returnQty,
             sector: requestData.sector,
-            location: batchData.location || 'Almoxarifado',
+            location: 'Almoxarifado',
             date: new Date().toISOString(),
             responsible: userProfile?.name || user?.displayName || user?.email || 'Administrador',
             responsibleEmail: user?.email,
-            batch_number: batchData.batch_number,
-            expiry_date: batchData.expiry_date,
+            batch_number: batchNumber,
+            expiry_date: expiryDate,
             isReturn: true,
             returnReason: requestData.returnReason || 'Não especificado',
             observation: requestData.observation || ''
@@ -2329,23 +2406,25 @@ export default function App() {
         }
 
         // Update main request status
-        transaction.update(doc(db, 'requests', requestId), {
+        transaction.update(requestRef, {
           status: 'DEVOLUCAO_APROVADA',
           adminObservation: adminObservation || '',
+          approvedAt: new Date().toISOString(),
+          approvedBy: user?.email || 'Administrador',
           updatedAt: serverTimestamp()
         });
       });
 
-      // Post-transaction updates:
+      // Post-transaction updates: update quantity_returned on original request items
       const requestSnap = await getDoc(doc(db, 'requests', requestId));
-      const requestData = requestSnap.data() as MaterialRequest | undefined;
+      const requestData = requestSnap?.data() as MaterialRequest | undefined;
       if (requestData) {
         const batch = writeBatch(db);
         if (requestData.originalRequestId) {
           const origItemsSnap = await getDocs(query(collection(db, 'request_items'), where('request_id', '==', requestData.originalRequestId)));
           origItemsSnap.docs.forEach(d => {
             const origItem = d.data() as RequestItem;
-            const matchedDevItem = devItems.find(di => di.product_name === origItem.product_name);
+            const matchedDevItem = devItems.find(di => di.product_name.trim().toLowerCase() === origItem.product_name.trim().toLowerCase());
             if (matchedDevItem) {
               const returnQty = matchedDevItem.quantity_approved || matchedDevItem.quantity_requested || 0;
               const currentReturned = origItem.quantity_returned || 0;
@@ -2355,7 +2434,7 @@ export default function App() {
             }
           });
         } else {
-          // Direct unified flow: find and update any ENTREGUE requests for this sector for matching items
+          // Direct flow: find and update ENTREGUE requests for this sector matching product_name
           const sectorReqsSnap = await getDocs(query(
             collection(db, 'requests'), 
             where('sector', '==', requestData.sector),
@@ -2408,8 +2487,9 @@ export default function App() {
         }
       }
 
-      showToast("Devolução aprovada e estoque atualizado!", "success");
+      showToast("Devolução aprovada com sucesso! Materiais retornados ao estoque.", "success");
       setShowRequestDetailModal({ show: false });
+
     } catch (error: any) {
       console.error("Erro ao aprovar devolução:", error);
       showToast(`Erro ao aprovar devolução: ${error.message}`, "error");
@@ -4739,6 +4819,28 @@ export default function App() {
     };
   }, [transactions, items, reportRange, reportSectorFilter, allRequestItems, requests, userProfile, isAdmin, selectedSector]);
 
+  const categoryDistribution = useMemo(() => {
+    const map: Record<string, { count: number; totalQty: number; value: number }> = {};
+    items
+      .filter(i => !i.deletedAt && (i.location || 'Almoxarifado') === inventoryLocation)
+      .forEach(i => {
+        const cat = i.category || 'Geral';
+        if (!map[cat]) map[cat] = { count: 0, totalQty: 0, value: 0 };
+        map[cat].count += 1;
+        map[cat].totalQty += (Number(i.quantity) || 0);
+        map[cat].value += ((Number(i.quantity) || 0) * (Number(i.unit_price) || 0));
+      });
+    const maxQty = Math.max(...Object.values(map).map(m => m.totalQty), 1);
+    return Object.entries(map)
+      .map(([category, data]) => ({
+        category,
+        ...data,
+        percentage: Math.min(100, Math.round((data.totalQty / maxQty) * 100))
+      }))
+      .sort((a, b) => b.totalQty - a.totalQty)
+      .slice(0, 6);
+  }, [items, inventoryLocation]);
+
   if (loading) {
     return (
       <div className="min-h-screen bg-[#F5F5F4] flex items-center justify-center">
@@ -4867,6 +4969,12 @@ export default function App() {
     .filter(t => (t.location || 'Almoxarifado') === inventoryLocation)
     .slice(0, 5);
 
+  const pendingRequestsCount = requests.filter(r => 
+    !r.deletedAt && 
+    (r.status === 'PENDENTE' || r.status === 'EM_SEPARACAO' || r.status === 'DEVOLUCAO_PENDENTE') &&
+    (isAdmin ? true : r.sector === selectedSector)
+  ).length;
+
   const groupedArray: ItemGroup[] = (Object.values(groupedItems) as ItemGroup[])
     .filter(group => {
       // Apply search and filters to the grouped items for the inventory list
@@ -4899,16 +5007,21 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#F5F5F4] text-[#1C1917] font-sans">
       {/* Mobile Header */}
-      <header className="lg:hidden fixed top-0 left-0 right-0 h-16 bg-white border-b border-[#E7E5E4] flex items-center justify-between px-4 z-20">
-        <div className="flex items-center gap-2">
-          <Package className="text-[#1C1917] w-6 h-6" />
-          <h1 className="font-black text-lg tracking-tighter">Policlínica</h1>
+      <header className="lg:hidden fixed top-0 left-0 right-0 h-16 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-4 z-20 text-white shadow-md">
+        <div className="flex items-center gap-2.5">
+          <div className="bg-gradient-to-br from-blue-600 to-indigo-800 p-2 rounded-xl text-white shadow-sm">
+            <Package className="w-5 h-5" />
+          </div>
+          <div className="flex items-baseline gap-1.5">
+            <h1 className="font-black text-lg tracking-tight text-white">Policlínica</h1>
+            <span className="text-[10px] font-black text-blue-300 tracking-wider uppercase">Almoxarifado</span>
+          </div>
         </div>
         <button 
           onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-          className="p-2 hover:bg-[#F5F5F4] rounded-lg transition-colors"
+          className="p-2 hover:bg-slate-800 rounded-xl transition-colors text-slate-300"
         >
-          {isMobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
+          {isMobileMenuOpen ? <X size={22} /> : <Menu size={22} />}
         </button>
       </header>
 
@@ -4920,117 +5033,228 @@ export default function App() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={() => setIsMobileMenuOpen(false)}
-            className="fixed inset-0 bg-[#1C1917]/20 backdrop-blur-sm z-30 lg:hidden"
+            className="fixed inset-0 bg-slate-950/40 backdrop-blur-sm z-30 lg:hidden"
           />
         )}
       </AnimatePresence>
 
       {/* Sidebar */}
-      <aside className={`fixed lg:left-0 top-0 h-full w-64 bg-white border-r border-[#E7E5E4] p-6 flex flex-col gap-8 z-40 transition-transform duration-300 transform ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
-        <div className="flex items-center justify-between lg:justify-start gap-3 px-2">
+      <aside className={`fixed lg:left-0 top-0 h-full w-64 bg-white border-r border-blue-100/80 p-5 flex flex-col gap-6 z-40 shadow-sm transition-transform duration-300 transform ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
+        <div className="flex items-center justify-between lg:justify-start gap-3 px-1 pt-1">
           <div className="flex items-center gap-3">
-            <div className="bg-[#1C1917] p-2 rounded-lg shadow-md">
-              <Package className="text-white w-6 h-6" />
+            <div className="bg-gradient-to-br from-blue-700 via-blue-800 to-indigo-900 p-2.5 rounded-2xl shadow-md shadow-blue-500/20 text-white ring-2 ring-blue-500/20">
+              <Package className="w-6 h-6" />
             </div>
             <div className="flex flex-col">
-              <h1 className="font-black text-xl tracking-tighter leading-none">Policlínica</h1>
-              <span className="text-[10px] font-bold text-[#78716C] uppercase tracking-widest">Almoxarifado</span>
+              <h1 className="font-black text-xl tracking-tight text-slate-900 leading-none">Policlínica</h1>
+              <span className="text-[10px] font-black text-blue-700 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-md uppercase tracking-widest leading-none block w-fit mt-1">
+                Almoxarifado
+              </span>
             </div>
           </div>
           <button 
             onClick={() => setIsMobileMenuOpen(false)}
-            className="lg:hidden p-2 hover:bg-[#F5F5F4] rounded-lg"
+            className="lg:hidden p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl"
           >
             <X size={20} />
           </button>
         </div>
 
-        <nav className="flex flex-col gap-1 overflow-y-auto">
+        <nav className="flex flex-col gap-1.5 overflow-y-auto pr-0.5">
           {userProfile && (
             <>
               {(isAdmin || userProfile.role === 'ADMIN') ? (
                 <>
                   <button 
                     onClick={() => { setActiveTab('dashboard'); setIsMobileMenuOpen(false); }}
-                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'dashboard' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                    className={`group flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all duration-200 text-xs ${
+                      activeTab === 'dashboard' 
+                        ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white font-extrabold shadow-md shadow-blue-600/20' 
+                        : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50/80 font-bold'
+                    }`}
                   >
-                    <LayoutDashboard size={20} /> Dashboard
+                    <div className="flex items-center gap-3">
+                      <LayoutDashboard size={18} className={activeTab === 'dashboard' ? 'text-white' : 'text-slate-400 group-hover:text-blue-600 transition-colors'} />
+                      <span>Dashboard</span>
+                    </div>
                   </button>
+
                   <button 
                     onClick={() => { setActiveTab('inventory'); setIsMobileMenuOpen(false); }}
-                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'inventory' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                    className={`group flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all duration-200 text-xs ${
+                      activeTab === 'inventory' 
+                        ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white font-extrabold shadow-md shadow-blue-600/20' 
+                        : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50/80 font-bold'
+                    }`}
                   >
-                    <Package size={20} /> Estoque
+                    <div className="flex items-center gap-3">
+                      <Package size={18} className={activeTab === 'inventory' ? 'text-white' : 'text-slate-400 group-hover:text-blue-600 transition-colors'} />
+                      <span>Estoque</span>
+                    </div>
                   </button>
+
                   <button 
                     onClick={() => { setActiveTab('history'); setIsMobileMenuOpen(false); }}
-                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'history' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                    className={`group flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all duration-200 text-xs ${
+                      activeTab === 'history' 
+                        ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white font-extrabold shadow-md shadow-blue-600/20' 
+                        : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50/80 font-bold'
+                    }`}
                   >
-                    <History size={20} /> Histórico
+                    <div className="flex items-center gap-3">
+                      <History size={18} className={activeTab === 'history' ? 'text-white' : 'text-slate-400 group-hover:text-blue-600 transition-colors'} />
+                      <span>Histórico</span>
+                    </div>
                   </button>
+
                   <button 
                     onClick={() => { setActiveTab('requests'); setIsMobileMenuOpen(false); }}
-                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'requests' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                    className={`group flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all duration-200 text-xs ${
+                      activeTab === 'requests' 
+                        ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white font-extrabold shadow-md shadow-blue-600/20' 
+                        : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50/80 font-bold'
+                    }`}
                   >
-                    <FileText size={20} /> Solicitações
+                    <div className="flex items-center gap-3">
+                      <FileText size={18} className={activeTab === 'requests' ? 'text-white' : 'text-slate-400 group-hover:text-blue-600 transition-colors'} />
+                      <span>Solicitações</span>
+                    </div>
+                    {pendingRequestsCount > 0 && (
+                      <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${
+                        activeTab === 'requests' ? 'bg-amber-400 text-slate-950' : 'bg-sky-100 text-sky-800'
+                      }`}>
+                        {pendingRequestsCount}
+                      </span>
+                    )}
                   </button>
+
                   <button 
                     onClick={() => { setActiveTab('admin-devolutions'); setIsMobileMenuOpen(false); }}
-                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'admin-devolutions' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                    className={`group flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all duration-200 text-xs ${
+                      activeTab === 'admin-devolutions' 
+                        ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white font-extrabold shadow-md shadow-blue-600/20' 
+                        : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50/80 font-bold'
+                    }`}
                   >
-                    <RotateCcw size={20} /> Devoluções
+                    <div className="flex items-center gap-3">
+                      <RotateCcw size={18} className={activeTab === 'admin-devolutions' ? 'text-white' : 'text-slate-400 group-hover:text-blue-600 transition-colors'} />
+                      <span>Devoluções</span>
+                    </div>
                   </button>
+
                   <button 
                     onClick={() => { setActiveTab('trash'); setIsMobileMenuOpen(false); }}
-                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'trash' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                    className={`group flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all duration-200 text-xs ${
+                      activeTab === 'trash' 
+                        ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white font-extrabold shadow-md shadow-blue-600/20' 
+                        : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50/80 font-bold'
+                    }`}
                   >
-                    <Trash2 size={20} /> Lixeira
+                    <div className="flex items-center gap-3">
+                      <Trash2 size={18} className={activeTab === 'trash' ? 'text-white' : 'text-slate-400 group-hover:text-blue-600 transition-colors'} />
+                      <span>Lixeira</span>
+                    </div>
                   </button>
+
                   <button 
                     onClick={() => { setActiveTab('reports'); setIsMobileMenuOpen(false); }}
-                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'reports' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                    className={`group flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all duration-200 text-xs ${
+                      activeTab === 'reports' 
+                        ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white font-extrabold shadow-md shadow-blue-600/20' 
+                        : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50/80 font-bold'
+                    }`}
                   >
-                    <BarChart3 size={20} /> Relatórios
+                    <div className="flex items-center gap-3">
+                      <BarChart3 size={18} className={activeTab === 'reports' ? 'text-white' : 'text-slate-400 group-hover:text-blue-600 transition-colors'} />
+                      <span>Relatórios</span>
+                    </div>
                   </button>
+
                   <button 
                     onClick={() => { setActiveTab('users'); setIsMobileMenuOpen(false); }}
-                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'users' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                    className={`group flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all duration-200 text-xs ${
+                      activeTab === 'users' 
+                        ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white font-extrabold shadow-md shadow-blue-600/20' 
+                        : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50/80 font-bold'
+                    }`}
                   >
-                    <Users size={20} /> Usuários
+                    <div className="flex items-center gap-3">
+                      <Users size={18} className={activeTab === 'users' ? 'text-white' : 'text-slate-400 group-hover:text-blue-600 transition-colors'} />
+                      <span>Usuários</span>
+                    </div>
                   </button>
                 </>
               ) : (
                 <>
                   <button 
                     onClick={() => { setActiveTab('new-request'); setIsMobileMenuOpen(false); }}
-                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'new-request' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                    className={`group flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all duration-200 text-xs ${
+                      activeTab === 'new-request' 
+                        ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white font-extrabold shadow-md shadow-blue-600/20' 
+                        : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50/80 font-bold'
+                    }`}
                   >
-                    <Plus size={20} /> Nova Solicitação
+                    <div className="flex items-center gap-3">
+                      <Plus size={18} className={activeTab === 'new-request' ? 'text-white' : 'text-slate-400 group-hover:text-blue-600 transition-colors'} />
+                      <span>Nova Solicitação</span>
+                    </div>
                   </button>
+
                   <button 
                     onClick={() => { setActiveTab('devolution'); setIsMobileMenuOpen(false); }}
-                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'devolution' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                    className={`group flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all duration-200 text-xs ${
+                      activeTab === 'devolution' 
+                        ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white font-extrabold shadow-md shadow-blue-600/20' 
+                        : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50/80 font-bold'
+                    }`}
                   >
-                    <RotateCcw size={20} /> Devolução de Materiais
+                    <div className="flex items-center gap-3">
+                      <RotateCcw size={18} className={activeTab === 'devolution' ? 'text-white' : 'text-slate-400 group-hover:text-blue-600 transition-colors'} />
+                      <span>Devolução de Materiais</span>
+                    </div>
                   </button>
+
                   <button 
                     onClick={() => { setActiveTab('my-requests'); setIsMobileMenuOpen(false); }}
-                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'my-requests' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                    className={`group flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all duration-200 text-xs ${
+                      activeTab === 'my-requests' 
+                        ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white font-extrabold shadow-md shadow-blue-600/20' 
+                        : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50/80 font-bold'
+                    }`}
                   >
-                    <FileText size={20} /> Minhas Solicitações
+                    <div className="flex items-center gap-3">
+                      <FileText size={18} className={activeTab === 'my-requests' ? 'text-white' : 'text-slate-400 group-hover:text-blue-600 transition-colors'} />
+                      <span>Minhas Solicitações</span>
+                    </div>
                   </button>
+
                   <button 
                     onClick={() => { setActiveTab('reports'); setIsMobileMenuOpen(false); }}
-                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'reports' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                    className={`group flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all duration-200 text-xs ${
+                      activeTab === 'reports' 
+                        ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white font-extrabold shadow-md shadow-blue-600/20' 
+                        : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50/80 font-bold'
+                    }`}
                   >
-                    <BarChart3 size={20} /> Relatórios
+                    <div className="flex items-center gap-3">
+                      <BarChart3 size={18} className={activeTab === 'reports' ? 'text-white' : 'text-slate-400 group-hover:text-blue-600 transition-colors'} />
+                      <span>Relatórios</span>
+                    </div>
                   </button>
+
                   {(userProfile?.role === 'LÍDER' || userProfile?.role === 'SETOR') && (
                     <button 
                       onClick={() => { setActiveTab('leader-stats'); setIsMobileMenuOpen(false); }}
-                      className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'leader-stats' ? 'bg-[#F5F5F4] font-semibold' : 'hover:bg-[#FAFAF9] text-[#57534E]'}`}
+                      className={`group flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all duration-200 text-xs ${
+                        activeTab === 'leader-stats' 
+                          ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white font-extrabold shadow-md shadow-blue-600/20' 
+                          : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50/80 font-bold'
+                      }`}
                     >
-                      <BarChart3 size={20} /> Estatísticas
+                      <div className="flex items-center gap-3">
+                        <BarChart3 size={18} className={activeTab === 'leader-stats' ? 'text-white' : 'text-slate-400 group-hover:text-blue-600 transition-colors'} />
+                        <span>Estatísticas</span>
+                      </div>
                     </button>
                   )}
                 </>
@@ -5039,37 +5263,41 @@ export default function App() {
           )}
         </nav>
 
-        <div className="mt-auto pt-6 border-t border-[#E7E5E4] space-y-2">
-          <div className="px-4 py-2">
-            <p className="text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Usuário</p>
+        <div className="mt-auto pt-4 border-t border-blue-100/80 space-y-2">
+          <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200/80 hover:border-blue-200 transition-all">
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2">Usuário Conectado</p>
             <div className="flex items-center gap-3">
-              <img src={user.photoURL || ''} className="w-8 h-8 rounded-full border border-[#E7E5E4]" alt="" />
-              <div className="overflow-hidden flex-1">
-                <p className="text-xs font-bold truncate">{user.displayName}</p>
+              <img src={user.photoURL || ''} className="w-9 h-9 rounded-xl border-2 border-blue-500/30 object-cover shadow-sm shrink-0" alt="" />
+              <div className="overflow-hidden flex-1 min-w-0">
+                <p className="text-xs font-extrabold text-slate-900 truncate">{user.displayName}</p>
                 {userProfile?.allowedSectors && userProfile.allowedSectors.length > 1 ? (
                   <select 
                     value={selectedSector}
                     onChange={(e) => setSelectedSector(e.target.value)}
-                    className="text-[10px] text-[#1C1917] font-black uppercase bg-[#F5F5F4] border-none rounded p-1 mt-1 cursor-pointer hover:bg-[#E7E5E4] transition-all w-full focus:ring-0"
+                    className="text-[10px] text-slate-900 font-extrabold uppercase bg-white border border-slate-200 rounded-lg px-2 py-1 mt-1 cursor-pointer hover:border-blue-300 transition-all w-full focus:ring-1 focus:ring-blue-500"
                   >
                     {userProfile.allowedSectors.map(s => (
                       <option key={s} value={s}>{s}</option>
                     ))}
                   </select>
                 ) : (
-                  <p className="text-[10px] text-[#A8A29E] font-medium truncate uppercase">{selectedSector || 'Sem Setor'}</p>
+                  <p className="text-[10px] text-slate-500 font-bold truncate uppercase mt-0.5">{selectedSector || 'Sem Setor'}</p>
                 )}
-                <button onClick={handleLogout} className="text-[10px] text-rose-600 font-bold hover:underline flex items-center gap-1 mt-1">
-                  <LogOut size={10} /> Sair
+                <button 
+                  onClick={handleLogout} 
+                  className="text-[10px] text-rose-600 font-bold hover:text-rose-700 hover:bg-rose-50 px-2 py-0.5 rounded-md transition-all flex items-center gap-1 mt-1.5"
+                >
+                  <LogOut size={11} /> Sair do sistema
                 </button>
               </div>
             </div>
           </div>
+
           <button 
             onClick={() => setShowSettingsModal(true)}
-            className="flex items-center gap-3 px-4 py-3 rounded-xl text-[#57534E] hover:bg-[#FAFAF9] w-full transition-all"
+            className="flex items-center gap-3 px-3.5 py-2.5 rounded-2xl text-slate-600 hover:text-blue-700 hover:bg-blue-50/80 text-xs font-bold w-full transition-all"
           >
-            <Settings size={20} /> Configurações
+            <Settings size={18} className="text-slate-400" /> Configurações
           </button>
         </div>
       </aside>
@@ -5118,28 +5346,28 @@ export default function App() {
                 </p>
               )}
               {activeTab === 'reports' && (
-                <div className="flex items-center gap-4 mt-2">
-                  <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border border-[#E7E5E4]">
-                    <Calendar size={14} className="text-[#A8A29E]" />
+                <div className="flex flex-wrap items-center gap-3 mt-3">
+                  <div className="flex items-center gap-2 bg-white px-3.5 py-2 rounded-2xl border border-slate-200/90 shadow-sm hover:border-blue-300 transition-all">
+                    <Calendar size={15} className="text-blue-600" />
                     <input 
                       type="date" 
-                      className="text-xs font-bold focus:outline-none"
+                      className="text-xs font-extrabold text-slate-700 focus:outline-none cursor-pointer"
                       value={reportRange.start}
                       onChange={e => setReportRange({...reportRange, start: e.target.value})}
                     />
-                    <span className="text-[#A8A29E] text-xs">até</span>
+                    <span className="text-slate-400 text-xs font-bold">até</span>
                     <input 
                       type="date" 
-                      className="text-xs font-bold focus:outline-none"
+                      className="text-xs font-extrabold text-slate-700 focus:outline-none cursor-pointer"
                       value={reportRange.end}
                       onChange={e => setReportRange({...reportRange, end: e.target.value})}
                     />
                   </div>
-                  {(isAdmin) && (
-                    <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border border-[#E7E5E4]">
-                      <Filter size={14} className="text-[#A8A29E]" />
+                  {isAdmin && (
+                    <div className="flex items-center gap-2 bg-white px-3.5 py-2 rounded-2xl border border-slate-200/90 shadow-sm hover:border-blue-300 transition-all">
+                      <Filter size={15} className="text-blue-600" />
                       <select 
-                        className="text-xs font-bold focus:outline-none bg-transparent"
+                        className="text-xs font-extrabold text-slate-700 focus:outline-none bg-transparent cursor-pointer"
                         value={reportSectorFilter}
                         onChange={e => setReportSectorFilter(e.target.value)}
                       >
@@ -5153,17 +5381,17 @@ export default function App() {
                   {isAdmin && (
                     <button 
                       onClick={handleExportExcel}
-                      className="flex items-center gap-2 bg-emerald-600 text-white px-4 py-1.5 rounded-xl text-xs font-bold hover:bg-emerald-700 transition-all shadow-sm"
+                      className="flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-700 text-white px-4 py-2 rounded-2xl text-xs font-extrabold hover:from-emerald-700 hover:to-teal-800 transition-all shadow-md shadow-emerald-600/20"
                     >
-                      <Download size={14} /> Exportar Excel
+                      <Download size={15} /> Exportar Excel
                     </button>
                   )}
                   {!isAdmin && (
                     <button 
                       onClick={handleExportMaterialsCatalogPDF}
-                      className="flex items-center gap-2 bg-blue-600 text-white px-4 py-1.5 rounded-xl text-xs font-bold hover:bg-blue-700 transition-all shadow-sm"
+                      className="flex items-center gap-2 bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white px-4 py-2 rounded-2xl text-xs font-extrabold hover:from-blue-800 hover:to-indigo-950 transition-all shadow-md shadow-blue-600/20"
                     >
-                      <FileText size={14} /> Catálogo (Líderes)
+                      <FileText size={15} /> Catálogo de Itens
                     </button>
                   )}
                 </div>
@@ -5282,21 +5510,21 @@ export default function App() {
             </div>
 
             <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[#A8A29E]" size={18} />
+              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={17} />
               <input 
                 type="text" 
-                placeholder="Buscar itens..."
-                className="pl-10 pr-4 py-2 bg-white border border-[#E7E5E4] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#1C1917]/10 w-64 transition-all"
+                placeholder="Buscar insumos e lotes..."
+                className="pl-10 pr-4 py-2 bg-white border border-slate-200 rounded-2xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 w-64 text-slate-800 shadow-sm transition-all"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
               />
             </div>
             {activeTab === 'inventory' && (
-              <div className="flex items-center gap-2">
-                <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-xl border border-[#E7E5E4]">
-                  <Filter size={16} className="text-[#A8A29E]" />
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-2xl border border-slate-200/90 shadow-sm hover:border-blue-300 transition-all">
+                  <Filter size={15} className="text-blue-600" />
                   <select 
-                    className="text-xs font-bold focus:outline-none bg-transparent"
+                    className="text-xs font-extrabold text-slate-700 focus:outline-none bg-transparent cursor-pointer"
                     value={categoryFilter}
                     onChange={e => setCategoryFilter(e.target.value)}
                   >
@@ -5306,10 +5534,10 @@ export default function App() {
                     ))}
                   </select>
                 </div>
-                <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-xl border border-[#E7E5E4]">
-                  <TrendingUp size={16} className="text-[#A8A29E]" />
+                <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-2xl border border-slate-200/90 shadow-sm hover:border-blue-300 transition-all">
+                  <TrendingUp size={15} className="text-blue-600" />
                   <select 
-                    className="text-xs font-bold focus:outline-none bg-transparent"
+                    className="text-xs font-extrabold text-slate-700 focus:outline-none bg-transparent cursor-pointer"
                     value={inventorySort}
                     onChange={e => setInventorySort(e.target.value as any)}
                   >
@@ -5319,10 +5547,10 @@ export default function App() {
                     <option value="duration_desc">Duração (Maior-Menor)</option>
                   </select>
                 </div>
-                <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-xl border border-[#E7E5E4]">
-                  <Filter size={16} className="text-[#A8A29E]" />
+                <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-2xl border border-slate-200/90 shadow-sm hover:border-blue-300 transition-all">
+                  <Filter size={15} className="text-blue-600" />
                   <select 
-                    className="text-xs font-bold focus:outline-none bg-transparent"
+                    className="text-xs font-extrabold text-slate-700 focus:outline-none bg-transparent cursor-pointer"
                     value={originFilter}
                     onChange={e => setOriginFilter(e.target.value as any)}
                   >
@@ -5336,35 +5564,35 @@ export default function App() {
                   <div className="flex gap-2">
                     <button 
                       onClick={handleExportInventory}
-                      className="p-2 bg-white border border-[#E7E5E4] rounded-xl text-[#57534E] hover:bg-[#FAFAF9] transition-all"
+                      className="p-2 bg-white border border-slate-200 rounded-2xl text-slate-600 hover:text-blue-700 hover:border-blue-300 hover:bg-blue-50/50 transition-all shadow-sm"
                       title="Baixar Planilha Excel"
                     >
-                      <Download size={20} />
+                      <Download size={18} />
                     </button>
                     <button 
                       onClick={handleExportInventoryPDF}
-                      className="p-2 bg-white border border-[#E7E5E4] rounded-xl text-rose-600 hover:bg-rose-50 transition-all"
+                      className="p-2 bg-white border border-slate-200 rounded-2xl text-rose-600 hover:text-rose-700 hover:border-rose-300 hover:bg-rose-50 transition-all shadow-sm"
                       title="Baixar Relatório PDF"
                     >
-                      <Printer size={20} />
+                      <Printer size={18} />
                     </button>
                   </div>
                 )}
               </div>
             )}
-            {(isAdmin || selectedSector === 'Farmácia') && (
+            {activeTab === 'dashboard' && (isAdmin || selectedSector === 'Farmácia') && (
               <>
                 <button 
                   onClick={() => setShowAddModal(true)}
-                  className="bg-[#1C1917] text-white px-5 py-2 rounded-xl font-medium flex items-center gap-2 hover:bg-[#292524] transition-all shadow-sm"
+                  className="bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white px-4.5 py-2 rounded-2xl text-xs font-extrabold flex items-center gap-2 hover:from-blue-800 hover:to-indigo-950 transition-all shadow-md shadow-blue-600/20"
                 >
-                  <Plus size={20} /> Entrada
+                  <Plus size={18} /> Nova Entrada
                 </button>
                 <button 
                   onClick={() => setShowTransactionModal({ show: true, type: 'exit' })}
-                  className="bg-rose-600 text-white px-5 py-2 rounded-xl font-medium flex items-center gap-2 hover:bg-rose-700 transition-all shadow-sm"
+                  className="bg-gradient-to-r from-rose-600 to-rose-700 text-white px-4.5 py-2 rounded-2xl text-xs font-extrabold flex items-center gap-2 hover:from-rose-700 hover:to-rose-800 transition-all shadow-md shadow-rose-600/20"
                 >
-                  <ArrowUpRight size={20} /> Saída
+                  <ArrowUpRight size={18} /> Nova Saída
                 </button>
               </>
             )}
@@ -5375,111 +5603,257 @@ export default function App() {
           {activeTab === 'dashboard' && (
             <motion.div 
               key="dashboard"
-              initial={{ opacity: 0, y: 10 }}
+              initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              className="space-y-6"
+              exit={{ opacity: 0, y: -12 }}
+              className="space-y-8"
             >
-              {/* Stats Cards */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 lg:gap-6">
-                <div className="bg-white p-6 rounded-2xl border border-stone-200/60 shadow-sm hover:border-stone-300 hover:shadow-md transition-all duration-300">
-                  <div className="flex items-center justify-between mb-4">
-                    <span className="text-xs font-bold text-stone-500 uppercase tracking-widest">Volume em Estoque</span>
-                    <div className="bg-emerald-50 text-emerald-600 p-2.5 rounded-xl border border-emerald-100/50">
-                      <Package size={18} />
-                    </div>
-                  </div>
-                  <h3 className="text-3xl font-black text-stone-800 tracking-tight">{totalVolume}</h3>
-                  <div className="text-[10px] text-stone-500 mt-3 font-semibold flex items-center gap-1.5 uppercase tracking-wider">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                    {groupedArray.length} tipos de itens
-                  </div>
-                </div>
+              {/* Executive Welcome Hero Banner - Deep Blue Gradient Theme */}
+              <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-slate-900 via-blue-950 to-indigo-950 border border-blue-900/50 p-6 sm:p-8 shadow-xl shadow-blue-950/20 text-white">
+                {/* Decorative glowing background elements */}
+                <div className="absolute -right-16 -top-16 w-80 h-80 bg-blue-600/20 rounded-full blur-3xl pointer-events-none" />
+                <div className="absolute right-1/3 -bottom-20 w-64 h-64 bg-indigo-500/10 rounded-full blur-2xl pointer-events-none" />
 
-                {(isAdmin || selectedSector === 'Farmácia') && (
-                  <div className="bg-white p-6 rounded-2xl border border-stone-200/60 shadow-sm hover:border-stone-300 hover:shadow-md transition-all duration-300">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs font-bold text-stone-500 uppercase tracking-widest">Patrimônio</span>
-                      <div className="bg-blue-50 text-blue-600 p-2.5 rounded-xl border border-blue-100/50">
-                        <DollarSign size={18} />
-                      </div>
+                <div className="relative z-10 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
+                  <div className="space-y-2 max-w-2xl">
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-blue-500/20 text-blue-300 border border-blue-400/30 backdrop-blur-sm">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                        Sistema Operacional em Tempo Real
+                      </span>
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-white/10 text-slate-200 border border-white/10">
+                        {inventoryLocation}
+                      </span>
                     </div>
-                    <h3 className="text-2xl font-black text-stone-800 tracking-tight select-all">
-                      {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalInventoryValue)}
-                    </h3>
-                    <div className="text-[10px] text-stone-500 mt-3 font-semibold flex items-center gap-1.5 uppercase tracking-wider">
-                      <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
-                      Valor total investido
-                    </div>
-                  </div>
-                )}
 
-                <div 
-                  onClick={() => lowStockItems.length > 0 && setShowDetailModal({ show: true, type: 'low_stock', items: lowStockItems as any })}
-                  className={`p-6 rounded-2xl border transition-all duration-300 cursor-pointer ${lowStockItems.length > 0 ? 'bg-amber-50/30 border-amber-200/70 hover:border-amber-300' : 'bg-white border-stone-200/60 hover:border-stone-300'}`}
-                >
-                  <div className="flex items-center justify-between mb-4">
-                    <span className="text-xs font-bold text-stone-500 uppercase tracking-widest">Estoque Baixo</span>
-                    <div className={`p-2.5 rounded-xl border ${lowStockItems.length > 0 ? 'bg-amber-100/50 text-amber-600 border-amber-200/50' : 'bg-stone-50 text-stone-500 border-stone-200/50'}`}>
-                      <AlertTriangle size={18} />
-                    </div>
+                    <h2 className="text-2xl sm:text-3xl font-black tracking-tight text-white">
+                      Painel de Gestão & Operação
+                    </h2>
+                    <p className="text-sm text-slate-300 leading-relaxed">
+                      Monitoramento contínuo de saldos, movimentações, alertas críticos de validade e requisições do almoxarifado.
+                    </p>
                   </div>
-                  <h3 className={`text-3xl font-black tracking-tight ${lowStockItems.length > 0 ? 'text-amber-600 animate-pulse' : 'text-stone-800'}`}>{lowStockItems.length}</h3>
-                  <div className="text-[10px] text-stone-500 mt-3 font-semibold flex items-center gap-1.5 uppercase tracking-wider">
-                    <span className={`w-1.5 h-1.5 rounded-full ${lowStockItems.length > 0 ? 'bg-amber-500' : 'bg-stone-300'}`} />
-                    {lowStockItems.length > 0 ? 'Necessita de reposição' : 'Estoque saudável'}
-                  </div>
-                </div>
 
-                <div 
-                  onClick={() => nearExpiryItems.length > 0 && setShowDetailModal({ show: true, type: 'expiry', items: nearExpiryItems })}
-                  className={`p-6 rounded-2xl border transition-all duration-300 cursor-pointer ${nearExpiryItems.length > 0 ? 'bg-rose-50/30 border-rose-200/70 hover:border-rose-300' : 'bg-white border-stone-200/60 hover:border-stone-300'}`}
-                >
-                  <div className="flex items-center justify-between mb-4">
-                    <span className="text-xs font-bold text-stone-500 uppercase tracking-widest">Vencimento</span>
-                    <div className={`p-2.5 rounded-xl border ${nearExpiryItems.length > 0 ? 'bg-rose-100/50 text-rose-600 border-rose-200/50' : 'bg-stone-50 text-stone-500 border-stone-200/50'}`}>
-                      <Calendar size={18} />
+                  {/* Header Quick Stats Pill Group */}
+                  <div className="flex items-center gap-3 bg-slate-900/80 backdrop-blur-md p-3 sm:p-4 rounded-2xl border border-blue-800/40 divide-x divide-blue-800/40 shrink-0">
+                    <div className="px-3 text-center">
+                      <p className="text-[10px] uppercase font-bold text-blue-300 tracking-wider">Itens Ativos</p>
+                      <p className="text-xl font-black text-white">{groupedArray.length}</p>
                     </div>
-                  </div>
-                  <h3 className={`text-3xl font-black tracking-tight ${nearExpiryItems.length > 0 ? 'text-rose-600 animate-pulse' : 'text-stone-800'}`}>{nearExpiryItems.length}</h3>
-                  <div className="text-[10px] text-stone-500 mt-3 font-semibold flex items-center gap-1.5 uppercase tracking-wider">
-                    <span className={`w-1.5 h-1.5 rounded-full ${nearExpiryItems.length > 0 ? 'bg-rose-500' : 'bg-stone-300'}`} />
-                    {nearExpiryItems.length > 0 ? 'Material perto do vencimento' : 'Prazos de validade ok'}
+                    <div className="px-3 text-center">
+                      <p className="text-[10px] uppercase font-bold text-sky-300 tracking-wider">Pendências</p>
+                      <p className="text-xl font-black text-amber-400">{pendingRequestsCount}</p>
+                    </div>
+                    <div className="px-3 text-center">
+                      <p className="text-[10px] uppercase font-bold text-indigo-300 tracking-wider">Alertas</p>
+                      <p className="text-xl font-black text-rose-400">{lowStockItems.length + nearExpiryItems.length}</p>
+                    </div>
                   </div>
                 </div>
               </div>
 
-              {/* Split Bento Block */}
+              {/* 4 Primary KPI Stats Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+                {/* Card 1: Volume Total */}
+                <div className="bg-white rounded-2xl border border-blue-100/80 shadow-sm hover:shadow-md hover:border-blue-200 transition-all duration-300 overflow-hidden group relative">
+                  <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 to-cyan-500" />
+                  <div className="p-6">
+                    <div className="flex items-center justify-between mb-4">
+                      <span className="text-xs font-black text-slate-500 uppercase tracking-widest">Volume em Estoque</span>
+                      <div className="bg-gradient-to-br from-blue-600 to-blue-700 text-white p-3 rounded-2xl shadow-md shadow-blue-500/20 group-hover:scale-105 transition-transform">
+                        <Package size={20} />
+                      </div>
+                    </div>
+                    <h3 className="text-3xl font-black text-slate-900 tracking-tight">{totalVolume.toLocaleString('pt-BR')}</h3>
+                    <div className="mt-4 flex items-center gap-2">
+                      <span className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-100 uppercase tracking-wider flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 rounded-full bg-blue-600" />
+                        {groupedArray.length} tipos de insumos
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Card 2: Patrimônio */}
+                {(isAdmin || selectedSector === 'Farmácia') && (
+                  <div className="bg-white rounded-2xl border border-indigo-100/80 shadow-sm hover:shadow-md hover:border-indigo-200 transition-all duration-300 overflow-hidden group relative">
+                    <div className="h-1.5 w-full bg-gradient-to-r from-indigo-600 to-blue-600" />
+                    <div className="p-6">
+                      <div className="flex items-center justify-between mb-4">
+                        <span className="text-xs font-black text-slate-500 uppercase tracking-widest">Patrimônio Investido</span>
+                        <div className="bg-gradient-to-br from-indigo-600 to-indigo-700 text-white p-3 rounded-2xl shadow-md shadow-indigo-500/20 group-hover:scale-105 transition-transform">
+                          <DollarSign size={20} />
+                        </div>
+                      </div>
+                      <h3 className="text-2xl font-black text-slate-900 tracking-tight select-all">
+                        {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalInventoryValue)}
+                      </h3>
+                      <div className="mt-4 flex items-center gap-2">
+                        <span className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-100 uppercase tracking-wider flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-indigo-600" />
+                          Valor financeiro ativo
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Card 3: Pendências / Solicitações */}
+                <div 
+                  onClick={() => setActiveTab('requests')}
+                  className="bg-white rounded-2xl border border-sky-100/80 shadow-sm hover:shadow-md hover:border-sky-300 transition-all duration-300 overflow-hidden group cursor-pointer relative"
+                >
+                  <div className="h-1.5 w-full bg-gradient-to-r from-sky-500 to-blue-600" />
+                  <div className="p-6">
+                    <div className="flex items-center justify-between mb-4">
+                      <span className="text-xs font-black text-slate-500 uppercase tracking-widest">Solicitações Pendentes</span>
+                      <div className="bg-gradient-to-br from-sky-500 to-blue-600 text-white p-3 rounded-2xl shadow-md shadow-sky-500/20 group-hover:scale-105 transition-transform">
+                        <Clock size={20} />
+                      </div>
+                    </div>
+                    <h3 className={`text-3xl font-black tracking-tight ${pendingRequestsCount > 0 ? 'text-sky-700' : 'text-slate-900'}`}>
+                      {pendingRequestsCount}
+                    </h3>
+                    <div className="mt-4 flex items-center gap-2">
+                      <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 ${pendingRequestsCount > 0 ? 'bg-sky-50 text-sky-800 border border-sky-200' : 'bg-slate-50 text-slate-600 border border-slate-100'}`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${pendingRequestsCount > 0 ? 'bg-sky-500 animate-pulse' : 'bg-slate-400'}`} />
+                        {pendingRequestsCount > 0 ? 'Aguardando atendimento' : 'Nenhuma pendência'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Card 4: Nível Crítico / Alertas */}
+                <div 
+                  onClick={() => lowStockItems.length > 0 && setShowDetailModal({ show: true, type: 'low_stock', items: lowStockItems as any })}
+                  className={`bg-white rounded-2xl border transition-all duration-300 overflow-hidden group cursor-pointer relative ${
+                    (lowStockItems.length > 0 || nearExpiryItems.length > 0)
+                      ? 'border-amber-200/80 shadow-sm hover:border-amber-300 hover:shadow-md'
+                      : 'border-blue-100/80 shadow-sm hover:border-blue-200'
+                  }`}
+                >
+                  <div className={`h-1.5 w-full ${lowStockItems.length > 0 ? 'bg-gradient-to-r from-amber-500 to-rose-500' : 'bg-gradient-to-r from-emerald-500 to-blue-500'}`} />
+                  <div className="p-6">
+                    <div className="flex items-center justify-between mb-4">
+                      <span className="text-xs font-black text-slate-500 uppercase tracking-widest">Atenção Necessária</span>
+                      <div className={`p-3 rounded-2xl shadow-md group-hover:scale-105 transition-transform text-white ${
+                        lowStockItems.length > 0 ? 'bg-gradient-to-br from-amber-500 to-rose-500 shadow-amber-500/20' : 'bg-gradient-to-br from-emerald-500 to-blue-600 shadow-emerald-500/20'
+                      }`}>
+                        <AlertTriangle size={20} />
+                      </div>
+                    </div>
+                    <h3 className={`text-3xl font-black tracking-tight ${lowStockItems.length > 0 ? 'text-amber-600' : 'text-slate-900'}`}>
+                      {lowStockItems.length + nearExpiryItems.length}
+                    </h3>
+                    <div className="mt-4 flex items-center gap-2">
+                      <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 ${
+                        lowStockItems.length > 0 ? 'bg-amber-50 text-amber-800 border border-amber-200' : 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                      }`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${lowStockItems.length > 0 ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`} />
+                        {lowStockItems.length} baixo estoque • {nearExpiryItems.length} próx. vencer
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Category Volume Distribution Bar Chart Section */}
+              {categoryDistribution.length > 0 && (
+                <div className="bg-white rounded-3xl border border-blue-100 p-6 shadow-sm space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-blue-50 pb-4">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2.5 bg-blue-50 text-blue-700 rounded-2xl border border-blue-100">
+                        <BarChart3 size={20} />
+                      </div>
+                      <div>
+                        <h4 className="font-extrabold text-sm text-slate-900 uppercase tracking-wider">
+                          Distribuição de Estoque por Categoria
+                        </h4>
+                        <p className="text-xs text-slate-500">
+                          Volume acumulado dos principais grupos de insumos cadastrados
+                        </p>
+                      </div>
+                    </div>
+                    <span className="text-xs font-bold text-blue-700 bg-blue-50 px-3 py-1 rounded-full border border-blue-100 self-start sm:self-auto">
+                      Top {categoryDistribution.length} Categorias
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pt-2">
+                    {categoryDistribution.map((cat) => (
+                      <div key={cat.category} className="p-4 rounded-2xl bg-slate-50/70 border border-slate-100 hover:border-blue-200 hover:bg-blue-50/30 transition-all">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs font-bold text-slate-800 truncate max-w-[180px]">{cat.category}</span>
+                          <span className="text-xs font-black text-blue-700 bg-blue-100/60 px-2 py-0.5 rounded-md">
+                            {cat.totalQty.toLocaleString('pt-BR')} un
+                          </span>
+                        </div>
+                        <div className="w-full bg-slate-200/80 rounded-full h-2.5 overflow-hidden">
+                          <div 
+                            className="bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-500 h-2.5 rounded-full transition-all duration-500"
+                            style={{ width: `${cat.percentage}%` }}
+                          />
+                        </div>
+                        <div className="flex justify-between items-center mt-2 text-[10px] text-slate-500 font-medium">
+                          <span>{cat.count} tipos de produtos</span>
+                          <span>{cat.value > 0 ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(cat.value) : ''}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Bento Grid Split Columns */}
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-                {/* Left Column: Alertas Críticos (takes 5/12 cols) */}
-                <div className="lg:col-span-5 bg-white p-6 rounded-2xl border border-stone-200/60 shadow-sm space-y-4">
-                  <h4 className="text-xs font-bold uppercase tracking-wider text-stone-500 flex items-center gap-2">
-                    <AlertTriangle className="text-amber-500" size={16} /> Alertas Críticos ({lowStockItems.length + nearExpiryItems.length})
-                  </h4>
-                  
-                  <div className="space-y-3 max-h-[460px] overflow-y-auto pr-1">
+                {/* Left Column: Central de Alertas Críticos (5/12 cols) */}
+                <div className="lg:col-span-5 bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden space-y-0">
+                  <div className="bg-gradient-to-r from-slate-900 via-blue-950 to-slate-900 text-white p-5 flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <div className="p-2 bg-amber-500/20 text-amber-400 rounded-xl border border-amber-400/30">
+                        <AlertTriangle size={18} />
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-extrabold uppercase tracking-wider text-white">
+                          Central de Alertas Críticos
+                        </h4>
+                        <p className="text-[10px] text-blue-200 font-medium">
+                          Itens abaixo do limite mínimo ou próximos ao vencimento
+                        </p>
+                      </div>
+                    </div>
+                    <span className="px-2.5 py-1 rounded-full text-xs font-black bg-amber-500/20 text-amber-300 border border-amber-400/30">
+                      {lowStockItems.length + nearExpiryItems.length}
+                    </span>
+                  </div>
+
+                  <div className="p-5 space-y-3 max-h-[480px] overflow-y-auto">
                     {lowStockItems.length === 0 && nearExpiryItems.length === 0 && (
-                      <div className="py-12 text-center">
-                        <CheckCircle size={36} className="mx-auto text-emerald-400 mb-3" />
-                        <p className="text-xs text-stone-500 font-bold mb-1">Tudo em conformidade</p>
-                        <p className="text-[10px] text-[#A8A29E]">Não há itens com estoque crítico ou vencimentos.</p>
+                      <div className="py-14 text-center">
+                        <CheckCircle size={40} className="mx-auto text-emerald-500 mb-3" />
+                        <p className="text-sm text-slate-800 font-bold mb-1">Estoque 100% em Conformidade</p>
+                        <p className="text-xs text-slate-500 max-w-xs mx-auto">
+                          Nenhum insumo apresentou nível crítico de reposição ou data de expiração próxima.
+                        </p>
                       </div>
                     )}
-                    
+
                     {lowStockItems.map(group => (
-                      <div key={`low-${group.name}`} className="flex items-center justify-between p-3 bg-amber-50/40 rounded-xl border border-amber-100/40 hover:bg-amber-50 transition-all duration-200">
-                        <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 bg-amber-100 text-amber-800 rounded-lg flex items-center justify-center font-black text-xs">
+                      <div key={`low-${group.name}`} className="flex items-center justify-between p-3.5 bg-amber-50/50 rounded-2xl border border-amber-200/60 hover:bg-amber-50 transition-all duration-200">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-9 h-9 bg-amber-100 text-amber-900 rounded-xl flex items-center justify-center font-black text-xs shrink-0 border border-amber-200">
                             {group.total_quantity}
                           </div>
                           <div className="min-w-0 flex-1">
-                            <p className="font-bold text-xs text-stone-800 truncate leading-tight">{group.name}</p>
-                            <p className="text-[9px] text-amber-700 font-medium">Estoque abaixo de {group.min_quantity}</p>
+                            <p className="font-extrabold text-xs text-slate-900 truncate leading-tight">{group.name}</p>
+                            <p className="text-[10px] text-amber-800 font-semibold mt-0.5">
+                              Abaixo do mínimo recomendado ({group.min_quantity} un)
+                            </p>
                           </div>
                         </div>
                         <button 
                           onClick={() => setShowTransactionModal({ show: true, type: 'entry', item: group.batches[0] })}
-                          className="bg-amber-600 text-white px-2.5 py-1.5 rounded-lg text-xs font-bold hover:bg-amber-700 transition-all shadow-sm shrink-0"
+                          className="bg-gradient-to-r from-amber-600 to-amber-700 text-white px-3 py-1.5 rounded-xl text-xs font-bold hover:from-amber-700 hover:to-amber-800 transition-all shadow-sm shrink-0 ml-2"
                         >
                           Repor
                         </button>
@@ -5489,14 +5863,14 @@ export default function App() {
                     {nearExpiryItems.map(item => {
                       const isExpired = new Date(item.expiry_date!) < new Date();
                       return (
-                        <div key={`exp-${item.id}`} className={`flex items-center justify-between p-3 rounded-xl border transition-all duration-200 ${isExpired ? 'bg-rose-50/50 border-rose-100/50' : 'bg-stone-50/50 border-stone-100/50'}`}>
+                        <div key={`exp-${item.id}`} className={`flex items-center justify-between p-3.5 rounded-2xl border transition-all duration-200 ${isExpired ? 'bg-rose-50/60 border-rose-200/80' : 'bg-slate-50 border-slate-200/80'}`}>
                           <div className="flex items-center gap-3 min-w-0 flex-1">
-                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${isExpired ? 'bg-rose-100 text-rose-600' : 'bg-amber-100 text-amber-600'}`}>
-                              <Calendar size={14} />
+                            <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 border ${isExpired ? 'bg-rose-100 text-rose-700 border-rose-200' : 'bg-amber-100 text-amber-800 border-amber-200'}`}>
+                              <Calendar size={16} />
                             </div>
                             <div className="min-w-0 flex-1">
-                              <p className="font-bold text-xs text-stone-800 truncate leading-tight">{item.name}</p>
-                              <p className={`text-[9px] font-bold ${isExpired ? 'text-rose-600' : 'text-stone-500'}`}>
+                              <p className="font-extrabold text-xs text-slate-900 truncate leading-tight">{item.name}</p>
+                              <p className={`text-[10px] font-bold mt-0.5 ${isExpired ? 'text-rose-700' : 'text-slate-600'}`}>
                                 {isExpired ? 'Expirou em: ' : 'Vence em: '}
                                 {new Date(item.expiry_date!).toLocaleDateString('pt-BR')}
                               </p>
@@ -5504,7 +5878,7 @@ export default function App() {
                           </div>
                           <button 
                             onClick={() => setShowTransactionModal({ show: true, type: 'exit', item })}
-                            className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm shrink-0 ${isExpired ? 'bg-rose-600 text-white hover:bg-rose-700' : 'bg-stone-700 text-white hover:bg-stone-800'}`}
+                            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all shadow-sm shrink-0 ml-2 ${isExpired ? 'bg-rose-600 text-white hover:bg-rose-700' : 'bg-slate-800 text-white hover:bg-slate-900'}`}
                           >
                             Retirar
                           </button>
@@ -5514,51 +5888,65 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Right Column: Atividade Recente (takes 7/12 cols) */}
-                <div className="lg:col-span-7 bg-white p-6 rounded-2xl border border-stone-200/60 shadow-sm space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h4 className="text-xs font-bold uppercase tracking-wider text-stone-500 flex items-center gap-2">
-                      <History size={16} /> Movimentações Recentes
-                    </h4>
-                    <span className="text-[9px] text-stone-400 font-bold uppercase tracking-wider bg-stone-100 px-2 py-0.5 rounded-md">Últimos 5 registros</span>
+                {/* Right Column: Movimentações Recentes (7/12 cols) */}
+                <div className="lg:col-span-7 bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden space-y-0">
+                  <div className="bg-gradient-to-r from-slate-900 via-blue-950 to-slate-900 text-white p-5 flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <div className="p-2 bg-blue-500/20 text-blue-300 rounded-xl border border-blue-400/30">
+                        <History size={18} />
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-extrabold uppercase tracking-wider text-white">
+                          Movimentações Recentes do Estoque
+                        </h4>
+                        <p className="text-[10px] text-blue-200 font-medium">
+                          Histórico de saídas e entradas registradas no almoxarifado
+                        </p>
+                      </div>
+                    </div>
+                    <span className="text-[10px] font-bold uppercase tracking-wider bg-blue-500/20 text-blue-300 border border-blue-400/30 px-2.5 py-1 rounded-full">
+                      Últimos 5 registros
+                    </span>
                   </div>
 
-                  <div className="space-y-3 max-h-[460px] overflow-y-auto pr-1">
+                  <div className="p-5 space-y-3 max-h-[480px] overflow-y-auto">
                     {recentTransactions.length === 0 && (
-                      <div className="py-12 text-center">
-                        <History size={36} className="mx-auto text-stone-300 mb-3" />
-                        <p className="text-xs text-stone-500 font-bold">Sem registros no momento</p>
+                      <div className="py-14 text-center">
+                        <History size={40} className="mx-auto text-slate-300 mb-3" />
+                        <p className="text-sm text-slate-800 font-bold">Sem registros no momento</p>
+                        <p className="text-xs text-slate-500">Nenhuma movimentação realizada nesta localização.</p>
                       </div>
                     )}
 
                     {recentTransactions.map(t => (
-                      <div key={t.id} className="group flex gap-3 p-2.5 hover:bg-stone-50/80 rounded-xl transition-all duration-200 border border-transparent hover:border-stone-100/50">
-                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border ${t.type === 'entry' ? 'bg-emerald-50/50 text-emerald-600 border-emerald-100/30' : 'bg-rose-50/50 text-rose-600 border-rose-100/30'}`}>
-                          {t.type === 'entry' ? <ArrowDownLeft size={14} /> : <ArrowUpRight size={14} />}
+                      <div key={t.id} className="group flex gap-3.5 p-3 hover:bg-blue-50/40 rounded-2xl transition-all duration-200 border border-slate-100 hover:border-blue-200">
+                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border ${t.type === 'entry' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-blue-50 text-blue-700 border-blue-200'}`}>
+                          {t.type === 'entry' ? <ArrowDownLeft size={18} /> : <ArrowUpRight size={18} />}
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-start justify-between gap-2">
-                            <p className="font-bold text-xs text-stone-800 truncate leading-tight" title={t.item_name}>
+                            <p className="font-extrabold text-xs text-slate-900 truncate leading-tight" title={t.item_name}>
                               {t.item_name}
                             </p>
-                            <span className={`text-xs font-black shrink-0 ${t.type === 'entry' ? 'text-emerald-600' : 'text-rose-600'}`}>
+                            <span className={`text-xs font-black shrink-0 px-2 py-0.5 rounded-md ${t.type === 'entry' ? 'bg-emerald-100 text-emerald-800' : 'bg-blue-100 text-blue-800'}`}>
                               {t.type === 'entry' ? '+' : '-'}{t.quantity} un
                             </span>
                           </div>
-                          <p className="text-[9px] text-stone-500 mt-0.5">
-                            {t.type === 'entry' ? 'Entrada em estoque' : `Saída p/ ${t.sector || '---'}`}
+                          <p className="text-[10px] text-slate-500 font-medium mt-0.5">
+                            {t.type === 'entry' ? 'Entrada / Adição em estoque' : `Saída e entrega p/ setor: ${t.sector || '---'}`}
                           </p>
-                          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-1 pt-1 border-t border-dashed border-stone-100">
-                            <span className="text-[9px] text-stone-400 font-medium">
-                              {new Date(t.date).toLocaleDateString('pt-BR')} {new Date(t.date).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-2 pt-1.5 border-t border-dashed border-slate-200/80">
+                            <span className="text-[10px] text-slate-400 font-medium flex items-center gap-1">
+                              <Clock size={11} />
+                              {new Date(t.date).toLocaleDateString('pt-BR')} às {new Date(t.date).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
                             </span>
                             {t.responsible && (
-                              <span className="text-[8px] text-stone-600 font-semibold bg-stone-100/80 px-1.5 py-0.5 rounded">
+                              <span className="text-[9px] text-blue-800 font-bold bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-md">
                                 {t.responsible.split('@')[0]}
                               </span>
                             )}
                             {t.supplier && (
-                              <span className="text-[8px] text-amber-700 font-semibold bg-amber-50 px-1.5 py-0.5 rounded">
+                              <span className="text-[9px] text-amber-800 font-bold bg-amber-50 border border-amber-100 px-2 py-0.5 rounded-md">
                                 Forn: {t.supplier}
                               </span>
                             )}
@@ -5570,10 +5958,10 @@ export default function App() {
                               setDeletionReason('');
                               setShowDeleteModal({ show: true, transactionId: t.id });
                             }}
-                            className="p-1 text-stone-400 hover:text-rose-600 hover:bg-rose-50/50 rounded-lg transition-all self-center opacity-0 group-hover:opacity-100 focus:opacity-100 shrink-0"
+                            className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all self-center opacity-0 group-hover:opacity-100 focus:opacity-100 shrink-0"
                             title="Excluir Movimentação"
                           >
-                            <Trash2 size={14} />
+                            <Trash2 size={15} />
                           </button>
                         )}
                       </div>
@@ -5592,96 +5980,104 @@ export default function App() {
               exit={{ opacity: 0, x: -20 }}
               className="space-y-4"
             >
-              <div className="flex justify-between items-center bg-white p-4 rounded-3xl border border-[#E7E5E4] shadow-sm">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-white p-4 rounded-3xl border border-blue-100/80 shadow-sm">
                 {isAdmin ? (
-                  <div className="flex items-center gap-2 bg-[#F5F5F4] p-1 rounded-2xl border border-[#E7E5E4]">
+                  <div className="flex items-center gap-2 bg-slate-100/80 p-1.5 rounded-2xl border border-slate-200/80">
                     <button 
                       onClick={() => setInventoryLocation('Almoxarifado')}
-                      className={`px-6 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${inventoryLocation === 'Almoxarifado' ? 'bg-[#1C1917] text-white shadow-md' : 'text-[#78716C] hover:bg-[#E7E5E4]'}`}
+                      className={`px-5 py-2 rounded-xl text-xs font-extrabold transition-all duration-200 flex items-center gap-2 ${
+                        inventoryLocation === 'Almoxarifado' 
+                          ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-md shadow-blue-600/20' 
+                          : 'text-slate-600 hover:bg-slate-200/70'
+                      }`}
                     >
-                      <Package size={14} /> Almoxarifado Geral
+                      <Package size={15} /> Almoxarifado Geral
                     </button>
                     <button 
                       onClick={() => setInventoryLocation('Farmácia')}
-                      className={`px-6 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${inventoryLocation === 'Farmácia' ? 'bg-[#1C1917] text-white shadow-md' : 'text-[#78716C] hover:bg-[#E7E5E4]'}`}
+                      className={`px-5 py-2 rounded-xl text-xs font-extrabold transition-all duration-200 flex items-center gap-2 ${
+                        inventoryLocation === 'Farmácia' 
+                          ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-md shadow-blue-600/20' 
+                          : 'text-slate-600 hover:bg-slate-200/70'
+                      }`}
                     >
-                      <Users size={14} /> Estoque Farmácia
+                      <Users size={15} /> Estoque Farmácia
                     </button>
                   </div>
                 ) : (
-                  <div className="flex items-center gap-3 px-4 py-2 bg-[#F5F5F4] rounded-2xl border border-[#E7E5E4]">
-                    <div className="p-2 bg-[#1C1917] text-white rounded-xl">
+                  <div className="flex items-center gap-3 px-4 py-2 bg-blue-50/80 rounded-2xl border border-blue-100">
+                    <div className="p-2 bg-gradient-to-br from-blue-700 to-indigo-900 text-white rounded-xl shadow-sm">
                       {inventoryLocation === 'Almoxarifado' ? <Package size={16} /> : <Users size={16} />}
                     </div>
-                    <p className="text-sm font-bold text-[#1C1917]">
-                      Estoque: {inventoryLocation}
+                    <p className="text-xs font-extrabold text-slate-900">
+                      Estoque Ativo: <span className="text-blue-700">{inventoryLocation}</span>
                     </p>
                   </div>
                 )}
                 
                 <div className="flex items-center gap-3">
-                  <p className="text-xs font-bold text-[#A8A29E] uppercase tracking-widest">
-                    Visualizando: <span className="text-[#1C1917]">{inventoryLocation}</span>
-                  </p>
+                  <span className="text-xs font-black text-slate-500 uppercase tracking-wider bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-xl">
+                    Visualização: <span className="text-blue-700 font-black">{inventoryLocation}</span>
+                  </span>
                 </div>
               </div>
 
-              <div className="bg-white rounded-[32px] border border-[#E7E5E4] shadow-sm overflow-hidden">
+              <div className="bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden">
                 <div className="overflow-x-auto">
                   <table className="w-full text-left border-collapse min-w-[1000px]">
                 <thead>
-                  <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
-                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Item / Lote</th>
-                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Tipo {isAdmin && '/ Fornecedor'}</th>
-                    {isAdmin && <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Origem</th>}
-                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">{isAdmin ? 'Preço Un.' : '---'}</th>
-                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Quantidade</th>
-                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Mínimo</th>
-                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Duração</th>
-                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Validade</th>
-                    <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">Ações</th>
+                  <tr className="bg-gradient-to-r from-slate-900 via-blue-950 to-slate-900 text-white">
+                    <th className="px-6 py-4 font-black text-xs text-blue-200/90 uppercase tracking-wider">Item / Insumo</th>
+                    <th className="px-6 py-4 font-black text-xs text-blue-200/90 uppercase tracking-wider">Categoria {isAdmin && '/ Fornecedor'}</th>
+                    {isAdmin && <th className="px-6 py-4 font-black text-xs text-blue-200/90 uppercase tracking-wider">Origem</th>}
+                    <th className="px-6 py-4 font-black text-xs text-blue-200/90 uppercase tracking-wider">{isAdmin ? 'Preço Un.' : '---'}</th>
+                    <th className="px-6 py-4 font-black text-xs text-blue-200/90 uppercase tracking-wider text-center">Quantidade</th>
+                    <th className="px-6 py-4 font-black text-xs text-blue-200/90 uppercase tracking-wider">Mínimo</th>
+                    <th className="px-6 py-4 font-black text-xs text-blue-200/90 uppercase tracking-wider text-center">Duração</th>
+                    <th className="px-6 py-4 font-black text-xs text-blue-200/90 uppercase tracking-wider">Status Crítico</th>
+                    <th className="px-6 py-4 font-black text-xs text-blue-200/90 uppercase tracking-wider text-right">Ações</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-[#E7E5E4]">
+                <tbody className="divide-y divide-blue-50/80">
                   {groupedArray.map(group => (
                     <React.Fragment key={group.name}>
                       <tr 
-                        className="bg-[#FAFAF9] hover:bg-[#F5F5F4] transition-all cursor-pointer"
+                        className="bg-white hover:bg-blue-50/40 transition-all cursor-pointer group/row"
                         onClick={() => toggleExpand(group.name)}
                       >
-                        <td className="px-6 py-5">
+                        <td className="px-6 py-4.5">
                           <div className="flex items-center gap-3">
-                            <div className={`transition-transform ${expandedItems.has(group.name) ? 'rotate-90' : ''}`}>
-                              <ChevronRight size={18} className="text-[#A8A29E]" />
+                            <div className={`p-1.5 rounded-lg bg-slate-100 text-slate-500 group-hover/row:bg-blue-100 group-hover/row:text-blue-700 transition-all ${expandedItems.has(group.name) ? 'rotate-90 bg-blue-100 text-blue-700' : ''}`}>
+                              <ChevronRight size={16} />
                             </div>
                             {isAdmin && editingMaterialName?.oldName === group.name ? (
-                              <div className="flex flex-col gap-2 p-3 bg-[#FAFAF9] border border-[#E7E5E4] rounded-2xl" onClick={(e) => e.stopPropagation()}>
+                              <div className="flex flex-col gap-2 p-3 bg-slate-50 border border-slate-200 rounded-2xl shadow-sm" onClick={(e) => e.stopPropagation()}>
                                 <div className="flex items-center gap-2">
                                   <input 
                                     type="text" 
                                     value={editingMaterialName.newName}
                                     onChange={(e) => setEditingMaterialName({ ...editingMaterialName, newName: e.target.value })}
-                                    className="px-3 py-1 bg-white border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-lg"
+                                    className="px-3 py-1 bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 font-bold text-sm text-slate-900"
                                     autoFocus
                                   />
                                   <button 
                                     onClick={handleUpdateMaterialName}
-                                    className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-xl"
+                                    className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-xl"
                                     title="Salvar"
                                   >
-                                    <Check size={20} />
+                                    <Check size={18} />
                                   </button>
                                   <button 
                                     onClick={() => setEditingMaterialName(null)}
-                                    className="p-2 text-rose-600 hover:bg-rose-50 rounded-xl"
+                                    className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-xl"
                                     title="Cancelar"
                                   >
-                                    <X size={20} />
+                                    <X size={18} />
                                   </button>
                                 </div>
-                                <div className="flex flex-col gap-1 bg-white p-2 rounded-xl border border-[#E7E5E4]">
+                                <div className="flex flex-col gap-1 bg-white p-2 rounded-xl border border-slate-200">
                                   <div className="flex flex-wrap gap-1 items-center">
-                                    <span className="text-[8px] font-black text-[#78716C] uppercase tracking-wider mr-1">Unidades:</span>
+                                    <span className="text-[8px] font-black text-slate-500 uppercase tracking-wider mr-1">Unidades:</span>
                                     {['mg', 'mcg', 'UI', 'g', 'ml', '%'].map(unit => (
                                       <button
                                         key={unit}
@@ -5696,14 +6092,14 @@ export default function App() {
                                             setEditingMaterialName({ ...editingMaterialName, newName: currentName });
                                           }
                                         }}
-                                        className="px-1.5 py-0.5 bg-stone-200 hover:bg-[#1C1917] hover:text-white text-stone-700 rounded text-[9px] font-bold transition-all uppercase"
+                                        className="px-1.5 py-0.5 bg-slate-100 hover:bg-blue-700 hover:text-white text-slate-700 rounded text-[9px] font-bold transition-all uppercase"
                                       >
                                         +{unit}
                                       </button>
                                     ))}
                                   </div>
                                   <div className="flex flex-wrap gap-1 items-center">
-                                    <span className="text-[8px] font-black text-[#78716C] uppercase tracking-wider mr-1">Dosagem:</span>
+                                    <span className="text-[8px] font-black text-slate-500 uppercase tracking-wider mr-1">Dosagem:</span>
                                     {['500 mg', '1000 mg', '1000 UI', '5000 UI', '10.000 UI', '50.000 UI'].map(dose => (
                                       <button
                                         key={dose}
@@ -5718,7 +6114,7 @@ export default function App() {
                                             setEditingMaterialName({ ...editingMaterialName, newName: currentName });
                                           }
                                         }}
-                                        className="px-1.5 py-0.5 bg-emerald-50 hover:bg-emerald-600 hover:text-white text-emerald-600 rounded text-[9px] font-bold transition-all uppercase"
+                                        className="px-1.5 py-0.5 bg-emerald-50 hover:bg-emerald-600 hover:text-white text-emerald-700 rounded text-[9px] font-bold transition-all uppercase"
                                       >
                                         +{dose}
                                       </button>
@@ -5729,150 +6125,146 @@ export default function App() {
                             ) : (
                               <div className="flex flex-col">
                                 <div className="flex items-center gap-2 group/name flex-wrap">
-                                  <p className="font-bold text-lg">{group.name}</p>
+                                  <p className="font-extrabold text-sm text-slate-900 group-hover/row:text-blue-700 transition-colors">{group.name}</p>
                                   {Array.from(new Set(group.batches.map(b => b.medication_type).filter(Boolean))).map(type => (
-                                    <span key={type} className="text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-50 text-rose-600 border border-rose-100 uppercase tracking-wider">
+                                    <span key={type} className="text-[9px] font-black px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-100/80 uppercase tracking-wider">
                                       {type}
                                     </span>
                                   ))}
                                   {isAdmin && (
                                     <button 
                                       onClick={(e) => { e.stopPropagation(); setEditingMaterialName({ oldName: group.name, newName: group.name }); }}
-                                      className="opacity-0 group-hover/name:opacity-100 p-1 text-[#A8A29E] hover:text-[#1C1917] transition-all"
+                                      className="opacity-0 group-hover/name:opacity-100 p-1 text-slate-400 hover:text-blue-700 transition-all"
                                       title="Editar Nome do Material"
                                     >
-                                      <Edit2 size={16} />
+                                      <Edit2 size={14} />
                                     </button>
                                   )}
                                 </div>
                                 {group.batches[0]?.description && (
-                                  <p className="text-[10px] text-[#A8A29E] italic mt-0.5 line-clamp-1">{group.batches[0].description}</p>
+                                  <p className="text-[10px] text-slate-400 italic mt-0.5 line-clamp-1">{group.batches[0].description}</p>
                                 )}
                               </div>
                             )}
                           </div>
                         </td>
-                      <td className="px-6 py-5">
-                          <p className="text-sm font-semibold text-[#44403C]">{group.category || '---'}</p>
-                          {isAdmin && <p className="text-xs text-[#78716C]">{group.supplier || '---'}</p>}
+                        <td className="px-6 py-4.5">
+                          <p className="text-xs font-bold text-slate-800">{group.category || '---'}</p>
+                          {isAdmin && <p className="text-[10px] font-medium text-slate-400 mt-0.5">{group.supplier || '---'}</p>}
                         </td>
-                        <td className="px-6 py-5">
+                        <td className="px-6 py-4.5">
                           {isAdmin ? (
                             (() => {
                               const origins = new Set(group.batches.map(b => b.origin));
                               if (origins.size === 1) {
                                 const origin = Array.from(origins)[0];
                                 return (
-                                  <span className={`text-xs font-bold px-2 py-1 rounded-lg ${origin === 'contract' ? 'bg-blue-100 text-blue-700' : origin === 'donation' ? 'bg-emerald-100 text-emerald-700' : 'bg-purple-100 text-purple-700'}`}>
+                                  <span className={`text-[10px] font-extrabold px-2.5 py-1 rounded-md border ${
+                                    origin === 'contract' ? 'bg-blue-50 text-blue-700 border-blue-200/80' : 
+                                    origin === 'donation' ? 'bg-emerald-50 text-emerald-700 border-emerald-200/80' : 
+                                    'bg-indigo-50 text-indigo-700 border-indigo-200/80'
+                                  }`}>
                                     {origin === 'contract' ? 'Contrato' : origin === 'donation' ? 'Doação' : 'Extra'}
                                   </span>
                                 );
                               }
                               return (
-                                <span className="text-[10px] font-bold px-2 py-1 rounded-lg bg-gray-100 text-gray-500 uppercase">
+                                <span className="text-[10px] font-extrabold px-2.5 py-1 rounded-md bg-slate-100 text-slate-600 border border-slate-200 uppercase">
                                   {group.batches.length} Lotes
                                 </span>
                               );
                             })()
                           ) : (
-                            <span className="text-xs text-[#A8A29E]">---</span>
+                            <span className="text-xs text-slate-300">---</span>
                           )}
                         </td>
-                        <td className="px-6 py-5 font-medium text-[#57534E]">---</td>
-                        <td className="px-6 py-5">
-                          <div className="flex flex-col items-center justify-center bg-[#F5F5F4] rounded-2xl p-2 border border-[#E7E5E4]">
-                            <span className={`text-xl font-black ${!isAdmin ? 'text-[#78716C]' : (group.total_quantity <= group.min_quantity ? 'text-orange-600' : 'text-emerald-600')}`}>
+                        <td className="px-6 py-4.5 font-semibold text-slate-600 text-xs">---</td>
+                        <td className="px-6 py-4.5">
+                          <div className="flex flex-col items-center justify-center bg-slate-50/90 rounded-2xl py-1.5 px-3 border border-slate-200/80 min-w-[80px]">
+                            <span className={`text-base font-black ${!isAdmin ? 'text-slate-600' : (group.total_quantity <= group.min_quantity ? 'text-amber-600' : 'text-slate-900')}`}>
                               {isAdmin ? group.total_quantity : '---'}
                             </span>
-                            <span className="text-[9px] font-bold text-[#A8A29E] uppercase tracking-tighter">Total Geral</span>
+                            <span className="text-[8px] font-black text-slate-400 uppercase tracking-wider">Estoque Total</span>
                           </div>
                         </td>
-                        <td className="px-6 py-5 text-[#57534E] font-medium">
+                        <td className="px-6 py-4.5 text-xs font-semibold text-slate-600">
                           <div className="flex flex-col">
-                            <span className="flex items-center gap-1">
+                            <span className="flex items-center gap-1 font-bold text-slate-800">
                               {isAdmin ? group.min_quantity : '---'}
-                              {isAdmin && <TrendingUp size={12} className="text-emerald-500" />}
+                              {isAdmin && <TrendingUp size={12} className="text-blue-600" />}
                             </span>
-                            {isAdmin && <span className="text-[10px] text-[#A8A29E]">({group.weeklyExitRate.toFixed(1)}/sem)</span>}
+                            {isAdmin && <span className="text-[10px] text-slate-400">({group.weeklyExitRate.toFixed(1)}/sem)</span>}
                           </div>
                         </td>
-                        <td className="px-6 py-5">
-                          <div className={`flex flex-col items-center justify-center p-2 rounded-xl border ${
-                            !isAdmin ? 'bg-[#F5F5F4] border-[#E7E5E4] text-[#A8A29E]' :
-                            group.durationWeeks === 'infinite' ? 'bg-blue-50 border-blue-100 text-blue-600' :
-                            group.durationWeeks <= 4 ? 'bg-rose-50 border-rose-100 text-rose-600' :
-                            group.durationWeeks <= 8 ? 'bg-orange-50 border-orange-100 text-orange-600' :
-                            'bg-emerald-50 border-emerald-100 text-emerald-600'
+                        <td className="px-6 py-4.5">
+                          <div className={`flex flex-col items-center justify-center py-1.5 px-2.5 rounded-xl border ${
+                            !isAdmin ? 'bg-slate-50 border-slate-200 text-slate-400' :
+                            group.durationWeeks === 'infinite' ? 'bg-blue-50 border-blue-200 text-blue-700' :
+                            group.durationWeeks <= 4 ? 'bg-rose-50 border-rose-200 text-rose-700' :
+                            group.durationWeeks <= 8 ? 'bg-amber-50 border-amber-200 text-amber-700' :
+                            'bg-emerald-50 border-emerald-200 text-emerald-700'
                           }`}>
-                            <span className="text-sm font-black">
-                              {isAdmin ? (group.durationWeeks === 'infinite' ? '∞' : `${group.durationWeeks.toFixed(1)}`) : '---'}
-                            </span>
-                            <span className="text-[9px] font-bold uppercase tracking-tighter">
-                              {isAdmin ? (
-                                group.durationWeeks === 'infinite' ? 'Semanas' :
-                                group.durationWeeks <= 4 ? 'M. Crítico' :
-                                group.durationWeeks <= 8 ? 'Crítico' :
-                                'Semanas'
-                              ) : 'Semanas'}
+                            <span className="text-xs font-black">
+                              {isAdmin ? (group.durationWeeks === 'infinite' ? '∞' : `${group.durationWeeks.toFixed(1)} sem`) : '---'}
                             </span>
                           </div>
                         </td>
-                        <td className="px-6 py-5 text-xs">
+                        <td className="px-6 py-4.5 text-xs">
                           {isAdmin && group.durationWeeks !== 'infinite' && (
-                            <span className={`font-bold uppercase tracking-tight ${
-                              group.durationWeeks <= 4 ? 'text-rose-600' :
-                              group.durationWeeks <= 8 ? 'text-orange-600' :
-                              'text-emerald-600'
+                            <span className={`font-black uppercase tracking-tight text-[10px] px-2 py-0.5 rounded-md border ${
+                              group.durationWeeks <= 4 ? 'bg-rose-50 text-rose-700 border-rose-200' :
+                              group.durationWeeks <= 8 ? 'bg-amber-50 text-amber-700 border-amber-200' :
+                              'bg-emerald-50 text-emerald-700 border-emerald-200'
                             }`}>
                               {group.durationWeeks <= 4 ? 'Muito Crítico' :
-                               group.durationWeeks <= 8 ? 'Crítico' :
+                               group.durationWeeks <= 8 ? 'Atenção' :
                                'Normal'}
                             </span>
                           )}
-                          {!isAdmin || group.durationWeeks === 'infinite' ? <span className="text-[#A8A29E]">---</span> : null}
+                          {(!isAdmin || group.durationWeeks === 'infinite') && <span className="text-slate-300">---</span>}
                         </td>
-                        <td className="px-6 py-5 text-right">
-                          <div className="flex flex-col items-end gap-1">
-                            <button className="text-xs font-bold text-emerald-600 uppercase tracking-wider hover:underline">
-                              {expandedItems.has(group.name) ? 'Recolher' : 'Ver Detalhes'}
+                        <td className="px-6 py-4.5 text-right">
+                          <div className="flex flex-col items-end gap-0.5">
+                            <button className="text-xs font-extrabold text-blue-700 group-hover/row:text-blue-900 uppercase tracking-wider flex items-center gap-1">
+                              {expandedItems.has(group.name) ? 'Recolher' : 'Ver Lotes'}
                             </button>
-                            <span className="text-[10px] text-[#A8A29E] font-medium">
-                              {group.batches.length} remessas ativas
+                            <span className="text-[10px] text-slate-400 font-medium">
+                              {group.batches.length} remessas
                             </span>
                           </div>
                         </td>
                       </tr>
                       
                       {expandedItems.has(group.name) && group.batches.map(item => (
-                        <tr key={item.id} className="bg-white hover:bg-[#FAFAF9] transition-all border-l-4 border-emerald-500">
-                          <td className="px-12 py-4">
+                        <tr key={item.id} className="bg-slate-50/70 hover:bg-blue-50/50 transition-all border-l-4 border-blue-600">
+                          <td className="px-12 py-3.5">
                             <div className="flex items-center gap-2">
-                              <p className="text-sm font-mono font-bold text-[#57534E]">Lote: {item.batch_number || '---'}</p>
+                              <p className="text-xs font-mono font-bold text-slate-800">Lote: {item.batch_number || '---'}</p>
                               {item.medication_type && (
-                                <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-[#F5F5F4] text-[#78716C] border border-[#E7E5E4] uppercase tracking-wide">
+                                <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-slate-200/80 text-slate-700 border border-slate-300/60 uppercase tracking-wide">
                                   {item.medication_type}
                                 </span>
                               )}
                             </div>
-                            {item.description && <p className="text-[10px] text-[#A8A29E] italic mt-0.5">{item.description}</p>}
+                            {item.description && <p className="text-[10px] text-slate-400 italic mt-0.5">{item.description}</p>}
                           </td>
-                          <td className="px-6 py-4">
+                          <td className="px-6 py-3.5">
                             {isAdmin ? (
-                              <p className="text-xs text-[#78716C]">{item.supplier || '---'}</p>
+                              <p className="text-xs text-slate-600 font-medium">{item.supplier || '---'}</p>
                             ) : (
-                              <p className="text-xs text-[#78716C]">---</p>
+                              <p className="text-xs text-slate-400">---</p>
                             )}
                           </td>
-                          <td className="px-6 py-4">
+                          <td className="px-6 py-3.5">
                             {isAdmin ? (
-                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${item.origin === 'contract' ? 'bg-blue-50 text-blue-600' : item.origin === 'donation' ? 'bg-emerald-50 text-emerald-600' : 'bg-purple-50 text-purple-600'}`}>
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${item.origin === 'contract' ? 'bg-blue-100 text-blue-800' : item.origin === 'donation' ? 'bg-emerald-100 text-emerald-800' : 'bg-indigo-100 text-indigo-800'}`}>
                                 {item.origin === 'contract' ? 'Contrato' : item.origin === 'donation' ? 'Doação' : 'Extra'}
                               </span>
                             ) : (
-                              <span className="text-xs text-[#A8A29E]">---</span>
+                              <span className="text-xs text-slate-300">---</span>
                             )}
                           </td>
-                          <td className="px-6 py-4 text-sm text-[#57534E]">
+                          <td className="px-6 py-3.5 text-xs text-slate-700 font-medium">
                             {isAdmin ? (
                               editingPrice?.id === item.id ? (
                                 <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
@@ -5881,7 +6273,7 @@ export default function App() {
                                     step="0.01"
                                     value={editingPrice.price}
                                     onChange={(e) => setEditingPrice({ ...editingPrice, price: parseFloat(e.target.value) || 0 })}
-                                    className="w-24 px-2 py-1 bg-[#F5F5F4] border border-[#E7E5E4] rounded-lg focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-xs"
+                                    className="w-24 px-2 py-1 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 font-bold text-xs"
                                     autoFocus
                                   />
                                   <button 
@@ -5900,11 +6292,11 @@ export default function App() {
                                   </button>
                                 </div>
                               ) : (
-                                <div className="flex items-center gap-2 group">
-                                  <span>{new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.unit_price)}</span>
+                                <div className="flex items-center gap-2 group/price">
+                                  <span className="font-bold text-slate-900">{new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.unit_price)}</span>
                                   <button 
                                     onClick={(e) => { e.stopPropagation(); setEditingPrice({ id: item.id, price: item.unit_price }); }}
-                                    className="opacity-0 group-hover:opacity-100 p-1 text-[#A8A29E] hover:text-[#1C1917] transition-all"
+                                    className="opacity-0 group-hover/price:opacity-100 p-1 text-slate-400 hover:text-blue-700 transition-all"
                                     title="Editar Preço"
                                   >
                                     <Edit2 size={12} />
@@ -5915,16 +6307,16 @@ export default function App() {
                               '---'
                             )}
                           </td>
-                          <td className="px-6 py-4">
+                          <td className="px-6 py-3.5 text-center">
                             {isAdmin ? (
                               editingQuantity?.id === item.id ? (
-                                <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                                <div className="flex items-center justify-center gap-2" onClick={(e) => e.stopPropagation()}>
                                   <input 
                                     type="number" 
                                     min="0"
                                     value={editingQuantity.quantity}
                                     onChange={(e) => setEditingQuantity({ ...editingQuantity, quantity: parseInt(e.target.value) || 0 })}
-                                    className="w-20 px-2 py-1 bg-[#F5F5F4] border border-[#E7E5E4] rounded-lg focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
+                                    className="w-20 px-2 py-1 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 font-bold text-xs"
                                     autoFocus
                                   />
                                   <button 
@@ -5943,63 +6335,60 @@ export default function App() {
                                   </button>
                                 </div>
                               ) : (
-                                <div className="flex flex-col group">
-                                  <div className="flex items-center gap-2">
-                                    <span className={`text-lg font-bold ${item.quantity <= (item.min_quantity || 0) ? 'text-orange-600' : 'text-[#1C1917]'}`}>
-                                      {item.quantity}
+                                <div className="flex flex-col items-center group/qty">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className={`text-sm font-black ${item.quantity <= (item.min_quantity || 0) ? 'text-amber-600' : 'text-slate-900'}`}>
+                                      {item.quantity} un
                                     </span>
                                     <button 
                                       onClick={(e) => { e.stopPropagation(); setEditingQuantity({ id: item.id, quantity: item.quantity }); }}
-                                      className="opacity-0 group-hover:opacity-100 p-1 text-[#A8A29E] hover:text-[#1C1917] transition-all"
+                                      className="opacity-0 group-hover/qty:opacity-100 p-1 text-slate-400 hover:text-blue-700 transition-all"
                                       title="Editar Quantidade"
                                     >
                                       <Edit2 size={12} />
                                     </button>
                                   </div>
-                                  <span className="text-[9px] font-bold text-[#A8A29E] uppercase tracking-tighter">Neste Lote</span>
                                 </div>
                               )
                             ) : (
-                              <div className="flex flex-col">
-                                <span className={`text-lg font-bold ${item.quantity <= (item.min_quantity || 0) ? 'text-orange-600' : 'text-[#1C1917]'}`}>
-                                  {item.quantity}
-                                </span>
-                                <span className="text-[9px] font-bold text-[#A8A29E] uppercase tracking-tighter">Neste Lote</span>
-                              </div>
+                              <span className={`text-sm font-black ${item.quantity <= (item.min_quantity || 0) ? 'text-amber-600' : 'text-slate-900'}`}>
+                                {item.quantity} un
+                              </span>
                             )}
                           </td>
-                          <td className="px-6 py-4 text-xs text-[#A8A29E]">---</td>
-                          <td className="px-6 py-4">
+                          <td className="px-6 py-3.5 text-xs text-slate-300">---</td>
+                          <td className="px-6 py-3.5 text-center">
                             {item.expiry_date ? (
-                              <span className={`text-xs ${item.expiry_date === 'Indeterminada' ? 'text-blue-600 font-bold' : isNearExpiry(item) ? 'text-red-600 font-bold' : 'text-[#57534E]'}`}>
+                              <span className={`text-xs font-bold ${item.expiry_date === 'Indeterminada' ? 'text-blue-700' : isNearExpiry(item) ? 'text-rose-600 font-black' : 'text-slate-700'}`}>
                                 {item.expiry_date === 'Indeterminada' ? 'Indeterminada' : new Date(item.expiry_date).toLocaleDateString('pt-BR')}
                               </span>
                             ) : (
-                              <span className="text-[#A8A29E] text-xs italic">N/A</span>
+                              <span className="text-slate-400 text-xs italic">N/A</span>
                             )}
                           </td>
-                          <td className="px-6 py-4 text-right space-x-2">
+                          <td className="px-6 py-3.5 text-xs text-slate-300">---</td>
+                          <td className="px-6 py-3.5 text-right space-x-1.5">
                             <button 
                               onClick={(e) => { e.stopPropagation(); setShowTransactionModal({ show: true, type: 'entry', item }); }}
-                              className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all"
-                              title="Entrada"
+                              className="p-1.5 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition-all border border-emerald-200/60"
+                              title="Adicionar Entrada"
                             >
-                              <Plus size={16} />
+                              <Plus size={15} />
                             </button>
                             <button 
                               onClick={(e) => { e.stopPropagation(); setShowTransactionModal({ show: true, type: 'exit', item }); }}
-                              className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
-                              title="Saída"
+                              className="p-1.5 text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg transition-all border border-blue-200/60"
+                              title="Registrar Saída"
                             >
-                              <ArrowUpRight size={16} />
+                              <ArrowUpRight size={15} />
                             </button>
                             {isAdmin && (
                               <button 
                                 onClick={(e) => { e.stopPropagation(); handleDeleteItem(item.id); }}
-                                className="p-1.5 text-rose-400 hover:bg-rose-50 hover:text-rose-600 rounded-lg transition-all"
-                                title="Excluir"
+                                className="p-1.5 text-rose-600 bg-rose-50 hover:bg-rose-100 rounded-lg transition-all border border-rose-200/60"
+                                title="Excluir Lote"
                               >
-                                <Trash2 size={16} />
+                                <Trash2 size={15} />
                               </button>
                             )}
                           </td>
@@ -6008,24 +6397,27 @@ export default function App() {
                     </React.Fragment>
                   ))}
                 </tbody>
-                <tfoot className="bg-[#FAFAF9] border-t-2 border-[#E7E5E4]">
+                <tfoot className="bg-slate-900 text-white border-t-2 border-slate-800">
                   <tr>
-                    <td colSpan={4} className="px-6 py-4 font-bold text-[#57534E] text-right uppercase tracking-wider">Total em Estoque</td>
+                    <td colSpan={4} className="px-6 py-4 font-black text-slate-300 text-right uppercase tracking-wider text-xs">Volume Total em Estoque</td>
                     <td className="px-6 py-4">
-                      <div className="flex flex-col items-center justify-center bg-[#1C1917] text-white rounded-xl py-2 px-3 shadow-sm">
-                        <span className="text-xl font-black">{totalVolume}</span>
-                        <span className="text-[8px] font-bold uppercase tracking-tighter opacity-70">Unidades Totais</span>
+                      <div className="flex flex-col items-center justify-center bg-gradient-to-r from-blue-600 to-indigo-700 text-white rounded-2xl py-2 px-3 shadow-md border border-blue-500/30">
+                        <span className="text-xl font-black">{totalVolume.toLocaleString('pt-BR')}</span>
+                        <span className="text-[8px] font-black uppercase tracking-widest opacity-90">Unidades</span>
                       </div>
                     </td>
-                    <td colSpan={3}></td>
+                    <td colSpan={4}></td>
                   </tr>
                 </tfoot>
               </table>
               </div>
               {filteredItems.length === 0 && (
-                <div className="p-20 text-center">
-                  <Package className="mx-auto text-[#E7E5E4] mb-4" size={48} />
-                  <p className="text-[#78716C]">Nenhum item encontrado.</p>
+                <div className="p-16 text-center">
+                  <div className="w-16 h-16 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-3 border border-blue-100">
+                    <Package size={32} />
+                  </div>
+                  <p className="text-slate-900 font-extrabold text-base">Nenhum item encontrado no estoque</p>
+                  <p className="text-slate-500 text-xs max-w-sm mx-auto mt-1">Tente ajustar os termos de busca ou selecionar outra categoria nos filtros acima.</p>
                 </div>
               )}
               </div>
@@ -6243,117 +6635,144 @@ export default function App() {
               exit={{ opacity: 0, scale: 0.98 }}
               className="space-y-8"
             >
-              {/* Materials Catalog Section - For Leaders (No Stock/Batch/Expiry) */}
-              {!isAdmin && (
-                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
-                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-                    <div className="flex items-center gap-4">
-                      <div className="bg-blue-600 p-3 rounded-2xl text-white">
-                        <BookOpen size={24} />
-                      </div>
-                      <div>
-                        <h3 className="text-xl font-black text-[#1C1917]">Dúvidas sobre o que pedir?</h3>
-                        <p className="text-[#78716C] text-sm font-medium">Relatório simplificado contendo apenas os nomes dos materiais e categorias.</p>
-                      </div>
+              {/* Executive Reports Hero Banner - Deep Blue Gradient Theme */}
+              <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-slate-900 via-blue-950 to-indigo-950 border border-blue-900/50 p-6 sm:p-8 shadow-xl shadow-blue-950/20 text-white">
+                <div className="absolute -right-16 -top-16 w-80 h-80 bg-blue-600/20 rounded-full blur-3xl pointer-events-none" />
+                <div className="absolute right-1/3 -bottom-20 w-64 h-64 bg-indigo-500/10 rounded-full blur-2xl pointer-events-none" />
+
+                <div className="relative z-10 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
+                  <div className="space-y-2 max-w-2xl">
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-blue-500/20 text-blue-300 border border-blue-400/30 backdrop-blur-sm">
+                        <BarChart3 size={13} className="text-blue-400" />
+                        Inteligência Analítica de Estoque
+                      </span>
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-white/10 text-slate-200 border border-white/10">
+                        {reportSectorFilter === 'all' ? 'Todos os Setores' : reportSectorFilter}
+                      </span>
                     </div>
-                    <button 
-                      onClick={handleExportMaterialsCatalogPDF}
-                      className="w-full sm:w-auto bg-blue-600 text-white px-8 py-3 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-blue-700 transition-all shadow-lg"
-                    >
-                      <Printer size={18} /> Ver Catálogo de Itens
-                    </button>
+
+                    <h2 className="text-2xl sm:text-3xl font-black tracking-tight text-white">
+                      Relatórios & Gestão de Consumo
+                    </h2>
+                    <p className="text-sm text-slate-300 leading-relaxed">
+                      Projeções orçamentárias, histórico de saídas, curva de movimentação física e relatórios fiscais do almoxarifado.
+                    </p>
+                  </div>
+
+                  {/* Quick Indicator Bar */}
+                  <div className="flex items-center gap-3 bg-slate-900/80 backdrop-blur-md p-3 sm:p-4 rounded-2xl border border-blue-800/40 divide-x divide-blue-800/40 shrink-0">
+                    <div className="px-3 text-center">
+                      <p className="text-[10px] uppercase font-bold text-emerald-400 tracking-wider">Entradas</p>
+                      <p className="text-xl font-black text-white">{reportData.entries}</p>
+                    </div>
+                    <div className="px-3 text-center">
+                      <p className="text-[10px] uppercase font-bold text-rose-400 tracking-wider">Saídas</p>
+                      <p className="text-xl font-black text-white">{reportData.exits}</p>
+                    </div>
+                    <div className="px-3 text-center">
+                      <p className="text-[10px] uppercase font-bold text-sky-300 tracking-wider">Período</p>
+                      <p className="text-xs font-bold text-slate-300 mt-1">
+                        {new Date(reportRange.start + 'T00:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })} - {new Date(reportRange.end + 'T00:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}
+                      </p>
+                    </div>
                   </div>
                 </div>
-              )}
+              </div>
 
-              {/* Print Requests Section - Only for Admin */}
-              {isAdmin && (
-                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
-                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-                    <div className="flex items-center gap-4">
-                      <div className="bg-[#1C1917] p-3 rounded-2xl text-white">
-                        <Printer size={24} />
-                      </div>
-                      <div>
-                        <h3 className="text-xl font-black text-[#1C1917]">Impressão de Solicitações</h3>
-                        <p className="text-[#78716C] text-sm font-medium">Imprima as solicitações pendentes e em separação por período</p>
+              {/* Special Utility Cards Section */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Print Requests Section - Only for Admin */}
+                {isAdmin && (
+                  <div className="bg-white p-6 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group">
+                    <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 to-indigo-600 absolute top-0 left-0" />
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-5 pt-2">
+                      <div className="flex items-center gap-4">
+                        <div className="bg-gradient-to-br from-blue-600 to-blue-800 text-white p-3.5 rounded-2xl shadow-md shadow-blue-600/20 group-hover:scale-105 transition-transform">
+                          <Printer size={22} />
+                        </div>
+                        <div>
+                          <h3 className="text-base font-black text-slate-900">Impressão de Solicitações</h3>
+                          <p className="text-slate-500 text-xs font-medium">Imprima as solicitações pendentes e em separação por período</p>
+                        </div>
                       </div>
                     </div>
-                    <div className="flex flex-col sm:flex-row items-center gap-4">
-                      <div className="w-full sm:w-auto flex items-center gap-2">
+
+                    <div className="flex flex-col sm:flex-row items-end gap-3 mt-5 pt-4 border-t border-slate-100">
+                      <div className="grid grid-cols-2 gap-3 w-full">
                         <div>
-                          <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1 ml-1">Início</label>
+                          <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 ml-1">Início</label>
                           <input 
                             type="date" 
                             value={printRange.start}
                             onChange={(e) => setPrintRange({...printRange, start: e.target.value})}
-                            className="w-full sm:w-40 px-4 py-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-bold text-xs text-slate-800 cursor-pointer"
                           />
                         </div>
-                        <div className="mt-4 text-[#A8A29E] font-bold">até</div>
                         <div>
-                          <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1 ml-1">Fim</label>
+                          <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 ml-1">Fim</label>
                           <input 
                             type="date" 
                             value={printRange.end}
                             onChange={(e) => setPrintRange({...printRange, end: e.target.value})}
-                            className="w-full sm:w-40 px-4 py-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-bold text-xs text-slate-800 cursor-pointer"
                           />
                         </div>
                       </div>
                       <button 
                         onClick={handlePrintRequests}
-                        className="w-full sm:w-auto mt-4 sm:mt-0 bg-[#1C1917] text-white px-8 py-3 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-[#292524] transition-all shadow-lg"
+                        className="w-full sm:w-auto bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white px-5 py-2.5 rounded-xl font-extrabold text-xs flex items-center justify-center gap-2 hover:from-blue-800 hover:to-indigo-950 transition-all shadow-md shadow-blue-600/20 whitespace-nowrap"
                       >
-                        <Printer size={18} /> Imprimir Solicitações
+                        <Printer size={15} /> Imprimir Relatório
                       </button>
                     </div>
                   </div>
-                </div>
-              )}
+                )}
 
-              {/* PCA Report Section */}
-              {selectedSector === 'Almoxarifado' && (
-                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
-                  <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-6">
-                    <div className="flex items-center gap-4">
-                      <div className="bg-emerald-600 p-3 rounded-2xl text-white">
-                        <Calendar size={24} />
-                      </div>
-                      <div>
-                        <h3 className="text-xl font-black text-[#1C1917]">Relatório PCA</h3>
-                        <p className="text-[#78716C] text-sm font-medium">Plano Anual de Contratação - Consumo por tipo de item no período</p>
+                {/* PCA Report Section */}
+                {selectedSector === 'Almoxarifado' && (
+                  <div className="bg-white p-6 rounded-3xl border border-emerald-100/80 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group">
+                    <div className="h-1.5 w-full bg-gradient-to-r from-emerald-600 to-teal-600 absolute top-0 left-0" />
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-5 pt-2">
+                      <div className="flex items-center gap-4">
+                        <div className="bg-gradient-to-br from-emerald-600 to-teal-700 text-white p-3.5 rounded-2xl shadow-md shadow-emerald-600/20 group-hover:scale-105 transition-transform">
+                          <Calendar size={22} />
+                        </div>
+                        <div>
+                          <h3 className="text-base font-black text-slate-900">Relatório PCA</h3>
+                          <p className="text-slate-500 text-xs font-medium">Plano Anual de Contratação - Consumo por tipo no período</p>
+                        </div>
                       </div>
                     </div>
-                    
-                    <div className="flex flex-col md:flex-row items-end gap-4">
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 w-full">
+
+                    <div className="flex flex-col sm:flex-row items-end gap-3 mt-5 pt-4 border-t border-slate-100">
+                      <div className="grid grid-cols-3 gap-2 w-full">
                         <div>
-                          <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1 ml-1">Início</label>
+                          <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 ml-1">Início</label>
                           <input 
                             type="date" 
                             value={pcaRange.start}
                             onChange={(e) => setPcaRange({...pcaRange, start: e.target.value})}
-                            className="w-full px-4 py-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-emerald-600/10 font-bold text-sm"
+                            className="w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 font-bold text-xs text-slate-800 cursor-pointer"
                           />
                         </div>
                         <div>
-                          <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1 ml-1">Fim</label>
+                          <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 ml-1">Fim</label>
                           <input 
                             type="date" 
                             value={pcaRange.end}
                             onChange={(e) => setPcaRange({...pcaRange, end: e.target.value})}
-                            className="w-full px-4 py-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-emerald-600/10 font-bold text-sm"
+                            className="w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 font-bold text-xs text-slate-800 cursor-pointer"
                           />
                         </div>
-                        <div className="col-span-2 sm:col-span-1">
-                          <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1 ml-1">Categoria</label>
+                        <div>
+                          <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 ml-1">Categoria</label>
                           <select 
                             value={pcaCategory}
                             onChange={(e) => setPcaCategory(e.target.value)}
-                            className="w-full px-4 py-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-emerald-600/10 font-bold text-sm"
+                            className="w-full px-2 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 font-bold text-xs text-slate-800 cursor-pointer"
                           >
-                            <option value="all">Todas as Categorias</option>
+                            <option value="all">Todas</option>
                             {Object.keys(CATEGORY_COLORS).sort().map(cat => (
                               <option key={cat} value={cat}>{cat}</option>
                             ))}
@@ -6362,92 +6781,145 @@ export default function App() {
                       </div>
                       <button 
                         onClick={handleExportPCA}
-                        className="w-full md:w-auto bg-emerald-600 text-white px-8 py-3 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-emerald-700 transition-all shadow-lg whitespace-nowrap"
+                        className="w-full sm:w-auto bg-gradient-to-r from-emerald-600 to-teal-700 text-white px-5 py-2.5 rounded-xl font-extrabold text-xs flex items-center justify-center gap-2 hover:from-emerald-700 hover:to-teal-800 transition-all shadow-md shadow-emerald-600/20 whitespace-nowrap"
                       >
-                        <Download size={18} /> Gerar Relatório PCA
+                        <Download size={15} /> Gerar PCA
                       </button>
                     </div>
                   </div>
-                </div>
-              )}
+                )}
 
-              {/* Report Stats */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 lg:gap-6">
+                {/* Materials Catalog Section - For Leaders */}
+                {!isAdmin && (
+                  <div className="bg-white p-6 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group lg:col-span-2">
+                    <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 to-cyan-500 absolute top-0 left-0" />
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-5 pt-2">
+                      <div className="flex items-center gap-4">
+                        <div className="bg-gradient-to-br from-blue-600 to-blue-800 text-white p-3.5 rounded-2xl shadow-md shadow-blue-600/20 group-hover:scale-105 transition-transform">
+                          <BookOpen size={22} />
+                        </div>
+                        <div>
+                          <h3 className="text-base font-black text-slate-900">Dúvidas sobre o que pedir?</h3>
+                          <p className="text-slate-500 text-xs font-medium">Baixe o catálogo simplificado contendo todos os nomes dos materiais e categorias cadastradas.</p>
+                        </div>
+                      </div>
+                      <button 
+                        onClick={handleExportMaterialsCatalogPDF}
+                        className="bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white px-6 py-3 rounded-xl font-extrabold text-xs flex items-center justify-center gap-2 hover:from-blue-800 hover:to-indigo-950 transition-all shadow-md shadow-blue-600/20 whitespace-nowrap"
+                      >
+                        <Printer size={16} /> Ver Catálogo de Itens
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* KPI Stats Grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
                 {isAdmin ? (
                   <>
-                    <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
-                      <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Entradas no Período</p>
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                          <div className="bg-emerald-100 p-2 rounded-xl text-emerald-600">
+                    {/* Card 1: Entradas */}
+                    <div className="bg-white rounded-2xl border border-emerald-100/80 shadow-sm hover:shadow-md hover:border-emerald-200 transition-all duration-300 overflow-hidden group relative">
+                      <div className="h-1.5 w-full bg-gradient-to-r from-emerald-500 to-teal-600" />
+                      <div className="p-6">
+                        <div className="flex items-center justify-between mb-3">
+                          <span className="text-xs font-black text-slate-500 uppercase tracking-widest">Entradas no Período</span>
+                          <div className="bg-gradient-to-br from-emerald-600 to-teal-700 text-white p-3 rounded-2xl shadow-md shadow-emerald-500/20 group-hover:scale-105 transition-transform">
                             <TrendingUp size={20} />
                           </div>
-                          <h3 className="text-3xl font-black">{reportData.entries}</h3>
                         </div>
-                        <div className="text-right">
-                          <p className="text-[10px] font-bold text-[#A8A29E] uppercase">Valor Total</p>
-                          <p className="text-sm font-black text-emerald-600">
+                        <h3 className="text-3xl font-black text-slate-900 tracking-tight">{reportData.entries.toLocaleString('pt-BR')}</h3>
+                        <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Valor Financeiro</span>
+                          <span className="text-xs font-black text-emerald-600">
                             {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.entriesValue)}
-                          </p>
+                          </span>
                         </div>
                       </div>
                     </div>
-                    <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
-                      <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Saídas no Período</p>
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                          <div className="bg-rose-100 p-2 rounded-xl text-rose-600">
+
+                    {/* Card 2: Saídas */}
+                    <div className="bg-white rounded-2xl border border-rose-100/80 shadow-sm hover:shadow-md hover:border-rose-200 transition-all duration-300 overflow-hidden group relative">
+                      <div className="h-1.5 w-full bg-gradient-to-r from-rose-500 to-pink-600" />
+                      <div className="p-6">
+                        <div className="flex items-center justify-between mb-3">
+                          <span className="text-xs font-black text-slate-500 uppercase tracking-widest">Saídas / Consumo</span>
+                          <div className="bg-gradient-to-br from-rose-600 to-pink-700 text-white p-3 rounded-2xl shadow-md shadow-rose-500/20 group-hover:scale-105 transition-transform">
                             <TrendingDown size={20} />
                           </div>
-                          <h3 className="text-3xl font-black">{reportData.exits}</h3>
                         </div>
-                        <div className="text-right">
-                          <p className="text-[10px] font-bold text-[#A8A29E] uppercase">Valor Total</p>
-                          <p className="text-sm font-black text-rose-600">
+                        <h3 className="text-3xl font-black text-slate-900 tracking-tight">{reportData.exits.toLocaleString('pt-BR')}</h3>
+                        <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Valor Baixado</span>
+                          <span className="text-xs font-black text-rose-600">
                             {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.exitsValue)}
-                          </p>
+                          </span>
                         </div>
                       </div>
                     </div>
-                    <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
-                      <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Valor Total em Estoque</p>
-                      <div className="flex items-center gap-3">
-                        <div className="bg-amber-100 p-2 rounded-xl text-amber-600">
-                          <DollarSign size={20} />
+
+                    {/* Card 3: Valor em Estoque */}
+                    <div className="bg-white rounded-2xl border border-indigo-100/80 shadow-sm hover:shadow-md hover:border-indigo-200 transition-all duration-300 overflow-hidden group relative">
+                      <div className="h-1.5 w-full bg-gradient-to-r from-indigo-600 to-blue-600" />
+                      <div className="p-6">
+                        <div className="flex items-center justify-between mb-3">
+                          <span className="text-xs font-black text-slate-500 uppercase tracking-widest">Patrimônio em Saldo</span>
+                          <div className="bg-gradient-to-br from-indigo-600 to-blue-700 text-white p-3 rounded-2xl shadow-md shadow-indigo-500/20 group-hover:scale-105 transition-transform">
+                            <DollarSign size={20} />
+                          </div>
                         </div>
-                        <h3 className="text-2xl font-black">
+                        <h3 className="text-2xl font-black text-slate-900 tracking-tight">
                           {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.totalValue)}
                         </h3>
+                        <div className="mt-4 pt-3 border-t border-slate-100 flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-indigo-600" />
+                          <span className="text-[10px] font-bold text-indigo-700 uppercase tracking-wider">
+                            Valor total ativo
+                          </span>
+                        </div>
                       </div>
                     </div>
-                    <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm">
-                      <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Itens Ativos</p>
-                      <div className="flex items-center gap-3">
-                        <div className="bg-blue-100 p-2 rounded-xl text-blue-600">
-                          <Package size={20} />
+
+                    {/* Card 4: Itens Ativos */}
+                    <div className="bg-white rounded-2xl border border-blue-100/80 shadow-sm hover:shadow-md hover:border-blue-200 transition-all duration-300 overflow-hidden group relative">
+                      <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 to-cyan-500" />
+                      <div className="p-6">
+                        <div className="flex items-center justify-between mb-3">
+                          <span className="text-xs font-black text-slate-500 uppercase tracking-widest">Insumos Cadastrados</span>
+                          <div className="bg-gradient-to-br from-blue-600 to-cyan-700 text-white p-3 rounded-2xl shadow-md shadow-blue-500/20 group-hover:scale-105 transition-transform">
+                            <Package size={20} />
+                          </div>
                         </div>
-                        <h3 className="text-3xl font-black">{items.length}</h3>
+                        <h3 className="text-3xl font-black text-slate-900 tracking-tight">{items.length}</h3>
+                        <div className="mt-4 pt-3 border-t border-slate-100 flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-blue-600" />
+                          <span className="text-[10px] font-bold text-blue-700 uppercase tracking-wider">
+                            Itens no catálogo
+                          </span>
+                        </div>
                       </div>
                     </div>
                   </>
                 ) : (
                   <>
-                    <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm lg:col-span-2">
-                      <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Consumo do Setor no Período</p>
-                      <div className="flex items-center gap-4">
-                        <div className="bg-rose-100 p-3 rounded-2xl text-rose-600">
+                    <div className="bg-white p-6 rounded-2xl border border-rose-100 shadow-sm hover:shadow-md transition-all lg:col-span-2 overflow-hidden relative group">
+                      <div className="h-1.5 w-full bg-gradient-to-r from-rose-500 to-pink-600 absolute top-0 left-0" />
+                      <p className="text-slate-500 text-xs font-black uppercase tracking-wider mb-3">Consumo do Setor no Período</p>
+                      <div className="flex items-center gap-5">
+                        <div className="bg-rose-50 p-4 rounded-2xl text-rose-600 border border-rose-100 group-hover:scale-105 transition-transform">
                           <ArrowDownLeft size={32} />
                         </div>
                         <div>
-                          <h3 className="text-4xl font-black text-rose-600">{reportData.exits}</h3>
-                          <p className="text-xs font-bold text-[#A8A29E] uppercase tracking-widest">Unidades Recebidas</p>
+                          <h3 className="text-4xl font-black text-rose-600">{reportData.exits.toLocaleString('pt-BR')}</h3>
+                          <p className="text-xs font-extrabold text-slate-400 uppercase tracking-widest mt-0.5">Unidades Recebidas</p>
                         </div>
                       </div>
                     </div>
-                    <div className="bg-white p-6 rounded-3xl border border-[#E7E5E4] shadow-sm lg:col-span-2">
-                      <p className="text-[#78716C] text-xs font-bold uppercase tracking-wider mb-2">Solicitações no Período</p>
-                      <div className="flex items-center gap-4">
-                        <div className="bg-blue-100 p-3 rounded-2xl text-blue-600">
+                    <div className="bg-white p-6 rounded-2xl border border-blue-100 shadow-sm hover:shadow-md transition-all lg:col-span-2 overflow-hidden relative group">
+                      <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 to-indigo-600 absolute top-0 left-0" />
+                      <p className="text-slate-500 text-xs font-black uppercase tracking-wider mb-3">Solicitações no Período</p>
+                      <div className="flex items-center gap-5">
+                        <div className="bg-blue-50 p-4 rounded-2xl text-blue-600 border border-blue-100 group-hover:scale-105 transition-transform">
                           <FileText size={32} />
                         </div>
                         <div>
@@ -6457,7 +6929,7 @@ export default function App() {
                               return r.sector === selectedSector && !r.deletedAt && d >= startOfDay(parseISO(reportRange.start)) && d <= endOfDay(parseISO(reportRange.end));
                             }).length}
                           </h3>
-                          <p className="text-xs font-bold text-[#A8A29E] uppercase tracking-widest">Pedidos Realizados</p>
+                          <p className="text-xs font-extrabold text-slate-400 uppercase tracking-widest mt-0.5">Pedidos Realizados</p>
                         </div>
                       </div>
                     </div>
@@ -6465,37 +6937,47 @@ export default function App() {
                 )}
               </div>
 
-              {/* Visual Overview Header */}
-              <div className="flex items-center gap-3 px-2">
-                <BarChart3 className="text-[#78716C]" size={20} />
-                <h3 className="text-xl font-black">Panorama Visual de Consumo</h3>
+              {/* Visual Overview Section Header */}
+              <div className="flex items-center justify-between px-1 pt-2">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 bg-blue-50 text-blue-700 rounded-2xl border border-blue-100">
+                    <BarChart3 size={20} />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-black text-slate-900 tracking-tight">Panorama Visual de Consumo & Movimentação</h3>
+                    <p className="text-xs text-slate-500 font-medium">Gráficos interativos para acompanhamento gerencial das operações</p>
+                  </div>
+                </div>
               </div>
 
               {/* Charts Grid */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {/* Movement Chart */}
-                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
-                  <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
-                    <Activity size={18} className="text-blue-600" /> Movimentação {isAdmin ? 'Geral' : 'do Setor'}
-                  </h4>
+                <div className="bg-white p-6 sm:p-8 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all">
+                  <div className="flex items-center justify-between mb-6">
+                    <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
+                      <Activity size={18} className="text-blue-600" /> Movimentação {isAdmin ? 'Geral' : 'do Setor'}
+                    </h4>
+                    <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2.5 py-1 rounded-lg uppercase tracking-wider">Fluxo Diário</span>
+                  </div>
                   <div className="h-[300px] w-full">
                     <ResponsiveContainer width="100%" height="100%">
                       <AreaChart data={reportData.daily}>
                         <defs>
                           <linearGradient id="colorEntries" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#10b981" stopOpacity={0.1}/>
+                            <stop offset="5%" stopColor="#10b981" stopOpacity={0.15}/>
                             <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
                           </linearGradient>
                           <linearGradient id="colorExits" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.1}/>
+                            <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.15}/>
                             <stop offset="95%" stopColor="#f43f5e" stopOpacity={0}/>
                           </linearGradient>
                         </defs>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F5F5F4" />
-                        <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
-                        <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                        <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#64748b', fontWeight: 600}} />
+                        <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#64748b', fontWeight: 600}} />
                         <Tooltip 
-                          contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                          contentStyle={{ borderRadius: '16px', border: '1px solid #e2e8f0', boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.08)', fontWeight: 'bold' }}
                         />
                         {isAdmin && <Area type="monotone" dataKey="entries" name="Entradas" stroke="#10b981" fillOpacity={1} fill="url(#colorEntries)" strokeWidth={3} />}
                         <Area type="monotone" dataKey="exits" name={isAdmin ? "Saídas" : "Consumo"} stroke="#f43f5e" fillOpacity={1} fill="url(#colorExits)" strokeWidth={3} />
@@ -6505,10 +6987,13 @@ export default function App() {
                 </div>
 
                 {/* Category Breakdown */}
-                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
-                  <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
-                    <PieChartIcon size={18} className="text-amber-600" /> Distribuição de Consumo por Categoria
-                  </h4>
+                <div className="bg-white p-6 sm:p-8 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all">
+                  <div className="flex items-center justify-between mb-6">
+                    <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
+                      <PieChartIcon size={18} className="text-amber-500" /> Distribuição de Consumo por Categoria
+                    </h4>
+                    <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2.5 py-1 rounded-lg uppercase tracking-wider">Proporção</span>
+                  </div>
                   <div className="h-[300px] w-full">
                     <ResponsiveContainer width="100%" height="100%">
                       <PieChart>
@@ -6517,8 +7002,8 @@ export default function App() {
                           cx="50%"
                           cy="50%"
                           innerRadius={60}
-                          outerRadius={100}
-                          paddingAngle={5}
+                          outerRadius={95}
+                          paddingAngle={4}
                           dataKey="value"
                           label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
                         >
@@ -6527,7 +7012,7 @@ export default function App() {
                           ))}
                         </Pie>
                         <Tooltip 
-                          contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                          contentStyle={{ borderRadius: '16px', border: '1px solid #e2e8f0', boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.08)', fontWeight: 'bold' }}
                         />
                         <Legend verticalAlign="bottom" height={36}/>
                       </PieChart>
@@ -6537,21 +7022,24 @@ export default function App() {
 
                 {/* Top Consumed Items - Only for Admin */}
                 {isAdmin && (
-                  <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
-                    <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
-                      <ArrowDownLeft size={18} className="text-rose-600" /> Ranking: Itens Mais Consumidos
-                    </h4>
-                    <div className="h-[300px] w-full">
+                  <div className="bg-white p-6 sm:p-8 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all lg:col-span-2">
+                    <div className="flex items-center justify-between mb-6">
+                      <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
+                        <ArrowDownLeft size={18} className="text-rose-600" /> Ranking: Itens Mais Consumidos
+                      </h4>
+                      <span className="text-[10px] font-bold text-rose-600 bg-rose-50 px-2.5 py-1 rounded-lg uppercase tracking-wider">Top Demandas</span>
+                    </div>
+                    <div className="h-[320px] w-full">
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={reportData.topConsumed} layout="vertical">
-                          <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#F5F5F4" />
-                          <XAxis type="number" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
-                          <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1C1917', fontWeight: 'bold'}} width={120} />
+                          <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
+                          <XAxis type="number" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#64748b'}} />
+                          <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1e293b', fontWeight: 'bold'}} width={130} />
                           <Tooltip 
-                            cursor={{fill: '#FAFAF9'}}
-                            contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                            cursor={{fill: '#f8fafc'}}
+                            contentStyle={{ borderRadius: '16px', border: '1px solid #e2e8f0', boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.08)', fontWeight: 'bold' }}
                           />
-                          <Bar dataKey="value" name="Qtd Consumida" fill="#f43f5e" radius={[0, 8, 8, 0]} barSize={20} />
+                          <Bar dataKey="value" name="Qtd Consumida" fill="#f43f5e" radius={[0, 8, 8, 0]} barSize={18} />
                         </BarChart>
                       </ResponsiveContainer>
                     </div>
@@ -6562,20 +7050,23 @@ export default function App() {
                 {isAdmin && (
                   <>
                     {/* Stock Value by Category */}
-                    <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
-                      <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
-                        <DollarSign size={18} className="text-emerald-600" /> Valor em Estoque por Categoria
-                      </h4>
+                    <div className="bg-white p-6 sm:p-8 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all">
+                      <div className="flex items-center justify-between mb-6">
+                        <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
+                          <DollarSign size={18} className="text-emerald-600" /> Valor em Estoque por Categoria
+                        </h4>
+                        <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-lg uppercase tracking-wider">Financeiro</span>
+                      </div>
                       <div className="h-[300px] w-full">
                         <ResponsiveContainer width="100%" height="100%">
                           <BarChart data={reportData.categoryValues} layout="vertical">
-                            <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#F5F5F4" />
-                            <XAxis type="number" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
-                            <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1C1917', fontWeight: 'bold'}} width={120} />
+                            <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
+                            <XAxis type="number" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#64748b'}} />
+                            <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1e293b', fontWeight: 'bold'}} width={130} />
                             <Tooltip 
-                              cursor={{fill: '#FAFAF9'}}
+                              cursor={{fill: '#f8fafc'}}
                               formatter={(value: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value)}
-                              contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                              contentStyle={{ borderRadius: '16px', border: '1px solid #e2e8f0', boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.08)', fontWeight: 'bold' }}
                             />
                             <Bar dataKey="value" name="Valor Total">
                               {reportData.categoryValues.map((entry, index) => (
@@ -6589,10 +7080,13 @@ export default function App() {
                     </div>
 
                     {/* Exits by Reason */}
-                    <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
-                      <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
-                        <TrendingDown size={18} className="text-rose-600" /> Saídas por Motivo
-                      </h4>
+                    <div className="bg-white p-6 sm:p-8 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all">
+                      <div className="flex items-center justify-between mb-6">
+                        <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
+                          <TrendingDown size={18} className="text-rose-600" /> Saídas por Motivo
+                        </h4>
+                        <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2.5 py-1 rounded-lg uppercase tracking-wider">Destinação</span>
+                      </div>
                       <div className="h-[300px] w-full">
                         <ResponsiveContainer width="100%" height="100%">
                           <PieChart>
@@ -6606,17 +7100,18 @@ export default function App() {
                               cx="50%"
                               cy="50%"
                               innerRadius={60}
-                              outerRadius={100}
-                              paddingAngle={5}
+                              outerRadius={95}
+                              paddingAngle={4}
                               dataKey="value"
                               label={({ name, value }) => `${name}: ${value}`}
                             >
-                              <Cell fill="#3b82f6" />
+                              <Cell fill="#2563eb" />
                               <Cell fill="#f59e0b" />
                               <Cell fill="#ef4444" />
+                              <Cell fill="#64748b" />
                             </Pie>
                             <Tooltip 
-                              contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                              contentStyle={{ borderRadius: '16px', border: '1px solid #e2e8f0', boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.08)', fontWeight: 'bold' }}
                             />
                             <Legend verticalAlign="bottom" height={36}/>
                           </PieChart>
@@ -6628,19 +7123,22 @@ export default function App() {
 
                 {/* Exits by Sector - Only for Admin */}
                 {isAdmin && (
-                  <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
-                    <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
-                      <ArrowUpRight size={18} className="text-rose-600" /> Saídas por Setor (Quantidade por Tipo)
-                    </h4>
+                  <div className="bg-white p-6 sm:p-8 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all">
+                    <div className="flex items-center justify-between mb-6">
+                      <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
+                        <ArrowUpRight size={18} className="text-rose-600" /> Saídas por Setor (Quantidade por Tipo)
+                      </h4>
+                      <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2.5 py-1 rounded-lg uppercase tracking-wider">Setorial</span>
+                    </div>
                     <div className="h-[300px] w-full">
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={reportData.sectors} layout="vertical">
-                          <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#F5F5F4" />
-                          <XAxis type="number" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
-                          <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1C1917', fontWeight: 'bold'}} width={100} />
+                          <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
+                          <XAxis type="number" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#64748b'}} />
+                          <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1e293b', fontWeight: 'bold'}} width={110} />
                           <Tooltip 
-                            cursor={{fill: '#FAFAF9'}}
-                            contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                            cursor={{fill: '#f8fafc'}}
+                            contentStyle={{ borderRadius: '16px', border: '1px solid #e2e8f0', boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.08)', fontWeight: 'bold' }}
                           />
                           {reportData.categoriesInSector.map((cat: string) => (
                             <Bar 
@@ -6650,7 +7148,7 @@ export default function App() {
                               stackId="a" 
                               fill={getCategoryColor(cat)} 
                               radius={[0, 0, 0, 0]} 
-                              barSize={20} 
+                              barSize={18} 
                             />
                           ))}
                           <Legend />
@@ -6662,53 +7160,32 @@ export default function App() {
 
                 {/* Value by Supplier */}
                 {isAdmin && (
-                  <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
-                    <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
-                      <DollarSign size={18} className="text-amber-600" /> Valor por Fornecedor
-                    </h4>
-                    <div className="h-[400px] w-full">
+                  <div className="bg-white p-6 sm:p-8 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all">
+                    <div className="flex items-center justify-between mb-6">
+                      <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
+                        <DollarSign size={18} className="text-amber-500" /> Valor por Fornecedor
+                      </h4>
+                      <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2.5 py-1 rounded-lg uppercase tracking-wider">Fornecedores</span>
+                    </div>
+                    <div className="h-[300px] w-full">
                       <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={reportData.suppliers} layout="vertical" margin={{ left: 20, right: 30 }}>
-                          <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#F5F5F4" />
-                          <XAxis type="number" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
+                        <BarChart data={reportData.suppliers} layout="vertical" margin={{ left: 10, right: 20 }}>
+                          <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
+                          <XAxis type="number" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#64748b'}} />
                           <YAxis 
                             dataKey="name" 
                             type="category" 
                             axisLine={false} 
                             tickLine={false} 
-                            tick={{fontSize: 10, fill: '#1C1917', fontWeight: 'bold'}} 
-                            width={150}
+                            tick={{fontSize: 10, fill: '#1e293b', fontWeight: 'bold'}} 
+                            width={140}
                           />
                           <Tooltip 
-                            cursor={{fill: '#FAFAF9'}}
+                            cursor={{fill: '#f8fafc'}}
                             formatter={(value: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value)}
-                            contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                            contentStyle={{ borderRadius: '16px', border: '1px solid #e2e8f0', boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.08)', fontWeight: 'bold' }}
                           />
-                          <Bar dataKey="value" name="Valor Total" fill="#f59e0b" radius={[0, 8, 8, 0]} barSize={20} />
-                          <Legend />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </div>
-                )}
-
-                {/* Top Consumed Items - Only for Admin */}
-                {isAdmin && (
-                  <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
-                    <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
-                      <ArrowDownLeft size={18} className="text-rose-600" /> Itens Mais Consumidos (Top 10)
-                    </h4>
-                    <div className="h-[400px] w-full">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={reportData.topConsumed}>
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F5F5F4" />
-                          <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1C1917', fontWeight: 'bold'}} />
-                          <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
-                          <Tooltip 
-                            cursor={{fill: '#FAFAF9'}}
-                            contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                          />
-                          <Bar dataKey="value" name="Qtd Consumida" fill="#f43f5e" radius={[8, 8, 0, 0]} barSize={40} />
+                          <Bar dataKey="value" name="Valor Total" fill="#f59e0b" radius={[0, 8, 8, 0]} barSize={18} />
                           <Legend />
                         </BarChart>
                       </ResponsiveContainer>
@@ -6718,21 +7195,24 @@ export default function App() {
 
                 {/* Top Requested Items - Only for Admin */}
                 {isAdmin && (
-                  <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
-                    <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
-                      <Plus size={18} className="text-blue-600" /> Itens Mais Solicitados (Top 10)
-                    </h4>
-                    <div className="h-[400px] w-full">
+                  <div className="bg-white p-6 sm:p-8 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all lg:col-span-2">
+                    <div className="flex items-center justify-between mb-6">
+                      <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
+                        <Plus size={18} className="text-blue-600" /> Itens Mais Solicitados (Top 10)
+                      </h4>
+                      <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-lg uppercase tracking-wider">Pedidos</span>
+                    </div>
+                    <div className="h-[320px] w-full">
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={reportData.topRequested}>
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F5F5F4" />
-                          <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1C1917', fontWeight: 'bold'}} />
-                          <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                          <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1e293b', fontWeight: 'bold'}} />
+                          <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#64748b'}} />
                           <Tooltip 
-                            cursor={{fill: '#FAFAF9'}}
-                            contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                            cursor={{fill: '#f8fafc'}}
+                            contentStyle={{ borderRadius: '16px', border: '1px solid #e2e8f0', boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.08)', fontWeight: 'bold' }}
                           />
-                          <Bar dataKey="value" name="Qtd Solicitada" fill="#3b82f6" radius={[8, 8, 0, 0]} barSize={40} />
+                          <Bar dataKey="value" name="Qtd Solicitada" fill="#2563eb" radius={[8, 8, 0, 0]} barSize={36} />
                           <Legend />
                         </BarChart>
                       </ResponsiveContainer>
@@ -6742,10 +7222,13 @@ export default function App() {
 
                 {/* Extra vs Contract Comparison */}
                 {isAdmin && (
-                  <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
-                    <h4 className="text-lg font-bold mb-8 flex items-center gap-2">
-                      <BarChart3 size={18} className="text-purple-600" /> Comparativo: Contrato vs Extra vs Doação
-                    </h4>
+                  <div className="bg-white p-6 sm:p-8 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all lg:col-span-2">
+                    <div className="flex items-center justify-between mb-6">
+                      <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
+                        <BarChart3 size={18} className="text-indigo-600" /> Comparativo: Contrato vs Extra vs Doação
+                      </h4>
+                      <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-lg uppercase tracking-wider">Origem</span>
+                    </div>
                     <div className="h-[300px] w-full">
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart 
@@ -6770,17 +7253,17 @@ export default function App() {
                             }
                           ]}
                         >
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F5F5F4" />
-                          <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#1C1917', fontWeight: 'bold'}} />
-                          <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#A8A29E'}} />
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                          <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 11, fill: '#1e293b', fontWeight: 'bold'}} />
+                          <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#64748b'}} />
                           <Tooltip 
-                            cursor={{fill: '#FAFAF9'}}
-                            contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                            cursor={{fill: '#f8fafc'}}
+                            contentStyle={{ borderRadius: '16px', border: '1px solid #e2e8f0', boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.08)', fontWeight: 'bold' }}
                           />
                           <Legend />
-                          <Bar dataKey="contrato" name="Contrato" fill="#1C1917" radius={[8, 8, 0, 0]} barSize={30} />
-                          <Bar dataKey="extra" name="Extra" fill="#8b5cf6" radius={[8, 8, 0, 0]} barSize={30} />
-                          <Bar dataKey="doacao" name="Doação" fill="#10b981" radius={[8, 8, 0, 0]} barSize={30} />
+                          <Bar dataKey="contrato" name="Contrato" fill="#1e293b" radius={[6, 6, 0, 0]} barSize={26} />
+                          <Bar dataKey="extra" name="Extra" fill="#6366f1" radius={[6, 6, 0, 0]} barSize={26} />
+                          <Bar dataKey="doacao" name="Doação" fill="#10b981" radius={[6, 6, 0, 0]} barSize={26} />
                         </BarChart>
                       </ResponsiveContainer>
                     </div>
@@ -6789,109 +7272,112 @@ export default function App() {
               </div>
 
               {/* Detailed Sector Breakdown - Visible for Admin and Sector Leaders */}
-                {(isAdmin || userProfile?.role === 'SETOR' || userProfile?.role === 'LÍDER') && (
-                  <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm lg:col-span-2">
-                  <div className="flex justify-between items-start mb-8">
+              {(isAdmin || userProfile?.role === 'SETOR' || userProfile?.role === 'LÍDER') && (
+                <div className="bg-white p-6 sm:p-8 rounded-3xl border border-blue-100/80 shadow-sm lg:col-span-2">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8 pb-6 border-b border-slate-100">
                     <div>
-                      <h4 className="text-lg font-bold flex items-center gap-2 mb-1">
-                        <History size={18} className="text-[#1C1917]" /> 
-                        Relatório de Consumo por Item
+                      <h4 className="text-lg font-black text-slate-900 flex items-center gap-2 mb-1">
+                        <History size={20} className="text-blue-600" /> 
+                        Relatório Detalhado de Consumo por Item
                       </h4>
-                      <p className="text-xs text-[#78716C] font-medium">
+                      <p className="text-xs text-slate-500 font-medium">
                         {isAdmin ? (reportSectorFilter === 'all' ? 'Todos os Setores' : `Setor: ${reportSectorFilter}`) : `Setor: ${selectedSector}`} • {format(parseISO(reportRange.start), 'dd/MM/yyyy')} a {format(parseISO(reportRange.end), 'dd/MM/yyyy')}
                       </p>
                     </div>
-                    <div className="flex flex-col items-end gap-3">
+                    <div className="flex flex-wrap items-center gap-3">
                       {isAdmin && (
-                        <div className="text-right">
-                          <p className="text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest">Valor Total de Saídas</p>
+                        <div className="text-right mr-2 hidden sm:block">
+                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total de Saídas</p>
                           <p className="text-xl font-black text-rose-600">
                             {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.consumptionReport.reduce((sum, i) => sum + i.totalValue, 0))}
                           </p>
                         </div>
                       )}
-                      <div className="flex gap-2">
+                      <div className="flex flex-wrap gap-2">
                         {isAdmin && (
                           <button 
                             onClick={() => {
                               setSelectedRoomCategories([...categories]);
                               setShowRoomInventoryModal(true);
                             }}
-                            className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-blue-700 transition-all shadow-sm"
+                            className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2.5 rounded-xl text-xs font-bold hover:bg-blue-700 transition-all shadow-md shadow-blue-500/10 active:scale-95"
                           >
-                            <Printer size={14} /> Mapa de Sala (Porta)
+                            <Printer size={15} /> Mapa de Sala (Porta)
                           </button>
                         )}
                         <button 
                           onClick={handleExportConsumptionPDF}
-                          className="flex items-center gap-2 bg-[#1C1917] text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-[#292524] transition-all shadow-sm"
+                          className="flex items-center gap-2 bg-gradient-to-r from-blue-700 to-indigo-900 text-white px-4 py-2.5 rounded-xl text-xs font-bold hover:from-blue-800 hover:to-indigo-950 transition-all shadow-md shadow-blue-900/10 active:scale-95"
                         >
-                          <Download size={14} /> Exportar PDF de Consumo
+                          <Download size={15} /> Exportar PDF Consumo
                         </button>
                       </div>
                     </div>
                   </div>
                   
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left border-collapse min-w-[600px]">
-                        <thead>
-                          <tr className="border-b border-[#E7E5E4]">
-                            <th className="pb-4 font-bold text-xs text-[#78716C] uppercase tracking-wider">Setor / Item</th>
-                            <th className="pb-4 font-bold text-xs text-[#78716C] uppercase tracking-wider">Categoria</th>
-                            <th className="pb-4 font-bold text-xs text-[#78716C] uppercase tracking-wider text-center">Quantidade</th>
-                            {isAdmin && <th className="pb-4 font-bold text-xs text-[#78716C] uppercase tracking-wider text-right">Valor Total</th>}
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-[#F5F5F4]">
-                          {reportData.consumptionBySector.map((sectorGroup, idx) => (
-                            <React.Fragment key={idx}>
-                              <tr className="bg-[#F5F5F4]/50 border-b border-[#E7E5E4]">
-                                <td className="py-2 px-4 font-bold text-[10px] uppercase tracking-wider text-[#78716C]" colSpan={isAdmin ? 3 : 3}>
-                                  {sectorGroup.sector}
+                  <div className="overflow-x-auto rounded-2xl border border-slate-100">
+                    <table className="w-full text-left border-collapse min-w-[650px]">
+                      <thead>
+                        <tr className="bg-slate-50/80 border-b border-slate-200/80">
+                          <th className="py-3.5 px-5 font-black text-xs text-slate-500 uppercase tracking-wider">Setor / Item</th>
+                          <th className="py-3.5 px-4 font-black text-xs text-slate-500 uppercase tracking-wider">Categoria</th>
+                          <th className="py-3.5 px-4 font-black text-xs text-slate-500 uppercase tracking-wider text-center">Quantidade</th>
+                          {isAdmin && <th className="py-3.5 px-5 font-black text-xs text-slate-500 uppercase tracking-wider text-right">Valor Total</th>}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {reportData.consumptionBySector.map((sectorGroup, idx) => (
+                          <React.Fragment key={idx}>
+                            <tr className="bg-blue-50/40 border-y border-blue-100/60">
+                              <td className="py-2.5 px-5 font-black text-[11px] uppercase tracking-wider text-blue-900 flex items-center gap-2" colSpan={isAdmin ? 3 : 3}>
+                                <span className="w-2 h-2 rounded-full bg-blue-600"></span>
+                                {sectorGroup.sector}
+                              </td>
+                              {isAdmin && (
+                                <td className="py-2.5 px-5 text-right font-black text-blue-950 text-xs">
+                                  {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(sectorGroup.totalValue)}
+                                </td>
+                              )}
+                            </tr>
+                            {Object.values(sectorGroup.items).sort((a, b) => b.quantity - a.quantity).map((item, iIdx) => (
+                              <tr key={`${idx}-${iIdx}`} className="hover:bg-blue-50/20 transition-all border-b border-slate-100/80 last:border-b-0">
+                                <td className="py-3.5 px-8 text-sm font-semibold text-slate-800">
+                                  {item.name}
+                                </td>
+                                <td className="py-3.5 px-4">
+                                  <span 
+                                    className="text-[10px] font-black px-2.5 py-1 rounded-md text-white whitespace-nowrap shadow-xs"
+                                    style={{ backgroundColor: getCategoryColor(item.category) }}
+                                  >
+                                    {item.category}
+                                  </span>
+                                </td>
+                                <td className="py-3.5 px-4 text-center">
+                                  <span className="text-slate-900 font-extrabold text-sm bg-slate-100 px-3 py-1 rounded-lg border border-slate-200/60">
+                                    {item.quantity}
+                                  </span>
                                 </td>
                                 {isAdmin && (
-                                  <td className="py-2 px-4 text-right font-bold text-[#1C1917] text-xs">
-                                    {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(sectorGroup.totalValue)}
+                                  <td className="py-3.5 px-5 text-right font-bold text-slate-600 text-sm">
+                                    {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.value)}
                                   </td>
                                 )}
                               </tr>
-                              {Object.values(sectorGroup.items).sort((a, b) => b.quantity - a.quantity).map((item, iIdx) => (
-                                <tr key={`${idx}-${iIdx}`} className="hover:bg-[#FAFAF9]/50 transition-all border-b border-[#F5F5F4]/30 last:border-b-0">
-                                  <td className="py-3 px-8 text-sm font-medium text-[#44403C]">
-                                    {item.name}
-                                  </td>
-                                  <td className="py-3">
-                                    <span 
-                                      className="text-[10px] font-bold px-2 py-0.5 rounded text-white whitespace-nowrap opacity-80"
-                                      style={{ backgroundColor: getCategoryColor(item.category) }}
-                                    >
-                                      {item.category}
-                                    </span>
-                                  </td>
-                                  <td className="py-3 text-center">
-                                    <span className="text-[#1C1917] font-bold text-sm">
-                                      {item.quantity}
-                                    </span>
-                                  </td>
-                                  {isAdmin && (
-                                    <td className="py-3 text-right font-medium text-[#78716C] text-sm">
-                                      {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.value)}
-                                    </td>
-                                  )}
-                                </tr>
-                              ))}
-                            </React.Fragment>
-                          ))}
-                          {reportData.consumptionBySector.length === 0 && (
-                            <tr>
-                              <td colSpan={isAdmin ? 4 : 3} className="py-10 text-center text-[#A8A29E] italic">Nenhuma saída registrada para este período.</td>
-                            </tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
+                            ))}
+                          </React.Fragment>
+                        ))}
+                        {reportData.consumptionBySector.length === 0 && (
+                          <tr>
+                            <td colSpan={isAdmin ? 4 : 3} className="py-12 text-center text-slate-400 font-medium italic">
+                              Nenhuma saída registrada para este período ou setor selecionado.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
                   </div>
-                )}
+                </div>
+              )}
             </motion.div>
           )}
 
