@@ -31,15 +31,15 @@ service cloud.firestore {
       return data.keys().hasAll(['sector', 'date', 'status', 'requesterEmail']) &&
              data.sector is string && data.sector.size() < 100 &&
              data.requesterEmail is string && data.requesterEmail.size() < 150 &&
-             data.status in ['PENDENTE', 'APROVADO', 'SEPARADO', 'ENTREGUE', 'RECUSADO'] &&
-             (!('observation' in data) || (data.observation is string && data.observation.size() < 500));
+             data.status in ['PENDENTE', 'EM_SEPARACAO', 'APROVADO', 'SEPARADO', 'ENTREGUE', 'RECUSADO', 'DEVOLUCAO_PENDENTE', 'DEVOLUCAO_APROVADA', 'DEVOLUCAO_RECUSADA'] &&
+             (!('observation' in data) || (data.observation is string && data.observation.size() < 1000));
     }
 
     function isValidNotification(data) {
       return data.keys().hasAll(['userId', 'title', 'message', 'date', 'read']) &&
              data.userId is string &&
              data.title is string && data.title.size() < 100 &&
-             data.message is string && data.message.size() < 500 &&
+             data.message is string && data.message.size() < 1000 &&
              data.date is string &&
              data.read is bool;
     }
@@ -65,7 +65,7 @@ service cloud.firestore {
       allow update: if isAdmin() || (
         isAuthenticated() && 
         resource.data.requesterEmail == request.auth.token.email && 
-        resource.data.status == 'PENDENTE'
+        (resource.data.status in ['PENDENTE', 'DEVOLUCAO_PENDENTE'] || request.resource.data.status in ['PENDENTE', 'DEVOLUCAO_PENDENTE'])
       );
       allow delete: if isAdmin();
     }
@@ -78,7 +78,7 @@ service cloud.firestore {
         resource.data.request_id != null &&
         exists(/databases/$(database)/documents/requests/$(resource.data.request_id)) && 
         get(/databases/$(database)/documents/requests/$(resource.data.request_id)).data.requesterEmail == request.auth.token.email &&
-        get(/databases/$(database)/documents/requests/$(resource.data.request_id)).data.status == 'PENDENTE'
+        (get(/databases/$(database)/documents/requests/$(resource.data.request_id)).data.status in ['PENDENTE', 'DEVOLUCAO_PENDENTE'])
       );
     }
 
@@ -90,13 +90,15 @@ service cloud.firestore {
     }
 
     match /notifications/{notificationId} {
-      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || (resource.data.userId == 'ADMIN_GROUP' && isAdmin()));
-      allow create: if isAdmin();
+      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || resource.data.userId == request.auth.token.email || (resource.data.userId == 'ADMIN_GROUP' && isAdmin()) || isAdmin());
+      allow create: if isAuthenticated();
       allow update: if isAuthenticated() && (
         (resource.data.userId == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read'])) ||
-        (resource.data.userId == 'ADMIN_GROUP' && isAdmin())
+        (resource.data.userId == request.auth.token.email && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read'])) ||
+        (resource.data.userId == 'ADMIN_GROUP' && isAdmin()) ||
+        isAdmin()
       );
-      allow delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || (resource.data.userId == 'ADMIN_GROUP' && isAdmin()));
+      allow delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || resource.data.userId == request.auth.token.email || (resource.data.userId == 'ADMIN_GROUP' && isAdmin()) || isAdmin());
     }
 
     match /dismissed_stock_alerts/{id} {

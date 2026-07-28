@@ -45,6 +45,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import html2canvas from 'html2canvas';
 import { 
   collection, 
   onSnapshot, 
@@ -213,8 +214,9 @@ interface FirestoreErrorInfo {
 }
 
 function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errMessage = error instanceof Error ? error.message : String(error);
   const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
+    error: errMessage,
     authInfo: {
       userId: auth.currentUser?.uid,
       email: auth.currentUser?.email,
@@ -230,9 +232,15 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
     },
     operationType,
     path
+  };
+
+  console.warn(`[Firestore ${operationType}] Notice on ${path}:`, errMessage);
+
+  // Throw only for mutations if explicitly needed, never for read/list listeners or quota limit errors
+  const isQuotaError = errMessage.toLowerCase().includes('quota limit exceeded') || errMessage.toLowerCase().includes('resource_exhausted');
+  if (!isQuotaError && (operationType === OperationType.WRITE || operationType === OperationType.CREATE || operationType === OperationType.UPDATE || operationType === OperationType.DELETE)) {
+    throw new Error(errMessage);
   }
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
 }
 
 interface ErrorBoundaryProps {
@@ -310,7 +318,16 @@ export default function App() {
   const [donationUnitCNPJ, setDonationUnitCNPJ] = useState('');
   const [donationRevisionDate, setDonationRevisionDate] = useState('');
   const [letterheadImage, setLetterheadImage] = useState<string | null>(null);
-  const [reportsTab, setReportsTab] = useState<'overview' | 'letterhead'>('overview');
+  const [reportsTab, setReportsTab] = useState<'overview' | 'quantitativo' | 'letterhead'>('overview');
+  const [quantitativoSource, setQuantitativoSource] = useState<'sample' | 'system'>('system');
+  const [quantitativoPeriodPreset, setQuantitativoPeriodPreset] = useState<'1_semestre_2026' | '2_semestre_2026' | 'ano_2026' | 'custom'>('1_semestre_2026');
+  const [quantitativoCustomStart, setQuantitativoCustomStart] = useState('2026-01-01');
+  const [quantitativoCustomEnd, setQuantitativoCustomEnd] = useState('2026-06-30');
+  const [quantitativoCategory, setQuantitativoCategory] = useState('Material Médico-Hospitalar');
+  const [quantitativoTitle, setQuantitativoTitle] = useState('');
+  const [quantitativoCriticalAnalysis, setQuantitativoCriticalAnalysis] = useState('');
+  const [isEditingQuantitativoAnalysis, setIsEditingQuantitativoAnalysis] = useState(false);
+  const quantitativoReportRef = useRef<HTMLDivElement>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'inventory' | 'history' | 'requests' | 'admin-devolutions' | 'reports' | 'my-requests' | 'new-request' | 'devolution' | 'users' | 'trash' | 'leader-stats'>('dashboard');
   const leaderStatistics = useMemo(() => {
@@ -964,25 +981,47 @@ export default function App() {
 
           // Always use email as the document ID for consistency
           const userRef = doc(db, 'users', userEmail);
-          const userSnap = await getDoc(userRef);
+          let userSnap: any = null;
+          try {
+            userSnap = await getDoc(userRef);
+          } catch (e: any) {
+            console.warn("Could not fetch user profile from Firestore:", e?.message || e);
+          }
 
-          // Special case for the master admins
-          if (!userSnap.exists() && (userEmail === 'gerlianemagalhaes79@gmail.com' || userEmail === 'poli.almoxarifado@gmail.com')) {
-            await setDoc(userRef, {
-              email: userEmail,
+          if (userSnap && !userSnap.exists() && (userEmail === 'gerlianemagalhaes79@gmail.com' || userEmail === 'poli.almoxarifado@gmail.com')) {
+            try {
+              await setDoc(userRef, {
+                email: userEmail,
+                name: user.displayName || (userEmail === 'gerlianemagalhaes79@gmail.com' ? 'Admin' : 'Poli Almoxarifado'),
+                role: 'ADMIN',
+                sector: 'Almoxarifado',
+                uid: user.uid,
+                lastLogin: new Date().toISOString()
+              });
+            } catch (e) {
+              console.warn("Could not set master admin profile doc:", e);
+            }
+          } else if (userSnap && userSnap.exists()) {
+            // Update existing profile with UID and last login
+            try {
+              await updateDoc(userRef, { 
+                uid: user.uid,
+                lastLogin: new Date().toISOString() 
+              });
+            } catch (e) {
+              console.warn("Could not update last login timestamp:", e);
+            }
+          } else if (!userSnap && (userEmail === 'gerlianemagalhaes79@gmail.com' || userEmail === 'poli.almoxarifado@gmail.com')) {
+            // Fallback for master admins when quota limit is exceeded
+            setUserProfile({
+              id: userEmail,
               name: user.displayName || (userEmail === 'gerlianemagalhaes79@gmail.com' ? 'Admin' : 'Poli Almoxarifado'),
               role: 'ADMIN',
               sector: 'Almoxarifado',
-              uid: user.uid,
-              lastLogin: new Date().toISOString()
+              email: userEmail
             });
-          } else if (userSnap.exists()) {
-            // Update existing profile with UID and last login
-            await updateDoc(userRef, { 
-              uid: user.uid,
-              lastLogin: new Date().toISOString() 
-            });
-          } else {
+            setActiveTab('dashboard');
+          } else if (userSnap && !userSnap.exists()) {
             // Not pre-registered and not master admin
             await signOut(auth);
             showToast("Acesso negado: Seu e-mail não está cadastrado no sistema. Entre em contato com o administrador.", "error");
@@ -995,16 +1034,12 @@ export default function App() {
               const profile = { id: doc.id, ...doc.data() } as UserProfile;
               setUserProfile(profile);
               
-              // Auto-select sector for the user
-              // Priority: allowedSectors[0] > sector > default
               if (profile.allowedSectors && profile.allowedSectors.length > 0) {
-                // Keep current selectedSector if it's still allowed, otherwise pick first
                 setSelectedSector(prev => (prev && profile.allowedSectors?.includes(prev) ? prev : profile.allowedSectors![0]));
               } else if (profile.sector) {
                 setSelectedSector(profile.sector);
               }
 
-              // Redirect based on role
               if (profile.role === 'ADMIN' || userEmail === 'gerlianemagalhaes79@gmail.com' || profile.sector === 'Almoxarifado') {
                 setActiveTab('dashboard');
               } else {
@@ -1018,8 +1053,13 @@ export default function App() {
           setUserProfile(null);
         }
       } catch (error: any) {
-        console.error("Auth state change error:", error);
-        showToast(`Erro na autenticação: ${error.message}`, "error");
+        const errStr = String(error?.message || error);
+        if (errStr.toLowerCase().includes('quota limit exceeded') || errStr.toLowerCase().includes('resource_exhausted')) {
+          console.warn("Auth state change notice (quota limit):", errStr);
+        } else {
+          console.error("Auth state change error:", error);
+          showToast(`Erro na autenticação: ${error.message}`, "error");
+        }
       } finally {
         setLoading(false);
       }
@@ -1191,7 +1231,7 @@ export default function App() {
           }
         }
       } catch (err) {
-        console.error("Error executing retroactive zero stock synchronization:", err);
+        console.warn("Notice in retroactive zero stock synchronization:", err);
       }
     };
 
@@ -2192,19 +2232,23 @@ export default function App() {
       });
 
       // Notify administrators
-      const adminSnap = await getDocs(query(collection(db, 'users'), where('role', '==', 'ADMIN')));
-      adminSnap.forEach(adminDoc => {
-        const notifRef = doc(collection(db, 'notifications'));
-        batch.set(notifRef, {
-          userId: adminDoc.id,
-          title: 'Solicitação de Devolução',
-          message: `Setor ${selectedSector} solicitou devolução de materiais.`,
-          date: new Date().toISOString(),
-          read: false,
-          requestId: newReqRef.id,
-          type: 'REQUEST'
+      try {
+        const adminSnap = await getDocs(query(collection(db, 'users'), where('role', '==', 'ADMIN')));
+        adminSnap.forEach(adminDoc => {
+          const notifRef = doc(collection(db, 'notifications'));
+          batch.set(notifRef, {
+            userId: adminDoc.id,
+            title: 'Solicitação de Devolução',
+            message: `Setor ${selectedSector} solicitou devolução de materiais.`,
+            date: new Date().toISOString(),
+            read: false,
+            requestId: newReqRef.id,
+            type: 'REQUEST'
+          });
         });
-      });
+      } catch (e) {
+        console.warn("Aviso ao notificar administradores:", e);
+      }
 
       await batch.commit();
 
@@ -3648,6 +3692,332 @@ export default function App() {
     }
   };
 
+  const quantitativoReportData = useMemo(() => {
+    if (quantitativoSource === 'sample') {
+      return {
+        months: ['Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'],
+        monthColors: ['#1d4ed8', '#b91c1c', '#b45309', '#15803d', '#c2410c', '#0284c7'],
+        sectors: [
+          { name: 'ALMOXARIFADO', values: [10, 0, 0, 0, 0, 0], total: 10 },
+          { name: 'CER', values: [11, 64, 19, 13, 27, 6], total: 140 },
+          { name: 'CME', values: [4, 30, 0, 15, 4, 0], total: 53 },
+          { name: 'ENVASE', values: [2, 0, 0, 5, 1, 1], total: 9 },
+          { name: 'ESC. QUALIDADE', values: [80, 0, 0, 0, 0, 0], total: 80 },
+          { name: 'HIGIENIZAÇÃO', values: [4, 0, 0, 1, 3, 0], total: 8 },
+          { name: 'ILHA', values: [316, 178, 266, 310, 579, 200], total: 1849 },
+          { name: 'IMAGEM', values: [351, 354, 131, 267, 505, 106], total: 1714 },
+          { name: 'PÉ DIABÉTICO', values: [384, 476, 563, 548, 572, 552], total: 3095 },
+          { name: 'RECEPÇÃO GERAL', values: [203, 0, 0, 0, 110, 17], total: 330 },
+          { name: 'SINAIS VITAIS', values: [18, 8, 15, 8, 10, 9], total: 68 }
+        ],
+        title: quantitativoTitle,
+        criticalAnalysis: quantitativoCriticalAnalysis
+      };
+    }
+
+    let months: string[] = ['Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+    let monthColors = ['#1d4ed8', '#b91c1c', '#b45309', '#15803d', '#c2410c', '#0284c7', '#7c3aed', '#db2777', '#059669'];
+    
+    let startDate: Date;
+    let endDate: Date;
+
+    if (quantitativoPeriodPreset === '1_semestre_2026') {
+      startDate = new Date('2026-01-01T00:00:00');
+      endDate = new Date('2026-06-30T23:59:59');
+      months = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho'];
+    } else if (quantitativoPeriodPreset === '2_semestre_2026') {
+      startDate = new Date('2026-07-01T00:00:00');
+      endDate = new Date('2026-12-31T23:59:59');
+      months = ['Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+    } else if (quantitativoPeriodPreset === 'ano_2026') {
+      startDate = new Date('2026-01-01T00:00:00');
+      endDate = new Date('2026-12-31T23:59:59');
+      months = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+    } else {
+      startDate = startOfDay(parseISO(quantitativoCustomStart));
+      endDate = endOfDay(parseISO(quantitativoCustomEnd));
+      months = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho'];
+    }
+
+    const sectorMap: Record<string, number[]> = {};
+
+    SECTORS.forEach(sec => {
+      sectorMap[sec.toUpperCase()] = new Array(months.length).fill(0);
+    });
+
+    const checkCategoryMatch = (itemCat: string | null | undefined, filterCat: string) => {
+      if (!filterCat || filterCat === 'Todos' || filterCat.startsWith('Todos')) return true;
+      if (!itemCat) return filterCat === 'Outros';
+
+      const catLower = itemCat.toLowerCase().trim();
+      const filterLower = filterCat.toLowerCase().trim();
+
+      if (filterLower.includes('médico') || filterLower.includes('medico') || filterLower.includes('hospitalar')) {
+        return catLower.includes('médico') || catLower.includes('medico') || catLower.includes('hospitalar');
+      }
+      if (filterLower.includes('medicamento')) {
+        return catLower.includes('medicamento') || catLower.includes('fármaco') || catLower.includes('farmaco');
+      }
+      if (filterLower.includes('aliment')) {
+        return catLower.includes('aliment') || catLower.includes('copa') || catLower.includes('cozinha');
+      }
+      if (filterLower.includes('expediente')) {
+        return catLower.includes('expediente') || catLower.includes('papelaria') || catLower.includes('escritório') || catLower.includes('escritorio');
+      }
+      if (filterLower.includes('higiene') || filterLower.includes('limpeza')) {
+        return catLower.includes('higiene') || catLower.includes('limpeza') || catLower.includes('saneante');
+      }
+      if (filterLower.includes('odont')) {
+        return catLower.includes('odont');
+      }
+      if (filterLower.includes('epi')) {
+        return catLower.includes('epi') || catLower.includes('segurança') || catLower.includes('seguranca');
+      }
+      if (filterLower.includes('informát') || filterLower.includes('informat') || filterLower.includes('ti')) {
+        return catLower.includes('informát') || catLower.includes('informat') || catLower.includes('ti');
+      }
+
+      return catLower.includes(filterLower) || filterLower.includes(catLower);
+    };
+
+    transactions.forEach(t => {
+      if (t.deletedAt) return;
+      if (t.type !== 'exit') return;
+      const tDate = new Date(t.date);
+      if (tDate < startDate || tDate > endDate) return;
+
+      const item = items.find(i => i.id === t.item_id);
+      if (!checkCategoryMatch(item?.category, quantitativoCategory)) return;
+
+      const secName = (t.sector || 'Outros').toUpperCase();
+      if (!sectorMap[secName]) {
+        sectorMap[secName] = new Array(months.length).fill(0);
+      }
+
+      let monthIdx = 0;
+      if (months.length === 6) {
+        monthIdx = tDate.getMonth() % 6;
+      } else {
+        monthIdx = tDate.getMonth();
+      }
+      if (monthIdx >= 0 && monthIdx < months.length) {
+        sectorMap[secName][monthIdx] += t.quantity;
+      }
+    });
+
+    requests.forEach(r => {
+      if (r.status !== 'ENTREGUE') return;
+      const rDate = new Date(r.deliveredAt || r.date);
+      if (rDate < startDate || rDate > endDate) return;
+
+      const secName = (r.sector || 'OUTROS').toUpperCase();
+      if (!sectorMap[secName]) {
+        sectorMap[secName] = new Array(months.length).fill(0);
+      }
+
+      let monthIdx = 0;
+      if (months.length === 6) {
+        monthIdx = rDate.getMonth() % 6;
+      } else {
+        monthIdx = rDate.getMonth();
+      }
+
+      const rItems = allRequestItems.filter(ri => {
+        if (ri.request_id !== r.id) return false;
+        if (quantitativoCategory === 'Todos') return true;
+        const item = items.find(i => i.id === ri.product_id);
+        return checkCategoryMatch(item?.category, quantitativoCategory);
+      });
+
+      const totalQty = rItems.reduce((acc, curr) => acc + (curr.quantity_approved || curr.quantity_requested || 0), 0);
+      if (monthIdx >= 0 && monthIdx < months.length) {
+        sectorMap[secName][monthIdx] += totalQty;
+      }
+    });
+
+    const sectors = Object.keys(sectorMap)
+      .map(name => {
+        const values = sectorMap[name];
+        const total = values.reduce((a, b) => a + b, 0);
+        return { name, values, total };
+      })
+      .filter(s => quantitativoSource === 'system' ? true : s.total > 0)
+      .sort((a, b) => b.total - a.total);
+
+    const activeSectors = sectors.filter(s => s.total > 0);
+    const finalSectors = activeSectors.length > 0 
+      ? activeSectors 
+      : (quantitativoSource === 'system' 
+        ? SECTORS.slice(0, 6).map(sec => ({ name: sec.toUpperCase(), values: new Array(months.length).fill(0), total: 0 }))
+        : [
+          { name: 'PÉ DIABÉTICO', values: [384, 476, 563, 548, 572, 552], total: 3095 },
+          { name: 'ILHA', values: [316, 178, 266, 310, 579, 200], total: 1849 },
+          { name: 'IMAGEM', values: [351, 354, 131, 267, 505, 106], total: 1714 }
+        ]);
+
+    const activeSectorsForAnalysis = finalSectors.filter(s => s.total > 0);
+
+    let periodText = 'no período analisado';
+    if (quantitativoPeriodPreset === '1_semestre_2026') periodText = 'no 1º semestre de 2026';
+    else if (quantitativoPeriodPreset === '2_semestre_2026') periodText = 'no 2º semestre de 2026';
+    else if (quantitativoPeriodPreset === 'ano_2026') periodText = 'no ano de 2026 (total)';
+
+    const catLabel = quantitativoCategory === 'Todos' ? 'materiais e insumos em geral' : `materiais da categoria ${quantitativoCategory.toUpperCase()}`;
+
+    let autoAnalysis = '';
+    if (activeSectorsForAnalysis.length > 0) {
+      const top1 = activeSectorsForAnalysis[0];
+      const top2 = activeSectorsForAnalysis[1];
+      const grandTotal = activeSectorsForAnalysis.reduce((acc, s) => acc + s.total, 0);
+
+      const monthTotals = months.map((_, idx) => activeSectorsForAnalysis.reduce((sum, sec) => sum + (sec.values[idx] || 0), 0));
+      const maxMonthIdx = monthTotals.indexOf(Math.max(...monthTotals));
+      const maxMonthName = months[maxMonthIdx] || 'mês de pico';
+
+      let sector2Text = '';
+      if (top2 && top2.total > 0) {
+        sector2Text = ` Em SEGUNDO LUGAR, destaca-se o setor de ${top2.name}, acumulando ${top2.total.toLocaleString('pt-BR')} unidades (${((top2.total / grandTotal) * 100).toFixed(1)}% do total).`;
+      }
+
+      autoAnalysis = `Verificou-se que, ${periodText}, o volume total de dispensação para ${catLabel} foi de ${grandTotal.toLocaleString('pt-BR')} unidades. O setor com MAIOR DEMANDA foi o de ${top1.name}, apresentando ${top1.total.toLocaleString('pt-BR')} unidades dispensadas (${((top1.total / grandTotal) * 100).toFixed(1)}% do consumo total).${sector2Text} Observou-se o maior pico de dispensações no mês de ${maxMonthName}. Os dados registrados pelo sistema indicam maior concentração assistencial nesses setores e auxiliam no planejamento das compras e estoques do almoxarifado.`;
+    } else {
+      autoAnalysis = `Verificou-se que, ${periodText}, não foram registradas movimentações de saída ou solicitações entregues para ${catLabel} no sistema. Os controles de estoque do almoxarifado permanecem monitorando o fluxo de demandas.`;
+    }
+
+    return {
+      months,
+      monthColors,
+      sectors: finalSectors,
+      title: quantitativoTitle || (quantitativoCategory === 'Todos' ? 'QUANTITATIVO GERAL DE MATERIAIS DISPENSADOS PARA OS SETORES DA POLICLÍNICA' : `QUANTITATIVO DE ${quantitativoCategory.toUpperCase()} DISPENSADOS PARA OS SETORES DA POLICLÍNICA`),
+      criticalAnalysis: quantitativoCriticalAnalysis.trim() !== '' ? quantitativoCriticalAnalysis : autoAnalysis
+    };
+  }, [quantitativoSource, quantitativoPeriodPreset, quantitativoCustomStart, quantitativoCustomEnd, quantitativoCategory, quantitativoTitle, quantitativoCriticalAnalysis, transactions, requests, allRequestItems, items]);
+
+  const handleExportQuantitativoPDF = async () => {
+    if (!quantitativoReportRef.current) return;
+    try {
+      showToast("Gerando PDF oficial do relatório...", "info");
+      const element = quantitativoReportRef.current;
+      const canvas = await html2canvas(element, {
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        backgroundColor: '#ffffff',
+        onclone: (clonedDoc) => {
+          // Hide all UI buttons, tooltips, and edit controls in the cloned document
+          const pdfHideElements = clonedDoc.querySelectorAll('[data-pdf-hide="true"], button');
+          pdfHideElements.forEach((el) => {
+            (el as HTMLElement).style.display = 'none';
+          });
+
+          // Accurate OKLCH to RGB converter for html2canvas compatibility
+          const oklchToRgb = (oklchStr: string): string => {
+            try {
+              const match = oklchStr.match(/oklch\(\s*([\d.%]+)\s+([\d.]+)\s+([\d.]+)(?:\s*\/\s*([\d.%]+))?\s*\)/i);
+              if (!match) return '#ffffff';
+
+              let L = parseFloat(match[1]);
+              if (match[1].endsWith('%')) L /= 100;
+              const C = parseFloat(match[2]);
+              const H = parseFloat(match[3]);
+              let A = match[4] ? parseFloat(match[4]) : 1;
+              if (match[4] && match[4].endsWith('%')) A /= 100;
+
+              const hRad = (H * Math.PI) / 180;
+              const a = C * Math.cos(hRad);
+              const b = C * Math.sin(hRad);
+
+              const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+              const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+              const s_ = L - 0.0894841775 * a - 1.2914855480 * b;
+
+              const l = l_ ** 3;
+              const m = m_ ** 3;
+              const s = s_ ** 3;
+
+              let r = +4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+              let g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+              let blue = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s;
+
+              const gamma = (x: number) => (x <= 0.0031308 ? 12.92 * x : 1.055 * (Math.max(0, x) ** (1 / 2.4)) - 0.055);
+              r = Math.min(255, Math.max(0, Math.round(gamma(r) * 255)));
+              g = Math.min(255, Math.max(0, Math.round(gamma(g) * 255)));
+              blue = Math.min(255, Math.max(0, Math.round(gamma(blue) * 255)));
+
+              if (A < 1) {
+                return `rgba(${r}, ${g}, ${blue}, ${A})`;
+              }
+              return `rgb(${r}, ${g}, ${blue})`;
+            } catch {
+              return '#ffffff';
+            }
+          };
+
+          const fixStylesString = (str: string) => {
+            return str
+              .replace(/oklch\([^)]+\)/gi, (match) => oklchToRgb(match))
+              .replace(/color-mix\([^)]+\)/gi, 'rgba(226, 232, 240, 0.8)');
+          };
+
+          // Convert oklch in <style> tags to valid rgb(...) colors so html2canvas doesn't fail or corrupt CSS variables
+          const styleElements = clonedDoc.querySelectorAll('style');
+          styleElements.forEach((style) => {
+            if (style.textContent && (style.textContent.includes('oklch') || style.textContent.includes('color-mix'))) {
+              style.textContent = fixStylesString(style.textContent);
+            }
+          });
+
+          // Convert inline style attributes in cloned elements
+          const allElements = clonedDoc.querySelectorAll('*');
+          allElements.forEach((el) => {
+            const htmlEl = el as HTMLElement;
+            const styleAttr = htmlEl.getAttribute('style');
+            if (styleAttr && (styleAttr.includes('oklch') || styleAttr.includes('color-mix'))) {
+              htmlEl.setAttribute('style', fixStylesString(styleAttr));
+            }
+          });
+        }
+      });
+
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF({
+        orientation: 'landscape',
+        unit: 'mm',
+        format: 'a4'
+      });
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = pdf.internal.pageSize.getHeight();
+      
+      const margin = 10;
+      const imgWidth = pdfWidth - margin * 2;
+      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+      
+      pdf.addImage(imgData, 'PNG', margin, margin, imgWidth, Math.min(imgHeight, pdfHeight - margin * 2));
+      pdf.save(`Quantitativo_Insumos_Setores_${format(new Date(), 'yyyyMMdd_HHmm')}.pdf`);
+      showToast("PDF oficial gerado e baixado com sucesso!", "success");
+    } catch (err) {
+      console.error("Erro ao gerar PDF:", err);
+      showToast("Erro ao gerar PDF. Tente usar a função de impressão.", "error");
+    }
+  };
+
+  const handleExportQuantitativoExcel = () => {
+    const dataToExport = quantitativoReportData.sectors.map(s => {
+      const row: Record<string, any> = { 'Setor': s.name };
+      quantitativoReportData.months.forEach((m, idx) => {
+        row[m] = s.values[idx] || 0;
+      });
+      row['Total Geral'] = s.total;
+      return row;
+    });
+
+    const ws = XLSX.utils.json_to_sheet(dataToExport);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Quantitativo por Setor");
+    XLSX.writeFile(wb, `Quantitativo_Setores_${format(new Date(), 'yyyyMMdd')}.xlsx`);
+    showToast("Planilha Excel exportada com sucesso!", "success");
+  };
+
   const handleExportRoomInventoryPDF = (roomFilter: string, displayRoomName: string, filteredCategories: string[]) => {
     try {
       // @ts-ignore - jsPDF types might not be perfectly aligned with imports
@@ -3886,7 +4256,6 @@ export default function App() {
         console.log("[PDF] Usando cabeçalho padrão (fallback) no Termo de Doação");
         const cpsmsCyan = [0, 169, 219];
         const cpsmsOrange = [255, 185, 0];
-        const subtextGray = [120, 113, 108];
 
         // Header Left Side
         pdfDoc.setFontSize(22);
@@ -3909,17 +4278,6 @@ export default function App() {
         pdfDoc.roundedRect(logoX + 4.5, logoY, 4, 4, 1.5, 1.5, 'F');
         pdfDoc.roundedRect(logoX, logoY + 4.5, 4, 4, 1.5, 1.5, 'F');
         pdfDoc.roundedRect(logoX + 4.5, logoY + 4.5, 4, 4, 1.5, 1.5, 'F');
-
-        pdfDoc.setFontSize(26);
-        pdfDoc.setTextColor(cpsmsCyan[0], cpsmsCyan[1], cpsmsCyan[2]);
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('CPSMS', pageWidth - margin, 21, { align: 'right' });
-        
-        pdfDoc.setFontSize(6);
-        pdfDoc.setTextColor(subtextGray[0], subtextGray[1], subtextGray[2]);
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('CONSÓRCIO PÚBLICO DE SAÚDE', pageWidth - margin, 24, { align: 'right' });
-        pdfDoc.text('DA MICRORREGIÃO DE SOBRAL', pageWidth - margin, 26.5, { align: 'right' });
 
         // Footer
         pdfDoc.setFontSize(7.5);
@@ -5756,61 +6114,21 @@ export default function App() {
               exit={{ opacity: 0, y: -12 }}
               className="space-y-8"
             >
-              {/* Executive Welcome Hero Banner - Light Clean Minimalist Theme */}
-              <div className="rounded-3xl bg-white border border-blue-100 p-6 sm:p-8 shadow-sm text-slate-900">
-                <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
-                  <div className="space-y-2.5 max-w-2xl">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-extrabold bg-emerald-50 text-emerald-700 border border-emerald-200/80">
-                        <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                        Sistema Operacional em Tempo Real
-                      </span>
-                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-extrabold bg-blue-50 text-blue-700 border border-blue-200/80">
-                        {inventoryLocation}
-                      </span>
-                    </div>
-
-                    <h2 className="text-2xl sm:text-3xl font-black tracking-tight text-slate-900">
-                      Painel de Gestão & Operação
-                    </h2>
-                    <p className="text-sm text-slate-500 leading-relaxed font-medium">
-                      Monitoramento contínuo de saldos, movimentações, alertas críticos de validade e requisições do almoxarifado.
-                    </p>
-                  </div>
-
-                  {/* Header Quick Stats Group */}
-                  <div className="grid grid-cols-3 gap-2 sm:gap-4 bg-slate-50 p-3.5 sm:p-4 rounded-2xl border border-slate-200/80 shrink-0">
-                    <div className="px-3 sm:px-4 text-center">
-                      <p className="text-[10px] uppercase font-extrabold text-slate-500 tracking-wider">Itens Ativos</p>
-                      <p className="text-xl sm:text-2xl font-black text-slate-900 mt-0.5">{groupedArray.length}</p>
-                    </div>
-                    <div className="px-3 sm:px-4 text-center border-l border-slate-200/80">
-                      <p className="text-[10px] uppercase font-extrabold text-amber-600 tracking-wider">Pendências</p>
-                      <p className="text-xl sm:text-2xl font-black text-amber-600 mt-0.5">{pendingRequestsCount}</p>
-                    </div>
-                    <div className="px-3 sm:px-4 text-center border-l border-slate-200/80">
-                      <p className="text-[10px] uppercase font-extrabold text-rose-600 tracking-wider">Alertas</p>
-                      <p className="text-xl sm:text-2xl font-black text-rose-600 mt-0.5">{totalAlertsCount}</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
               {/* 4 Primary KPI Stats Cards */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                 {/* Card 1: Volume Total */}
-                <div className="bg-white rounded-2xl border border-blue-100/80 shadow-sm hover:shadow-md hover:border-blue-200 transition-all duration-300 overflow-hidden group relative">
-                  <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 to-cyan-500" />
-                  <div className="p-6">
-                    <div className="flex items-center justify-between mb-4">
-                      <span className="text-xs font-black text-slate-500 uppercase tracking-widest">Volume em Estoque</span>
-                      <div className="bg-gradient-to-br from-blue-600 to-blue-700 text-white p-3 rounded-2xl shadow-md shadow-blue-500/20 group-hover:scale-105 transition-transform">
-                        <Package size={20} />
+                <div className="bg-white rounded-xl border border-blue-100/80 shadow-xs hover:shadow-sm hover:border-blue-200 transition-all duration-200 overflow-hidden group relative">
+                  <div className="h-1 w-full bg-gradient-to-r from-blue-600 to-cyan-500" />
+                  <div className="p-3.5">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Volume em Estoque</span>
+                      <div className="bg-gradient-to-br from-blue-600 to-blue-700 text-white p-1.5 rounded-lg shadow-xs group-hover:scale-105 transition-transform">
+                        <Package size={15} />
                       </div>
                     </div>
-                    <h3 className="text-3xl font-black text-slate-900 tracking-tight">{totalVolume.toLocaleString('pt-BR')}</h3>
-                    <div className="mt-4 flex items-center gap-2">
-                      <span className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-100 uppercase tracking-wider flex items-center gap-1.5">
+                    <h3 className="text-xl font-black text-slate-900 tracking-tight">{totalVolume.toLocaleString('pt-BR')}</h3>
+                    <div className="mt-2 flex items-center gap-1.5">
+                      <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-100 uppercase tracking-wider flex items-center gap-1">
                         <span className="w-1.5 h-1.5 rounded-full bg-blue-600" />
                         {groupedArray.length} tipos de insumos
                       </span>
@@ -5820,20 +6138,20 @@ export default function App() {
 
                 {/* Card 2: Patrimônio */}
                 {(isAdmin || selectedSector === 'Farmácia') && (
-                  <div className="bg-white rounded-2xl border border-indigo-100/80 shadow-sm hover:shadow-md hover:border-indigo-200 transition-all duration-300 overflow-hidden group relative">
-                    <div className="h-1.5 w-full bg-gradient-to-r from-indigo-600 to-blue-600" />
-                    <div className="p-6">
-                      <div className="flex items-center justify-between mb-4">
-                        <span className="text-xs font-black text-slate-500 uppercase tracking-widest">Patrimônio Investido</span>
-                        <div className="bg-gradient-to-br from-indigo-600 to-indigo-700 text-white p-3 rounded-2xl shadow-md shadow-indigo-500/20 group-hover:scale-105 transition-transform">
-                          <DollarSign size={20} />
+                  <div className="bg-white rounded-xl border border-indigo-100/80 shadow-xs hover:shadow-sm hover:border-indigo-200 transition-all duration-200 overflow-hidden group relative">
+                    <div className="h-1 w-full bg-gradient-to-r from-indigo-600 to-blue-600" />
+                    <div className="p-3.5">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Patrimônio Investido</span>
+                        <div className="bg-gradient-to-br from-indigo-600 to-indigo-700 text-white p-1.5 rounded-lg shadow-xs group-hover:scale-105 transition-transform">
+                          <DollarSign size={15} />
                         </div>
                       </div>
-                      <h3 className="text-2xl font-black text-slate-900 tracking-tight select-all">
+                      <h3 className="text-lg font-black text-slate-900 tracking-tight select-all">
                         {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalInventoryValue)}
                       </h3>
-                      <div className="mt-4 flex items-center gap-2">
-                        <span className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-100 uppercase tracking-wider flex items-center gap-1.5">
+                      <div className="mt-2 flex items-center gap-1.5">
+                        <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-100 uppercase tracking-wider flex items-center gap-1">
                           <span className="w-1.5 h-1.5 rounded-full bg-indigo-600" />
                           Valor financeiro ativo
                         </span>
@@ -5845,21 +6163,21 @@ export default function App() {
                 {/* Card 3: Pendências / Solicitações */}
                 <div 
                   onClick={() => setActiveTab('requests')}
-                  className="bg-white rounded-2xl border border-sky-100/80 shadow-sm hover:shadow-md hover:border-sky-300 transition-all duration-300 overflow-hidden group cursor-pointer relative"
+                  className="bg-white rounded-xl border border-sky-100/80 shadow-xs hover:shadow-sm hover:border-sky-300 transition-all duration-200 overflow-hidden group cursor-pointer relative"
                 >
-                  <div className="h-1.5 w-full bg-gradient-to-r from-sky-500 to-blue-600" />
-                  <div className="p-6">
-                    <div className="flex items-center justify-between mb-4">
-                      <span className="text-xs font-black text-slate-500 uppercase tracking-widest">Solicitações Pendentes</span>
-                      <div className="bg-gradient-to-br from-sky-500 to-blue-600 text-white p-3 rounded-2xl shadow-md shadow-sky-500/20 group-hover:scale-105 transition-transform">
-                        <Clock size={20} />
+                  <div className="h-1 w-full bg-gradient-to-r from-sky-500 to-blue-600" />
+                  <div className="p-3.5">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Solicitações Pendentes</span>
+                      <div className="bg-gradient-to-br from-sky-500 to-blue-600 text-white p-1.5 rounded-lg shadow-xs group-hover:scale-105 transition-transform">
+                        <Clock size={15} />
                       </div>
                     </div>
-                    <h3 className={`text-3xl font-black tracking-tight ${pendingRequestsCount > 0 ? 'text-sky-700' : 'text-slate-900'}`}>
+                    <h3 className={`text-xl font-black tracking-tight ${pendingRequestsCount > 0 ? 'text-sky-700' : 'text-slate-900'}`}>
                       {pendingRequestsCount}
                     </h3>
-                    <div className="mt-4 flex items-center gap-2">
-                      <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 ${pendingRequestsCount > 0 ? 'bg-sky-50 text-sky-800 border border-sky-200' : 'bg-slate-50 text-slate-600 border border-slate-100'}`}>
+                    <div className="mt-2 flex items-center gap-1.5">
+                      <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 ${pendingRequestsCount > 0 ? 'bg-sky-50 text-sky-800 border border-sky-200' : 'bg-slate-50 text-slate-600 border border-slate-100'}`}>
                         <span className={`w-1.5 h-1.5 rounded-full ${pendingRequestsCount > 0 ? 'bg-sky-500' : 'bg-slate-400'}`} />
                         {pendingRequestsCount > 0 ? 'Aguardando atendimento' : 'Nenhuma pendência'}
                       </span>
@@ -5874,48 +6192,48 @@ export default function App() {
                     type: 'all_alerts', 
                     items: [...expiredItems, ...lowStockItems, ...nearExpiryItems] as any 
                   })}
-                  className={`bg-white rounded-2xl border transition-all duration-300 overflow-hidden group cursor-pointer relative ${
+                  className={`bg-white rounded-xl border transition-all duration-200 overflow-hidden group cursor-pointer relative ${
                     totalAlertsCount > 0
-                      ? 'border-amber-200/80 shadow-sm hover:border-amber-300 hover:shadow-md'
-                      : 'border-blue-100/80 shadow-sm hover:border-blue-200'
+                      ? 'border-amber-200/80 shadow-xs hover:border-amber-300 hover:shadow-sm'
+                      : 'border-blue-100/80 shadow-xs hover:border-blue-200'
                   }`}
                 >
-                  <div className={`h-1.5 w-full ${expiredItems.length > 0 ? 'bg-gradient-to-r from-rose-600 to-amber-500' : lowStockItems.length > 0 ? 'bg-gradient-to-r from-amber-500 to-rose-500' : 'bg-gradient-to-r from-emerald-500 to-blue-500'}`} />
-                  <div className="p-6">
-                    <div className="flex items-center justify-between mb-4">
-                      <span className="text-xs font-black text-slate-500 uppercase tracking-widest">Atenção Necessária</span>
-                      <div className={`p-3 rounded-2xl shadow-md group-hover:scale-105 transition-transform text-white ${
-                        expiredItems.length > 0 ? 'bg-gradient-to-br from-rose-600 to-amber-600 shadow-rose-500/20' : lowStockItems.length > 0 ? 'bg-gradient-to-br from-amber-500 to-rose-500 shadow-amber-500/20' : 'bg-gradient-to-br from-emerald-500 to-blue-600 shadow-emerald-500/20'
+                  <div className={`h-1 w-full ${expiredItems.length > 0 ? 'bg-gradient-to-r from-rose-600 to-amber-500' : lowStockItems.length > 0 ? 'bg-gradient-to-r from-amber-500 to-rose-500' : 'bg-gradient-to-r from-emerald-500 to-blue-500'}`} />
+                  <div className="p-3.5">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Atenção Necessária</span>
+                      <div className={`p-1.5 rounded-lg shadow-xs group-hover:scale-105 transition-transform text-white ${
+                        expiredItems.length > 0 ? 'bg-gradient-to-br from-rose-600 to-amber-600' : lowStockItems.length > 0 ? 'bg-gradient-to-br from-amber-500 to-rose-500' : 'bg-gradient-to-br from-emerald-500 to-blue-600'
                       }`}>
-                        <AlertTriangle size={20} />
+                        <AlertTriangle size={15} />
                       </div>
                     </div>
-                    <h3 className={`text-3xl font-black tracking-tight ${expiredItems.length > 0 ? 'text-rose-600' : lowStockItems.length > 0 ? 'text-amber-600' : 'text-slate-900'}`}>
+                    <h3 className={`text-xl font-black tracking-tight ${expiredItems.length > 0 ? 'text-rose-600' : lowStockItems.length > 0 ? 'text-amber-600' : 'text-slate-900'}`}>
                       {totalAlertsCount}
                     </h3>
-                    <div className="mt-4 flex flex-wrap items-center gap-1.5">
+                    <div className="mt-2 flex flex-wrap items-center gap-1">
                       {totalAlertsCount === 0 ? (
-                        <span className="px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 bg-emerald-50 text-emerald-800 border border-emerald-200">
+                        <span className="px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 bg-emerald-50 text-emerald-800 border border-emerald-200">
                           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
                           Tudo em dia
                         </span>
                       ) : (
                         <>
                           {expiredItems.length > 0 && (
-                            <span className="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-rose-100 text-rose-800 border border-rose-300 flex items-center gap-1">
-                              <span className="w-1.5 h-1.5 rounded-full bg-rose-600" />
+                            <span className="px-1.5 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider bg-rose-100 text-rose-800 border border-rose-300 flex items-center gap-1">
+                              <span className="w-1 h-1 rounded-full bg-rose-600" />
                               {expiredItems.length} vencido{expiredItems.length > 1 ? 's' : ''}
                             </span>
                           )}
                           {lowStockItems.length > 0 && (
-                            <span className="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-amber-100 text-amber-800 border border-amber-300 flex items-center gap-1">
-                              <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                            <span className="px-1.5 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider bg-amber-100 text-amber-800 border border-amber-300 flex items-center gap-1">
+                              <span className="w-1 h-1 rounded-full bg-amber-500" />
                               {lowStockItems.length} baixo estoque
                             </span>
                           )}
                           {nearExpiryItems.length > 0 && (
-                            <span className="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-sky-100 text-sky-800 border border-sky-300 flex items-center gap-1">
-                              <span className="w-1.5 h-1.5 rounded-full bg-sky-500" />
+                            <span className="px-1.5 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider bg-sky-100 text-sky-800 border border-sky-300 flex items-center gap-1">
+                              <span className="w-1 h-1 rounded-full bg-sky-500" />
                               {nearExpiryItems.length} próx. vencer
                             </span>
                           )}
@@ -6910,10 +7228,10 @@ export default function App() {
               </div>
 
               {/* Reports Navigation Sub-Tabs */}
-              <div className="flex items-center gap-3 bg-white p-2 rounded-2xl border border-slate-200/80 shadow-sm">
+              <div className="flex items-center gap-3 bg-white p-2 rounded-2xl border border-slate-200/80 shadow-sm overflow-x-auto">
                 <button
                   onClick={() => setReportsTab('overview')}
-                  className={`px-5 py-2.5 rounded-xl text-xs sm:text-sm font-black flex items-center gap-2 transition-all ${
+                  className={`px-5 py-2.5 rounded-xl text-xs sm:text-sm font-black flex items-center gap-2 transition-all shrink-0 ${
                     reportsTab === 'overview'
                       ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-md shadow-blue-600/20'
                       : 'text-slate-600 hover:text-blue-700 hover:bg-slate-100'
@@ -6922,8 +7240,21 @@ export default function App() {
                   <BarChart3 size={17} /> Relatórios & Gráficos
                 </button>
                 <button
+                  onClick={() => setReportsTab('quantitativo')}
+                  className={`px-5 py-2.5 rounded-xl text-xs sm:text-sm font-black flex items-center gap-2 transition-all relative shrink-0 ${
+                    reportsTab === 'quantitativo'
+                      ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-md shadow-blue-600/20'
+                      : 'text-slate-600 hover:text-blue-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <PieChartIcon size={17} /> Quantitativo por Setor
+                  <span className="flex items-center gap-1 text-[10px] bg-blue-600 text-white px-2 py-0.5 rounded-full font-bold">
+                    Oficial
+                  </span>
+                </button>
+                <button
                   onClick={() => setReportsTab('letterhead')}
-                  className={`px-5 py-2.5 rounded-xl text-xs sm:text-sm font-black flex items-center gap-2 transition-all relative ${
+                  className={`px-5 py-2.5 rounded-xl text-xs sm:text-sm font-black flex items-center gap-2 transition-all relative shrink-0 ${
                     reportsTab === 'letterhead'
                       ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-md shadow-blue-600/20'
                       : 'text-slate-600 hover:text-blue-700 hover:bg-slate-100'
@@ -7642,6 +7973,323 @@ export default function App() {
                 </div>
               )}
               </div>
+              )}
+
+              {reportsTab === 'quantitativo' && (
+                <div className="space-y-6">
+                  {/* Action & Filter Controls Bar */}
+                  <div className="bg-white p-5 sm:p-6 rounded-3xl border border-slate-200/90 shadow-xs space-y-4">
+                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="px-3 py-1 rounded-full text-xs font-extrabold bg-blue-50 text-blue-700 border border-blue-200">
+                            Relatório Oficial Dispensação
+                          </span>
+                          <span className="px-3 py-1 rounded-full text-xs font-extrabold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            {quantitativoSource === 'sample' ? 'Exemplo Oficial Sobral' : 'Dados do Sistema'}
+                          </span>
+                        </div>
+                        <h3 className="text-xl sm:text-2xl font-black text-slate-900 mt-2">
+                          Quantitativo de Materiais por Setor
+                        </h3>
+                        <p className="text-xs sm:text-sm text-slate-500 font-medium mt-1">
+                          Gere o documento oficial com gráfico e análise crítica para apresentação gerencial e fiscal referente à categoria selecionada.
+                        </p>
+                      </div>
+
+                      {/* Export Buttons */}
+                      <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                        <button
+                          onClick={() => handleExportQuantitativoExcel()}
+                          className="px-4 py-2.5 rounded-xl bg-slate-100 text-slate-800 font-extrabold text-xs flex items-center gap-2 hover:bg-slate-200 transition-all border border-slate-200/80"
+                        >
+                          <Download size={15} /> Excel (.xlsx)
+                        </button>
+                        <button
+                          onClick={() => setIsEditingQuantitativoAnalysis(!isEditingQuantitativoAnalysis)}
+                          className="px-4 py-2.5 rounded-xl bg-slate-900 text-white font-extrabold text-xs flex items-center gap-2 hover:bg-slate-800 transition-all shadow-xs"
+                        >
+                          <Edit2 size={15} /> {isEditingQuantitativoAnalysis ? 'Concluir Edição' : 'Editar Análise Crítica'}
+                        </button>
+                        <button
+                          onClick={handleExportQuantitativoPDF}
+                          className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white font-black text-xs flex items-center gap-2 hover:from-blue-800 hover:to-indigo-950 transition-all shadow-md shadow-blue-600/20"
+                        >
+                          <Printer size={15} /> Exportar PDF Oficial
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Filter Parameters */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-1">
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-wider mb-1">
+                          Origem dos Dados
+                        </label>
+                        <select
+                          value={quantitativoSource}
+                          onChange={(e) => setQuantitativoSource(e.target.value as 'sample' | 'system')}
+                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs text-slate-800 focus:ring-2 focus:ring-blue-500/20"
+                        >
+                          <option value="system">Dados Reais do Sistema (Padrão)</option>
+                          <option value="sample">Exemplo Demonstrativo</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-wider mb-1">
+                          Período de Referência
+                        </label>
+                        <select
+                          value={quantitativoPeriodPreset}
+                          onChange={(e) => setQuantitativoPeriodPreset(e.target.value as any)}
+                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs text-slate-800 focus:ring-2 focus:ring-blue-500/20"
+                        >
+                          <option value="1_semestre_2026">1º Semestre de 2026 (Jan - Jun)</option>
+                          <option value="2_semestre_2026">2º Semestre de 2026 (Jul - Dez)</option>
+                          <option value="ano_2026">Ano Completo de 2026 (Total)</option>
+                          <option value="custom">Período Personalizado</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-wider mb-1">
+                          Categoria de Materiais
+                        </label>
+                        <select
+                          value={quantitativoCategory}
+                          onChange={(e) => {
+                            setQuantitativoCategory(e.target.value);
+                            setQuantitativoTitle('');
+                          }}
+                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs text-slate-800 focus:ring-2 focus:ring-blue-500/20"
+                        >
+                          <option value="Material Médico-Hospitalar">Material Médico-Hospitalar</option>
+                          <option value="Medicamentos">Medicamentos</option>
+                          <option value="Alimentício">Alimentício</option>
+                          <option value="Expediente">Expediente / Papelaria</option>
+                          <option value="Higiene e Limpeza">Higiene e Limpeza</option>
+                          <option value="Odontológico">Odontológico</option>
+                          <option value="Radiológico">Radiológico</option>
+                          <option value="EPI e Segurança">EPI e Segurança</option>
+                          <option value="Informática">Informática / TI</option>
+                          <option value="Copa & Cozinha">Copa & Cozinha</option>
+                          <option value="Manutenção">Manutenção</option>
+                          <option value="Todos">Todos os Materiais (Total Geral)</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-wider mb-1">
+                          Título do Documento
+                        </label>
+                        <input
+                          type="text"
+                          value={quantitativoTitle}
+                          onChange={(e) => setQuantitativoTitle(e.target.value)}
+                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs text-slate-800 focus:ring-2 focus:ring-blue-500/20"
+                        />
+                      </div>
+
+                      <div className="sm:col-span-2 lg:col-span-4">
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="block text-[10px] font-black text-slate-500 uppercase tracking-wider">
+                            Texto da Análise Crítica (Gerada pelo Gráfico / Editável)
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => setQuantitativoCriticalAnalysis('')}
+                            className="text-[10px] font-bold text-blue-700 hover:underline cursor-pointer flex items-center gap-1"
+                          >
+                            <RotateCcw size={10} /> Recalcular Automático pelo Gráfico
+                          </button>
+                        </div>
+                        <textarea
+                          rows={3}
+                          value={quantitativoCriticalAnalysis !== '' ? quantitativoCriticalAnalysis : quantitativoReportData.criticalAnalysis}
+                          onChange={(e) => setQuantitativoCriticalAnalysis(e.target.value)}
+                          placeholder="Digite ou edite o texto da Análise Crítica do relatório..."
+                          className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-medium text-xs text-slate-800 focus:ring-2 focus:ring-blue-500/20 leading-relaxed"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Printable Document A4 Canvas Container (Landscape Orientation) */}
+                  <div className="bg-slate-200/80 p-4 sm:p-8 rounded-3xl border border-slate-300 flex justify-center shadow-inner overflow-x-auto">
+                    <div
+                      ref={quantitativoReportRef}
+                      className="bg-white w-full max-w-[1120px] p-8 sm:p-12 shadow-2xl rounded-xl border border-slate-300 text-slate-900 space-y-6 relative font-sans shrink-0"
+                      style={{ minWidth: '920px' }}
+                    >
+                      {/* Document Header - Timbrado Image Only */}
+                      <div className="pb-4 border-b-2 border-slate-200 flex justify-center items-center min-h-[70px]">
+                        <img 
+                          src={letterheadImage || "/official_letterhead.png"} 
+                          alt="Papel Timbrado Oficial" 
+                          className="w-full max-h-24 object-contain" 
+                          onError={(e) => {
+                            if (appLogo) {
+                              (e.target as HTMLElement).setAttribute('src', appLogo);
+                            } else {
+                              (e.target as HTMLElement).style.display = 'none';
+                            }
+                          }}
+                        />
+                      </div>
+
+                      {/* Document Title */}
+                      <div className="text-center py-2">
+                        <h1 className="text-sm sm:text-base font-black text-slate-950 uppercase tracking-tight leading-snug max-w-4xl mx-auto">
+                          {quantitativoReportData.title}
+                        </h1>
+                      </div>
+
+                      {/* Stacked Bar Chart Matrix */}
+                      <div className="space-y-2 py-2">
+                        {/* Row Headers & Bars */}
+                        {quantitativoReportData.sectors.map((sec, idx) => (
+                          <div key={idx} className="flex items-center gap-3">
+                            <div className="w-36 sm:w-44 text-right shrink-0">
+                              <span className="text-[11px] font-extrabold text-slate-800 uppercase tracking-tight truncate block">
+                                {sec.name}
+                              </span>
+                            </div>
+
+                            {/* Stacked Bar Track */}
+                            <div className="flex-1 h-6 bg-slate-100 border border-slate-300 rounded-sm overflow-hidden flex relative shadow-2xs">
+                              {sec.values.map((val, mIdx) => {
+                                if (val === 0 || sec.total === 0) return null;
+                                const pct = (val / sec.total) * 100;
+                                return (
+                                  <div
+                                    key={mIdx}
+                                    className="h-full flex items-center justify-center text-[10px] font-black text-white px-1 overflow-hidden transition-all"
+                                    style={{
+                                      width: `${pct}%`,
+                                      backgroundColor: quantitativoReportData.monthColors[mIdx % quantitativoReportData.monthColors.length]
+                                    }}
+                                    title={`${quantitativoReportData.months[mIdx]}: ${val}`}
+                                  >
+                                    {pct >= 4 ? val : ''}
+                                  </div>
+                                );
+                              })}
+                            </div>
+
+                            {/* Total Geral Badge */}
+                            <div className="w-16 text-right shrink-0">
+                              <span className="px-2 py-0.5 rounded bg-slate-900 text-white font-extrabold text-xs shadow-2xs inline-block text-center w-full">
+                                {sec.total}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+
+                        {/* Scale Axis % */}
+                        <div className="flex items-center justify-between text-[9px] font-bold text-slate-400 pt-2 px-36 sm:px-44">
+                          <span>0%</span>
+                          <span>25%</span>
+                          <span>50%</span>
+                          <span>75%</span>
+                          <span>100%</span>
+                        </div>
+
+                        {/* Month Legend Bar */}
+                        <div className="flex flex-wrap items-center justify-center gap-3 pt-3 border-t border-slate-200">
+                          {quantitativoReportData.months.map((m, mIdx) => (
+                            <div key={mIdx} className="flex items-center gap-1.5">
+                              <span
+                                className="w-3.5 h-3.5 rounded-xs inline-block shadow-2xs"
+                                style={{ backgroundColor: quantitativoReportData.monthColors[mIdx % quantitativoReportData.monthColors.length] }}
+                              />
+                              <span className="text-[11px] font-extrabold text-slate-700">{m}</span>
+                            </div>
+                          ))}
+                          <div className="flex items-center gap-1.5 ml-2">
+                            <span className="w-3.5 h-3.5 rounded-xs bg-slate-900 inline-block shadow-2xs" />
+                            <span className="text-[11px] font-extrabold text-slate-900">Total geral</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Análise Crítica Section */}
+                      <div className="pt-3 border-t-2 border-slate-200 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <h3 className="text-xs font-black uppercase tracking-wider flex items-center gap-2" style={{ color: '#0f172a' }}>
+                            <BarChart3 size={15} style={{ color: '#334155' }} />
+                            Análise Crítica:
+                          </h3>
+                          <button
+                            data-pdf-hide="true"
+                            type="button"
+                            onClick={() => setIsEditingQuantitativoAnalysis(!isEditingQuantitativoAnalysis)}
+                            className="text-[10px] font-bold text-slate-700 hover:text-slate-900 flex items-center gap-1 cursor-pointer bg-slate-100 hover:bg-slate-200 px-2.5 py-1 rounded-lg border border-slate-300 transition-all print:hidden"
+                          >
+                            <Edit2 size={12} />
+                            {isEditingQuantitativoAnalysis ? 'Salvar Edição' : 'Editar Análise'}
+                          </button>
+                        </div>
+
+                        {isEditingQuantitativoAnalysis ? (
+                          <div className="space-y-2">
+                            <textarea
+                              rows={6}
+                              value={quantitativoCriticalAnalysis !== '' ? quantitativoCriticalAnalysis : quantitativoReportData.criticalAnalysis}
+                              onChange={(e) => setQuantitativoCriticalAnalysis(e.target.value)}
+                              placeholder="Digite ou edite o texto da Análise Crítica..."
+                              className="w-full p-3 border border-slate-300 rounded-xl text-xs font-medium leading-relaxed focus:ring-2 focus:ring-slate-400/20"
+                              style={{ backgroundColor: '#f8fafc', color: '#0f172a', borderColor: '#cbd5e1' }}
+                            />
+                            <div data-pdf-hide="true" className="text-[10px] text-slate-500 font-bold flex flex-wrap justify-between items-center gap-2 print:hidden">
+                              <span>* O texto acima será impresso no relatório oficial em PDF.</span>
+                              <div className="flex items-center gap-3">
+                                <button
+                                  type="button"
+                                  onClick={() => setQuantitativoCriticalAnalysis('')}
+                                  className="text-slate-700 hover:underline flex items-center gap-1 font-bold"
+                                >
+                                  <RotateCcw size={10} /> Recalcular pelo Gráfico
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setIsEditingQuantitativoAnalysis(false)}
+                                  className="text-slate-900 underline font-black hover:text-slate-950"
+                                >
+                                  Concluir Edição
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
+                          <div
+                            onClick={() => setIsEditingQuantitativoAnalysis(true)}
+                            title="Clique para editar o texto da Análise Crítica"
+                            className="group cursor-pointer relative"
+                          >
+                            <p 
+                              className="text-xs font-medium leading-relaxed text-justify p-4 rounded-xl border border-slate-200 group-hover:border-slate-400 transition-colors"
+                              style={{ backgroundColor: '#f8fafc', color: '#0f172a', borderColor: '#e2e8f0' }}
+                            >
+                              {quantitativoReportData.criticalAnalysis}
+                            </p>
+                            <span data-pdf-hide="true" className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-800 text-white text-[10px] font-bold px-2 py-0.5 rounded-md shadow-xs flex items-center gap-1 print:hidden">
+                              <Edit2 size={10} /> Clique para editar
+                            </span>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Official Document Footer */}
+                      <div className="pt-4 border-t border-slate-200 text-center text-[10px] font-bold space-y-0.5" style={{ color: '#64748b' }}>
+                        <p>
+                          Policlínica Bernardo Félix da Silva. Av. Monsenhor Aloísio Pinto, 481, Dom Expedito CEP 62050-255, Sobral Ceará.
+                        </p>
+                        <p>Fone: (88) 3614-3156 . Fax: (88) 3614-3245</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               )}
 
               {reportsTab === 'letterhead' && (
