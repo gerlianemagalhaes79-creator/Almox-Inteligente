@@ -5289,28 +5289,35 @@ export default function App() {
   }, [transactions, items, reportRange, reportSectorFilter, allRequestItems, requests, userProfile, isAdmin, selectedSector]);
 
   const categoryDistribution = useMemo(() => {
-    const map: Record<string, { count: number; totalQty: number; value: number }> = {};
+    const map: Record<string, { productNames: Set<string>; totalQty: number; value: number }> = {};
     items
-      .filter(i => !i.deletedAt && (i.location || 'Almoxarifado') === inventoryLocation)
+      .filter(i => !i.deletedAt && i.quantity > 0 && (i.location || 'Almoxarifado') === inventoryLocation)
       .forEach(i => {
         const cat = i.category || 'Geral';
-        if (!map[cat]) map[cat] = { count: 0, totalQty: 0, value: 0 };
-        map[cat].count += 1;
+        if (!map[cat]) map[cat] = { productNames: new Set<string>(), totalQty: 0, value: 0 };
+        map[cat].productNames.add(i.name.trim());
         map[cat].totalQty += (Number(i.quantity) || 0);
         map[cat].value += ((Number(i.quantity) || 0) * (Number(i.unit_price) || 0));
       });
-    const maxCount = Math.max(...Object.values(map).map(m => m.count), 1);
-    const maxQty = Math.max(...Object.values(map).map(m => m.totalQty), 1);
 
-    return Object.entries(map)
-      .map(([category, data]) => ({
-        category,
+    const entries = Object.entries(map).map(([category, data]) => ({
+      category,
+      count: data.productNames.size,
+      totalQty: data.totalQty,
+      value: data.value,
+    }));
+
+    const maxCount = Math.max(...entries.map(m => m.count), 1);
+    const maxQty = Math.max(...entries.map(m => m.totalQty), 1);
+
+    return entries
+      .map(data => ({
         ...data,
         typePercentage: Math.min(100, Math.round((data.count / maxCount) * 100)),
         unitPercentage: Math.min(100, Math.round((data.totalQty / maxQty) * 100))
       }))
       .sort((a, b) => distribViewMode === 'types' ? b.count - a.count : b.totalQty - a.totalQty)
-      .slice(0, 8);
+      .slice(0, 12);
   }, [items, inventoryLocation, distribViewMode]);
 
   if (loading) {
@@ -6035,7 +6042,7 @@ export default function App() {
                     onChange={e => setCategoryFilter(e.target.value)}
                   >
                     <option value="all">Todos os Tipos</option>
-                    {Object.keys(CATEGORY_COLORS).map(cat => (
+                    {Array.from(new Set([...Object.keys(CATEGORY_COLORS), ...categories, ...items.map(i => i.category).filter(Boolean)])).sort().map(cat => (
                       <option key={cat} value={cat}>{cat}</option>
                     ))}
                   </select>
@@ -6294,11 +6301,19 @@ export default function App() {
                     {categoryDistribution.map((cat) => {
                       const displayPercentage = distribViewMode === 'types' ? cat.typePercentage : cat.unitPercentage;
                       return (
-                        <div key={cat.category} className="p-4 rounded-2xl bg-slate-50/70 border border-slate-100 hover:border-blue-200 hover:bg-blue-50/30 transition-all">
+                        <div 
+                          key={cat.category} 
+                          onClick={() => {
+                            setCategoryFilter(cat.category);
+                            setActiveTab('inventory');
+                          }}
+                          className="p-4 rounded-2xl bg-slate-50/70 border border-slate-100 hover:border-blue-300 hover:bg-blue-50/50 transition-all cursor-pointer group"
+                          title={`Clique para ver os produtos da categoria ${cat.category} no estoque`}
+                        >
                           <div className="flex items-center justify-between mb-2">
-                            <span className="text-xs font-bold text-slate-800 truncate max-w-[170px]">{cat.category}</span>
-                            <span className="text-xs font-black text-blue-700 bg-blue-100/70 px-2.5 py-0.5 rounded-md">
-                              {distribViewMode === 'types' ? `${cat.count} tipos` : `${cat.totalQty.toLocaleString('pt-BR')} un`}
+                            <span className="text-xs font-bold text-slate-800 truncate max-w-[170px] group-hover:text-blue-700 transition-colors">{cat.category}</span>
+                            <span className="text-xs font-black text-blue-700 bg-blue-100/70 group-hover:bg-blue-600 group-hover:text-white transition-all px-2.5 py-0.5 rounded-md">
+                              {distribViewMode === 'types' ? `${cat.count} ${cat.count === 1 ? 'tipo' : 'tipos'}` : `${cat.totalQty.toLocaleString('pt-BR')} un`}
                             </span>
                           </div>
                           <div className="w-full bg-slate-200/80 rounded-full h-2.5 overflow-hidden">
