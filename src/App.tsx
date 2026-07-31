@@ -4243,57 +4243,63 @@ export default function App() {
           }
         }
         
-        console.log("[PDF] Usando cabeçalho padrão com 3 logos alinhados no Termo de Doação");
+        console.log("[PDF] Usando cabeçalho padrão com 3 logos retangulares expandidos no Termo de Doação");
         const docLogo = appRectangularLogo || appLogo;
+        const logoWidth = 50;
+        const logoHeight = 16;
+        const logoY = 10;
         
-        // 1. LOGO ALMOXARIFADO (Left)
+        // 1. LOGO ALMOXARIFADO (Left - Rectangular)
         if (docLogo) {
           try {
             const format = docLogo.includes('image/png') ? 'PNG' : 'JPEG';
-            pdfDoc.addImage(docLogo, format, margin, 10, 38, 16, undefined, 'FAST');
+            pdfDoc.addImage(docLogo, format, margin, logoY, logoWidth, logoHeight, undefined, 'FAST');
           } catch (e) {
             console.error("Error adding docLogo to Donation Term:", e);
           }
         } else {
-          pdfDoc.setFillColor(22, 163, 74);
-          pdfDoc.roundedRect(margin, 10, 16, 16, 3, 3, 'F');
-          pdfDoc.setFillColor(250, 204, 21);
-          pdfDoc.circle(margin + 8, 18, 4, 'F');
+          pdfDoc.setFillColor(240, 253, 244);
+          pdfDoc.roundedRect(margin, logoY, logoWidth, logoHeight, 2, 2, 'F');
+          pdfDoc.setFontSize(8);
+          pdfDoc.setFont('helvetica', 'bold');
+          pdfDoc.setTextColor(22, 101, 52);
+          pdfDoc.text('ALMOXARIFADO', margin + (logoWidth / 2), logoY + 10, { align: 'center' });
         }
 
-        // 2. LOGO POLICLÍNICA (Center)
-        const centerX = (pageWidth / 2) - 8;
+        // 2. LOGO POLICLÍNICA (Center - Rectangular)
+        const centerX = (pageWidth / 2) - (logoWidth / 2);
         if (policlinicaLogo) {
           try {
             const format = policlinicaLogo.includes('image/png') ? 'PNG' : 'JPEG';
-            pdfDoc.addImage(policlinicaLogo, format, centerX, 10, 16, 16, undefined, 'FAST');
+            pdfDoc.addImage(policlinicaLogo, format, centerX, logoY, logoWidth, logoHeight, undefined, 'FAST');
           } catch (e) {
             console.error("Error adding policlinicaLogo to Donation Term:", e);
           }
         } else {
-          pdfDoc.setFillColor(2, 132, 199);
-          pdfDoc.roundedRect(centerX, 10, 16, 16, 3, 3, 'F');
-          pdfDoc.setFillColor(255, 255, 255);
-          pdfDoc.rect(centerX + 6.5, 10 + 3.5, 3, 9, 'F');
-          pdfDoc.rect(centerX + 3.5, 10 + 6.5, 9, 3, 'F');
+          pdfDoc.setFillColor(240, 249, 255);
+          pdfDoc.roundedRect(centerX, logoY, logoWidth, logoHeight, 2, 2, 'F');
+          pdfDoc.setFontSize(8);
+          pdfDoc.setFont('helvetica', 'bold');
+          pdfDoc.setTextColor(3, 105, 161);
+          pdfDoc.text('POLICLÍNICA DE SOBRAL', centerX + (logoWidth / 2), logoY + 10, { align: 'center' });
         }
 
-        // 3. LOGO CONSÓRCIO CPSMS (Right)
-        const rightX = pageWidth - margin - 16;
+        // 3. LOGO CONSÓRCIO CPSMS (Right - Rectangular)
+        const rightX = pageWidth - margin - logoWidth;
         if (consorcioLogo) {
           try {
             const format = consorcioLogo.includes('image/png') ? 'PNG' : 'JPEG';
-            pdfDoc.addImage(consorcioLogo, format, rightX, 10, 16, 16, undefined, 'FAST');
+            pdfDoc.addImage(consorcioLogo, format, rightX, logoY, logoWidth, logoHeight, undefined, 'FAST');
           } catch (e) {
             console.error("Error adding consorcioLogo to Donation Term:", e);
           }
         } else {
-          pdfDoc.setFillColor(234, 88, 12);
-          pdfDoc.roundedRect(rightX, 10, 7.5, 7.5, 1.5, 1.5, 'F');
-          pdfDoc.roundedRect(rightX + 8.5, 10 + 8.5, 7.5, 7.5, 1.5, 1.5, 'F');
-          pdfDoc.setFillColor(2, 132, 199);
-          pdfDoc.roundedRect(rightX + 8.5, 10, 7.5, 7.5, 1.5, 1.5, 'F');
-          pdfDoc.roundedRect(rightX, 10 + 8.5, 7.5, 7.5, 1.5, 1.5, 'F');
+          pdfDoc.setFillColor(255, 247, 237);
+          pdfDoc.roundedRect(rightX, logoY, logoWidth, logoHeight, 2, 2, 'F');
+          pdfDoc.setFontSize(8);
+          pdfDoc.setFont('helvetica', 'bold');
+          pdfDoc.setTextColor(194, 65, 12);
+          pdfDoc.text('CONSÓRCIO CPSMS', rightX + (logoWidth / 2), logoY + 10, { align: 'center' });
         }
 
         pdfDoc.setDrawColor(226, 232, 240);
@@ -4464,57 +4470,63 @@ export default function App() {
         console.warn("Could not render letterheadImage on PDF report:", e);
       }
     } else {
-      // Perfectly aligned 3-logo horizontal header row
+      // Perfectly aligned 3-logo horizontal header row (homogeneous rectangular logos)
       const docLogo = appRectangularLogo || appLogo;
+      const logoWidth = 50;
+      const logoHeight = 16;
+      const logoY = 10;
       
-      // 1. LEFT LOGO: Logo Almoxarifado / Sistema
+      // 1. LEFT LOGO: Logo Almoxarifado / Sistema (Rectangular)
       if (docLogo) {
         try {
           const format = docLogo.includes('image/png') ? 'PNG' : 'JPEG';
-          doc.addImage(docLogo, format, 14, 10, 38, 16, undefined, 'FAST');
+          doc.addImage(docLogo, format, 14, logoY, logoWidth, logoHeight, undefined, 'FAST');
         } catch (e) {
           console.warn("Could not render logo on PDF report:", e);
         }
       } else {
-        doc.setFillColor(22, 163, 74);
-        doc.roundedRect(14, 10, 16, 16, 3, 3, 'F');
-        doc.setFillColor(250, 204, 21);
-        doc.circle(22, 18, 4, 'F');
+        doc.setFillColor(240, 253, 244);
+        doc.roundedRect(14, logoY, logoWidth, logoHeight, 2, 2, 'F');
+        doc.setFontSize(8);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(22, 101, 52);
+        doc.text('ALMOXARIFADO', 14 + (logoWidth / 2), logoY + 10, { align: 'center' });
       }
 
-      // 2. CENTER LOGO: Logo da Policlínica
-      const centerX = (pageWidth / 2) - 8;
+      // 2. CENTER LOGO: Logo da Policlínica (Rectangular)
+      const centerX = (pageWidth / 2) - (logoWidth / 2);
       if (policlinicaLogo) {
         try {
           const format = policlinicaLogo.includes('image/png') ? 'PNG' : 'JPEG';
-          doc.addImage(policlinicaLogo, format, centerX, 10, 16, 16, undefined, 'FAST');
+          doc.addImage(policlinicaLogo, format, centerX, logoY, logoWidth, logoHeight, undefined, 'FAST');
         } catch (e) {
           console.warn("Could not render policlinicaLogo on PDF:", e);
         }
       } else {
-        doc.setFillColor(2, 132, 199);
-        doc.roundedRect(centerX, 10, 16, 16, 3, 3, 'F');
-        doc.setFillColor(255, 255, 255);
-        doc.rect(centerX + 6.5, 10 + 3.5, 3, 9, 'F');
-        doc.rect(centerX + 3.5, 10 + 6.5, 9, 3, 'F');
+        doc.setFillColor(240, 249, 255);
+        doc.roundedRect(centerX, logoY, logoWidth, logoHeight, 2, 2, 'F');
+        doc.setFontSize(8);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(3, 105, 161);
+        doc.text('POLICLÍNICA DE SOBRAL', centerX + (logoWidth / 2), logoY + 10, { align: 'center' });
       }
 
-      // 3. RIGHT LOGO: Logo do Consórcio CPSMS
-      const rightX = pageWidth - 14 - 16;
+      // 3. RIGHT LOGO: Logo do Consórcio CPSMS (Rectangular)
+      const rightX = pageWidth - 14 - logoWidth;
       if (consorcioLogo) {
         try {
           const format = consorcioLogo.includes('image/png') ? 'PNG' : 'JPEG';
-          doc.addImage(consorcioLogo, format, rightX, 10, 16, 16, undefined, 'FAST');
+          doc.addImage(consorcioLogo, format, rightX, logoY, logoWidth, logoHeight, undefined, 'FAST');
         } catch (e) {
           console.warn("Could not render consorcioLogo on PDF:", e);
         }
       } else {
-        doc.setFillColor(234, 88, 12);
-        doc.roundedRect(rightX, 10, 7.5, 7.5, 1.5, 1.5, 'F');
-        doc.roundedRect(rightX + 8.5, 10 + 8.5, 7.5, 7.5, 1.5, 1.5, 'F');
-        doc.setFillColor(2, 132, 199);
-        doc.roundedRect(rightX + 8.5, 10, 7.5, 7.5, 1.5, 1.5, 'F');
-        doc.roundedRect(rightX, 10 + 8.5, 7.5, 7.5, 1.5, 1.5, 'F');
+        doc.setFillColor(255, 247, 237);
+        doc.roundedRect(rightX, logoY, logoWidth, logoHeight, 2, 2, 'F');
+        doc.setFontSize(8);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(194, 65, 12);
+        doc.text('CONSÓRCIO CPSMS', rightX + (logoWidth / 2), logoY + 10, { align: 'center' });
       }
 
       // Divider Line
@@ -4816,55 +4828,61 @@ export default function App() {
 
       const drawLetterhead = (pdfDoc: any) => {
         const docLogo = appRectangularLogo || appLogo;
+        const logoWidth = 50;
+        const logoHeight = 16;
+        const logoY = 10;
         
-        // 1. LOGO ALMOXARIFADO (Left)
+        // 1. LOGO ALMOXARIFADO (Left - Rectangular)
         if (docLogo) {
           try {
             const format = docLogo.includes('image/png') ? 'PNG' : 'JPEG';
-            pdfDoc.addImage(docLogo, format, margin, 10, 38, 16, undefined, 'FAST');
+            pdfDoc.addImage(docLogo, format, margin, logoY, logoWidth, logoHeight, undefined, 'FAST');
           } catch (e) {
             console.error("Error adding logo to Delivery Receipt:", e);
           }
         } else {
-          pdfDoc.setFillColor(22, 163, 74);
-          pdfDoc.roundedRect(margin, 10, 16, 16, 3, 3, 'F');
-          pdfDoc.setFillColor(250, 204, 21);
-          pdfDoc.circle(margin + 8, 18, 4, 'F');
+          pdfDoc.setFillColor(240, 253, 244);
+          pdfDoc.roundedRect(margin, logoY, logoWidth, logoHeight, 2, 2, 'F');
+          pdfDoc.setFontSize(8);
+          pdfDoc.setFont('helvetica', 'bold');
+          pdfDoc.setTextColor(22, 101, 52);
+          pdfDoc.text('ALMOXARIFADO', margin + (logoWidth / 2), logoY + 10, { align: 'center' });
         }
 
-        // 2. LOGO POLICLÍNICA (Center)
-        const centerX = (pageWidth / 2) - 8;
+        // 2. LOGO POLICLÍNICA (Center - Rectangular)
+        const centerX = (pageWidth / 2) - (logoWidth / 2);
         if (policlinicaLogo) {
           try {
             const format = policlinicaLogo.includes('image/png') ? 'PNG' : 'JPEG';
-            pdfDoc.addImage(policlinicaLogo, format, centerX, 10, 16, 16, undefined, 'FAST');
+            pdfDoc.addImage(policlinicaLogo, format, centerX, logoY, logoWidth, logoHeight, undefined, 'FAST');
           } catch (e) {
             console.error("Error adding policlinicaLogo to Delivery Receipt:", e);
           }
         } else {
-          pdfDoc.setFillColor(2, 132, 199);
-          pdfDoc.roundedRect(centerX, 10, 16, 16, 3, 3, 'F');
-          pdfDoc.setFillColor(255, 255, 255);
-          pdfDoc.rect(centerX + 6.5, 10 + 3.5, 3, 9, 'F');
-          pdfDoc.rect(centerX + 3.5, 10 + 6.5, 9, 3, 'F');
+          pdfDoc.setFillColor(240, 249, 255);
+          pdfDoc.roundedRect(centerX, logoY, logoWidth, logoHeight, 2, 2, 'F');
+          pdfDoc.setFontSize(8);
+          pdfDoc.setFont('helvetica', 'bold');
+          pdfDoc.setTextColor(3, 105, 161);
+          pdfDoc.text('POLICLÍNICA DE SOBRAL', centerX + (logoWidth / 2), logoY + 10, { align: 'center' });
         }
 
-        // 3. LOGO CONSÓRCIO CPSMS (Right)
-        const rightX = pageWidth - margin - 16;
+        // 3. LOGO CONSÓRCIO CPSMS (Right - Rectangular)
+        const rightX = pageWidth - margin - logoWidth;
         if (consorcioLogo) {
           try {
             const format = consorcioLogo.includes('image/png') ? 'PNG' : 'JPEG';
-            pdfDoc.addImage(consorcioLogo, format, rightX, 10, 16, 16, undefined, 'FAST');
+            pdfDoc.addImage(consorcioLogo, format, rightX, logoY, logoWidth, logoHeight, undefined, 'FAST');
           } catch (e) {
             console.error("Error adding consorcioLogo to Delivery Receipt:", e);
           }
         } else {
-          pdfDoc.setFillColor(234, 88, 12);
-          pdfDoc.roundedRect(rightX, 10, 7.5, 7.5, 1.5, 1.5, 'F');
-          pdfDoc.roundedRect(rightX + 8.5, 10 + 8.5, 7.5, 7.5, 1.5, 1.5, 'F');
-          pdfDoc.setFillColor(2, 132, 199);
-          pdfDoc.roundedRect(rightX + 8.5, 10, 7.5, 7.5, 1.5, 1.5, 'F');
-          pdfDoc.roundedRect(rightX, 10 + 8.5, 7.5, 7.5, 1.5, 1.5, 'F');
+          pdfDoc.setFillColor(255, 247, 237);
+          pdfDoc.roundedRect(rightX, logoY, logoWidth, logoHeight, 2, 2, 'F');
+          pdfDoc.setFontSize(8);
+          pdfDoc.setFont('helvetica', 'bold');
+          pdfDoc.setTextColor(194, 65, 12);
+          pdfDoc.text('CONSÓRCIO CPSMS', rightX + (logoWidth / 2), logoY + 10, { align: 'center' });
         }
 
         pdfDoc.setDrawColor(226, 232, 240);
@@ -11027,34 +11045,34 @@ export default function App() {
                     </div>
 
                     <div className="bg-white p-4 rounded-xl border border-slate-700 text-slate-900 space-y-3 shadow-inner">
-                      {/* Top Row: ONLY the 3 Logos */}
-                      <div className="flex items-center justify-between gap-2">
-                        {/* 1. Logo Almoxarifado (Left) */}
-                        <div className="w-24 h-10 bg-slate-50 border border-slate-200 rounded-lg p-1 flex items-center justify-center shrink-0 overflow-hidden">
+                      {/* Top Row: ALL 3 Logos as Homogeneous Rectangles */}
+                      <div className="flex items-center justify-between gap-3">
+                        {/* 1. Logo Almoxarifado (Left - Rectangular) */}
+                        <div className="flex-1 h-12 bg-emerald-50/50 border border-emerald-100 rounded-xl p-1.5 flex items-center justify-center overflow-hidden">
                           {appRectangularLogo ? (
                             <img src={appRectangularLogo} alt="Logo Almoxarifado" className="max-h-full max-w-full object-contain" />
                           ) : appLogo ? (
                             <img src={appLogo} alt="Logo Sistema" className="max-h-full max-w-full object-contain" />
                           ) : (
-                            <div className="text-[8px] font-black text-emerald-700 uppercase">ALMOXARIFADO</div>
+                            <div className="text-[9px] font-black text-emerald-800 uppercase tracking-tight text-center">ALMOXARIFADO</div>
                           )}
                         </div>
 
-                        {/* 2. Logo Policlínica (Center) */}
-                        <div className="w-10 h-10 bg-sky-50 border border-sky-100 rounded-lg p-0.5 flex items-center justify-center overflow-hidden">
+                        {/* 2. Logo Policlínica (Center - Rectangular) */}
+                        <div className="flex-1 h-12 bg-sky-50/50 border border-sky-100 rounded-xl p-1.5 flex items-center justify-center overflow-hidden">
                           {policlinicaLogo ? (
                             <img src={policlinicaLogo} alt="Logo Policlínica" className="max-h-full max-w-full object-contain" />
                           ) : (
-                            <div className="bg-sky-600 text-white p-1 rounded font-black text-[8px]">POLI</div>
+                            <div className="text-[9px] font-black text-sky-800 uppercase tracking-tight text-center">POLICLÍNICA DE SOBRAL</div>
                           )}
                         </div>
 
-                        {/* 3. Logo Consórcio CPSMS (Right) */}
-                        <div className="w-10 h-10 bg-orange-50 border border-orange-100 rounded-lg p-0.5 flex items-center justify-center overflow-hidden">
+                        {/* 3. Logo Consórcio CPSMS (Right - Rectangular) */}
+                        <div className="flex-1 h-12 bg-orange-50/50 border border-orange-100 rounded-xl p-1.5 flex items-center justify-center overflow-hidden">
                           {consorcioLogo ? (
                             <img src={consorcioLogo} alt="Logo Consórcio" className="max-h-full max-w-full object-contain" />
                           ) : (
-                            <div className="bg-orange-500 text-white p-1 rounded font-black text-[7px] text-center">CPSMS</div>
+                            <div className="text-[9px] font-black text-orange-800 uppercase tracking-tight text-center">CONSÓRCIO CPSMS</div>
                           )}
                         </div>
                       </div>
