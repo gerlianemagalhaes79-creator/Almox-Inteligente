@@ -4243,13 +4243,14 @@ export default function App() {
           }
         }
         
-        // Use appLogo as small logo if full letterhead background is not provided
-        if (appLogo) {
+        // Use appRectangularLogo (or fallback to appLogo) as small logo if full letterhead background is not provided
+        const docLogo = appRectangularLogo || appLogo;
+        if (docLogo) {
           try {
-            const format = appLogo.includes('image/png') ? 'PNG' : 'JPEG';
-            pdfDoc.addImage(appLogo, format, margin, 14, 40, 20, undefined, 'FAST');
+            const format = docLogo.includes('image/png') ? 'PNG' : 'JPEG';
+            pdfDoc.addImage(docLogo, format, margin, 14, 40, 20, undefined, 'FAST');
           } catch (e) {
-            console.error("Error adding appLogo to Donation Term:", e);
+            console.error("Error adding docLogo to Donation Term:", e);
           }
         }
 
@@ -4261,12 +4262,12 @@ export default function App() {
         pdfDoc.setFontSize(22);
         pdfDoc.setTextColor(cpsmsCyan[0], cpsmsCyan[1], cpsmsCyan[2]);
         pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('Policlínica de Sobral', appLogo ? margin + 45 : margin, 20);
+        pdfDoc.text('Policlínica de Sobral', docLogo ? margin + 45 : margin, 20);
         
         pdfDoc.setFontSize(11);
         pdfDoc.setTextColor(cpsmsOrange[0], cpsmsOrange[1], cpsmsOrange[2]);
         pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('BERNARDO FÉLIX DA SILVA', appLogo ? margin + 45 : margin, 26);
+        pdfDoc.text('BERNARDO FÉLIX DA SILVA', docLogo ? margin + 45 : margin, 26);
 
         // Header Right Side (Vector Logo)
         const logoX = pageWidth - margin - 46; 
@@ -4437,13 +4438,16 @@ export default function App() {
       } catch (e) {
         console.warn("Could not render letterheadImage on PDF report:", e);
       }
-    } else if (appLogo) {
-      try {
-        const format = appLogo.includes('image/png') ? 'PNG' : 'JPEG';
-        doc.addImage(appLogo, format, 14, 10, 40, 18, undefined, 'FAST');
-        startY = 34;
-      } catch (e) {
-        console.warn("Could not render appLogo on PDF report:", e);
+    } else {
+      const docLogo = appRectangularLogo || appLogo;
+      if (docLogo) {
+        try {
+          const format = docLogo.includes('image/png') ? 'PNG' : 'JPEG';
+          doc.addImage(docLogo, format, 14, 10, 40, 18, undefined, 'FAST');
+          startY = 34;
+        } catch (e) {
+          console.warn("Could not render logo on PDF report:", e);
+        }
       }
     }
 
@@ -4467,11 +4471,15 @@ export default function App() {
   };
 
   const [appLogo, setAppLogo] = useState<string | null>(null);
+  const [appRectangularLogo, setAppRectangularLogo] = useState<string | null>(null);
 
   // Load app logo & letterhead from localStorage & Firestore on mount
   useEffect(() => {
     const savedLogo = localStorage.getItem('app_logo_base64');
     if (savedLogo) setAppLogo(savedLogo);
+
+    const savedRectLogo = localStorage.getItem('app_rectangular_logo_base64');
+    if (savedRectLogo) setAppRectangularLogo(savedRectLogo);
 
     const savedLetterhead = localStorage.getItem('letterhead_image_base64');
     if (savedLetterhead) setLetterheadImage(savedLetterhead);
@@ -4482,6 +4490,10 @@ export default function App() {
         if (data.appLogo) {
           setAppLogo(data.appLogo);
           localStorage.setItem('app_logo_base64', data.appLogo);
+        }
+        if (data.appRectangularLogo) {
+          setAppRectangularLogo(data.appRectangularLogo);
+          localStorage.setItem('app_rectangular_logo_base64', data.appRectangularLogo);
         }
         if (data.letterheadImage) {
           setLetterheadImage(data.letterheadImage);
@@ -4542,7 +4554,7 @@ export default function App() {
         localStorage.setItem('app_logo_base64', base64);
         try {
           await setDoc(doc(db, 'settings', 'general'), { appLogo: base64 }, { merge: true });
-          showToast("Logo do sistema atualizada com sucesso!", "success");
+          showToast("Logo quadrada do sistema atualizada com sucesso!", "success");
         } catch (err) {
           console.error("Erro ao salvar no Firestore:", err);
           showToast("Logo atualizada!", "success");
@@ -4557,10 +4569,46 @@ export default function App() {
     localStorage.removeItem('app_logo_base64');
     try {
       await setDoc(doc(db, 'settings', 'general'), { appLogo: deleteField() }, { merge: true });
-      showToast("Logo removida com sucesso!", "success");
+      showToast("Logo quadrada removida com sucesso!", "success");
     } catch (err) {
       console.error("Erro ao remover logo do Firestore:", err);
       showToast("Logo removida!", "success");
+    }
+  };
+
+  const handleRectangularLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (file.size > 2 * 1024 * 1024) {
+        showToast("Imagem muito grande. Máximo 2MB.", "error");
+        return;
+      }
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64 = reader.result as string;
+        setAppRectangularLogo(base64);
+        localStorage.setItem('app_rectangular_logo_base64', base64);
+        try {
+          await setDoc(doc(db, 'settings', 'general'), { appRectangularLogo: base64 }, { merge: true });
+          showToast("Logo retangular atualizada com sucesso!", "success");
+        } catch (err) {
+          console.error("Erro ao salvar no Firestore:", err);
+          showToast("Logo retangular atualizada!", "success");
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleRemoveRectangularLogo = async () => {
+    setAppRectangularLogo(null);
+    localStorage.removeItem('app_rectangular_logo_base64');
+    try {
+      await setDoc(doc(db, 'settings', 'general'), { appRectangularLogo: deleteField() }, { merge: true });
+      showToast("Logo retangular removida com sucesso!", "success");
+    } catch (err) {
+      console.error("Erro ao remover logo retangular do Firestore:", err);
+      showToast("Logo retangular removida!", "success");
     }
   };
 
@@ -4580,13 +4628,14 @@ export default function App() {
       const margin = 14;
 
       const drawLetterhead = (pdfDoc: any) => {
-        if (appLogo) {
+        const docLogo = appRectangularLogo || appLogo;
+        if (docLogo) {
           try {
             // Draw custom logo at the top right if available
-            const format = appLogo.includes('image/png') ? 'PNG' : 'JPEG';
-            pdfDoc.addImage(appLogo, format, margin, 14, 40, 20, undefined, 'FAST');
+            const format = docLogo.includes('image/png') ? 'PNG' : 'JPEG';
+            pdfDoc.addImage(docLogo, format, margin, 14, 40, 20, undefined, 'FAST');
           } catch (e) {
-            console.error("Error adding appLogo to Delivery Receipt:", e);
+            console.error("Error adding logo to Delivery Receipt:", e);
           }
         }
 
@@ -4598,14 +4647,12 @@ export default function App() {
         pdfDoc.setFontSize(22);
         pdfDoc.setTextColor(cpsmsCyan[0], cpsmsCyan[1], cpsmsCyan[2]);
         pdfDoc.setFont('helvetica', 'bold');
-        // If there's an app logo, we might want to offset the text or skip it? 
-        // For now, let's keep the text but maybe offset it if needed.
-        pdfDoc.text('Policlínica de Sobral', appLogo ? margin + 45 : margin, 20);
+        pdfDoc.text('Policlínica de Sobral', docLogo ? margin + 45 : margin, 20);
         
         pdfDoc.setFontSize(11);
         pdfDoc.setTextColor(cpsmsOrange[0], cpsmsOrange[1], cpsmsOrange[2]);
         pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('BERNARDO FÉLIX DA SILVA', appLogo ? margin + 45 : margin, 26);
+        pdfDoc.text('BERNARDO FÉLIX DA SILVA', docLogo ? margin + 45 : margin, 26);
 
         // Header Right Side (Vector Logo)
         const logoX = pageWidth - margin - 46; 
@@ -5329,6 +5376,7 @@ export default function App() {
   }
 
   if (!user) {
+    const loginLogo = appRectangularLogo || appLogo;
     return (
       <div className="min-h-screen bg-slate-100 flex items-center justify-center p-6">
         <motion.div 
@@ -5337,9 +5385,9 @@ export default function App() {
           className="bg-white p-10 rounded-[40px] shadow-2xl max-w-md w-full border border-slate-200"
         >
           <div className="text-center mb-8">
-            {appLogo ? (
-              <div className="w-28 h-28 rounded-3xl overflow-hidden bg-white border border-blue-200/80 p-2 shadow-xl mx-auto mb-6 flex items-center justify-center ring-4 ring-blue-500/10">
-                <img src={appLogo} alt="Logo Policlínica" className="w-full h-full object-contain" />
+            {loginLogo ? (
+              <div className="w-full max-w-[260px] h-24 rounded-2xl overflow-hidden bg-white border border-blue-200/80 p-2.5 shadow-md mx-auto mb-6 flex items-center justify-center ring-4 ring-blue-500/10">
+                <img src={loginLogo} alt="Logo Policlínica" className="max-w-full max-h-full object-contain" />
               </div>
             ) : (
               <div className="bg-gradient-to-br from-blue-700 via-blue-800 to-indigo-900 w-24 h-24 rounded-3xl flex items-center justify-center mx-auto mb-6 shadow-xl overflow-hidden border-4 border-white ring-4 ring-blue-500/10 text-white">
@@ -8144,8 +8192,9 @@ export default function App() {
                           alt="Papel Timbrado Oficial" 
                           className="w-full max-h-24 object-contain" 
                           onError={(e) => {
-                            if (appLogo) {
-                              (e.target as HTMLElement).setAttribute('src', appLogo);
+                            const logoToUse = appRectangularLogo || appLogo;
+                            if (logoToUse) {
+                              (e.target as HTMLElement).setAttribute('src', logoToUse);
                             } else {
                               (e.target as HTMLElement).style.display = 'none';
                             }
@@ -10760,43 +10809,29 @@ export default function App() {
 
             <div className="space-y-6 overflow-y-auto pr-1">
               {settingsTab === 'logo' && (
-                <div className="space-y-5">
+                <div className="space-y-6">
                   <div className="p-4 bg-blue-50/80 rounded-2xl border border-blue-100 text-blue-900">
                     <h4 className="text-xs font-black uppercase tracking-wider text-blue-800 mb-1 flex items-center gap-2">
                       <ImageIcon size={16} className="text-blue-600" />
-                      Substituir Logo de Caixa do Sistema
+                      Gerenciamento de Logotipos
                     </h4>
                     <p className="text-xs leading-relaxed text-blue-700 font-medium">
-                      Faça o upload do logotipo oficial da unidade para substituir o ícone de caixa do menu principal, topo do sistema e documentos em PDF (Recibos e Termos).
+                      Configure a <strong>Logo Quadrada</strong> para o menu do sistema e a <strong>Logo Retangular</strong> para a tela de login e para os documentos/relatórios PDF.
                     </p>
                   </div>
 
-                  {/* Live Preview Card */}
-                  <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200">
-                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block mb-2">Pré-visualização no Menu</span>
-                    <div className="flex items-center gap-3 bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
-                      {appLogo ? (
-                        <div className="w-10 h-10 rounded-xl overflow-hidden bg-white border border-blue-100 p-1 shadow-xs flex items-center justify-center shrink-0">
-                          <img src={appLogo} alt="Preview Logo" className="w-full h-full object-contain" />
-                        </div>
-                      ) : (
-                        <div className="bg-gradient-to-br from-blue-700 via-blue-800 to-indigo-900 p-2 rounded-xl text-white shadow-xs shrink-0">
-                          <Package className="w-6 h-6" />
-                        </div>
-                      )}
-                      <div>
-                        <h1 className="font-black text-base text-slate-900 leading-none">Policlínica</h1>
-                        <span className="text-[9px] font-black text-blue-700 bg-blue-50 border border-blue-100 px-1.5 py-0.5 rounded-md uppercase tracking-widest block w-fit mt-0.5">
-                          Almoxarifado
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Upload Box */}
+                  {/* Section 1: Logo Quadrada */}
                   <div className="p-5 bg-white rounded-2xl border border-slate-200 space-y-4">
-                    <div className="flex items-center justify-between">
-                      <h4 className="font-extrabold text-sm text-slate-900">Upload do Logotipo</h4>
+                    <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                      <div>
+                        <h4 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
+                          <span className="w-2.5 h-2.5 rounded-full bg-blue-600 inline-block"></span>
+                          Logo Quadrada (Menu do Sistema)
+                        </h4>
+                        <p className="text-[11px] text-slate-500 font-medium mt-0.5">
+                          Exibida no menu lateral e topo da navegação.
+                        </p>
+                      </div>
                       {appLogo && (
                         <button 
                           onClick={handleRemoveLogo}
@@ -10807,28 +10842,116 @@ export default function App() {
                       )}
                     </div>
 
-                    <label className="block w-full cursor-pointer group">
-                      <div className={`overflow-hidden rounded-2xl border-2 border-dashed transition-all flex flex-col items-center justify-center gap-2 p-6 ${appLogo ? 'border-blue-300 bg-blue-50/20 hover:bg-blue-50/40' : 'border-slate-300 hover:border-blue-500 hover:bg-slate-50'}`}>
+                    {/* Preview Menu */}
+                    <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
+                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block mb-1.5">Pré-visualização no Menu</span>
+                      <div className="flex items-center gap-3 bg-white p-2.5 rounded-xl border border-slate-200 shadow-xs">
                         {appLogo ? (
-                          <div className="flex flex-col items-center gap-3">
-                            <img src={appLogo} alt="Logo do Sistema" className="max-h-24 object-contain" />
+                          <div className="w-10 h-10 rounded-xl overflow-hidden bg-white border border-blue-100 p-1 shadow-xs flex items-center justify-center shrink-0">
+                            <img src={appLogo} alt="Preview Logo Quadrada" className="w-full h-full object-contain" />
+                          </div>
+                        ) : (
+                          <div className="bg-gradient-to-br from-blue-700 via-blue-800 to-indigo-900 p-2 rounded-xl text-white shadow-xs shrink-0">
+                            <Package className="w-6 h-6" />
+                          </div>
+                        )}
+                        <div>
+                          <h1 className="font-black text-sm text-slate-900 leading-none">Policlínica</h1>
+                          <span className="text-[9px] font-black text-blue-700 bg-blue-50 border border-blue-100 px-1.5 py-0.5 rounded-md uppercase tracking-widest block w-fit mt-0.5">
+                            Almoxarifado
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Upload Quadrada */}
+                    <label className="block w-full cursor-pointer group">
+                      <div className={`overflow-hidden rounded-2xl border-2 border-dashed transition-all flex flex-col items-center justify-center gap-2 p-5 ${appLogo ? 'border-blue-300 bg-blue-50/20 hover:bg-blue-50/40' : 'border-slate-300 hover:border-blue-500 hover:bg-slate-50'}`}>
+                        {appLogo ? (
+                          <div className="flex flex-col items-center gap-2">
+                            <img src={appLogo} alt="Logo Quadrada" className="max-h-20 object-contain" />
                             <span className="text-xs font-bold text-blue-700 bg-blue-100/80 px-3 py-1 rounded-full flex items-center gap-1.5">
-                              <Upload size={13} /> Clique para alterar a logo
+                              <Upload size={13} /> Clique para alterar a logo quadrada
                             </span>
                           </div>
                         ) : (
                           <>
-                            <div className="p-3.5 bg-blue-50 text-blue-600 rounded-full shadow-xs group-hover:scale-110 transition-transform">
-                              <Upload size={22} />
+                            <div className="p-3 bg-blue-50 text-blue-600 rounded-full shadow-xs group-hover:scale-110 transition-transform">
+                              <Upload size={20} />
                             </div>
                             <div className="text-center">
-                              <p className="text-xs font-black text-slate-800">Clique aqui para selecionar uma imagem</p>
-                              <p className="text-[10px] font-bold text-slate-400 mt-0.5">Formatos aceitos: PNG, JPG ou SVG (Máx. 2MB)</p>
+                              <p className="text-xs font-black text-slate-800">Clique para enviar a logo quadrada</p>
+                              <p className="text-[10px] font-bold text-slate-400 mt-0.5">Formato recomendado: 1:1 (PNG, JPG ou SVG - Máx. 2MB)</p>
                             </div>
                           </>
                         )}
                       </div>
                       <input type="file" accept="image/*" className="hidden" onChange={handleLogoUpload} />
+                    </label>
+                  </div>
+
+                  {/* Section 2: Logo Retangular */}
+                  <div className="p-5 bg-white rounded-2xl border border-slate-200 space-y-4">
+                    <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                      <div>
+                        <h4 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
+                          <span className="w-2.5 h-2.5 rounded-full bg-emerald-600 inline-block"></span>
+                          Logo Retangular (Login e Documentos PDF)
+                        </h4>
+                        <p className="text-[11px] text-slate-500 font-medium mt-0.5">
+                          Exibida na tela de login e no cabeçalho de recibos, termos, catálogos e relatórios PDF.
+                        </p>
+                      </div>
+                      {appRectangularLogo && (
+                        <button 
+                          onClick={handleRemoveRectangularLogo}
+                          className="text-xs font-extrabold text-rose-600 hover:text-rose-700 hover:underline flex items-center gap-1"
+                        >
+                          <Trash2 size={13} /> Remover Logo
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Preview Login & Document */}
+                    <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
+                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block mb-1.5">Pré-visualização (Login & Documentos)</span>
+                      <div className="flex items-center justify-center bg-white p-3 rounded-xl border border-slate-200 shadow-xs h-20">
+                        {appRectangularLogo ? (
+                          <img src={appRectangularLogo} alt="Preview Logo Retangular" className="max-h-full max-w-full object-contain" />
+                        ) : appLogo ? (
+                          <div className="flex items-center gap-2 text-slate-500">
+                            <img src={appLogo} alt="Fallback Logo Quadrada" className="max-h-12 max-w-full object-contain opacity-70" />
+                            <span className="text-[10px] font-semibold text-slate-400">(Usando logo quadrada como fallback)</span>
+                          </div>
+                        ) : (
+                          <span className="text-xs font-bold text-slate-400">Nenhuma logo cadastrada</span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Upload Retangular */}
+                    <label className="block w-full cursor-pointer group">
+                      <div className={`overflow-hidden rounded-2xl border-2 border-dashed transition-all flex flex-col items-center justify-center gap-2 p-5 ${appRectangularLogo ? 'border-emerald-300 bg-emerald-50/20 hover:bg-emerald-50/40' : 'border-slate-300 hover:border-emerald-500 hover:bg-slate-50'}`}>
+                        {appRectangularLogo ? (
+                          <div className="flex flex-col items-center gap-2">
+                            <img src={appRectangularLogo} alt="Logo Retangular" className="max-h-20 object-contain" />
+                            <span className="text-xs font-bold text-emerald-700 bg-emerald-100/80 px-3 py-1 rounded-full flex items-center gap-1.5">
+                              <Upload size={13} /> Clique para alterar a logo retangular
+                            </span>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="p-3 bg-emerald-50 text-emerald-600 rounded-full shadow-xs group-hover:scale-110 transition-transform">
+                              <Upload size={20} />
+                            </div>
+                            <div className="text-center">
+                              <p className="text-xs font-black text-slate-800">Clique para enviar a logo retangular</p>
+                              <p className="text-[10px] font-bold text-slate-400 mt-0.5">Formato recomendado: Horizontal / Retangular (PNG, JPG ou SVG - Máx. 2MB)</p>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                      <input type="file" accept="image/*" className="hidden" onChange={handleRectangularLogoUpload} />
                     </label>
                   </div>
                 </div>
