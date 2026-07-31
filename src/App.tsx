@@ -4285,21 +4285,24 @@ export default function App() {
         }
 
         // 3. LOGO CONSÓRCIO CPSMS (Right - Rectangular)
-        const rightX = pageWidth - margin - logoWidth;
+        const consorcioWidth = 56;
+        const consorcioHeight = 18;
+        const consorcioY = 9;
+        const rightX = pageWidth - margin - consorcioWidth;
         if (consorcioLogo) {
           try {
             const format = consorcioLogo.includes('image/png') ? 'PNG' : 'JPEG';
-            pdfDoc.addImage(consorcioLogo, format, rightX, logoY, logoWidth, logoHeight, undefined, 'FAST');
+            pdfDoc.addImage(consorcioLogo, format, rightX, consorcioY, consorcioWidth, consorcioHeight, undefined, 'FAST');
           } catch (e) {
             console.error("Error adding consorcioLogo to Donation Term:", e);
           }
         } else {
           pdfDoc.setFillColor(255, 247, 237);
-          pdfDoc.roundedRect(rightX, logoY, logoWidth, logoHeight, 2, 2, 'F');
+          pdfDoc.roundedRect(rightX, consorcioY, consorcioWidth, consorcioHeight, 2, 2, 'F');
           pdfDoc.setFontSize(8);
           pdfDoc.setFont('helvetica', 'bold');
           pdfDoc.setTextColor(194, 65, 12);
-          pdfDoc.text('CONSÓRCIO CPSMS', rightX + (logoWidth / 2), logoY + 10, { align: 'center' });
+          pdfDoc.text('CONSÓRCIO CPSMS', rightX + (consorcioWidth / 2), consorcioY + 11, { align: 'center' });
         }
 
         pdfDoc.setDrawColor(226, 232, 240);
@@ -4512,21 +4515,24 @@ export default function App() {
       }
 
       // 3. RIGHT LOGO: Logo do Consórcio CPSMS (Rectangular)
-      const rightX = pageWidth - 14 - logoWidth;
+      const consorcioWidth = 56;
+      const consorcioHeight = 18;
+      const consorcioY = 9;
+      const rightX = pageWidth - 14 - consorcioWidth;
       if (consorcioLogo) {
         try {
           const format = consorcioLogo.includes('image/png') ? 'PNG' : 'JPEG';
-          doc.addImage(consorcioLogo, format, rightX, logoY, logoWidth, logoHeight, undefined, 'FAST');
+          doc.addImage(consorcioLogo, format, rightX, consorcioY, consorcioWidth, consorcioHeight, undefined, 'FAST');
         } catch (e) {
           console.warn("Could not render consorcioLogo on PDF:", e);
         }
       } else {
         doc.setFillColor(255, 247, 237);
-        doc.roundedRect(rightX, logoY, logoWidth, logoHeight, 2, 2, 'F');
+        doc.roundedRect(rightX, consorcioY, consorcioWidth, consorcioHeight, 2, 2, 'F');
         doc.setFontSize(8);
         doc.setFont('helvetica', 'bold');
         doc.setTextColor(194, 65, 12);
-        doc.text('CONSÓRCIO CPSMS', rightX + (logoWidth / 2), logoY + 10, { align: 'center' });
+        doc.text('CONSÓRCIO CPSMS', rightX + (consorcioWidth / 2), consorcioY + 11, { align: 'center' });
       }
 
       // Divider Line
@@ -4868,21 +4874,24 @@ export default function App() {
         }
 
         // 3. LOGO CONSÓRCIO CPSMS (Right - Rectangular)
-        const rightX = pageWidth - margin - logoWidth;
+        const consorcioWidth = 56;
+        const consorcioHeight = 18;
+        const consorcioY = 9;
+        const rightX = pageWidth - margin - consorcioWidth;
         if (consorcioLogo) {
           try {
             const format = consorcioLogo.includes('image/png') ? 'PNG' : 'JPEG';
-            pdfDoc.addImage(consorcioLogo, format, rightX, logoY, logoWidth, logoHeight, undefined, 'FAST');
+            pdfDoc.addImage(consorcioLogo, format, rightX, consorcioY, consorcioWidth, consorcioHeight, undefined, 'FAST');
           } catch (e) {
             console.error("Error adding consorcioLogo to Delivery Receipt:", e);
           }
         } else {
           pdfDoc.setFillColor(255, 247, 237);
-          pdfDoc.roundedRect(rightX, logoY, logoWidth, logoHeight, 2, 2, 'F');
+          pdfDoc.roundedRect(rightX, consorcioY, consorcioWidth, consorcioHeight, 2, 2, 'F');
           pdfDoc.setFontSize(8);
           pdfDoc.setFont('helvetica', 'bold');
           pdfDoc.setTextColor(194, 65, 12);
-          pdfDoc.text('CONSÓRCIO CPSMS', rightX + (logoWidth / 2), logoY + 10, { align: 'center' });
+          pdfDoc.text('CONSÓRCIO CPSMS', rightX + (consorcioWidth / 2), consorcioY + 11, { align: 'center' });
         }
 
         pdfDoc.setDrawColor(226, 232, 240);
@@ -5501,6 +5510,37 @@ export default function App() {
       }
     });
 
+    // Returns by Sector calculation
+    const returnsBySectorMap: Record<string, { name: string; quantity: number; value: number }> = {};
+    const returnsByReasonMap: Record<string, number> = {};
+
+    filteredTrans.filter(t => t.type === 'entry' && t.isReturn).forEach(t => {
+      const item = items.find(i => i.id === t.item_id);
+      const price = Number(item?.unit_price) || 0;
+      const val = t.quantity * price;
+      let sec = t.sector || 'Não Informado';
+      if (sec === 'Farmácia (Consumo Interno)') sec = 'Farmácia';
+
+      if (!returnsBySectorMap[sec]) {
+        returnsBySectorMap[sec] = { name: sec, quantity: 0, value: 0 };
+      }
+      returnsBySectorMap[sec].quantity += t.quantity;
+      returnsBySectorMap[sec].value += val;
+
+      const reason = t.returnReason || 'Não especificado';
+      returnsByReasonMap[reason] = (returnsByReasonMap[reason] || 0) + t.quantity;
+    });
+
+    const returnsBySector = Object.values(returnsBySectorMap).sort((a, b) => b.quantity - a.quantity);
+    const returnsByReason = Object.entries(returnsByReasonMap)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value);
+    const totalReturnsCount = filteredTrans.filter(t => t.type === 'entry' && t.isReturn).reduce((sum, t) => sum + t.quantity, 0);
+    const totalReturnsValue = filteredTrans.filter(t => t.type === 'entry' && t.isReturn).reduce((sum, t) => {
+      const item = items.find(i => i.id === t.item_id);
+      return sum + (t.quantity * (Number(item?.unit_price) || 0));
+    }, 0);
+
     return {
       entries,
       exits,
@@ -5545,7 +5585,11 @@ export default function App() {
         .map(i => ({ name: i.name, value: i.totalQuantity }))
         .sort((a, b) => b.value - a.value)
         .slice(0, 10),
-      exitsByReason
+      exitsByReason,
+      returnsBySector,
+      returnsByReason,
+      totalReturnsCount,
+      totalReturnsValue
     };
   }, [transactions, items, reportRange, reportSectorFilter, allRequestItems, requests, userProfile, isAdmin, selectedSector]);
 
@@ -7495,6 +7539,11 @@ export default function App() {
                     </div>
                     <div className="h-8 w-px bg-slate-200" />
                     <div className="px-3 py-1 text-center">
+                      <p className="text-[10px] uppercase font-extrabold text-amber-600 tracking-wider">Devoluções</p>
+                      <p className="text-lg font-black text-slate-900 mt-0.5">{reportData.totalReturnsCount}</p>
+                    </div>
+                    <div className="h-8 w-px bg-slate-200" />
+                    <div className="px-3 py-1 text-center">
                       <p className="text-[10px] uppercase font-extrabold text-slate-500 tracking-wider">Período</p>
                       <p className="text-xs font-bold text-slate-700 mt-1">
                         {new Date(reportRange.start + 'T00:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })} - {new Date(reportRange.end + 'T00:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}
@@ -8028,6 +8077,58 @@ export default function App() {
                     </div>
                   </div>
                 )}
+
+                {/* Returns by Sector - Devoluções por Setor */}
+                <div className="bg-white p-6 sm:p-8 rounded-3xl border border-amber-100/80 shadow-sm hover:shadow-md transition-all">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-6">
+                    <div>
+                      <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
+                        <RotateCcw size={18} className="text-amber-600" /> Devoluções por Setor
+                      </h4>
+                      <p className="text-xs text-slate-500 font-medium">Materiais devolvidos ao almoxarifado pelos setores</p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200/80 px-2.5 py-1 rounded-lg uppercase tracking-wider">
+                        {reportData.totalReturnsCount} {reportData.totalReturnsCount === 1 ? 'Item Devolvido' : 'Itens Devolvidos'}
+                      </span>
+                      {isAdmin && reportData.totalReturnsValue > 0 && (
+                        <span className="text-[10px] font-black text-emerald-700 bg-emerald-50 border border-emerald-200/80 px-2.5 py-1 rounded-lg uppercase tracking-wider">
+                          {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.totalReturnsValue)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {reportData.returnsBySector.length > 0 ? (
+                    <div className="h-[300px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={reportData.returnsBySector} layout="vertical">
+                          <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
+                          <XAxis type="number" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#64748b'}} />
+                          <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#1e293b', fontWeight: 'bold'}} width={110} />
+                          <Tooltip 
+                            cursor={{fill: '#fffbeb'}}
+                            formatter={(value: number, name: string) => [
+                              name === 'Qtd Devolvida' ? `${value} un.` : new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value),
+                              'Quantidade'
+                            ]}
+                            contentStyle={{ borderRadius: '16px', border: '1px solid #fde68a', boxShadow: '0 10px 25px -5px rgba(245, 158, 11, 0.1)', fontWeight: 'bold' }}
+                          />
+                          <Bar dataKey="quantity" name="Qtd Devolvida" fill="#d97706" radius={[0, 8, 8, 0]} barSize={18} />
+                          <Legend />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  ) : (
+                    <div className="h-[220px] flex flex-col items-center justify-center text-center p-6 bg-amber-50/30 rounded-2xl border border-dashed border-amber-200/60">
+                      <div className="w-10 h-10 rounded-2xl bg-amber-100/80 text-amber-700 flex items-center justify-center mb-2 shadow-xs">
+                        <RotateCcw size={20} />
+                      </div>
+                      <p className="text-sm font-black text-slate-800">Nenhuma devolução registrada no período</p>
+                      <p className="text-xs text-slate-500 max-w-sm mt-1 font-medium">Os materiais que forem devolvidos pelos setores ao almoxarifado no período selecionado aparecerão consolidados neste gráfico.</p>
+                    </div>
+                  )}
+                </div>
 
                 {/* Value by Supplier */}
                 {isAdmin && (
@@ -11068,9 +11169,9 @@ export default function App() {
                         </div>
 
                         {/* 3. Logo Consórcio CPSMS (Right - Rectangular) */}
-                        <div className="flex-1 h-12 bg-orange-50/50 border border-orange-100 rounded-xl p-1.5 flex items-center justify-center overflow-hidden">
+                        <div className="flex-[1.15] h-14 bg-orange-50/50 border border-orange-100 rounded-xl p-1 flex items-center justify-center overflow-hidden">
                           {consorcioLogo ? (
-                            <img src={consorcioLogo} alt="Logo Consórcio" className="max-h-full max-w-full object-contain" />
+                            <img src={consorcioLogo} alt="Logo Consórcio" className="max-h-full max-w-full object-contain scale-105" />
                           ) : (
                             <div className="text-[9px] font-black text-orange-800 uppercase tracking-tight text-center">CONSÓRCIO CPSMS</div>
                           )}
