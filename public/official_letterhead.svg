@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 160" width="1200" height="160">
+  <defs>
+    <linearGradient id="headerGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0284C7" />
+      <stop offset="50%" stop-color="#0369A1" />
+      <stop offset="100%" stop-color="#EA580C" />
+    </linearGradient>
+    <filter id="shadow" x="-5%" y="-5%" width="110%" height="110%">
+      <feDropShadow dx="0" dy="1" stdDeviation="2" flood-opacity="0.08" />
+    </filter>
+  </defs>
+
+  <!-- Background Canvas -->
+  <rect width="1200" height="160" fill="#FFFFFF" rx="8" />
+
+  <!-- LEFT LOGO (Logo 1: Governo do Estado do Ceará / SUS) -->
+  <g transform="translate(35, 25)">
+    <!-- Shield / Ceará Emblem -->
+    <path d="M0,8 C0,3.5 3.5,0 8,0 L42,0 C46.5,0 50,3.5 50,8 L50,42 C50,62 25,78 25,78 C25,78 0,62 0,42 Z" fill="#15803D" />
+    <path d="M5,10 C5,7 7,5 10,5 L40,5 C43,5 45,7 45,10 L45,40 C45,56 25,70 25,70 C25,70 5,56 5,40 Z" fill="#16A34A" />
+    <!-- Sun / Star motif inside shield -->
+    <circle cx="25" cy="28" r="10" fill="#FACC15" />
+    <path d="M25,12 L28,22 L38,22 L30,28 L33,38 L25,32 L17,38 L20,28 L12,22 L22,22 Z" fill="#FFFFFF" opacity="0.9" />
+    <!-- Text beside emblem -->
+    <text x="62" y="28" font-family="system-ui, -apple-system, sans-serif" font-weight="800" font-size="13" fill="#1E293B" letter-spacing="0.5">GOVERNO DO</text>
+    <text x="62" y="45" font-family="system-ui, -apple-system, sans-serif" font-weight="900" font-size="16" fill="#15803D" letter-spacing="0.5">ESTADO DO CEARÁ</text>
+    <text x="62" y="62" font-family="system-ui, -apple-system, sans-serif" font-weight="700" font-size="11" fill="#64748B">Secretaria da Saúde • SUS</text>
+  </g>
+
+  <!-- CENTER DIVIDER LEFT -->
+  <line x1="280" y1="25" x2="280" y2="115" stroke="#E2E8F0" stroke-width="1.5" stroke-dasharray="4,4" />
+
+  <!-- CENTER TEXT (Main Institutional Title) -->
+  <g transform="translate(600, 42)" text-anchor="middle">
+    <text x="0" y="0" font-family="system-ui, -apple-system, sans-serif" font-weight="900" font-size="21" fill="#0F172A" letter-spacing="-0.3">
+      POLICLÍNICA BERNARDO FÉLIX DA SILVA
+    </text>
+    <text x="0" y="24" font-family="system-ui, -apple-system, sans-serif" font-weight="800" font-size="13" fill="#0284C7" letter-spacing="0.2">
+      CONSÓRCIO PÚBLICO DE SAÚDE DA MICRORREGIÃO DE SOBRAL — CPSMS
+    </text>
+    <text x="0" y="44" font-family="system-ui, -apple-system, sans-serif" font-weight="600" font-size="11" fill="#64748B">
+      Sobral - CE • Sistema de Gestão de Almoxarifado e Estoque Central
+    </text>
+  </g>
+
+  <!-- CENTER DIVIDER RIGHT -->
+  <line x1="920" y1="25" x2="920" y2="115" stroke="#E2E8F0" stroke-width="1.5" stroke-dasharray="4,4" />
+
+  <!-- RIGHT LOGOS (Logo 2 & Logo 3: Policlínica & CPSMS Badge) -->
+  <g transform="translate(945, 28)">
+    <!-- Logo 2: Policlínica Icon -->
+    <rect x="0" y="0" width="38" height="38" rx="10" fill="#0284C7" />
+    <path d="M19,9 L19,29 M9,19 L29,19" stroke="#FFFFFF" stroke-width="4.5" stroke-linecap="round" />
+    
+    <!-- Logo 3: CPSMS Quad Emblem -->
+    <g transform="translate(48, 0)">
+      <rect x="0" y="0" width="17" height="17" rx="4" fill="#EA580C" />
+      <rect x="20" y="0" width="17" height="17" rx="4" fill="#0284C7" />
+      <rect x="0" y="20" width="17" height="17" rx="4" fill="#0284C7" />
+      <rect x="20" y="20" width="17" height="17" rx="4" fill="#EA580C" />
+    </g>
+
+    <!-- Sublabel right -->
+    <text x="0" y="58" font-family="system-ui, -apple-system, sans-serif" font-weight="800" font-size="11" fill="#0369A1">POLICLÍNICA</text>
+    <text x="0" y="71" font-family="system-ui, -apple-system, sans-serif" font-weight="900" font-size="11" fill="#EA580C">CPSMS SOBRAL</text>
+  </g>
+
+  <!-- BOTTOM ACCENT BAR (Gradient line) -->
+  <rect x="30" y="138" width="1140" height="4" rx="2" fill="url(#headerGrad)" />
+</svg>

@@ -3077,7 +3077,7 @@ export default function App() {
               responsibleEmail: user?.email || '',
               exitReason: exitReason,
               expiryReason: (exitReason === 'vencido' || exitReason === 'perda') ? expiryReason : null,
-              donationUnitName: exitReason === 'doacao' ? (donationUnitName || 'Policlínica Bernardo Félix da Silva') : null,
+              donationUnitName: exitReason === 'doacao' ? (donationUnitName || 'Policlínica de Sobral') : null,
               donationUnitAddress: exitReason === 'doacao' ? donationUnitAddress : null,
               donationUnitCNPJ: exitReason === 'doacao' ? donationUnitCNPJ : null,
               donationRevisionDate: exitReason === 'doacao' ? donationRevisionDate : null,
@@ -3207,7 +3207,7 @@ export default function App() {
           const currentDonationNumber = `${(uniqueDonations.size + 1).toString().padStart(2, '0')}/${currentYear}`;
 
           handleExportDonationTermPDF({
-            donatingUnitName: donationUnitName || 'Policlínica Bernardo Félix da Silva',
+            donatingUnitName: donationUnitName || 'Policlínica de Sobral',
             receivingUnit: {
               name: selectedSector || 'Unidade Receptora',
               address: donationUnitAddress,
@@ -3408,7 +3408,7 @@ export default function App() {
       const startY = drawPDFLetterhead(
         doc,
         'Catálogo de Materiais em Estoque',
-        `Policlínica Bernardo Félix da Silva • Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`
+        `Policlínica de Sobral • Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`
       );
       
       // Filter unique items across all batches and locations
@@ -4219,7 +4219,7 @@ export default function App() {
       // Se não houver imagem personalizada, tenta carregar a padrão
       if (!base64Image) {
         try {
-          base64Image = await getImageDataURL("/official_letterhead.png");
+          base64Image = await getImageDataURL("/official_letterhead.svg");
         } catch (err) {
           console.warn("Could not load logo image for Donation Term, using fallback text header:", err);
         }
@@ -4243,48 +4243,68 @@ export default function App() {
           }
         }
         
-        // Use appRectangularLogo (or fallback to appLogo) as small logo if full letterhead background is not provided
+        console.log("[PDF] Usando cabeçalho padrão com 3 logos alinhados no Termo de Doação");
         const docLogo = appRectangularLogo || appLogo;
+        
+        // 1. LOGO ALMOXARIFADO (Left)
         if (docLogo) {
           try {
             const format = docLogo.includes('image/png') ? 'PNG' : 'JPEG';
-            pdfDoc.addImage(docLogo, format, margin, 14, 40, 20, undefined, 'FAST');
+            pdfDoc.addImage(docLogo, format, margin, 10, 38, 16, undefined, 'FAST');
           } catch (e) {
             console.error("Error adding docLogo to Donation Term:", e);
           }
+        } else {
+          pdfDoc.setFillColor(22, 163, 74);
+          pdfDoc.roundedRect(margin, 10, 16, 16, 3, 3, 'F');
+          pdfDoc.setFillColor(250, 204, 21);
+          pdfDoc.circle(margin + 8, 18, 4, 'F');
         }
 
-        console.log("[PDF] Usando cabeçalho padrão (fallback) no Termo de Doação");
-        const cpsmsCyan = [0, 169, 219];
-        const cpsmsOrange = [255, 185, 0];
+        // 2. LOGO POLICLÍNICA (Center)
+        const centerX = (pageWidth / 2) - 8;
+        if (policlinicaLogo) {
+          try {
+            const format = policlinicaLogo.includes('image/png') ? 'PNG' : 'JPEG';
+            pdfDoc.addImage(policlinicaLogo, format, centerX, 10, 16, 16, undefined, 'FAST');
+          } catch (e) {
+            console.error("Error adding policlinicaLogo to Donation Term:", e);
+          }
+        } else {
+          pdfDoc.setFillColor(2, 132, 199);
+          pdfDoc.roundedRect(centerX, 10, 16, 16, 3, 3, 'F');
+          pdfDoc.setFillColor(255, 255, 255);
+          pdfDoc.rect(centerX + 6.5, 10 + 3.5, 3, 9, 'F');
+          pdfDoc.rect(centerX + 3.5, 10 + 6.5, 9, 3, 'F');
+        }
 
-        // Header Left Side
-        pdfDoc.setFontSize(22);
-        pdfDoc.setTextColor(cpsmsCyan[0], cpsmsCyan[1], cpsmsCyan[2]);
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('Policlínica de Sobral', docLogo ? margin + 45 : margin, 20);
-        
-        pdfDoc.setFontSize(11);
-        pdfDoc.setTextColor(cpsmsOrange[0], cpsmsOrange[1], cpsmsOrange[2]);
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('BERNARDO FÉLIX DA SILVA', docLogo ? margin + 45 : margin, 26);
+        // 3. LOGO CONSÓRCIO CPSMS (Right)
+        const rightX = pageWidth - margin - 16;
+        if (consorcioLogo) {
+          try {
+            const format = consorcioLogo.includes('image/png') ? 'PNG' : 'JPEG';
+            pdfDoc.addImage(consorcioLogo, format, rightX, 10, 16, 16, undefined, 'FAST');
+          } catch (e) {
+            console.error("Error adding consorcioLogo to Donation Term:", e);
+          }
+        } else {
+          pdfDoc.setFillColor(234, 88, 12);
+          pdfDoc.roundedRect(rightX, 10, 7.5, 7.5, 1.5, 1.5, 'F');
+          pdfDoc.roundedRect(rightX + 8.5, 10 + 8.5, 7.5, 7.5, 1.5, 1.5, 'F');
+          pdfDoc.setFillColor(2, 132, 199);
+          pdfDoc.roundedRect(rightX + 8.5, 10, 7.5, 7.5, 1.5, 1.5, 'F');
+          pdfDoc.roundedRect(rightX, 10 + 8.5, 7.5, 7.5, 1.5, 1.5, 'F');
+        }
 
-        // Header Right Side (Vector Logo)
-        const logoX = pageWidth - margin - 46; 
-        const logoY = 16;
-        
-        pdfDoc.setFillColor(cpsmsOrange[0], cpsmsOrange[1], cpsmsOrange[2]);
-        pdfDoc.roundedRect(logoX, logoY, 4, 4, 1.5, 1.5, 'F');
-        pdfDoc.setFillColor(cpsmsCyan[0], cpsmsCyan[1], cpsmsCyan[2]);
-        pdfDoc.roundedRect(logoX + 4.5, logoY, 4, 4, 1.5, 1.5, 'F');
-        pdfDoc.roundedRect(logoX, logoY + 4.5, 4, 4, 1.5, 1.5, 'F');
-        pdfDoc.roundedRect(logoX + 4.5, logoY + 4.5, 4, 4, 1.5, 1.5, 'F');
+        pdfDoc.setDrawColor(226, 232, 240);
+        pdfDoc.setLineWidth(0.5);
+        pdfDoc.line(margin, 29, pageWidth - margin, 29);
 
         // Footer
         pdfDoc.setFontSize(7.5);
         pdfDoc.setTextColor(120, 113, 108);
         pdfDoc.setFont('helvetica', 'normal');
-        const footer1 = 'Policlínica Bernardo Félix da Silva. Av. Monsenhor Aloísio Pinto, 481, CEP 62050-255, Sobral-CE';
+        const footer1 = 'Policlínica de Sobral. Av. Monsenhor Aloísio Pinto, 481, CEP 62050-255, Sobral-CE';
         const footer2 = 'Fone: (88) 3614-3156 | Fax: (88) 3614-3245 | cpsms.ce.gov.br';
         pdfDoc.text(footer1, pageWidth / 2, pageHeight - 12, { align: 'center' });
         pdfDoc.text(footer2, pageWidth / 2, pageHeight - 8, { align: 'center' });
@@ -4300,20 +4320,31 @@ export default function App() {
         }).join(' ');
       };
 
-      const donorName = formatTitleCase(data.donatingUnitName || 'Policlínica Bernardo Félix da Silva');
+      const donorName = formatTitleCase(data.donatingUnitName || 'Policlínica de Sobral');
       const receivingName = formatTitleCase(data.receivingUnit.name);
       const receivingAddress = data.receivingUnit.address;
       const receivingCNPJ = data.receivingUnit.cnpj;
 
       drawLetterhead(doc);
 
-      // --- DOCUMENT INFO ---
+      // --- TITLE & DATA DE EMISSÃO BELOW LOGOS ---
+      doc.setFontSize(13);
+      doc.setTextColor(17, 24, 39);
+      doc.setFont('helvetica', 'bold');
+      doc.text('TERMO DE DOAÇÃO DE MATERIAIS E INSUMOS', pageWidth / 2, 35, { align: 'center' });
+      
+      doc.setFontSize(8.5);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(100, 116, 139);
+      doc.text(`Data de Emissão: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, pageWidth / 2, 40, { align: 'center' });
+
+      // --- DOCUMENT METADATA RIGHT-ALIGNED ---
       doc.setFontSize(8);
       doc.setTextColor(107, 114, 128);
       doc.setFont('helvetica', 'normal');
-      doc.text('Código: TERMO-ALMOX', pageWidth - margin, 45, { align: 'right' });
-      doc.text(`Data de Implantação: ${format(new Date(), 'dd/MM/yyyy')}`, pageWidth - margin, 49, { align: 'right' });
-      doc.text(`Última Revisão: ${data.revisionDate || '---'}`, pageWidth - margin, 53, { align: 'right' });
+      doc.text('Código: TERMO-ALMOX', pageWidth - margin, 46, { align: 'right' });
+      doc.text(`Data de Implantação: ${format(new Date(), 'dd/MM/yyyy')}`, pageWidth - margin, 50, { align: 'right' });
+      doc.text(`Última Revisão: ${data.revisionDate || '---'}`, pageWidth - margin, 54, { align: 'right' });
       
       if (data.donationNumber) {
         doc.setFontSize(9);
@@ -4322,15 +4353,9 @@ export default function App() {
         doc.text(`Termo nº: ${data.donationNumber}`, pageWidth - margin, 59, { align: 'right' });
       }
 
-      // --- TITLE ---
-      doc.setFontSize(12);
-      doc.setTextColor(17, 24, 39);
-      doc.setFont('helvetica', 'bold');
-      doc.text('Termo de Doação de Materiais e Insumos', pageWidth / 2, 70, { align: 'center' });
-      
       doc.setDrawColor(209, 213, 219);
       doc.setLineWidth(0.2);
-      doc.line(margin, 74, pageWidth - margin, 74);
+      doc.line(margin, 63, pageWidth - margin, 63);
 
       // --- CONTENT ---
       doc.setFontSize(10);
@@ -4341,7 +4366,7 @@ export default function App() {
       
       const textWidth = pageWidth - (margin * 2);
       const textLines = doc.splitTextToSize(donationText, textWidth);
-      doc.text(textLines, margin, 85, { 
+      doc.text(textLines, margin, 72, { 
         align: 'justify', 
         maxWidth: textWidth,
         lineHeightFactor: 1.5 
@@ -4428,43 +4453,98 @@ export default function App() {
 
   const drawPDFLetterhead = (doc: any, title?: string, subtitle?: string): number => {
     const pageWidth = doc.internal.pageSize.width;
-    let startY = 20;
+    let startY = 14;
 
     if (letterheadImage) {
       try {
         const format = letterheadImage.includes('image/png') ? 'PNG' : 'JPEG';
         doc.addImage(letterheadImage, format, 14, 8, pageWidth - 28, 28, undefined, 'FAST');
-        startY = 42;
+        startY = 40;
       } catch (e) {
         console.warn("Could not render letterheadImage on PDF report:", e);
       }
     } else {
+      // Perfectly aligned 3-logo horizontal header row
       const docLogo = appRectangularLogo || appLogo;
+      
+      // 1. LEFT LOGO: Logo Almoxarifado / Sistema
       if (docLogo) {
         try {
           const format = docLogo.includes('image/png') ? 'PNG' : 'JPEG';
-          doc.addImage(docLogo, format, 14, 10, 40, 18, undefined, 'FAST');
-          startY = 34;
+          doc.addImage(docLogo, format, 14, 10, 38, 16, undefined, 'FAST');
         } catch (e) {
           console.warn("Could not render logo on PDF report:", e);
         }
+      } else {
+        doc.setFillColor(22, 163, 74);
+        doc.roundedRect(14, 10, 16, 16, 3, 3, 'F');
+        doc.setFillColor(250, 204, 21);
+        doc.circle(22, 18, 4, 'F');
       }
+
+      // 2. CENTER LOGO: Logo da Policlínica
+      const centerX = (pageWidth / 2) - 8;
+      if (policlinicaLogo) {
+        try {
+          const format = policlinicaLogo.includes('image/png') ? 'PNG' : 'JPEG';
+          doc.addImage(policlinicaLogo, format, centerX, 10, 16, 16, undefined, 'FAST');
+        } catch (e) {
+          console.warn("Could not render policlinicaLogo on PDF:", e);
+        }
+      } else {
+        doc.setFillColor(2, 132, 199);
+        doc.roundedRect(centerX, 10, 16, 16, 3, 3, 'F');
+        doc.setFillColor(255, 255, 255);
+        doc.rect(centerX + 6.5, 10 + 3.5, 3, 9, 'F');
+        doc.rect(centerX + 3.5, 10 + 6.5, 9, 3, 'F');
+      }
+
+      // 3. RIGHT LOGO: Logo do Consórcio CPSMS
+      const rightX = pageWidth - 14 - 16;
+      if (consorcioLogo) {
+        try {
+          const format = consorcioLogo.includes('image/png') ? 'PNG' : 'JPEG';
+          doc.addImage(consorcioLogo, format, rightX, 10, 16, 16, undefined, 'FAST');
+        } catch (e) {
+          console.warn("Could not render consorcioLogo on PDF:", e);
+        }
+      } else {
+        doc.setFillColor(234, 88, 12);
+        doc.roundedRect(rightX, 10, 7.5, 7.5, 1.5, 1.5, 'F');
+        doc.roundedRect(rightX + 8.5, 10 + 8.5, 7.5, 7.5, 1.5, 1.5, 'F');
+        doc.setFillColor(2, 132, 199);
+        doc.roundedRect(rightX + 8.5, 10, 7.5, 7.5, 1.5, 1.5, 'F');
+        doc.roundedRect(rightX, 10 + 8.5, 7.5, 7.5, 1.5, 1.5, 'F');
+      }
+
+      // Divider Line
+      doc.setDrawColor(226, 232, 240);
+      doc.setLineWidth(0.5);
+      doc.line(14, 29, pageWidth - 14, 29);
+
+      startY = 35;
     }
 
     if (title) {
-      doc.setFontSize(16);
+      doc.setFontSize(13);
       doc.setFont('helvetica', 'bold');
       doc.setTextColor(28, 25, 23);
-      doc.text(title, 14, startY);
-      startY += 7;
+      doc.text(title, pageWidth / 2, startY, { align: 'center' });
+      startY += 5;
     }
 
+    doc.setFontSize(8.5);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(100, 116, 139);
+    doc.text(`Data de Emissão: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, pageWidth / 2, startY, { align: 'center' });
+    startY += 7;
+
     if (subtitle) {
-      doc.setFontSize(10);
+      doc.setFontSize(8.5);
       doc.setFont('helvetica', 'normal');
       doc.setTextColor(120, 113, 108);
-      doc.text(subtitle, 14, startY);
-      startY += 8;
+      doc.text(subtitle, pageWidth / 2, startY, { align: 'center' });
+      startY += 7;
     }
 
     return startY;
@@ -4472,6 +4552,8 @@ export default function App() {
 
   const [appLogo, setAppLogo] = useState<string | null>(null);
   const [appRectangularLogo, setAppRectangularLogo] = useState<string | null>(null);
+  const [policlinicaLogo, setPoliclinicaLogo] = useState<string | null>(null);
+  const [consorcioLogo, setConsorcioLogo] = useState<string | null>(null);
 
   // Load app logo & letterhead from localStorage & Firestore on mount
   useEffect(() => {
@@ -4480,6 +4562,12 @@ export default function App() {
 
     const savedRectLogo = localStorage.getItem('app_rectangular_logo_base64');
     if (savedRectLogo) setAppRectangularLogo(savedRectLogo);
+
+    const savedPoliLogo = localStorage.getItem('policlinica_logo_base64');
+    if (savedPoliLogo) setPoliclinicaLogo(savedPoliLogo);
+
+    const savedConsLogo = localStorage.getItem('consorcio_logo_base64');
+    if (savedConsLogo) setConsorcioLogo(savedConsLogo);
 
     const savedLetterhead = localStorage.getItem('letterhead_image_base64');
     if (savedLetterhead) setLetterheadImage(savedLetterhead);
@@ -4490,14 +4578,41 @@ export default function App() {
         if (data.appLogo) {
           setAppLogo(data.appLogo);
           localStorage.setItem('app_logo_base64', data.appLogo);
+        } else {
+          setAppLogo(null);
+          localStorage.removeItem('app_logo_base64');
         }
+
         if (data.appRectangularLogo) {
           setAppRectangularLogo(data.appRectangularLogo);
           localStorage.setItem('app_rectangular_logo_base64', data.appRectangularLogo);
+        } else {
+          setAppRectangularLogo(null);
+          localStorage.removeItem('app_rectangular_logo_base64');
         }
+
+        if (data.policlinicaLogo) {
+          setPoliclinicaLogo(data.policlinicaLogo);
+          localStorage.setItem('policlinica_logo_base64', data.policlinicaLogo);
+        } else {
+          setPoliclinicaLogo(null);
+          localStorage.removeItem('policlinica_logo_base64');
+        }
+
+        if (data.consorcioLogo) {
+          setConsorcioLogo(data.consorcioLogo);
+          localStorage.setItem('consorcio_logo_base64', data.consorcioLogo);
+        } else {
+          setConsorcioLogo(null);
+          localStorage.removeItem('consorcio_logo_base64');
+        }
+
         if (data.letterheadImage) {
           setLetterheadImage(data.letterheadImage);
           localStorage.setItem('letterhead_image_base64', data.letterheadImage);
+        } else {
+          setLetterheadImage(null);
+          localStorage.removeItem('letterhead_image_base64');
         }
       }
     }, (err) => {
@@ -4612,6 +4727,78 @@ export default function App() {
     }
   };
 
+  const handlePoliclinicaLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (file.size > 2 * 1024 * 1024) {
+        showToast("Imagem muito grande. Máximo 2MB.", "error");
+        return;
+      }
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64 = reader.result as string;
+        setPoliclinicaLogo(base64);
+        localStorage.setItem('policlinica_logo_base64', base64);
+        try {
+          await setDoc(doc(db, 'settings', 'general'), { policlinicaLogo: base64 }, { merge: true });
+          showToast("Logo da Policlínica atualizada com sucesso!", "success");
+        } catch (err) {
+          console.error("Erro ao salvar no Firestore:", err);
+          showToast("Logo da Policlínica atualizada!", "success");
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleRemovePoliclinicaLogo = async () => {
+    setPoliclinicaLogo(null);
+    localStorage.removeItem('policlinica_logo_base64');
+    try {
+      await setDoc(doc(db, 'settings', 'general'), { policlinicaLogo: deleteField() }, { merge: true });
+      showToast("Logo da Policlínica removida com sucesso!", "success");
+    } catch (err) {
+      console.error("Erro ao remover logo da Policlínica do Firestore:", err);
+      showToast("Logo da Policlínica removida!", "success");
+    }
+  };
+
+  const handleConsorcioLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (file.size > 2 * 1024 * 1024) {
+        showToast("Imagem muito grande. Máximo 2MB.", "error");
+        return;
+      }
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64 = reader.result as string;
+        setConsorcioLogo(base64);
+        localStorage.setItem('consorcio_logo_base64', base64);
+        try {
+          await setDoc(doc(db, 'settings', 'general'), { consorcioLogo: base64 }, { merge: true });
+          showToast("Logo do Consórcio CPSMS atualizada com sucesso!", "success");
+        } catch (err) {
+          console.error("Erro ao salvar no Firestore:", err);
+          showToast("Logo do Consórcio atualizada!", "success");
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleRemoveConsorcioLogo = async () => {
+    setConsorcioLogo(null);
+    localStorage.removeItem('consorcio_logo_base64');
+    try {
+      await setDoc(doc(db, 'settings', 'general'), { consorcioLogo: deleteField() }, { merge: true });
+      showToast("Logo do Consórcio removida com sucesso!", "success");
+    } catch (err) {
+      console.error("Erro ao remover logo do Consórcio do Firestore:", err);
+      showToast("Logo do Consórcio removida!", "success");
+    }
+  };
+
   const handleExportDeliveryReceiptPDF = async (data: {
     sector: string;
     items: { product_name: string; quantity: number }[];
@@ -4629,58 +4816,66 @@ export default function App() {
 
       const drawLetterhead = (pdfDoc: any) => {
         const docLogo = appRectangularLogo || appLogo;
+        
+        // 1. LOGO ALMOXARIFADO (Left)
         if (docLogo) {
           try {
-            // Draw custom logo at the top right if available
             const format = docLogo.includes('image/png') ? 'PNG' : 'JPEG';
-            pdfDoc.addImage(docLogo, format, margin, 14, 40, 20, undefined, 'FAST');
+            pdfDoc.addImage(docLogo, format, margin, 10, 38, 16, undefined, 'FAST');
           } catch (e) {
             console.error("Error adding logo to Delivery Receipt:", e);
           }
+        } else {
+          pdfDoc.setFillColor(22, 163, 74);
+          pdfDoc.roundedRect(margin, 10, 16, 16, 3, 3, 'F');
+          pdfDoc.setFillColor(250, 204, 21);
+          pdfDoc.circle(margin + 8, 18, 4, 'F');
         }
 
-        const cpsmsCyan = [0, 169, 219];
-        const cpsmsOrange = [255, 185, 0];
-        const subtextGray = [120, 113, 108];
+        // 2. LOGO POLICLÍNICA (Center)
+        const centerX = (pageWidth / 2) - 8;
+        if (policlinicaLogo) {
+          try {
+            const format = policlinicaLogo.includes('image/png') ? 'PNG' : 'JPEG';
+            pdfDoc.addImage(policlinicaLogo, format, centerX, 10, 16, 16, undefined, 'FAST');
+          } catch (e) {
+            console.error("Error adding policlinicaLogo to Delivery Receipt:", e);
+          }
+        } else {
+          pdfDoc.setFillColor(2, 132, 199);
+          pdfDoc.roundedRect(centerX, 10, 16, 16, 3, 3, 'F');
+          pdfDoc.setFillColor(255, 255, 255);
+          pdfDoc.rect(centerX + 6.5, 10 + 3.5, 3, 9, 'F');
+          pdfDoc.rect(centerX + 3.5, 10 + 6.5, 9, 3, 'F');
+        }
 
-        // Header Left Side
-        pdfDoc.setFontSize(22);
-        pdfDoc.setTextColor(cpsmsCyan[0], cpsmsCyan[1], cpsmsCyan[2]);
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('Policlínica de Sobral', docLogo ? margin + 45 : margin, 20);
-        
-        pdfDoc.setFontSize(11);
-        pdfDoc.setTextColor(cpsmsOrange[0], cpsmsOrange[1], cpsmsOrange[2]);
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('BERNARDO FÉLIX DA SILVA', docLogo ? margin + 45 : margin, 26);
+        // 3. LOGO CONSÓRCIO CPSMS (Right)
+        const rightX = pageWidth - margin - 16;
+        if (consorcioLogo) {
+          try {
+            const format = consorcioLogo.includes('image/png') ? 'PNG' : 'JPEG';
+            pdfDoc.addImage(consorcioLogo, format, rightX, 10, 16, 16, undefined, 'FAST');
+          } catch (e) {
+            console.error("Error adding consorcioLogo to Delivery Receipt:", e);
+          }
+        } else {
+          pdfDoc.setFillColor(234, 88, 12);
+          pdfDoc.roundedRect(rightX, 10, 7.5, 7.5, 1.5, 1.5, 'F');
+          pdfDoc.roundedRect(rightX + 8.5, 10 + 8.5, 7.5, 7.5, 1.5, 1.5, 'F');
+          pdfDoc.setFillColor(2, 132, 199);
+          pdfDoc.roundedRect(rightX + 8.5, 10, 7.5, 7.5, 1.5, 1.5, 'F');
+          pdfDoc.roundedRect(rightX, 10 + 8.5, 7.5, 7.5, 1.5, 1.5, 'F');
+        }
 
-        // Header Right Side (Vector Logo)
-        const logoX = pageWidth - margin - 46; 
-        const logoY = 16;
-        
-        pdfDoc.setFillColor(cpsmsOrange[0], cpsmsOrange[1], cpsmsOrange[2]);
-        pdfDoc.roundedRect(logoX, logoY, 4, 4, 1.5, 1.5, 'F');
-        pdfDoc.setFillColor(cpsmsCyan[0], cpsmsCyan[1], cpsmsCyan[2]);
-        pdfDoc.roundedRect(logoX + 4.5, logoY, 4, 4, 1.5, 1.5, 'F');
-        pdfDoc.roundedRect(logoX, logoY + 4.5, 4, 4, 1.5, 1.5, 'F');
-        pdfDoc.roundedRect(logoX + 4.5, logoY + 4.5, 4, 4, 1.5, 1.5, 'F');
-
-        pdfDoc.setFontSize(26);
-        pdfDoc.setTextColor(cpsmsCyan[0], cpsmsCyan[1], cpsmsCyan[2]);
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('CPSMS', pageWidth - margin, 21, { align: 'right' });
-        
-        pdfDoc.setFontSize(6);
-        pdfDoc.setTextColor(subtextGray[0], subtextGray[1], subtextGray[2]);
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('CONSÓRCIO PÚBLICO DE SAÚDE', pageWidth - margin, 24, { align: 'right' });
-        pdfDoc.text('DA MICRORREGIÃO DE SOBRAL', pageWidth - margin, 26.5, { align: 'right' });
+        pdfDoc.setDrawColor(226, 232, 240);
+        pdfDoc.setLineWidth(0.5);
+        pdfDoc.line(margin, 29, pageWidth - margin, 29);
 
         // Footer
         pdfDoc.setFontSize(7.5);
         pdfDoc.setTextColor(120, 113, 108);
         pdfDoc.setFont('helvetica', 'normal');
-        const footer1 = 'Policlínica Bernardo Félix da Silva. Av. Monsenhor Aloísio Pinto, 481, CEP 62050-255, Sobral-CE';
+        const footer1 = 'Policlínica de Sobral. Av. Monsenhor Aloísio Pinto, 481, CEP 62050-255, Sobral-CE';
         const footer2 = 'Fone: (88) 3614-3156 | Fax: (88) 3614-3245 | cpsms.ce.gov.br';
         pdfDoc.text(footer1, pageWidth / 2, pageHeight - 12, { align: 'center' });
         pdfDoc.text(footer2, pageWidth / 2, pageHeight - 8, { align: 'center' });
@@ -4688,24 +4883,25 @@ export default function App() {
 
       drawLetterhead(doc);
       
-      // Document Title & Emissions
-      doc.setFontSize(11);
+      // Document Title & Emission Date directly below logos
+      doc.setFontSize(13);
       doc.setTextColor(28, 25, 23);
       doc.setFont('helvetica', 'bold');
-      doc.text('RECIBO DE ENTREGA DE MATERIAL', pageWidth / 2, 40, { align: 'center' });
+      doc.text('RECIBO DE ENTREGA DE MATERIAL', pageWidth / 2, 35, { align: 'center' });
       
-      doc.setFontSize(8);
+      doc.setFontSize(8.5);
       doc.setFont('helvetica', 'normal');
-      doc.text(`Data de Emissão: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, pageWidth - 14, 45, { align: 'right' });
+      doc.setTextColor(100, 116, 139);
+      doc.text(`Data de Emissão: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, pageWidth / 2, 40, { align: 'center' });
 
       // Stylized blue separator
       doc.setDrawColor(0, 139, 190);
       doc.setLineWidth(0.5);
-      doc.line(14, 48, pageWidth - 14, 48);
+      doc.line(14, 44, pageWidth - 14, 44);
 
       // Info Card
       doc.setFillColor(248, 250, 252);
-      doc.roundedRect(14, 52, pageWidth - 28, 20, 2, 2, 'F');
+      doc.roundedRect(14, 48, pageWidth - 28, 20, 2, 2, 'F');
       
       doc.setFontSize(9);
       doc.setTextColor(71, 85, 105);
@@ -4800,7 +4996,7 @@ export default function App() {
       doc.setDrawColor(226, 232, 240);
       doc.line(14, pageHeight - 20, pageWidth - 14, pageHeight - 20);
       
-      const footerLine1 = 'Policlínica Bernardo Félix da Silva. Av. Monsenhor Aloísio Pinto, 481, Dom Expedito CEP 62050-255, Sobral Ceará.';
+      const footerLine1 = 'Policlínica de Sobral. Av. Monsenhor Aloísio Pinto, 481, Dom Expedito CEP 62050-255, Sobral Ceará.';
       const footerLine2 = 'Fone: (88) 3614-3156 . Fax: (88) 3614-3245';
       doc.text(footerLine1, pageWidth / 2, pageHeight - 12, { align: 'center' });
       doc.text(footerLine2, pageWidth / 2, pageHeight - 8, { align: 'center' });
@@ -5399,7 +5595,7 @@ export default function App() {
                 Policlínica
               </h1>
               <h2 className="text-sm font-black text-blue-700 uppercase tracking-wider mt-0.5">
-                Bernardo Félix da Silva
+                de Sobral
               </h2>
             </div>
             <div className="h-0.5 w-12 bg-blue-100 mx-auto mb-4 rounded-full" />
@@ -8188,7 +8384,7 @@ export default function App() {
                       {/* Document Header - Timbrado Image Only */}
                       <div className="pb-4 border-b-2 border-slate-200 flex justify-center items-center min-h-[70px]">
                         <img 
-                          src={letterheadImage || "/official_letterhead.png"} 
+                          src={letterheadImage || "/official_letterhead.svg"} 
                           alt="Papel Timbrado Oficial" 
                           className="w-full max-h-24 object-contain" 
                           onError={(e) => {
@@ -8347,7 +8543,7 @@ export default function App() {
                       {/* Official Document Footer */}
                       <div className="pt-4 border-t border-slate-200 text-center text-[10px] font-bold space-y-0.5" style={{ color: '#64748b' }}>
                         <p>
-                          Policlínica Bernardo Félix da Silva. Av. Monsenhor Aloísio Pinto, 481, Dom Expedito CEP 62050-255, Sobral Ceará.
+                          Policlínica de Sobral. Av. Monsenhor Aloísio Pinto, 481, Dom Expedito CEP 62050-255, Sobral Ceará.
                         </p>
                         <p>Fone: (88) 3614-3156 . Fax: (88) 3614-3245</p>
                       </div>
@@ -10257,9 +10453,9 @@ export default function App() {
                           <input 
                             required
                             type="text"
-                            placeholder="Policlínica Bernardo Félix da Silva"
+                            placeholder="Policlínica de Sobral"
                             className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
-                            value={donationUnitName || 'Policlínica Bernardo Félix da Silva'}
+                            value={donationUnitName || 'Policlínica de Sobral'}
                             onChange={e => setDonationUnitName(e.target.value)}
                           />
                         </div>
@@ -10813,146 +11009,315 @@ export default function App() {
                   <div className="p-4 bg-blue-50/80 rounded-2xl border border-blue-100 text-blue-900">
                     <h4 className="text-xs font-black uppercase tracking-wider text-blue-800 mb-1 flex items-center gap-2">
                       <ImageIcon size={16} className="text-blue-600" />
-                      Gerenciamento de Logotipos
+                      Gerenciamento Completo de Logotipos
                     </h4>
                     <p className="text-xs leading-relaxed text-blue-700 font-medium">
-                      Configure a <strong>Logo Quadrada</strong> para o menu do sistema e a <strong>Logo Retangular</strong> para a tela de login e para os documentos/relatórios PDF.
+                      Cadastre os logotipos oficiais da <strong>Policlínica</strong>, do <strong>Consórcio CPSMS</strong>, do <strong>Governo/SUS</strong> e do <strong>Sistema</strong>. Eles serão inseridos automaticamente em todos os documentos PDF, relatórios e recibos.
                     </p>
                   </div>
 
-                  {/* Section 1: Logo Quadrada */}
-                  <div className="p-5 bg-white rounded-2xl border border-slate-200 space-y-4">
-                    <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                      <div>
-                        <h4 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
-                          <span className="w-2.5 h-2.5 rounded-full bg-blue-600 inline-block"></span>
-                          Logo Quadrada (Menu do Sistema)
-                        </h4>
-                        <p className="text-[11px] text-slate-500 font-medium mt-0.5">
-                          Exibida no menu lateral e topo da navegação.
-                        </p>
-                      </div>
-                      {appLogo && (
-                        <button 
-                          onClick={handleRemoveLogo}
-                          className="text-xs font-extrabold text-rose-600 hover:text-rose-700 hover:underline flex items-center gap-1"
-                        >
-                          <Trash2 size={13} /> Remover Logo
-                        </button>
-                      )}
+                  {/* Live Document Header Preview */}
+                  <div className="p-4 bg-slate-900 text-white rounded-2xl space-y-3 shadow-md">
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                      <span className="text-[10px] font-black uppercase tracking-widest text-emerald-400 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                        Pré-Visualização do Cabeçalho dos Documentos
+                      </span>
+                      <span className="text-[9px] font-semibold text-slate-400">Modelo PDF A4</span>
                     </div>
 
-                    {/* Preview Menu */}
-                    <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
-                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block mb-1.5">Pré-visualização no Menu</span>
-                      <div className="flex items-center gap-3 bg-white p-2.5 rounded-xl border border-slate-200 shadow-xs">
-                        {appLogo ? (
-                          <div className="w-10 h-10 rounded-xl overflow-hidden bg-white border border-blue-100 p-1 shadow-xs flex items-center justify-center shrink-0">
-                            <img src={appLogo} alt="Preview Logo Quadrada" className="w-full h-full object-contain" />
-                          </div>
-                        ) : (
-                          <div className="bg-gradient-to-br from-blue-700 via-blue-800 to-indigo-900 p-2 rounded-xl text-white shadow-xs shrink-0">
-                            <Package className="w-6 h-6" />
-                          </div>
-                        )}
-                        <div>
-                          <h1 className="font-black text-sm text-slate-900 leading-none">Policlínica</h1>
-                          <span className="text-[9px] font-black text-blue-700 bg-blue-50 border border-blue-100 px-1.5 py-0.5 rounded-md uppercase tracking-widest block w-fit mt-0.5">
-                            Almoxarifado
-                          </span>
+                    <div className="bg-white p-4 rounded-xl border border-slate-700 text-slate-900 space-y-3 shadow-inner">
+                      {/* Top Row: ONLY the 3 Logos */}
+                      <div className="flex items-center justify-between gap-2">
+                        {/* 1. Logo Almoxarifado (Left) */}
+                        <div className="w-24 h-10 bg-slate-50 border border-slate-200 rounded-lg p-1 flex items-center justify-center shrink-0 overflow-hidden">
+                          {appRectangularLogo ? (
+                            <img src={appRectangularLogo} alt="Logo Almoxarifado" className="max-h-full max-w-full object-contain" />
+                          ) : appLogo ? (
+                            <img src={appLogo} alt="Logo Sistema" className="max-h-full max-w-full object-contain" />
+                          ) : (
+                            <div className="text-[8px] font-black text-emerald-700 uppercase">ALMOXARIFADO</div>
+                          )}
+                        </div>
+
+                        {/* 2. Logo Policlínica (Center) */}
+                        <div className="w-10 h-10 bg-sky-50 border border-sky-100 rounded-lg p-0.5 flex items-center justify-center overflow-hidden">
+                          {policlinicaLogo ? (
+                            <img src={policlinicaLogo} alt="Logo Policlínica" className="max-h-full max-w-full object-contain" />
+                          ) : (
+                            <div className="bg-sky-600 text-white p-1 rounded font-black text-[8px]">POLI</div>
+                          )}
+                        </div>
+
+                        {/* 3. Logo Consórcio CPSMS (Right) */}
+                        <div className="w-10 h-10 bg-orange-50 border border-orange-100 rounded-lg p-0.5 flex items-center justify-center overflow-hidden">
+                          {consorcioLogo ? (
+                            <img src={consorcioLogo} alt="Logo Consórcio" className="max-h-full max-w-full object-contain" />
+                          ) : (
+                            <div className="bg-orange-500 text-white p-1 rounded font-black text-[7px] text-center">CPSMS</div>
+                          )}
                         </div>
                       </div>
-                    </div>
 
-                    {/* Upload Quadrada */}
-                    <label className="block w-full cursor-pointer group">
-                      <div className={`overflow-hidden rounded-2xl border-2 border-dashed transition-all flex flex-col items-center justify-center gap-2 p-5 ${appLogo ? 'border-blue-300 bg-blue-50/20 hover:bg-blue-50/40' : 'border-slate-300 hover:border-blue-500 hover:bg-slate-50'}`}>
-                        {appLogo ? (
-                          <div className="flex flex-col items-center gap-2">
-                            <img src={appLogo} alt="Logo Quadrada" className="max-h-20 object-contain" />
-                            <span className="text-xs font-bold text-blue-700 bg-blue-100/80 px-3 py-1 rounded-full flex items-center gap-1.5">
-                              <Upload size={13} /> Clique para alterar a logo quadrada
-                            </span>
-                          </div>
-                        ) : (
-                          <>
-                            <div className="p-3 bg-blue-50 text-blue-600 rounded-full shadow-xs group-hover:scale-110 transition-transform">
-                              <Upload size={20} />
-                            </div>
-                            <div className="text-center">
-                              <p className="text-xs font-black text-slate-800">Clique para enviar a logo quadrada</p>
-                              <p className="text-[10px] font-bold text-slate-400 mt-0.5">Formato recomendado: 1:1 (PNG, JPG ou SVG - Máx. 2MB)</p>
-                            </div>
-                          </>
-                        )}
-                      </div>
-                      <input type="file" accept="image/*" className="hidden" onChange={handleLogoUpload} />
-                    </label>
-                  </div>
+                      {/* Divider Line */}
+                      <div className="border-t border-slate-200" />
 
-                  {/* Section 2: Logo Retangular */}
-                  <div className="p-5 bg-white rounded-2xl border border-slate-200 space-y-4">
-                    <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                      <div>
-                        <h4 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
-                          <span className="w-2.5 h-2.5 rounded-full bg-emerald-600 inline-block"></span>
-                          Logo Retangular (Login e Documentos PDF)
-                        </h4>
-                        <p className="text-[11px] text-slate-500 font-medium mt-0.5">
-                          Exibida na tela de login e no cabeçalho de recibos, termos, catálogos e relatórios PDF.
+                      {/* Title & Emission Date below logos */}
+                      <div className="text-center space-y-0.5">
+                        <h5 className="font-black text-xs text-slate-900 uppercase tracking-tight">
+                          RECIBO DE ENTREGA DE MATERIAL
+                        </h5>
+                        <p className="text-[9px] font-semibold text-slate-500">
+                          Data de Emissão: {format(new Date(), 'dd/MM/yyyy HH:mm')}
                         </p>
                       </div>
-                      {appRectangularLogo && (
-                        <button 
-                          onClick={handleRemoveRectangularLogo}
-                          className="text-xs font-extrabold text-rose-600 hover:text-rose-700 hover:underline flex items-center gap-1"
-                        >
-                          <Trash2 size={13} /> Remover Logo
-                        </button>
-                      )}
                     </div>
+                  </div>
 
-                    {/* Preview Login & Document */}
-                    <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
-                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block mb-1.5">Pré-visualização (Login & Documentos)</span>
-                      <div className="flex items-center justify-center bg-white p-3 rounded-xl border border-slate-200 shadow-xs h-20">
-                        {appRectangularLogo ? (
-                          <img src={appRectangularLogo} alt="Preview Logo Retangular" className="max-h-full max-w-full object-contain" />
-                        ) : appLogo ? (
-                          <div className="flex items-center gap-2 text-slate-500">
-                            <img src={appLogo} alt="Fallback Logo Quadrada" className="max-h-12 max-w-full object-contain opacity-70" />
-                            <span className="text-[10px] font-semibold text-slate-400">(Usando logo quadrada como fallback)</span>
-                          </div>
-                        ) : (
-                          <span className="text-xs font-bold text-slate-400">Nenhuma logo cadastrada</span>
+                  {/* Grid de 4 Logotipos */}
+                  <div className="grid grid-cols-1 gap-5">
+                    {/* 1. Logo da Policlínica */}
+                    <div className="p-5 bg-white rounded-2xl border border-sky-200 shadow-xs space-y-3">
+                      <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                        <div>
+                          <h4 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
+                            <span className="w-2.5 h-2.5 rounded-full bg-sky-600 inline-block"></span>
+                            Logo Oficial da Policlínica
+                          </h4>
+                          <p className="text-[11px] text-slate-500 font-medium mt-0.5">
+                            Substitui a marca da Policlínica no canto superior do cabeçalho dos documentos.
+                          </p>
+                        </div>
+                        {policlinicaLogo && (
+                          <button 
+                            onClick={handleRemovePoliclinicaLogo}
+                            className="text-xs font-extrabold text-rose-600 hover:text-rose-700 hover:underline flex items-center gap-1"
+                          >
+                            <Trash2 size={13} /> Remover
+                          </button>
                         )}
                       </div>
+
+                      <label className="block w-full cursor-pointer group">
+                        <div className={`overflow-hidden rounded-2xl border-2 border-dashed transition-all flex flex-col items-center justify-center gap-2 p-4 ${policlinicaLogo ? 'border-sky-300 bg-sky-50/20 hover:bg-sky-50/40' : 'border-slate-300 hover:border-sky-500 hover:bg-slate-50'}`}>
+                          {policlinicaLogo ? (
+                            <div className="flex flex-col items-center gap-2">
+                              <img src={policlinicaLogo} alt="Logo Policlínica" className="max-h-16 object-contain" />
+                              <span className="text-xs font-bold text-sky-700 bg-sky-100/80 px-3 py-1 rounded-full flex items-center gap-1.5">
+                                <Upload size={13} /> Alterar Logo da Policlínica
+                              </span>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-3">
+                              <div className="p-2.5 bg-sky-50 text-sky-600 rounded-full group-hover:scale-110 transition-transform">
+                                <Upload size={18} />
+                              </div>
+                              <div>
+                                <p className="text-xs font-black text-slate-800">Clique para enviar a logo da Policlínica</p>
+                                <p className="text-[10px] font-bold text-slate-400">PNG, JPG ou SVG (Máx. 2MB)</p>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                        <input type="file" accept="image/*" className="hidden" onChange={handlePoliclinicaLogoUpload} />
+                      </label>
                     </div>
 
-                    {/* Upload Retangular */}
-                    <label className="block w-full cursor-pointer group">
-                      <div className={`overflow-hidden rounded-2xl border-2 border-dashed transition-all flex flex-col items-center justify-center gap-2 p-5 ${appRectangularLogo ? 'border-emerald-300 bg-emerald-50/20 hover:bg-emerald-50/40' : 'border-slate-300 hover:border-emerald-500 hover:bg-slate-50'}`}>
-                        {appRectangularLogo ? (
-                          <div className="flex flex-col items-center gap-2">
-                            <img src={appRectangularLogo} alt="Logo Retangular" className="max-h-20 object-contain" />
-                            <span className="text-xs font-bold text-emerald-700 bg-emerald-100/80 px-3 py-1 rounded-full flex items-center gap-1.5">
-                              <Upload size={13} /> Clique para alterar a logo retangular
-                            </span>
-                          </div>
-                        ) : (
-                          <>
-                            <div className="p-3 bg-emerald-50 text-emerald-600 rounded-full shadow-xs group-hover:scale-110 transition-transform">
-                              <Upload size={20} />
-                            </div>
-                            <div className="text-center">
-                              <p className="text-xs font-black text-slate-800">Clique para enviar a logo retangular</p>
-                              <p className="text-[10px] font-bold text-slate-400 mt-0.5">Formato recomendado: Horizontal / Retangular (PNG, JPG ou SVG - Máx. 2MB)</p>
-                            </div>
-                          </>
+                    {/* 2. Logo do Consórcio CPSMS */}
+                    <div className="p-5 bg-white rounded-2xl border border-orange-200 shadow-xs space-y-3">
+                      <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                        <div>
+                          <h4 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
+                            <span className="w-2.5 h-2.5 rounded-full bg-orange-500 inline-block"></span>
+                            Logo Oficial do Consórcio CPSMS
+                          </h4>
+                          <p className="text-[11px] text-slate-500 font-medium mt-0.5">
+                            Substitui a marca do Consórcio no canto superior do cabeçalho dos documentos.
+                          </p>
+                        </div>
+                        {consorcioLogo && (
+                          <button 
+                            onClick={handleRemoveConsorcioLogo}
+                            className="text-xs font-extrabold text-rose-600 hover:text-rose-700 hover:underline flex items-center gap-1"
+                          >
+                            <Trash2 size={13} /> Remover
+                          </button>
                         )}
                       </div>
-                      <input type="file" accept="image/*" className="hidden" onChange={handleRectangularLogoUpload} />
-                    </label>
+
+                      <label className="block w-full cursor-pointer group">
+                        <div className={`overflow-hidden rounded-2xl border-2 border-dashed transition-all flex flex-col items-center justify-center gap-2 p-4 ${consorcioLogo ? 'border-orange-300 bg-orange-50/20 hover:bg-orange-50/40' : 'border-slate-300 hover:border-orange-500 hover:bg-slate-50'}`}>
+                          {consorcioLogo ? (
+                            <div className="flex flex-col items-center gap-2">
+                              <img src={consorcioLogo} alt="Logo Consórcio" className="max-h-16 object-contain" />
+                              <span className="text-xs font-bold text-orange-700 bg-orange-100/80 px-3 py-1 rounded-full flex items-center gap-1.5">
+                                <Upload size={13} /> Alterar Logo do Consórcio
+                              </span>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-3">
+                              <div className="p-2.5 bg-orange-50 text-orange-600 rounded-full group-hover:scale-110 transition-transform">
+                                <Upload size={18} />
+                              </div>
+                              <div>
+                                <p className="text-xs font-black text-slate-800">Clique para enviar a logo do Consórcio CPSMS</p>
+                                <p className="text-[10px] font-bold text-slate-400">PNG, JPG ou SVG (Máx. 2MB)</p>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                        <input type="file" accept="image/*" className="hidden" onChange={handleConsorcioLogoUpload} />
+                      </label>
+                    </div>
+
+                    {/* 3. Logo Estado / SUS / Governo (Login e Canto Esquerdo) */}
+                    <div className="p-5 bg-white rounded-2xl border border-emerald-200 shadow-xs space-y-3">
+                      <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                        <div>
+                          <h4 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
+                            <span className="w-2.5 h-2.5 rounded-full bg-emerald-600 inline-block"></span>
+                            Logo Estado / SUS / Governo (Login e Canto Esquerdo)
+                          </h4>
+                          <p className="text-[11px] text-slate-500 font-medium mt-0.5">
+                            Exibida no canto superior esquerdo dos relatórios e na tela de login.
+                          </p>
+                        </div>
+                        {appRectangularLogo && (
+                          <button 
+                            onClick={handleRemoveRectangularLogo}
+                            className="text-xs font-extrabold text-rose-600 hover:text-rose-700 hover:underline flex items-center gap-1"
+                          >
+                            <Trash2 size={13} /> Remover
+                          </button>
+                        )}
+                      </div>
+
+                      <label className="block w-full cursor-pointer group">
+                        <div className={`overflow-hidden rounded-2xl border-2 border-dashed transition-all flex flex-col items-center justify-center gap-2 p-4 ${appRectangularLogo ? 'border-emerald-300 bg-emerald-50/20 hover:bg-emerald-50/40' : 'border-slate-300 hover:border-emerald-500 hover:bg-slate-50'}`}>
+                          {appRectangularLogo ? (
+                            <div className="flex flex-col items-center gap-2">
+                              <img src={appRectangularLogo} alt="Logo Estado/SUS" className="max-h-16 object-contain" />
+                              <span className="text-xs font-bold text-emerald-700 bg-emerald-100/80 px-3 py-1 rounded-full flex items-center gap-1.5">
+                                <Upload size={13} /> Alterar Logo Estado/SUS
+                              </span>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-3">
+                              <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-full group-hover:scale-110 transition-transform">
+                                <Upload size={18} />
+                              </div>
+                              <div>
+                                <p className="text-xs font-black text-slate-800">Clique para enviar a logo retangular (Estado/SUS)</p>
+                                <p className="text-[10px] font-bold text-slate-400">PNG, JPG ou SVG (Máx. 2MB)</p>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                        <input type="file" accept="image/*" className="hidden" onChange={handleRectangularLogoUpload} />
+                      </label>
+                    </div>
+
+                    {/* 4. Logo Quadrada (Menu do Sistema) */}
+                    <div className="p-5 bg-white rounded-2xl border border-blue-200 shadow-xs space-y-3">
+                      <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                        <div>
+                          <h4 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
+                            <span className="w-2.5 h-2.5 rounded-full bg-blue-600 inline-block"></span>
+                            Logo Quadrada (Menu do Sistema)
+                          </h4>
+                          <p className="text-[11px] text-slate-500 font-medium mt-0.5">
+                            Exibida no menu lateral e topo da navegação do almoxarifado.
+                          </p>
+                        </div>
+                        {appLogo && (
+                          <button 
+                            onClick={handleRemoveLogo}
+                            className="text-xs font-extrabold text-rose-600 hover:text-rose-700 hover:underline flex items-center gap-1"
+                          >
+                            <Trash2 size={13} /> Remover
+                          </button>
+                        )}
+                      </div>
+
+                      <label className="block w-full cursor-pointer group">
+                        <div className={`overflow-hidden rounded-2xl border-2 border-dashed transition-all flex flex-col items-center justify-center gap-2 p-4 ${appLogo ? 'border-blue-300 bg-blue-50/20 hover:bg-blue-50/40' : 'border-slate-300 hover:border-blue-500 hover:bg-slate-50'}`}>
+                          {appLogo ? (
+                            <div className="flex flex-col items-center gap-2">
+                              <img src={appLogo} alt="Logo Quadrada Menu" className="max-h-16 object-contain" />
+                              <span className="text-xs font-bold text-blue-700 bg-blue-100/80 px-3 py-1 rounded-full flex items-center gap-1.5">
+                                <Upload size={13} /> Alterar Logo Quadrada
+                              </span>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-3">
+                              <div className="p-2.5 bg-blue-50 text-blue-600 rounded-full group-hover:scale-110 transition-transform">
+                                <Upload size={18} />
+                              </div>
+                              <div>
+                                <p className="text-xs font-black text-slate-800">Clique para enviar a logo quadrada do sistema</p>
+                                <p className="text-[10px] font-bold text-slate-400">Formato 1:1 (PNG, JPG ou SVG - Máx. 2MB)</p>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                        <input type="file" accept="image/*" className="hidden" onChange={handleLogoUpload} />
+                      </label>
+                    </div>
+
+                    {/* 5. Papel Timbrado Completo (Imagem A4) */}
+                    <div className="p-5 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-3">
+                      <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                        <div>
+                          <h4 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
+                            <span className="w-2.5 h-2.5 rounded-full bg-indigo-600 inline-block"></span>
+                            Papel Timbrado Completo (Imagem de Fundo A4)
+                          </h4>
+                          <p className="text-[11px] text-slate-500 font-medium mt-0.5">
+                            Caso sua instituição já possua um papel timbrado em imagem única para o fundo do PDF.
+                          </p>
+                        </div>
+                        {letterheadImage && (
+                          <button 
+                            onClick={handleRemoveLetterhead}
+                            className="text-xs font-extrabold text-rose-600 hover:text-rose-700 hover:underline flex items-center gap-1"
+                          >
+                            <Trash2 size={13} /> Remover Timbrado
+                          </button>
+                        )}
+                      </div>
+
+                      <label className="block w-full cursor-pointer group">
+                        <div className={`overflow-hidden rounded-2xl border-2 border-dashed transition-all flex flex-col items-center justify-center gap-2 p-4 ${letterheadImage ? 'border-indigo-300 bg-indigo-50/20 hover:bg-indigo-50/40' : 'border-slate-300 hover:border-indigo-500 hover:bg-slate-50'}`}>
+                          {letterheadImage ? (
+                            <div className="flex flex-col items-center gap-2">
+                              <img src={letterheadImage} alt="Papel Timbrado A4" className="max-h-20 object-contain rounded-md border border-slate-200 shadow-xs" />
+                              <span className="text-xs font-bold text-indigo-700 bg-indigo-100/80 px-3 py-1 rounded-full flex items-center gap-1.5">
+                                <Upload size={13} /> Alterar imagem de Papel Timbrado
+                              </span>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-3">
+                              <div className="p-2.5 bg-indigo-50 text-indigo-600 rounded-full group-hover:scale-110 transition-transform">
+                                <Upload size={18} />
+                              </div>
+                              <div>
+                                <p className="text-xs font-black text-slate-800">Clique para enviar imagem de papel timbrado completa</p>
+                                <p className="text-[10px] font-bold text-slate-400">PNG ou JPG (Máx. 5MB)</p>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                        <input 
+                          type="file" 
+                          accept="image/*" 
+                          className="hidden" 
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) handleLetterheadUpload(file);
+                          }} 
+                        />
+                      </label>
+                    </div>
                   </div>
                 </div>
               )}
