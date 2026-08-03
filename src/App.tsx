@@ -385,7 +385,7 @@ export default function App() {
   const [devolutionReason, setDevolutionReason] = useState('Não teve uso');
   const [devolutionObservation, setDevolutionObservation] = useState('');
   const [isProcessingDevolution, setIsProcessingDevolution] = useState(false);
-  const [devolutionSubTab, setDevolutionSubTab] = useState<'my_returns' | 'eligible_deliveries'>('my_returns');
+  const [devolutionSubTab, setDevolutionSubTab] = useState<'my_returns' | 'eligible_deliveries' | 'sector_stock'>('my_returns');
   const [adminAddItemSearch, setAdminAddItemSearch] = useState('');
   const [isAdminAddingItem, setIsAdminAddingItem] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -2295,162 +2295,143 @@ export default function App() {
           throw new Error("Esta devolução já foi aprovada anteriormente.");
         }
 
-        // Collect unique batch IDs to fetch inside transaction
-        const targetBatchIdsToRead = new Set<string>();
+        // Collect all doc IDs that we need to read in the transaction:
+        // 1) Sector source items (Farmácia / Requesting sector)
+        // 2) Almoxarifado target items
+        const docIdsToRead = new Set<string>();
 
         for (const item of devItems) {
           const returnQty = item.quantity_approved || item.quantity_requested || 0;
           if (returnQty <= 0) continue;
 
-          let targetBatch: Item | undefined;
-          if (item.batch_id) {
-            targetBatch = allActiveItems.find(i => i.id === item.batch_id);
+          // Find source item in sector stock
+          if (item.batch_id && allActiveItems.some(i => i.id === item.batch_id)) {
+            docIdsToRead.add(item.batch_id);
           }
-          if (!targetBatch) {
-            targetBatch = allActiveItems.find(i => 
-              i.name.trim().toLowerCase() === item.product_name.trim().toLowerCase() && 
-              (!i.location || i.location === 'Almoxarifado')
-            );
-          }
-          if (!targetBatch) {
-            targetBatch = allActiveItems.find(i => 
-              i.name.trim().toLowerCase() === item.product_name.trim().toLowerCase()
-            );
+          const sectorItem = allActiveItems.find(i => 
+            i.name.trim().toLowerCase() === item.product_name.trim().toLowerCase() && 
+            i.location === requestData.sector
+          );
+          if (sectorItem) {
+            docIdsToRead.add(sectorItem.id);
           }
 
-          if (targetBatch) {
-            targetBatchIdsToRead.add(targetBatch.id);
+          // Find target item in Almoxarifado stock
+          const almoxItem = allActiveItems.find(i => 
+            i.name.trim().toLowerCase() === item.product_name.trim().toLowerCase() && 
+            (!i.location || i.location === 'Almoxarifado')
+          );
+          if (almoxItem) {
+            docIdsToRead.add(almoxItem.id);
           }
         }
 
-        // Farmácia sector location check
-        const pharmBatchIdsToRead = new Set<string>();
-        if (requestData.sector === 'Farmácia') {
-          for (const item of devItems) {
-            const pharmItem = allActiveItems.find(i => 
-              i.name.trim().toLowerCase() === item.product_name.trim().toLowerCase() && 
-              i.location === 'Farmácia'
-            );
-            if (pharmItem) {
-              pharmBatchIdsToRead.add(pharmItem.id);
-            }
-          }
-        }
-
-        // Execute sequential reads inside transaction
+        // Read all docs inside transaction
         const snapMap = new Map<string, any>();
-
-        for (const bId of targetBatchIdsToRead) {
-          const bRef = doc(db, 'items', bId);
-          const bSnap = await transaction.get(bRef);
-          snapMap.set(bId, bSnap);
+        for (const id of docIdsToRead) {
+          const itemRef = doc(db, 'items', id);
+          const snap = await transaction.get(itemRef);
+          snapMap.set(id, snap);
         }
 
-        for (const pId of pharmBatchIdsToRead) {
-          if (!snapMap.has(pId)) {
-            const pRef = doc(db, 'items', pId);
-            const pSnap = await transaction.get(pRef);
-            snapMap.set(pId, pSnap);
-          }
-        }
-
-        // Execute writes inside transaction
+        // Now perform transaction writes
         for (const item of devItems) {
           const returnQty = item.quantity_approved || item.quantity_requested || 0;
           if (returnQty <= 0) continue;
 
-          let targetBatchId: string | undefined;
-          let targetBatchData: Item | undefined;
+          // 1. DECREASE stock in sector (e.g., Farmácia)
+          let sourceItemDoc: { id: string, data: Item } | undefined;
 
+          // Check if item.batch_id is a valid sector item
           if (item.batch_id && snapMap.has(item.batch_id)) {
             const snap = snapMap.get(item.batch_id);
             if (snap && snap.exists()) {
-              targetBatchId = item.batch_id;
-              targetBatchData = snap.data() as Item;
+              const data = snap.data() as Item;
+              if (data.location === requestData.sector) {
+                sourceItemDoc = { id: item.batch_id, data };
+              }
             }
           }
 
-          if (!targetBatchData) {
+          // Fallback search for sector item by name & location
+          if (!sourceItemDoc) {
             for (const [id, snap] of snapMap.entries()) {
-              if (snap.exists()) {
+              if (snap && snap.exists()) {
                 const data = snap.data() as Item;
-                if (data.name.trim().toLowerCase() === item.product_name.trim().toLowerCase()) {
-                  targetBatchId = id;
-                  targetBatchData = data;
+                if (data.location === requestData.sector && data.name.trim().toLowerCase() === item.product_name.trim().toLowerCase()) {
+                  sourceItemDoc = { id, data };
                   break;
                 }
               }
             }
           }
 
-          let batchRef: DocumentReference;
-          let currentQty = 0;
-          let batchNumber = 'Devolução';
-          let expiryDate = 'Indeterminada';
-          let origin = 'extra';
-
-          if (targetBatchId && targetBatchData) {
-            batchRef = doc(db, 'items', targetBatchId);
-            currentQty = targetBatchData.quantity || 0;
-            batchNumber = targetBatchData.batch_number || 'Devolução';
-            expiryDate = targetBatchData.expiry_date || 'Indeterminada';
-            origin = targetBatchData.origin || 'extra';
-
-            const newQty = currentQty + returnQty;
-            transaction.update(batchRef, {
+          if (sourceItemDoc) {
+            const sourceRef = doc(db, 'items', sourceItemDoc.id);
+            const currentQty = Number(sourceItemDoc.data.quantity) || 0;
+            const newQty = Math.max(0, currentQty - returnQty);
+            transaction.update(sourceRef, {
               quantity: newQty,
               updatedAt: serverTimestamp()
             });
+            sourceItemDoc.data.quantity = newQty; // update in-memory
+          }
 
-            // Update in-memory snapMap data
-            targetBatchData.quantity = newQty;
+          // 2. INCREASE stock in Almoxarifado
+          let almoxItemDoc: { id: string, data: Item } | undefined;
+          for (const [id, snap] of snapMap.entries()) {
+            if (snap && snap.exists()) {
+              const data = snap.data() as Item;
+              if ((!data.location || data.location === 'Almoxarifado') && data.name.trim().toLowerCase() === item.product_name.trim().toLowerCase()) {
+                almoxItemDoc = { id, data };
+                break;
+              }
+            }
+          }
+
+          let almoxRef: DocumentReference;
+          let batchNumber = sourceItemDoc?.data.batch_number || 'Devolução';
+          let expiryDate = sourceItemDoc?.data.expiry_date || 'Indeterminada';
+          let category = sourceItemDoc?.data.category || 'Medicamentos';
+          let unitMeasure = sourceItemDoc?.data.unit_measure || 'Unidade (UN)';
+
+          if (almoxItemDoc) {
+            almoxRef = doc(db, 'items', almoxItemDoc.id);
+            const currentAlmoxQty = Number(almoxItemDoc.data.quantity) || 0;
+            const newAlmoxQty = currentAlmoxQty + returnQty;
+            transaction.update(almoxRef, {
+              quantity: newAlmoxQty,
+              updatedAt: serverTimestamp()
+            });
+            almoxItemDoc.data.quantity = newAlmoxQty; // update in-memory
           } else {
-            // If item does not exist in stock, create a new stock item in Almoxarifado
+            // Create new stock item in Almoxarifado if none exists
             const newStockRef = doc(collection(db, 'items'));
-            batchRef = newStockRef;
+            almoxRef = newStockRef;
             transaction.set(newStockRef, {
               name: item.product_name,
               quantity: returnQty,
               min_quantity: 10,
-              category: 'Geral',
+              category: category,
               unit: 'unid',
+              unit_measure: unitMeasure,
               location: 'Almoxarifado',
               origin: 'extra',
-              batch_number: 'Devolução',
-              expiry_date: 'Indeterminada',
+              batch_number: batchNumber,
+              expiry_date: expiryDate,
               entry_date: new Date().toISOString(),
               createdAt: serverTimestamp(),
               updatedAt: serverTimestamp()
             });
           }
 
-          // If sector is Farmácia, decrease Farmácia stock
-          if (requestData.sector === 'Farmácia') {
-            for (const [pId, pSnap] of snapMap.entries()) {
-              if (pSnap.exists()) {
-                const pData = pSnap.data() as Item;
-                if (pData.location === 'Farmácia' && pData.name.trim().toLowerCase() === item.product_name.trim().toLowerCase()) {
-                  const pRef = doc(db, 'items', pId);
-                  const pCurrentQty = pData.quantity || 0;
-                  const pNewQty = Math.max(0, pCurrentQty - returnQty);
-                  transaction.update(pRef, {
-                    quantity: pNewQty,
-                    updatedAt: serverTimestamp()
-                  });
-                  pData.quantity = pNewQty;
-                  break;
-                }
-              }
-            }
-          }
-
-          // Create entry transaction log
-          const transRef = doc(collection(db, 'transactions'));
-          transaction.set(transRef, {
-            item_id: batchRef.id,
+          // 3. Log entry transaction for Almoxarifado
+          const transRefEntry = doc(collection(db, 'transactions'));
+          transaction.set(transRefEntry, {
+            item_id: almoxRef.id,
             item_name: item.product_name,
             type: 'entry',
-            origin: origin,
+            origin: 'extra',
             quantity: returnQty,
             sector: requestData.sector,
             location: 'Almoxarifado',
@@ -2462,6 +2443,26 @@ export default function App() {
             isReturn: true,
             returnReason: requestData.returnReason || 'Não especificado',
             observation: requestData.observation || ''
+          });
+
+          // 4. Log exit transaction for Sector/Farmácia
+          const transRefExit = doc(collection(db, 'transactions'));
+          transaction.set(transRefExit, {
+            item_id: sourceItemDoc ? sourceItemDoc.id : almoxRef.id,
+            item_name: item.product_name,
+            type: 'exit',
+            origin: 'extra',
+            quantity: returnQty,
+            sector: requestData.sector,
+            location: requestData.sector,
+            date: new Date().toISOString(),
+            responsible: userProfile?.name || user?.displayName || user?.email || 'Administrador',
+            responsibleEmail: user?.email,
+            exitReason: 'vencido',
+            expiryReason: requestData.returnReason || 'Devolução ao Almoxarifado',
+            batch_number: batchNumber,
+            expiry_date: expiryDate,
+            isReturn: true
           });
         }
 
@@ -9822,7 +9823,7 @@ export default function App() {
               })()}
 
               {/* Modern Segmented Controller */}
-              <div className="bg-slate-100/80 p-1.5 rounded-2xl inline-flex gap-1 w-full sm:w-auto border border-slate-200/60">
+              <div className="bg-slate-100/80 p-1.5 rounded-2xl inline-flex flex-wrap gap-1 w-full sm:w-auto border border-slate-200/60">
                 <button
                   onClick={() => setDevolutionSubTab('my_returns')}
                   className={`flex-1 sm:flex-none px-5 py-2.5 rounded-xl text-xs font-black transition-all ${
@@ -9832,6 +9833,16 @@ export default function App() {
                   }`}
                 >
                   Minhas Devoluções
+                </button>
+                <button
+                  onClick={() => setDevolutionSubTab('sector_stock')}
+                  className={`flex-1 sm:flex-none px-5 py-2.5 rounded-xl text-xs font-black transition-all ${
+                    devolutionSubTab === 'sector_stock'
+                      ? 'bg-white text-amber-700 shadow-sm border border-amber-100/80'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Estoque do Setor ({selectedSector})
                 </button>
                 <button
                   onClick={() => setDevolutionSubTab('eligible_deliveries')}
@@ -9846,7 +9857,7 @@ export default function App() {
               </div>
 
               {/* Subtab Content */}
-              {devolutionSubTab === 'my_returns' ? (
+              {devolutionSubTab === 'my_returns' && (
                 <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">
                   <div className="p-6 border-b border-slate-100">
                     <h3 className="text-base font-black text-slate-900">Histórico de Solicitações de Devolução</h3>
@@ -9923,7 +9934,112 @@ export default function App() {
                     )}
                   </div>
                 </div>
-              ) : (
+              )}
+
+              {devolutionSubTab === 'sector_stock' && (
+                <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">
+                  <div className="p-6 border-b border-slate-100">
+                    <h3 className="text-base font-black text-slate-900">Itens em Estoque no Setor ({selectedSector})</h3>
+                    <p className="text-xs text-slate-500 font-medium">Selecione qualquer material guardado neste setor (inclusive vencidos) para devolver ao almoxarifado.</p>
+                  </div>
+
+                  <div className="p-4 sm:p-6 space-y-3">
+                    {(() => {
+                      const currentSectorStock = items.filter(i => 
+                        !i.deletedAt && 
+                        (i.location === selectedSector || (selectedSector === 'Farmácia' && i.location === 'Farmácia')) && 
+                        i.quantity > 0
+                      );
+
+                      if (currentSectorStock.length === 0) {
+                        return (
+                          <div className="p-12 text-center text-slate-500 space-y-2">
+                            <Package className="mx-auto text-slate-300" size={40} />
+                            <p className="font-bold text-sm text-slate-700">Nenhum item em estoque no setor.</p>
+                            <p className="text-xs text-slate-500">Quando a farmácia/setor possuir saldo em estoque, os itens aparecerão aqui para devolução imediata.</p>
+                          </div>
+                        );
+                      }
+
+                      return currentSectorStock.map(item => {
+                        const expired = isExpired(item);
+                        const nearExpiry = isNearExpiry(item);
+
+                        return (
+                          <div 
+                            key={item.id} 
+                            className={`border rounded-2xl p-4 sm:p-5 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
+                              expired 
+                                ? 'bg-rose-50/50 border-rose-200 hover:border-rose-300' 
+                                : nearExpiry 
+                                ? 'bg-amber-50/40 border-amber-200 hover:border-amber-300' 
+                                : 'bg-slate-50/60 border-slate-200/60 hover:border-amber-200'
+                            }`}
+                          >
+                            <div className="space-y-1.5 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-black text-sm text-slate-900">{item.name}</span>
+                                {item.category && (
+                                  <span className="text-[10px] font-bold text-slate-500 bg-white px-2 py-0.5 rounded-md border border-slate-200">
+                                    {item.category}
+                                  </span>
+                                )}
+                                {expired ? (
+                                  <span className="text-[10px] font-black text-rose-700 bg-rose-100 border border-rose-300 px-2.5 py-0.5 rounded-full uppercase tracking-wider flex items-center gap-1">
+                                    <AlertTriangle size={12} /> Vencido
+                                  </span>
+                                ) : nearExpiry ? (
+                                  <span className="text-[10px] font-black text-amber-700 bg-amber-100 border border-amber-300 px-2.5 py-0.5 rounded-full uppercase tracking-wider flex items-center gap-1">
+                                    <AlertTriangle size={12} /> Validade Próxima
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] font-black text-emerald-700 bg-emerald-100 border border-emerald-300 px-2 py-0.5 rounded-full uppercase tracking-wider">
+                                    Em dia
+                                  </span>
+                                )}
+                              </div>
+
+                              <p className="text-xs text-slate-500 font-medium">
+                                Quantidade no Estoque: <span className="font-bold text-slate-900">{item.quantity} {item.unit_measure || 'unid'}</span>
+                                {item.batch_number && (
+                                  <> • Lote: <span className="font-bold text-slate-700">{item.batch_number}</span></>
+                                )}
+                                {item.expiry_date && item.expiry_date !== 'Indeterminada' && (
+                                  <> • Validade: <span className={`font-bold ${expired ? 'text-rose-600' : 'text-slate-700'}`}>{new Date(item.expiry_date).toLocaleDateString('pt-BR')}</span></>
+                                )}
+                              </p>
+                            </div>
+
+                            <button 
+                              onClick={() => {
+                                setDevolutionBasket([{
+                                  product_id: item.id,
+                                  product_name: item.name,
+                                  quantity: item.quantity,
+                                  maxQty: item.quantity,
+                                  selectedBatchId: item.id
+                                }]);
+                                setDevolutionReason(expired ? 'Vencido' : 'Não teve uso');
+                                setDevolutionObservation(expired ? `Material vencido em ${new Date(item.expiry_date).toLocaleDateString('pt-BR')}` : '');
+                                setShowDevolutionModal({ show: true });
+                              }}
+                              className={`px-4 py-2.5 rounded-xl text-xs font-black transition-all shadow-xs self-end sm:self-center whitespace-nowrap flex items-center gap-1.5 ${
+                                expired 
+                                  ? 'bg-rose-600 hover:bg-rose-700 text-white' 
+                                  : 'bg-amber-600 hover:bg-amber-700 text-white'
+                              }`}
+                            >
+                              <RotateCcw size={14} /> Devolver ao Almoxarifado
+                            </button>
+                          </div>
+                        );
+                      });
+                    })()}
+                  </div>
+                </div>
+              )}
+
+              {devolutionSubTab === 'eligible_deliveries' && (
                 <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">
                   <div className="p-6 border-b border-slate-100">
                     <h3 className="text-base font-black text-slate-900">Entregas Realizadas ao Setor</h3>
@@ -12374,9 +12490,16 @@ export default function App() {
 
             {/* Add Item Selector Section */}
             {(() => {
+              // 1. Fetch items currently in sector stock
+              const sectorStockItems = items.filter(i => 
+                !i.deletedAt && 
+                (i.location === selectedSector || (selectedSector === 'Farmácia' && i.location === 'Farmácia')) && 
+                i.quantity > 0
+              );
+
+              // 2. Fetch delivered request items
               const deliveredReqs = requests.filter(r => r.sector === selectedSector && r.status === 'ENTREGUE' && !r.deletedAt);
               const reqIds = new Set(deliveredReqs.map(r => r.id));
-              
               const productMap: Record<string, { product_id: string, product_name: string, quantity_approved: number, quantity_returned: number, batch_id: string }> = {};
               
               allRequestItems.forEach(ri => {
@@ -12403,49 +12526,139 @@ export default function App() {
                 available: p.quantity_approved - p.quantity_returned
               })).filter(p => p.available > 0);
 
+              // 3. Find expired items in sector stock
+              const expiredSectorItems = sectorStockItems.filter(i => isExpired(i));
+
+              // 4. Combine options for dropdown
+              const returnableMap: Record<string, { key: string, product_id: string, product_name: string, available: number, batch_id: string, isFromStock?: boolean }> = {};
+
+              sectorStockItems.forEach(sItem => {
+                returnableMap[`stock-${sItem.id}`] = {
+                  key: `stock-${sItem.id}`,
+                  product_id: sItem.id,
+                  product_name: `${sItem.name} [Lote: ${sItem.batch_number || 'S/N'}]`,
+                  available: sItem.quantity,
+                  batch_id: sItem.id,
+                  isFromStock: true
+                };
+              });
+
+              sectorDeliveredItems.forEach(dItem => {
+                if (!returnableMap[`req-${dItem.product_id}`]) {
+                  returnableMap[`req-${dItem.product_id}`] = {
+                    key: `req-${dItem.product_id}`,
+                    product_id: dItem.product_id,
+                    product_name: dItem.product_name,
+                    available: dItem.available,
+                    batch_id: dItem.batch_id
+                  };
+                }
+              });
+
+              const availableOptions = Object.values(returnableMap);
+
               return (
-                <div className="bg-slate-50/80 p-4.5 sm:p-5 rounded-2xl border border-slate-200/80 space-y-3">
-                  <h4 className="text-xs font-black uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
-                    <Plus size={15} className="text-amber-600" /> Adicionar Material do Setor à Devolução
-                  </h4>
-                  <div className="flex flex-col sm:flex-row gap-2.5">
-                    <select
-                      value={selectedDevProduct}
-                      onChange={(e) => setSelectedDevProduct(e.target.value)}
-                      className="flex-1 p-3 bg-white border border-slate-200 rounded-xl text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 font-bold text-slate-800"
-                    >
-                      <option value="">-- Selecione o Material Recebido --</option>
-                      {sectorDeliveredItems
-                        .filter(p => !devolutionBasket.some(b => b.product_name === p.product_name))
-                        .map(p => (
-                          <option key={p.product_id} value={p.product_name}>
-                            {p.product_name} (Disponível no setor: {p.available})
-                          </option>
-                        ))}
-                    </select>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!selectedDevProduct) return;
-                        const matched = sectorDeliveredItems.find(p => p.product_name === selectedDevProduct);
-                        if (matched) {
-                          const productBatches = items.filter(i => !i.deletedAt && i.name === matched.product_name);
-                          const newItem = {
-                            product_id: matched.product_id,
-                            product_name: matched.product_name,
-                            quantity: 1,
-                            maxQty: matched.available,
-                            selectedBatchId: matched.batch_id || productBatches[0]?.id || ''
-                          };
-                          setDevolutionBasket([...devolutionBasket, newItem]);
-                          setSelectedDevProduct('');
-                        }
-                      }}
-                      disabled={!selectedDevProduct}
-                      className="bg-slate-900 text-white px-5 py-3 rounded-xl text-xs font-black uppercase tracking-wider hover:bg-slate-800 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 whitespace-nowrap"
-                    >
-                      <Plus size={16} /> Adicionar Item
-                    </button>
+                <div className="space-y-4">
+                  {/* Expired Items Highlight Banner */}
+                  {expiredSectorItems.length > 0 && (
+                    <div className="bg-rose-50 border border-rose-200 p-4 rounded-2xl space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2 text-rose-800 font-black text-xs uppercase tracking-wider">
+                          <AlertTriangle size={16} className="text-rose-600" />
+                          Materiais Vencidos no Estoque ({selectedSector})
+                        </div>
+                        <span className="text-xs font-bold text-rose-700 bg-rose-100 px-2.5 py-0.5 rounded-full border border-rose-200">
+                          {expiredSectorItems.length} {expiredSectorItems.length === 1 ? 'item vencido' : 'itens vencidos'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-rose-700 leading-relaxed">
+                        Detectamos materiais com validade expirada no estoque do seu setor. Clique no botão ao lado de cada item para adicioná-lo automaticamente para devolução ao almoxarifado:
+                      </p>
+                      <div className="space-y-2">
+                        {expiredSectorItems.map(expItem => {
+                          const isAlreadyInBasket = devolutionBasket.some(b => b.product_name === expItem.name && b.selectedBatchId === expItem.id);
+                          return (
+                            <div key={expItem.id} className="bg-white p-3 sm:p-3.5 rounded-xl border border-rose-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+                              <div>
+                                <p className="font-bold text-xs text-slate-900">{expItem.name}</p>
+                                <p className="text-[11px] text-slate-500 font-medium pt-0.5">
+                                  Lote: <span className="font-bold text-slate-700">{expItem.batch_number || 'S/N'}</span> • Vencimento: <span className="font-bold text-rose-600">{new Date(expItem.expiry_date).toLocaleDateString('pt-BR')}</span> • Qtd Atual: <span className="font-bold text-slate-900">{expItem.quantity}</span>
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                disabled={isAlreadyInBasket}
+                                onClick={() => {
+                                  const newItem = {
+                                    product_id: expItem.id,
+                                    product_name: expItem.name,
+                                    quantity: expItem.quantity,
+                                    maxQty: expItem.quantity,
+                                    selectedBatchId: expItem.id
+                                  };
+                                  setDevolutionBasket([...devolutionBasket, newItem]);
+                                  setDevolutionReason('Vencido');
+                                  setDevolutionObservation(`Devolução de material vencido em ${new Date(expItem.expiry_date).toLocaleDateString('pt-BR')} (Lote: ${expItem.batch_number || 'S/N'})`);
+                                }}
+                                className={`px-3 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 shrink-0 ${
+                                  isAlreadyInBasket 
+                                    ? 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200' 
+                                    : 'bg-rose-600 hover:bg-rose-700 text-white shadow-sm'
+                                }`}
+                              >
+                                {isAlreadyInBasket ? 'Já Adicionado' : 'Devolver (Vencido)'}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Standard Add Item Dropdown */}
+                  <div className="bg-slate-50/80 p-4.5 sm:p-5 rounded-2xl border border-slate-200/80 space-y-3">
+                    <h4 className="text-xs font-black uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                      <Plus size={15} className="text-amber-600" /> Selecionar Material do Estoque do Setor
+                    </h4>
+                    <div className="flex flex-col sm:flex-row gap-2.5">
+                      <select
+                        value={selectedDevProduct}
+                        onChange={(e) => setSelectedDevProduct(e.target.value)}
+                        className="flex-1 p-3 bg-white border border-slate-200 rounded-xl text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 font-bold text-slate-800"
+                      >
+                        <option value="">-- Selecione o Material para Devolução --</option>
+                        {availableOptions
+                          .filter(p => !devolutionBasket.some(b => b.product_name === p.product_name || b.product_id === p.product_id))
+                          .map(p => (
+                            <option key={p.key} value={p.key}>
+                              {p.product_name} (Disponível: {p.available})
+                            </option>
+                          ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!selectedDevProduct) return;
+                          const matched = availableOptions.find(p => p.key === selectedDevProduct);
+                          if (matched) {
+                            const productBatches = items.filter(i => !i.deletedAt && i.name === matched.product_name);
+                            const newItem = {
+                              product_id: matched.product_id,
+                              product_name: matched.product_name.split(' [Lote:')[0],
+                              quantity: 1,
+                              maxQty: matched.available,
+                              selectedBatchId: matched.batch_id || productBatches[0]?.id || ''
+                            };
+                            setDevolutionBasket([...devolutionBasket, newItem]);
+                            setSelectedDevProduct('');
+                          }
+                        }}
+                        disabled={!selectedDevProduct}
+                        className="bg-slate-900 text-white px-5 py-3 rounded-xl text-xs font-black uppercase tracking-wider hover:bg-slate-800 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 whitespace-nowrap"
+                      >
+                        <Plus size={16} /> Adicionar Item
+                      </button>
+                    </div>
                   </div>
                 </div>
               );
