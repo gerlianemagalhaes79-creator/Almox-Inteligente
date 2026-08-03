@@ -6019,6 +6019,20 @@ export default function App() {
               ) : (
                 <>
                   <button 
+                    onClick={() => { setActiveTab('inventory'); setIsMobileMenuOpen(false); }}
+                    className={`group flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all duration-200 text-xs ${
+                      activeTab === 'inventory' 
+                        ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white font-extrabold shadow-md shadow-blue-600/20' 
+                        : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50/80 font-bold'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <Package size={18} className={activeTab === 'inventory' ? 'text-white' : 'text-slate-400 group-hover:text-blue-600 transition-colors'} />
+                      <span>{selectedSector === 'Farmácia' || userProfile?.sector === 'Farmácia' ? 'Estoque da Farmácia' : 'Estoque'}</span>
+                    </div>
+                  </button>
+
+                  <button 
                     onClick={() => { setActiveTab('new-request'); setIsMobileMenuOpen(false); }}
                     className={`group flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all duration-200 text-xs ${
                       activeTab === 'new-request' 
@@ -6863,39 +6877,28 @@ export default function App() {
               className="space-y-4"
             >
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-white p-4 rounded-3xl border border-blue-100/80 shadow-sm">
-                {isAdmin ? (
-                  <div className="flex items-center gap-2 bg-slate-100/80 p-1.5 rounded-2xl border border-slate-200/80">
-                    <button 
-                      onClick={() => setInventoryLocation('Almoxarifado')}
-                      className={`px-5 py-2 rounded-xl text-xs font-extrabold transition-all duration-200 flex items-center gap-2 ${
-                        inventoryLocation === 'Almoxarifado' 
-                          ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-md shadow-blue-600/20' 
-                          : 'text-slate-600 hover:bg-slate-200/70'
-                      }`}
-                    >
-                      <Package size={15} /> Almoxarifado Geral
-                    </button>
-                    <button 
-                      onClick={() => setInventoryLocation('Farmácia')}
-                      className={`px-5 py-2 rounded-xl text-xs font-extrabold transition-all duration-200 flex items-center gap-2 ${
-                        inventoryLocation === 'Farmácia' 
-                          ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-md shadow-blue-600/20' 
-                          : 'text-slate-600 hover:bg-slate-200/70'
-                      }`}
-                    >
-                      <Users size={15} /> Estoque Farmácia
-                    </button>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-3 px-4 py-2 bg-blue-50/80 rounded-2xl border border-blue-100">
-                    <div className="p-2 bg-gradient-to-br from-blue-700 to-indigo-900 text-white rounded-xl shadow-sm">
-                      {inventoryLocation === 'Almoxarifado' ? <Package size={16} /> : <Users size={16} />}
-                    </div>
-                    <p className="text-xs font-extrabold text-slate-900">
-                      Estoque Ativo: <span className="text-blue-700">{inventoryLocation}</span>
-                    </p>
-                  </div>
-                )}
+                <div className="flex items-center gap-2 bg-slate-100/80 p-1.5 rounded-2xl border border-slate-200/80">
+                  <button 
+                    onClick={() => setInventoryLocation('Almoxarifado')}
+                    className={`px-5 py-2 rounded-xl text-xs font-extrabold transition-all duration-200 flex items-center gap-2 ${
+                      inventoryLocation === 'Almoxarifado' 
+                        ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-md shadow-blue-600/20' 
+                        : 'text-slate-600 hover:bg-slate-200/70'
+                    }`}
+                  >
+                    <Package size={15} /> Almoxarifado Geral
+                  </button>
+                  <button 
+                    onClick={() => setInventoryLocation('Farmácia')}
+                    className={`px-5 py-2 rounded-xl text-xs font-extrabold transition-all duration-200 flex items-center gap-2 ${
+                      inventoryLocation === 'Farmácia' 
+                        ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-md shadow-blue-600/20' 
+                        : 'text-slate-600 hover:bg-slate-200/70'
+                    }`}
+                  >
+                    <Users size={15} /> Estoque Farmácia
+                  </button>
+                </div>
                 
                 <div className="flex items-center gap-3">
                   <span className="text-xs font-black text-slate-500 uppercase tracking-wider bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-xl">
@@ -7070,8 +7073,8 @@ export default function App() {
                         <td className="px-6 py-4.5 font-semibold text-slate-600 text-xs">---</td>
                         <td className="px-6 py-4.5">
                           <div className="flex flex-col items-center justify-center bg-slate-50/90 rounded-2xl py-1.5 px-3 border border-slate-200/80 min-w-[80px]">
-                            <span className={`text-base font-black ${!isAdmin ? 'text-slate-600' : (group.total_quantity <= group.min_quantity ? 'text-amber-600' : 'text-slate-900')}`}>
-                              {isAdmin ? group.total_quantity : '---'}
+                            <span className={`text-base font-black ${group.total_quantity <= (group.min_quantity || 0) ? 'text-amber-600' : 'text-slate-900'}`}>
+                              {group.total_quantity}
                             </span>
                             <span className="text-[8px] font-black text-slate-400 uppercase tracking-wider">Estoque Total</span>
                           </div>
@@ -7079,27 +7082,26 @@ export default function App() {
                         <td className="px-6 py-4.5 text-xs font-semibold text-slate-600">
                           <div className="flex flex-col">
                             <span className="flex items-center gap-1 font-bold text-slate-800">
-                              {isAdmin ? group.min_quantity : '---'}
-                              {isAdmin && <TrendingUp size={12} className="text-blue-600" />}
+                              {group.min_quantity !== undefined && !isNaN(group.min_quantity) ? group.min_quantity : '---'}
+                              <TrendingUp size={12} className="text-blue-600" />
                             </span>
-                            {isAdmin && <span className="text-[10px] text-slate-400">({group.weeklyExitRate.toFixed(1)}/sem)</span>}
+                            {group.weeklyExitRate > 0 && <span className="text-[10px] text-slate-400">({group.weeklyExitRate.toFixed(1)}/sem)</span>}
                           </div>
                         </td>
                         <td className="px-6 py-4.5">
                           <div className={`flex flex-col items-center justify-center py-1.5 px-2.5 rounded-xl border ${
-                            !isAdmin ? 'bg-slate-50 border-slate-200 text-slate-400' :
                             group.durationWeeks === 'infinite' ? 'bg-blue-50 border-blue-200 text-blue-700' :
                             group.durationWeeks <= 4 ? 'bg-rose-50 border-rose-200 text-rose-700' :
                             group.durationWeeks <= 8 ? 'bg-amber-50 border-amber-200 text-amber-700' :
                             'bg-emerald-50 border-emerald-200 text-emerald-700'
                           }`}>
                             <span className="text-xs font-black">
-                              {isAdmin ? (group.durationWeeks === 'infinite' ? '∞' : `${group.durationWeeks.toFixed(1)} sem`) : '---'}
+                              {group.durationWeeks === 'infinite' ? '∞' : `${group.durationWeeks.toFixed(1)} sem`}
                             </span>
                           </div>
                         </td>
                         <td className="px-6 py-4.5 text-xs">
-                          {isAdmin && group.durationWeeks !== 'infinite' && (
+                          {group.durationWeeks !== 'infinite' ? (
                             <span className={`font-black uppercase tracking-tight text-[10px] px-2 py-0.5 rounded-md border ${
                               group.durationWeeks <= 4 ? 'bg-rose-50 text-rose-700 border-rose-200' :
                               group.durationWeeks <= 8 ? 'bg-amber-50 text-amber-700 border-amber-200' :
@@ -7109,8 +7111,9 @@ export default function App() {
                                group.durationWeeks <= 8 ? 'Atenção' :
                                'Normal'}
                             </span>
+                          ) : (
+                            <span className="text-slate-300">---</span>
                           )}
-                          {(!isAdmin || group.durationWeeks === 'infinite') && <span className="text-slate-300">---</span>}
                         </td>
                         <td className="px-6 py-4.5 text-right">
                           <div className="flex flex-col items-end gap-0.5">
