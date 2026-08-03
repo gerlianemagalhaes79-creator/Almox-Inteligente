@@ -63,6 +63,7 @@ export interface Item {
   location?: 'Almoxarifado' | 'Farmácia';
   room?: string;
   medication_type?: string;
+  unit_measure?: string;
   deletedAt?: string;
   deletedBy?: string;
 }

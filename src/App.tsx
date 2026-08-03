@@ -108,6 +108,7 @@ interface ItemGroup {
   min_quantity: number;
   category: string | null;
   supplier: string | null;
+  unit_measure?: string | null;
   batches: Item[];
   weeklyExitRate: number;
   durationWeeks: number | 'infinite';
@@ -601,6 +602,7 @@ export default function App() {
       expiry_date: '',
       is_indeterminate_expiry: false,
       unit_price: 0,
+      unit_measure: 'Unidade (UN)',
       medication_type: ''
     }]
   });
@@ -624,6 +626,7 @@ export default function App() {
           expiry_date: '',
           is_indeterminate_expiry: false,
           unit_price: 0,
+          unit_measure: 'Unidade (UN)',
           medication_type: ''
         }]
       });
@@ -642,6 +645,7 @@ export default function App() {
         expiry_date: '',
         is_indeterminate_expiry: false,
         unit_price: 0,
+        unit_measure: 'Unidade (UN)',
         medication_type: ''
       }]
     }));
@@ -667,6 +671,7 @@ export default function App() {
           batch_number: '',
           initial_quantity: 1,
           expiry_date: '',
+          unit_measure: itemToDuplicate.unit_measure || 'Unidade (UN)',
           medication_type: itemToDuplicate.medication_type || ''
         }]
       }));
@@ -2887,6 +2892,7 @@ export default function App() {
               min_quantity: min_qty,
               expiry_date: expiryValue || currentItemData.expiry_date,
               unit_price: price || currentItemData.unit_price,
+              unit_measure: itemData.unit_measure || currentItemData.unit_measure || 'Unidade (UN)',
               supplier: bulkEntry.supplier || currentItemData.supplier,
               category: bulkEntry.category || currentItemData.category,
               medication_type: bulkEntry.category === 'Medicamentos' ? (itemData.medication_type || currentItemData.medication_type || '') : '',
@@ -2924,6 +2930,7 @@ export default function App() {
             expiry_date: expiryValue,
             origin: bulkEntry.origin,
             unit_price: price,
+            unit_measure: itemData.unit_measure || 'Unidade (UN)',
             supplier: bulkEntry.supplier,
             category: bulkEntry.category,
             medication_type: bulkEntry.category === 'Medicamentos' ? (itemData.medication_type || '') : '',
@@ -2968,6 +2975,7 @@ export default function App() {
           expiry_date: '',
           is_indeterminate_expiry: false,
           unit_price: 0,
+          unit_measure: 'Unidade (UN)',
           medication_type: ''
         }]
       });
@@ -5740,12 +5748,16 @@ export default function App() {
         min_quantity: weeklyExitRate > 0 ? Math.ceil(weeklyExitRate * 5) : item.min_quantity,
         category: item.category,
         supplier: item.supplier,
+        unit_measure: item.unit_measure || null,
         batches: [],
         weeklyExitRate: weeklyExitRate,
         durationWeeks: 0
       };
     }
     acc[item.name].total_quantity += item.quantity;
+    if (!acc[item.name].unit_measure && item.unit_measure) {
+      acc[item.name].unit_measure = item.unit_measure;
+    }
     acc[item.name].batches.push(item);
     
     // Update duration
@@ -6995,6 +7007,11 @@ export default function App() {
                               <div className="flex flex-col">
                                 <div className="flex items-center gap-2 group/name flex-wrap">
                                   <p className="font-extrabold text-sm text-slate-900 group-hover/row:text-blue-700 transition-colors">{group.name}</p>
+                                  {group.unit_measure && (
+                                    <span className="text-[9px] font-black px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200/80 uppercase tracking-wider">
+                                      {group.unit_measure}
+                                    </span>
+                                  )}
                                   {Array.from(new Set(group.batches.map(b => b.medication_type).filter(Boolean))).map(type => (
                                     <span key={type} className="text-[9px] font-black px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-100/80 uppercase tracking-wider">
                                       {type}
@@ -7109,6 +7126,11 @@ export default function App() {
                           <td className="px-12 py-3.5">
                             <div className="flex items-center gap-2">
                               <p className="text-xs font-mono font-bold text-slate-800">Lote: {item.batch_number || '---'}</p>
+                              {item.unit_measure && (
+                                <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-amber-100/80 text-amber-900 border border-amber-200 uppercase tracking-wide">
+                                  {item.unit_measure}
+                                </span>
+                              )}
                               {item.medication_type && (
                                 <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-slate-200/80 text-slate-700 border border-slate-300/60 uppercase tracking-wide">
                                   {item.medication_type}
@@ -10119,6 +10141,7 @@ export default function App() {
                         {bulkEntry.category === 'Medicamentos' && (
                           <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-36 min-w-[110px]">Tipo de Material</th>
                         )}
+                        <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-36 min-w-[120px]">Unidade / Emb.</th>
                         <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-20">Qtd</th>
                         <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-20">Mín</th>
                         <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-24">Lote</th>
@@ -10214,6 +10237,50 @@ export default function App() {
                               </select>
                             </td>
                           )}
+                          <td className="px-2 min-w-[140px]">
+                            <select 
+                              required
+                              className="w-full px-3 py-2 bg-[#F5F5F4] border-none rounded-lg focus:ring-2 focus:ring-[#1C1917]/10 text-xs text-stone-900 font-bold"
+                              value={
+                                ['Unidade (UN)', 'Pacote (PCT)', 'Caixa (CX)', 'Frasco (FR)', 'Ampola (AMP)', 'Bisnaga (BSG)', 'Envelope (ENV)', 'Galão (GL)', 'Rolo (RL)', 'Par (PR)', 'Metro (M)', 'Quilo (KG)', 'Litro (L)', 'Resma'].includes(item.unit_measure || '')
+                                  ? (item.unit_measure || 'Unidade (UN)')
+                                  : 'Outro'
+                              }
+                              onChange={e => {
+                                const val = e.target.value;
+                                if (val === 'Outro') {
+                                  updateBulkItem(item.id, 'unit_measure', '');
+                                } else {
+                                  updateBulkItem(item.id, 'unit_measure', val);
+                                }
+                              }}
+                            >
+                              <option value="Unidade (UN)">Unidade (UN)</option>
+                              <option value="Pacote (PCT)">Pacote (PCT)</option>
+                              <option value="Caixa (CX)">Caixa (CX)</option>
+                              <option value="Frasco (FR)">Frasco (FR)</option>
+                              <option value="Ampola (AMP)">Ampola (AMP)</option>
+                              <option value="Bisnaga (BSG)">Bisnaga (BSG)</option>
+                              <option value="Envelope (ENV)">Envelope (ENV)</option>
+                              <option value="Galão (GL)">Galão (GL)</option>
+                              <option value="Rolo (RL)">Rolo (RL)</option>
+                              <option value="Par (PR)">Par (PR)</option>
+                              <option value="Metro (M)">Metro (M)</option>
+                              <option value="Quilo (KG)">Quilo (KG)</option>
+                              <option value="Litro (L)">Litro (L)</option>
+                              <option value="Resma">Resma</option>
+                              <option value="Outro">Outro (digitar...)</option>
+                            </select>
+                            {!['Unidade (UN)', 'Pacote (PCT)', 'Caixa (CX)', 'Frasco (FR)', 'Ampola (AMP)', 'Bisnaga (BSG)', 'Envelope (ENV)', 'Galão (GL)', 'Rolo (RL)', 'Par (PR)', 'Metro (M)', 'Quilo (KG)', 'Litro (L)', 'Resma'].includes(item.unit_measure || '') && (
+                              <input 
+                                type="text"
+                                placeholder="Especifique a embalagem..."
+                                className="w-full mt-1 px-2.5 py-1 bg-white border border-stone-300 rounded-lg text-xs text-stone-900 font-bold focus:ring-2 focus:ring-[#1C1917]/10"
+                                value={item.unit_measure || ''}
+                                onChange={e => updateBulkItem(item.id, 'unit_measure', e.target.value)}
+                              />
+                            )}
+                          </td>
                           <td className="px-2 w-20">
                             <input 
                               required
