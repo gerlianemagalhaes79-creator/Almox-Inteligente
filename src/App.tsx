@@ -3408,6 +3408,140 @@ export default function App() {
     }
   };
 
+  const handleExportLowStockPDF = () => {
+    try {
+      const doc = new jsPDF();
+      const dateStr = format(new Date(), 'dd/MM/yyyy HH:mm');
+      const locationLabel = inventoryLocation === 'Farmácia' ? 'Farmácia (Medicamentos)' : 'Almoxarifado Geral';
+      
+      const startY = drawPDFLetterhead(
+        doc,
+        `RELATÓRIO DE ITENS CRÍTICOS — ESTOQUE BAIXO`,
+        `Unidade: ${locationLabel} • Data de Emissão: ${dateStr}`
+      );
+
+      // Collect all active items for current location
+      const activeLocationItems = items.filter(
+        i => !i.deletedAt && i.quantity > 0 && (i.location || 'Almoxarifado') === inventoryLocation
+      );
+
+      const locationGrouped: Record<string, ItemGroup> = {};
+      activeLocationItems.forEach(item => {
+        if (!locationGrouped[item.name]) {
+          const weeklyRate = weeklyExitRates[item.name] || 0;
+          locationGrouped[item.name] = {
+            name: item.name,
+            total_quantity: 0,
+            min_quantity: weeklyRate > 0 ? Math.ceil(weeklyRate * 5) : item.min_quantity,
+            category: item.category,
+            supplier: item.supplier,
+            unit_measure: item.unit_measure || null,
+            batches: [],
+            weeklyExitRate: weeklyRate,
+            durationWeeks: 0
+          };
+        }
+        locationGrouped[item.name].total_quantity += item.quantity;
+        if (!locationGrouped[item.name].unit_measure && item.unit_measure) {
+          locationGrouped[item.name].unit_measure = item.unit_measure;
+        }
+        locationGrouped[item.name].batches.push(item);
+      });
+
+      // Filter groups where total_quantity <= min_quantity
+      const lowStockGroupsList = Object.values(locationGrouped).filter(
+        g => g.total_quantity <= g.min_quantity
+      );
+
+      // Sort by deficit/ratio ascending (most critical first)
+      lowStockGroupsList.sort((a, b) => {
+        const ratioA = a.min_quantity > 0 ? a.total_quantity / a.min_quantity : 1;
+        const ratioB = b.min_quantity > 0 ? b.total_quantity / b.min_quantity : 1;
+        return ratioA - ratioB;
+      });
+
+      if (lowStockGroupsList.length === 0) {
+        doc.setFontSize(11);
+        doc.setTextColor(16, 185, 129); // emerald-600
+        doc.setFont("helvetica", "bold");
+        doc.text("Nenhum item com estoque baixo registrado no momento.", 14, startY + 12);
+        
+        doc.setFontSize(9.5);
+        doc.setTextColor(100, 116, 139);
+        doc.setFont("helvetica", "normal");
+        doc.text(`Todos os insumos cadastrados no ${locationLabel} estão acima do estoque mínimo.`, 14, startY + 20);
+
+        const dateFileStr = format(new Date(), 'dd-MM-yyyy');
+        doc.save(`Relatorio_Estoque_Baixo_${inventoryLocation}_${dateFileStr}.pdf`);
+        showToast("Relatório gerado: Nenhum item com estoque baixo encontrado.", "info");
+        return;
+      }
+
+      // Prepare table data
+      const tableData = lowStockGroupsList.map(group => {
+        const deficit = Math.max(0, group.min_quantity - group.total_quantity);
+        let status = 'ESTOQUE BAIXO';
+        if (group.total_quantity === 0) {
+          status = 'ZERADO / SEM ESTOQUE';
+        } else if (group.total_quantity <= (group.min_quantity * 0.5)) {
+          status = 'MUITO CRÍTICO';
+        }
+
+        const unitText = group.unit_measure ? ` ${group.unit_measure}` : '';
+
+        return [
+          group.name,
+          group.category || 'Geral',
+          `${group.total_quantity}${unitText}`,
+          `${group.min_quantity}${unitText}`,
+          `${deficit}${unitText}`,
+          status
+        ];
+      });
+
+      autoTable(doc, {
+        startY: startY + 4,
+        head: [['Material / Medicamento', 'Categoria', 'Estoque Atual', 'Estoque Mínimo', 'Déficit (Reposição)', 'Status Crítico']],
+        body: tableData,
+        theme: 'striped',
+        headStyles: { fillColor: [180, 35, 24], halign: 'center', fontStyle: 'bold' }, // Dark Red/Amber
+        columnStyles: {
+          2: { halign: 'center' },
+          3: { halign: 'center' },
+          4: { halign: 'center', fontStyle: 'bold' },
+          5: { halign: 'center' }
+        },
+        styles: { fontSize: 8.5, cellPadding: 3 },
+        didParseCell: function(data) {
+          if (data.section === 'body' && data.column.index === 5) {
+            const text = data.cell.text[0];
+            if (text.includes('ZERADO') || text === 'MUITO CRÍTICO') {
+              data.cell.styles.textColor = [220, 38, 38]; // red-600
+              data.cell.styles.fontStyle = 'bold';
+            } else if (text === 'ESTOQUE BAIXO') {
+              data.cell.styles.textColor = [217, 119, 6]; // amber-600
+              data.cell.styles.fontStyle = 'bold';
+            }
+          }
+        }
+      });
+
+      // Add total count summary at bottom
+      const finalY = (doc as any).lastAutoTable ? (doc as any).lastAutoTable.finalY + 10 : startY + 50;
+      doc.setFontSize(9);
+      doc.setTextColor(30, 41, 59);
+      doc.setFont("helvetica", "bold");
+      doc.text(`Total de itens identificados com estoque baixo ou crítico: ${lowStockGroupsList.length}`, 14, finalY);
+
+      const dateFileStr = format(new Date(), 'dd-MM-yyyy');
+      doc.save(`Relatorio_Estoque_Baixo_${inventoryLocation}_${dateFileStr}.pdf`);
+      showToast("Relatório PDF de estoque baixo gerado com sucesso!", "success");
+    } catch (error) {
+      console.error('Erro ao exportar PDF de estoque baixo:', error);
+      showToast("Erro ao exportar PDF de estoque baixo.", "error");
+    }
+  };
+
   const handleExportMaterialsCatalogPDF = () => {
     try {
       // @ts-ignore
@@ -6409,6 +6543,14 @@ export default function App() {
                 {isAdmin && (
                   <div className="flex gap-2">
                     <button 
+                      onClick={handleExportLowStockPDF}
+                      className="px-3 py-2 bg-amber-50 border border-amber-200 rounded-2xl text-amber-700 hover:text-amber-800 hover:border-amber-300 hover:bg-amber-100 transition-all shadow-sm flex items-center gap-1.5 text-xs font-bold"
+                      title="Imprimir Relatório de Itens Críticos / Estoque Baixo"
+                    >
+                      <Printer size={16} className="text-amber-600" />
+                      <span className="hidden sm:inline">Relatório Estoque Baixo</span>
+                    </button>
+                    <button 
                       onClick={handleExportInventory}
                       className="p-2 bg-white border border-slate-200 rounded-2xl text-slate-600 hover:text-blue-700 hover:border-blue-300 hover:bg-blue-50/50 transition-all shadow-sm"
                       title="Baixar Planilha Excel"
@@ -6418,7 +6560,7 @@ export default function App() {
                     <button 
                       onClick={handleExportInventoryPDF}
                       className="p-2 bg-white border border-slate-200 rounded-2xl text-rose-600 hover:text-rose-700 hover:border-rose-300 hover:bg-rose-50 transition-all shadow-sm"
-                      title="Baixar Relatório PDF"
+                      title="Baixar Relatório PDF de Todo Estoque"
                     >
                       <Printer size={18} />
                     </button>
@@ -6688,9 +6830,18 @@ export default function App() {
                         </p>
                       </div>
                     </div>
-                    <span className="px-2.5 py-1 rounded-full text-xs font-black bg-amber-500/20 text-amber-300 border border-amber-400/30">
-                      {totalAlertsCount}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={handleExportLowStockPDF}
+                        className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-400/40 rounded-xl text-[11px] font-extrabold transition-all flex items-center gap-1 shadow-xs"
+                        title="Imprimir Relatório PDF dos Itens Críticos / Estoque Baixo"
+                      >
+                        <Printer size={13} /> Relatório PDF
+                      </button>
+                      <span className="px-2.5 py-1 rounded-full text-xs font-black bg-amber-500/20 text-amber-300 border border-amber-400/30">
+                        {totalAlertsCount}
+                      </span>
+                    </div>
                   </div>
 
                   <div className="p-5 space-y-3 max-h-[480px] overflow-y-auto">
@@ -11168,12 +11319,21 @@ export default function App() {
                   Listagem de insumos que requerem providência imediata
                 </p>
               </div>
-              <button 
-                onClick={() => setShowDetailModal({ show: false, type: 'low_stock', items: [] })}
-                className="p-2 hover:bg-slate-100 rounded-full transition-all text-slate-500"
-              >
-                <X size={24} />
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleExportLowStockPDF}
+                  className="px-3.5 py-2 bg-gradient-to-r from-amber-600 via-rose-600 to-rose-700 hover:from-amber-700 hover:to-rose-800 text-white font-extrabold text-xs rounded-2xl shadow-md transition-all flex items-center gap-2"
+                  title="Imprimir Relatório de Itens Críticos / Estoque Baixo"
+                >
+                  <Printer size={16} /> Imprimir Relatório
+                </button>
+                <button 
+                  onClick={() => setShowDetailModal({ show: false, type: 'low_stock', items: [] })}
+                  className="p-2 hover:bg-slate-100 rounded-full transition-all text-slate-500"
+                >
+                  <X size={24} />
+                </button>
+              </div>
             </div>
 
             <div className="space-y-3">
