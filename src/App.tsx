@@ -6956,52 +6956,54 @@ export default function App() {
                                     <X size={18} />
                                   </button>
                                 </div>
-                                <div className="flex flex-col gap-1 bg-white p-2 rounded-xl border border-slate-200">
-                                  <div className="flex flex-wrap gap-1 items-center">
-                                    <span className="text-[8px] font-black text-slate-500 uppercase tracking-wider mr-1">Unidades:</span>
-                                    {['mg', 'mcg', 'UI', 'g', 'ml', '%'].map(unit => (
-                                      <button
-                                        key={unit}
-                                        type="button"
-                                        onClick={() => {
-                                          let currentName = editingMaterialName.newName.trim();
-                                          if (currentName) {
-                                            if (!currentName.endsWith(' ')) {
-                                              currentName += ' ';
+                                {group.category === 'Medicamentos' && (
+                                  <div className="flex flex-col gap-1 bg-white p-2 rounded-xl border border-slate-200">
+                                    <div className="flex flex-wrap gap-1 items-center">
+                                      <span className="text-[8px] font-black text-slate-500 uppercase tracking-wider mr-1">Unidades:</span>
+                                      {['mg', 'mcg', 'UI', 'g', 'ml', '%'].map(unit => (
+                                        <button
+                                          key={unit}
+                                          type="button"
+                                          onClick={() => {
+                                            let currentName = editingMaterialName.newName.trim();
+                                            if (currentName) {
+                                              if (!currentName.endsWith(' ')) {
+                                                currentName += ' ';
+                                              }
+                                              currentName += unit;
+                                              setEditingMaterialName({ ...editingMaterialName, newName: currentName });
                                             }
-                                            currentName += unit;
-                                            setEditingMaterialName({ ...editingMaterialName, newName: currentName });
-                                          }
-                                        }}
-                                        className="px-1.5 py-0.5 bg-slate-100 hover:bg-blue-700 hover:text-white text-slate-700 rounded text-[9px] font-bold transition-all uppercase"
-                                      >
-                                        +{unit}
-                                      </button>
-                                    ))}
-                                  </div>
-                                  <div className="flex flex-wrap gap-1 items-center">
-                                    <span className="text-[8px] font-black text-slate-500 uppercase tracking-wider mr-1">Dosagem:</span>
-                                    {['500 mg', '1000 mg', '1000 UI', '5000 UI', '10.000 UI', '50.000 UI'].map(dose => (
-                                      <button
-                                        key={dose}
-                                        type="button"
-                                        onClick={() => {
-                                          let currentName = editingMaterialName.newName.trim();
-                                          if (currentName) {
-                                            if (!currentName.endsWith(' ')) {
-                                              currentName += ' ';
+                                          }}
+                                          className="px-1.5 py-0.5 bg-slate-100 hover:bg-blue-700 hover:text-white text-slate-700 rounded text-[9px] font-bold transition-all uppercase"
+                                        >
+                                          +{unit}
+                                        </button>
+                                      ))}
+                                    </div>
+                                    <div className="flex flex-wrap gap-1 items-center">
+                                      <span className="text-[8px] font-black text-slate-500 uppercase tracking-wider mr-1">Dosagem:</span>
+                                      {['500 mg', '1000 mg', '1000 UI', '5000 UI', '10.000 UI', '50.000 UI'].map(dose => (
+                                        <button
+                                          key={dose}
+                                          type="button"
+                                          onClick={() => {
+                                            let currentName = editingMaterialName.newName.trim();
+                                            if (currentName) {
+                                              if (!currentName.endsWith(' ')) {
+                                                currentName += ' ';
+                                              }
+                                              currentName += dose;
+                                              setEditingMaterialName({ ...editingMaterialName, newName: currentName });
                                             }
-                                            currentName += dose;
-                                            setEditingMaterialName({ ...editingMaterialName, newName: currentName });
-                                          }
-                                        }}
-                                        className="px-1.5 py-0.5 bg-emerald-50 hover:bg-emerald-600 hover:text-white text-emerald-700 rounded text-[9px] font-bold transition-all uppercase"
-                                      >
-                                        +{dose}
-                                      </button>
-                                    ))}
+                                          }}
+                                          className="px-1.5 py-0.5 bg-emerald-50 hover:bg-emerald-600 hover:text-white text-emerald-700 rounded text-[9px] font-bold transition-all uppercase"
+                                        >
+                                          +{dose}
+                                        </button>
+                                      ))}
+                                    </div>
                                   </div>
-                                </div>
+                                )}
                               </div>
                             ) : (
                               <div className="flex flex-col">
@@ -10163,12 +10165,8 @@ export default function App() {
                               value={item.name}
                               onChange={e => updateBulkItem(item.id, 'name', e.target.value)}
                             />
-                            {/* Quick unit helpers for medications/vitamins/etc */}
-                            {(bulkEntry.category === 'Medicamentos' || 
-                              bulkEntry.category === 'Fisioterápicos' || 
-                              bulkEntry.category === 'Anestésico' || 
-                              bulkEntry.category === 'Médico Hospitalar' || 
-                              item.name.toLowerCase().includes('vit')) && (
+                            {/* Quick unit helpers for medications */}
+                            {bulkEntry.category === 'Medicamentos' && (
                               <div className="mt-1.5 flex flex-col gap-1 bg-[#FAFAF9] p-2 rounded-lg border border-[#E7E5E4] max-w-[280px]">
                                 <div className="flex flex-wrap gap-1 items-center">
                                   <span className="text-[8px] font-black text-[#78716C] uppercase tracking-wider mr-1">Unidades:</span>
