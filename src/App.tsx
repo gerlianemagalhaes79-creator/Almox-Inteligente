@@ -10263,8 +10263,8 @@ export default function App() {
                           <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-36 min-w-[110px]">Tipo de Material</th>
                         )}
                         <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-36 min-w-[120px]">Unidade / Emb.</th>
-                        <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-20">Qtd</th>
-                        <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-20">Mín</th>
+                        <th className="px-4 py-2 text-[10px] font-black text-emerald-800 uppercase tracking-widest min-w-[110px] bg-emerald-100/70 rounded-t-xl text-center">Qtd. Entrada</th>
+                        <th className="px-4 py-2 text-[10px] font-black text-amber-800 uppercase tracking-widest min-w-[100px] bg-amber-100/70 rounded-t-xl text-center">Estoque Mín</th>
                         <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-24">Lote</th>
                         <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-40">Validade</th>
                         <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-28">Preço Un.</th>
@@ -10398,22 +10398,24 @@ export default function App() {
                               />
                             )}
                           </td>
-                          <td className="px-2 w-20">
+                          <td className="px-2 min-w-[110px]">
                             <input 
                               required
                               type="number"
                               min="1"
-                              className="w-full px-3 py-2 bg-[#F5F5F4] border-none rounded-lg focus:ring-2 focus:ring-[#1C1917]/10 text-xs text-stone-900 font-bold"
+                              placeholder="Qtd"
+                              className="w-full px-3 py-2 bg-emerald-50 border-2 border-emerald-300 rounded-xl focus:ring-2 focus:ring-emerald-500 text-sm text-emerald-950 font-black shadow-sm text-center"
                               value={isNaN(item.initial_quantity) ? '' : item.initial_quantity}
                               onChange={e => updateBulkItem(item.id, 'initial_quantity', e.target.value === '' ? NaN : parseInt(e.target.value))}
                             />
                           </td>
-                          <td className="px-2 w-20">
+                          <td className="px-2 min-w-[100px]">
                             <input 
                               required
                               type="number"
                               min="0"
-                              className="w-full px-3 py-2 bg-[#F5F5F4] border-none rounded-lg focus:ring-2 focus:ring-[#1C1917]/10 text-xs text-stone-900 font-bold"
+                              placeholder="Mín"
+                              className="w-full px-3 py-2 bg-amber-50 border border-amber-300 rounded-xl focus:ring-2 focus:ring-amber-500 text-sm text-amber-950 font-extrabold text-center"
                               value={isNaN(item.min_quantity) ? '' : item.min_quantity}
                               onChange={e => updateBulkItem(item.id, 'min_quantity', e.target.value === '' ? NaN : parseInt(e.target.value))}
                             />
@@ -10633,12 +10635,12 @@ export default function App() {
                     </div>
                   )}
                   <div>
-                    <label className="block text-sm font-bold text-[#57534E] mb-2 text-center">Quantidade</label>
-                    <div className="flex items-center justify-center gap-6">
+                    <label className="block text-sm font-extrabold text-[#57534E] mb-2 text-center uppercase tracking-wider">Quantidade a Adicionar</label>
+                    <div className="flex items-center justify-center gap-4 py-2">
                       <button 
                         type="button"
                         onClick={() => setTransactionQty(Math.max(1, transactionQty - 1))}
-                        className="w-12 h-12 rounded-2xl bg-[#F5F5F4] flex items-center justify-center text-2xl font-bold hover:bg-[#E7E5E4]"
+                        className="w-12 h-12 rounded-2xl bg-slate-100 hover:bg-slate-200 border border-slate-300 flex items-center justify-center text-2xl font-black text-slate-800 shadow-sm transition-all"
                       >
                         -
                       </button>
@@ -10647,12 +10649,12 @@ export default function App() {
                         min="1"
                         value={transactionQty}
                         onChange={e => setTransactionQty(Math.max(1, parseInt(e.target.value) || 0))}
-                        className="text-4xl font-bold w-24 text-center bg-transparent border-none focus:ring-0"
+                        className="text-3xl font-black w-32 py-2 px-3 text-center bg-emerald-50 text-emerald-950 border-2 border-emerald-500 rounded-2xl shadow-inner focus:ring-2 focus:ring-emerald-500/30"
                       />
                       <button 
                         type="button"
                         onClick={() => setTransactionQty(transactionQty + 1)}
-                        className="w-12 h-12 rounded-2xl bg-[#F5F5F4] flex items-center justify-center text-2xl font-bold hover:bg-[#E7E5E4]"
+                        className="w-12 h-12 rounded-2xl bg-slate-100 hover:bg-slate-200 border border-slate-300 flex items-center justify-center text-2xl font-black text-slate-800 shadow-sm transition-all"
                       >
                         +
                       </button>
