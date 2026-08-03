@@ -398,18 +398,20 @@ export default function App() {
   const [inventorySort, setInventorySort] = useState<'name_asc' | 'name_desc' | 'duration_asc' | 'duration_desc'>('name_asc');
   const [inventoryLocation, setInventoryLocation] = useState<'Almoxarifado' | 'Farmácia'>('Almoxarifado');
 
-  useEffect(() => {
-    if (selectedSector === 'Farmácia') {
-      setInventoryLocation('Farmácia');
-    } else {
-      setInventoryLocation('Almoxarifado');
-    }
-  }, [selectedSector]);
-  
   const isAdmin = userProfile?.role === 'ADMIN' || 
                   user?.email === 'gerlianemagalhaes79@gmail.com' || 
                   user?.email === 'poli.almoxarifado@gmail.com' || 
-                  selectedSector === 'Almoxarifado';
+                  userProfile?.sector === 'Almoxarifado';
+
+  useEffect(() => {
+    if (userProfile?.sector === 'Farmácia' || selectedSector === 'Farmácia') {
+      if (!isAdmin) {
+        setInventoryLocation('Farmácia');
+      }
+    } else if (!isAdmin) {
+      setInventoryLocation('Almoxarifado');
+    }
+  }, [selectedSector, userProfile?.sector, isAdmin]);
 
   const weeklyExitRates = useMemo(() => {
     const twentyOneDaysAgo = new Date();
@@ -3069,9 +3071,7 @@ export default function App() {
               return `${nextCount.toString().padStart(2, '0')}/${currentYear}`;
             })() : null;
 
-            const sectorValue = (inventoryLocation === 'Farmácia' && exitReason === 'consumo' && (modalSector === 'Farmácia' || modalSector === SECTORS[0] || !modalSector)) 
-              ? 'Farmácia (Consumo Interno)' 
-              : modalSector;
+            const sectorValue = modalSector || (inventoryLocation === 'Farmácia' ? 'Farmácia (Consumo Interno)' : 'Almoxarifado');
 
             transaction.set(newTransRef, {
               item_id: currentItemData.id || itemRef.id,
@@ -6877,30 +6877,53 @@ export default function App() {
               className="space-y-4"
             >
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-white p-4 rounded-3xl border border-blue-100/80 shadow-sm">
-                <div className="flex items-center gap-2 bg-slate-100/80 p-1.5 rounded-2xl border border-slate-200/80">
-                  <button 
-                    onClick={() => setInventoryLocation('Almoxarifado')}
-                    className={`px-5 py-2 rounded-xl text-xs font-extrabold transition-all duration-200 flex items-center gap-2 ${
-                      inventoryLocation === 'Almoxarifado' 
-                        ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-md shadow-blue-600/20' 
-                        : 'text-slate-600 hover:bg-slate-200/70'
-                    }`}
-                  >
-                    <Package size={15} /> Almoxarifado Geral
-                  </button>
-                  <button 
-                    onClick={() => setInventoryLocation('Farmácia')}
-                    className={`px-5 py-2 rounded-xl text-xs font-extrabold transition-all duration-200 flex items-center gap-2 ${
-                      inventoryLocation === 'Farmácia' 
-                        ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-md shadow-blue-600/20' 
-                        : 'text-slate-600 hover:bg-slate-200/70'
-                    }`}
-                  >
-                    <Users size={15} /> Estoque Farmácia
-                  </button>
-                </div>
-                
+                {isAdmin ? (
+                  <div className="flex items-center gap-2 bg-slate-100/80 p-1.5 rounded-2xl border border-slate-200/80">
+                    <button 
+                      onClick={() => setInventoryLocation('Almoxarifado')}
+                      className={`px-5 py-2 rounded-xl text-xs font-extrabold transition-all duration-200 flex items-center gap-2 ${
+                        inventoryLocation === 'Almoxarifado' 
+                          ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-md shadow-blue-600/20' 
+                          : 'text-slate-600 hover:bg-slate-200/70'
+                      }`}
+                    >
+                      <Package size={15} /> Almoxarifado Geral
+                    </button>
+                    <button 
+                      onClick={() => setInventoryLocation('Farmácia')}
+                      className={`px-5 py-2 rounded-xl text-xs font-extrabold transition-all duration-200 flex items-center gap-2 ${
+                        inventoryLocation === 'Farmácia' 
+                          ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-md shadow-blue-600/20' 
+                          : 'text-slate-600 hover:bg-slate-200/70'
+                      }`}
+                    >
+                      <Users size={15} /> Estoque Farmácia
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-3 px-4 py-2 bg-blue-50/80 rounded-2xl border border-blue-100">
+                    <div className="p-2 bg-gradient-to-br from-blue-700 to-indigo-900 text-white rounded-xl shadow-sm">
+                      {inventoryLocation === 'Farmácia' ? <Users size={16} /> : <Package size={16} />}
+                    </div>
+                    <div>
+                      <p className="text-xs font-black text-slate-900">
+                        Estoque: <span className="text-blue-700">{inventoryLocation === 'Farmácia' ? 'Medicamentos (Farmácia)' : 'Almoxarifado Geral'}</span>
+                      </p>
+                      <p className="text-[10px] text-slate-500 font-medium">Acesso exclusivo aos medicamentos da Farmácia</p>
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex items-center gap-3">
+                  {inventoryLocation === 'Farmácia' && (
+                    <button 
+                      onClick={() => setActiveTab('new-request')}
+                      className="px-4 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white font-extrabold text-xs rounded-2xl shadow-md hover:shadow-lg transition-all flex items-center gap-2"
+                      title="Solicitar novos medicamentos ao Almoxarifado Geral"
+                    >
+                      <Plus size={16} /> Solicitar ao Almoxarifado
+                    </button>
+                  )}
                   <span className="text-xs font-black text-slate-500 uppercase tracking-wider bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-xl">
                     Visualização: <span className="text-blue-700 font-black">{inventoryLocation}</span>
                   </span>
@@ -10739,19 +10762,7 @@ export default function App() {
                       {exitReason === 'doacao' ? 'Destinatário da Doação' : 
                        (exitReason === 'vencido' || exitReason === 'perda') ? 'Classificação' : 'Setor de Destino'}
                     </label>
-                    {inventoryLocation === 'Farmácia' && exitReason === 'consumo' && (modalSector === 'Farmácia' || modalSector === SECTORS[0] || !modalSector) ? (
-                      <div className="bg-emerald-50 p-4 rounded-2xl border border-emerald-100">
-                        <p className="text-xs font-bold text-emerald-700 uppercase tracking-widest mb-1">Saída Interna Farmácia</p>
-                        <p className="text-sm text-emerald-600">Esta movimentação será registrada como consumo interno da Farmácia.</p>
-                        <button 
-                          type="button"
-                          onClick={() => setModalSector(SECTORS[1])} // Force showing selector by picking another value
-                          className="mt-2 text-[10px] font-bold text-emerald-600 hover:underline"
-                        >
-                          Alterar Setor de Destino
-                        </button>
-                      </div>
-                    ) : exitReason === 'doacao' ? (
+                    {exitReason === 'doacao' ? (
                       <div className="space-y-4">
                         <div>
                           <label className="block text-[10px] font-bold text-[#A8A29E] uppercase mb-1 ml-1">Unidade Doadora</label>
@@ -10870,7 +10881,8 @@ export default function App() {
                         value={modalSector}
                         onChange={e => setModalSector(e.target.value)}
                       >
-                        <option value="">Selecione o setor...</option>
+                        <option value="">Selecione o setor de destino...</option>
+                        <option value="Farmácia (Consumo Interno)">Farmácia (Consumo Interno)</option>
                         {SECTORS.map(sector => (
                           <option key={sector} value={sector}>{sector}</option>
                         ))}
