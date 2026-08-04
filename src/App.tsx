@@ -39,7 +39,8 @@ import {
   BookOpen,
   Activity,
   PieChart as PieChartIcon,
-  Image as ImageIcon
+  Image as ImageIcon,
+  Tag
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as XLSX from 'xlsx';
@@ -269,26 +270,51 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
 
   render() {
     if (this.state.hasError) {
+      const isQuotaError = String(this.state.error?.message || '').toLowerCase().includes('quota') || 
+                           String(this.state.error?.message || '').toLowerCase().includes('resource_exhausted') ||
+                           String(this.state.error?.message || '').toLowerCase().includes('resource-exhausted');
+
       return (
-        <div className="min-h-screen bg-rose-50 flex items-center justify-center p-6">
-          <div className="bg-white p-8 rounded-3xl shadow-xl max-w-md w-full border border-rose-100">
-            <div className="w-16 h-16 bg-rose-100 text-rose-600 rounded-2xl flex items-center justify-center mx-auto mb-6">
+        <div className="min-h-screen bg-slate-900 flex items-center justify-center p-6">
+          <div className="bg-white p-8 rounded-3xl shadow-2xl max-w-lg w-full border border-slate-100">
+            <div className={`w-16 h-16 ${isQuotaError ? 'bg-amber-100 text-amber-600' : 'bg-rose-100 text-rose-600'} rounded-2xl flex items-center justify-center mx-auto mb-6`}>
               <AlertTriangle size={32} />
             </div>
-            <h2 className="text-2xl font-black text-center mb-4">Algo deu errado</h2>
-            <p className="text-[#78716C] text-center mb-6">
-              Ocorreu um erro inesperado. Por favor, recarregue a página ou entre em contato com o suporte.
-            </p>
-            <div className="bg-rose-50 p-4 rounded-xl mb-6 overflow-auto max-h-40">
-              <code className="text-xs text-rose-700">
-                {this.state.error?.message || "Erro desconhecido"}
-              </code>
-            </div>
+            
+            {isQuotaError ? (
+              <>
+                <h2 className="text-2xl font-black text-center text-slate-900 mb-2">Cota Gratuita de Leituras Excedida</h2>
+                <p className="text-slate-600 text-xs font-medium text-center mb-6 leading-relaxed">
+                  A cota diária do plano gratuito do Firebase (leituras de banco de dados) foi temporariamente atingida. 
+                  O sistema continua armazenando suas alterações e ativou a aceleração por cache local no navegador.
+                </p>
+                <div className="bg-amber-50 border border-amber-200 p-4 rounded-2xl mb-6">
+                  <p className="text-xs font-bold text-amber-800 mb-1">💡 O que você pode fazer:</p>
+                  <ul className="text-[11px] text-amber-700 space-y-1 list-disc list-inside">
+                    <li>Recarregue a página para utilizar os dados em cache no seu navegador.</li>
+                    <li>As cotas diárias gratuitas são renovadas automaticamente pelo Google Firebase a cada novo ciclo diário.</li>
+                  </ul>
+                </div>
+              </>
+            ) : (
+              <>
+                <h2 className="text-2xl font-black text-center text-slate-900 mb-4">Algo deu errado</h2>
+                <p className="text-slate-500 text-center mb-6 text-sm">
+                  Ocorreu um erro inesperado. Por favor, recarregue a página ou tente novamente.
+                </p>
+                <div className="bg-rose-50 p-4 rounded-xl mb-6 overflow-auto max-h-40 border border-rose-100">
+                  <code className="text-xs text-rose-700">
+                    {this.state.error?.message || "Erro desconhecido"}
+                  </code>
+                </div>
+              </>
+            )}
+
             <button 
               onClick={() => window.location.reload()}
-              className="w-full py-4 bg-rose-600 text-white rounded-2xl font-bold hover:bg-rose-700 transition-all"
+              className="w-full py-4 bg-gradient-to-r from-blue-700 to-indigo-900 text-white rounded-2xl font-black text-sm hover:from-blue-800 hover:to-indigo-950 transition-all shadow-lg shadow-blue-900/20"
             >
-              Recarregar Página
+              Recarregar Aplicação
             </button>
           </div>
         </div>
@@ -742,6 +768,13 @@ export default function App() {
   const [editingPrice, setEditingPrice] = useState<{ id: string, price: number } | null>(null);
   const [editingQuantity, setEditingQuantity] = useState<{ id: string, quantity: number } | null>(null);
   const [editingMaterialName, setEditingMaterialName] = useState<{ oldName: string, newName: string } | null>(null);
+  const [editingCategory, setEditingCategory] = useState<{ name: string, currentCategory: string, itemId?: string } | null>(null);
+  const [customNewCategory, setCustomNewCategory] = useState('');
+  const [showChangeCategoryModal, setShowChangeCategoryModal] = useState(false);
+  const [categoryModalMaterial, setCategoryModalMaterial] = useState('');
+  const [categoryModalNewCategory, setCategoryModalNewCategory] = useState('');
+  const [customModalCategory, setCustomModalCategory] = useState('');
+  const [isUpdatingCategory, setIsUpdatingCategory] = useState(false);
 
   const uniqueSuppliers = useMemo(() => {
     const fromItems = items.map(i => i.supplier).filter(Boolean) as string[];
@@ -875,6 +908,108 @@ export default function App() {
     } catch (error: any) {
       console.error("Error updating material name:", error);
       showToast(`Erro ao atualizar nome: ${error.message}`, "error");
+    }
+  };
+
+  const handleUpdateCategory = async (targetCategory?: string) => {
+    if (!editingCategory) return;
+    
+    let newCat = (targetCategory !== undefined ? targetCategory : editingCategory.currentCategory).trim();
+    if (newCat === '__NEW__') {
+      newCat = customNewCategory.trim();
+    }
+    
+    if (!newCat) {
+      showToast("Por favor, selecione ou informe uma categoria válida.", "error");
+      return;
+    }
+
+    try {
+      if (editingCategory.itemId) {
+        await updateDoc(doc(db, 'items', editingCategory.itemId), {
+          category: newCat
+        });
+        showToast("Categoria do lote atualizada com sucesso!", "success");
+      } else {
+        const itemsToUpdate = items.filter(i => i.name === editingCategory.name);
+        if (itemsToUpdate.length === 0) {
+          setEditingCategory(null);
+          return;
+        }
+
+        for (let i = 0; i < itemsToUpdate.length; i += 400) {
+          const batch = writeBatch(db);
+          const chunk = itemsToUpdate.slice(i, i + 400);
+          chunk.forEach(item => {
+            batch.update(doc(db, 'items', item.id), { category: newCat });
+          });
+          await batch.commit();
+        }
+        showToast(`Categoria de "${editingCategory.name}" alterada para "${newCat}" com sucesso!`, "success");
+      }
+
+      if (!categories.includes(newCat)) {
+        setCategories(prev => [...prev, newCat]);
+      }
+
+      setEditingCategory(null);
+      setCustomNewCategory('');
+    } catch (error: any) {
+      console.error("Error updating category:", error);
+      handleFirestoreError(error, OperationType.UPDATE, `items`);
+      showToast(`Erro ao atualizar categoria: ${error.message}`, "error");
+    }
+  };
+
+  const handleModalChangeCategory = async () => {
+    if (!categoryModalMaterial) {
+      showToast("Selecione o material que deseja alterar.", "error");
+      return;
+    }
+
+    let newCat = categoryModalNewCategory.trim();
+    if (newCat === '__NEW__') {
+      newCat = customModalCategory.trim();
+    }
+
+    if (!newCat) {
+      showToast("Informe a nova categoria.", "error");
+      return;
+    }
+
+    setIsUpdatingCategory(true);
+    try {
+      const itemsToUpdate = items.filter(i => i.name === categoryModalMaterial);
+      if (itemsToUpdate.length === 0) {
+        showToast("Nenhum item encontrado com esse nome.", "error");
+        setIsUpdatingCategory(false);
+        return;
+      }
+
+      for (let i = 0; i < itemsToUpdate.length; i += 400) {
+        const batch = writeBatch(db);
+        const chunk = itemsToUpdate.slice(i, i + 400);
+        chunk.forEach(item => {
+          batch.update(doc(db, 'items', item.id), { category: newCat });
+        });
+        await batch.commit();
+      }
+
+      if (!categories.includes(newCat)) {
+        setCategories(prev => [...prev, newCat]);
+      }
+
+      showToast(`Categoria do material "${categoryModalMaterial}" alterada para "${newCat}" com sucesso!`, "success");
+      setShowChangeCategoryModal(false);
+      setCategoryModalMaterial('');
+      setCategoryModalNewCategory('');
+      setCustomModalCategory('');
+    } catch (error: any) {
+      console.error("Error changing category:", error);
+      handleFirestoreError(error, OperationType.UPDATE, `items`);
+      showToast(`Erro ao alterar categoria: ${error.message}`, "error");
+    } finally {
+      setIsUpdatingCategory(false);
     }
   };
 
@@ -1639,34 +1774,25 @@ export default function App() {
     const threeDaysAgo = subDays(new Date(), 3);
     
     try {
-      // Cleanup items
-      const itemsSnap = await getDocs(query(collection(db, 'items')));
-      for (const d of itemsSnap.docs) {
-        const data = d.data();
-        if (data.deletedAt && new Date(data.deletedAt) < threeDaysAgo) {
-          await deleteDoc(doc(db, 'items', d.id));
-        }
+      // Cleanup items already loaded in state that are deleted > 3 days ago
+      const deletedItems = items.filter(i => i.deletedAt && new Date(i.deletedAt) < threeDaysAgo);
+      for (const item of deletedItems) {
+        if (item.id) await deleteDoc(doc(db, 'items', item.id));
       }
       
-      // Cleanup requests
-      const requestsSnap = await getDocs(query(collection(db, 'requests')));
-      for (const d of requestsSnap.docs) {
-        const data = d.data();
-        if (data.deletedAt && new Date(data.deletedAt) < threeDaysAgo) {
-          await deleteDoc(doc(db, 'requests', d.id));
-        }
+      // Cleanup requests already loaded in state that are deleted > 3 days ago
+      const deletedRequests = requests.filter(r => r.deletedAt && new Date(r.deletedAt) < threeDaysAgo);
+      for (const req of deletedRequests) {
+        if (req.id) await deleteDoc(doc(db, 'requests', req.id));
       }
 
-      // Cleanup transactions
-      const transSnap = await getDocs(query(collection(db, 'transactions')));
-      for (const d of transSnap.docs) {
-        const data = d.data();
-        if (data.deletedAt && new Date(data.deletedAt) < threeDaysAgo) {
-          await deleteDoc(doc(db, 'transactions', d.id));
-        }
+      // Cleanup transactions already loaded in state that are deleted > 3 days ago
+      const deletedTrans = transactions.filter(t => t.deletedAt && new Date(t.deletedAt) < threeDaysAgo);
+      for (const t of deletedTrans) {
+        if (t.id) await deleteDoc(doc(db, 'transactions', t.id));
       }
     } catch (error) {
-      console.error("Error during cleanup:", error);
+      console.warn("Notice during cleanup:", error);
     }
   };
 
@@ -6543,6 +6669,19 @@ export default function App() {
                 {isAdmin && (
                   <div className="flex gap-2">
                     <button 
+                      onClick={() => {
+                        setCategoryModalMaterial('');
+                        setCategoryModalNewCategory('');
+                        setCustomModalCategory('');
+                        setShowChangeCategoryModal(true);
+                      }}
+                      className="px-3 py-2 bg-indigo-50 border border-indigo-200/90 rounded-2xl text-indigo-700 hover:text-indigo-800 hover:border-indigo-300 hover:bg-indigo-100 transition-all shadow-xs flex items-center gap-1.5 text-xs font-bold"
+                      title="Alterar Categoria do Material / Insumo"
+                    >
+                      <Tag size={15} className="text-indigo-600" />
+                      <span className="hidden sm:inline">Alterar Categoria</span>
+                    </button>
+                    <button 
                       onClick={handleExportLowStockPDF}
                       className="px-3 py-2 bg-amber-50 border border-amber-200 rounded-2xl text-amber-700 hover:text-amber-800 hover:border-amber-300 hover:bg-amber-100 transition-all shadow-sm flex items-center gap-1.5 text-xs font-bold"
                       title="Imprimir Relatório de Itens Críticos / Estoque Baixo"
@@ -7214,9 +7353,77 @@ export default function App() {
                             )}
                           </div>
                         </td>
-                        <td className="px-6 py-4.5">
-                          <p className="text-xs font-bold text-slate-800">{group.category || '---'}</p>
-                          {isAdmin && <p className="text-[10px] font-medium text-slate-400 mt-0.5">{group.supplier || '---'}</p>}
+                        <td className="px-6 py-4.5" onClick={(e) => e.stopPropagation()}>
+                          {isAdmin && editingCategory?.name === group.name && !editingCategory?.itemId ? (
+                            <div className="flex flex-col gap-1.5 bg-indigo-50/90 p-2.5 border border-indigo-200 rounded-2xl shadow-md min-w-[210px]">
+                              <label className="text-[10px] font-black text-indigo-900 uppercase tracking-wider">Nova Categoria:</label>
+                              <select 
+                                value={editingCategory.currentCategory === '__NEW__' ? '__NEW__' : editingCategory.currentCategory}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  if (val === '__NEW__') {
+                                    setEditingCategory({ ...editingCategory, currentCategory: '__NEW__' });
+                                  } else {
+                                    setEditingCategory({ ...editingCategory, currentCategory: val });
+                                  }
+                                }}
+                                className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-xl text-xs font-extrabold text-slate-800 focus:ring-2 focus:ring-indigo-500"
+                              >
+                                {categories.map(cat => (
+                                  <option key={`cat-select-${cat}`} value={cat}>{cat}</option>
+                                ))}
+                                <option value="__NEW__">+ Cadastrar Nova Categoria...</option>
+                              </select>
+
+                              {editingCategory.currentCategory === '__NEW__' && (
+                                <input 
+                                  type="text"
+                                  placeholder="Digite a nova categoria"
+                                  value={customNewCategory}
+                                  onChange={(e) => setCustomNewCategory(e.target.value)}
+                                  className="w-full px-2.5 py-1 bg-white border border-indigo-300 rounded-xl text-xs font-extrabold text-indigo-900 focus:ring-2 focus:ring-indigo-500"
+                                  autoFocus
+                                />
+                              )}
+
+                              <div className="flex items-center gap-1.5 mt-1">
+                                <button 
+                                  onClick={() => handleUpdateCategory()}
+                                  className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-1 shadow-xs"
+                                  title="Salvar Categoria"
+                                >
+                                  <Check size={14} /> Salvar
+                                </button>
+                                <button 
+                                  onClick={() => { setEditingCategory(null); setCustomNewCategory(''); }}
+                                  className="py-1.5 px-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl font-bold text-xs transition-all"
+                                  title="Cancelar"
+                                >
+                                  <X size={14} />
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-1.5 group/cat">
+                              <div>
+                                <p className="text-xs font-bold text-slate-800">{group.category || '---'}</p>
+                                {isAdmin && <p className="text-[10px] font-medium text-slate-400 mt-0.5">{group.supplier || '---'}</p>}
+                              </div>
+                              {isAdmin && (
+                                <button 
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setEditingCategory({ name: group.name, currentCategory: group.category || categories[0] || 'Expediente' });
+                                    setCustomNewCategory('');
+                                  }}
+                                  className="opacity-0 group-hover/cat:opacity-100 p-1 text-slate-400 hover:text-indigo-700 hover:bg-indigo-50 rounded-lg transition-all"
+                                  title="Alterar Categoria deste Material"
+                                >
+                                  <Edit2 size={13} />
+                                </button>
+                              )}
+                            </div>
+                          )}
                         </td>
                         <td className="px-6 py-4.5">
                           {isAdmin ? (
@@ -11827,6 +12034,18 @@ export default function App() {
                     >
                       <Package size={16} /> Mesclar Itens Duplicados
                     </button>
+                    <button 
+                      onClick={() => {
+                        setShowSettingsModal(false);
+                        setCategoryModalMaterial('');
+                        setCategoryModalNewCategory('');
+                        setCustomModalCategory('');
+                        setShowChangeCategoryModal(true);
+                      }}
+                      className="w-full py-3.5 bg-indigo-700 text-white rounded-xl font-extrabold text-xs uppercase tracking-wider hover:bg-indigo-800 transition-all flex items-center justify-center gap-2 shadow-md shadow-indigo-700/20"
+                    >
+                      <Tag size={16} /> Alterar Categoria de Material
+                    </button>
                   </div>
                 </div>
               )}
@@ -12017,6 +12236,115 @@ export default function App() {
                   ) : (
                     <>
                       <CheckCircle size={18} /> Confirmar Mesclagem
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {showChangeCategoryModal && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[80] flex items-center justify-center p-6">
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="bg-white w-full max-w-md rounded-[32px] p-8 shadow-2xl"
+          >
+            <div className="flex justify-between items-center mb-6">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2.5 bg-indigo-100 text-indigo-700 rounded-2xl">
+                  <Tag size={22} />
+                </div>
+                <div>
+                  <h3 className="text-xl font-black text-[#1C1917]">Alterar Categoria de Material</h3>
+                  <p className="text-xs text-slate-500 font-medium">Corrija a categoria de insumos cadastrados incorretamente</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setShowChangeCategoryModal(false)}
+                className="p-2 hover:bg-[#F5F5F4] rounded-full transition-all text-slate-400"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="space-y-5">
+              <div>
+                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5 ml-1">Selecione o Material / Insumo</label>
+                <select 
+                  className="w-full px-4 py-3 bg-[#F5F5F4] border border-slate-200 rounded-2xl focus:ring-2 focus:ring-indigo-500 font-bold text-sm text-slate-800"
+                  value={categoryModalMaterial}
+                  onChange={e => {
+                    const selectedName = e.target.value;
+                    setCategoryModalMaterial(selectedName);
+                    const itemGroup = items.find(i => i.name === selectedName);
+                    if (itemGroup && itemGroup.category) {
+                      setCategoryModalNewCategory(itemGroup.category);
+                    }
+                  }}
+                >
+                  <option value="">Selecione um material do estoque...</option>
+                  {uniqueItemNames.map(name => {
+                    const currentCat = items.find(i => i.name === name)?.category || 'Sem Categoria';
+                    return (
+                      <option key={`cat-modal-${name}`} value={name}>
+                        {name} ({currentCat})
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5 ml-1">Nova Categoria</label>
+                <select 
+                  className="w-full px-4 py-3 bg-[#F5F5F4] border border-slate-200 rounded-2xl focus:ring-2 focus:ring-indigo-500 font-bold text-sm text-slate-800"
+                  value={categoryModalNewCategory}
+                  onChange={e => setCategoryModalNewCategory(e.target.value)}
+                >
+                  <option value="">Selecione a categoria correta...</option>
+                  {categories.map(cat => (
+                    <option key={`cat-opt-${cat}`} value={cat}>{cat}</option>
+                  ))}
+                  <option value="__NEW__">+ Cadastrar Nova Categoria...</option>
+                </select>
+              </div>
+
+              {categoryModalNewCategory === '__NEW__' && (
+                <motion.div initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }}>
+                  <label className="block text-[10px] font-black text-indigo-700 uppercase tracking-widest mb-1.5 ml-1">Nome da Nova Categoria</label>
+                  <input 
+                    type="text"
+                    placeholder="Ex: Odontológico, Laboratorial..."
+                    value={customModalCategory}
+                    onChange={e => setCustomModalCategory(e.target.value)}
+                    className="w-full px-4 py-3 bg-indigo-50/50 border border-indigo-200 rounded-2xl focus:ring-2 focus:ring-indigo-500 font-bold text-sm text-indigo-900"
+                    autoFocus
+                  />
+                </motion.div>
+              )}
+
+              <div className="pt-2 flex gap-3">
+                <button 
+                  onClick={() => setShowChangeCategoryModal(false)}
+                  className="flex-1 py-3.5 bg-[#F5F5F4] text-[#57534E] rounded-2xl font-bold hover:bg-[#E7E5E4] transition-all text-xs"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  onClick={handleModalChangeCategory}
+                  disabled={isUpdatingCategory || !categoryModalMaterial || !categoryModalNewCategory}
+                  className={`flex-1 py-3.5 bg-indigo-600 text-white rounded-2xl font-bold transition-all text-xs flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/20 ${isUpdatingCategory || !categoryModalMaterial || !categoryModalNewCategory ? 'opacity-50 cursor-not-allowed' : 'hover:bg-indigo-700'}`}
+                >
+                  {isUpdatingCategory ? (
+                    <>
+                      <RotateCcw className="animate-spin" size={16} /> Salvando...
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle size={16} /> Salvar Categoria
                     </>
                   )}
                 </button>
