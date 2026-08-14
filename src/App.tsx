@@ -83,6 +83,8 @@ import { initializeApp } from 'firebase/app';
 import { db, auth } from './firebase';
 import firebaseConfig from '../firebase-applet-config.json';
 import { Item, Transaction, UserProfile, MaterialRequest, RequestItem, Notification } from './types';
+import { ApuraSUSProducaoReport } from './components/ApuraSUSProducaoReport';
+import { ApuraSUSCustosReport } from './components/ApuraSUSCustosReport';
 import { 
   BarChart, 
   Bar, 
@@ -345,7 +347,7 @@ export default function App() {
   const [donationUnitCNPJ, setDonationUnitCNPJ] = useState('');
   const [donationRevisionDate, setDonationRevisionDate] = useState('');
   const [letterheadImage, setLetterheadImage] = useState<string | null>(null);
-  const [reportsTab, setReportsTab] = useState<'overview' | 'quantitativo' | 'letterhead'>('overview');
+  const [reportsTab, setReportsTab] = useState<'overview' | 'apurasus_producao' | 'apurasus_custos' | 'quantitativo' | 'letterhead'>('overview');
   const [quantitativoSource, setQuantitativoSource] = useState<'sample' | 'system'>('system');
   const [quantitativoPeriodPreset, setQuantitativoPeriodPreset] = useState<'1_semestre_2026' | '2_semestre_2026' | 'ano_2026' | 'custom'>('1_semestre_2026');
   const [quantitativoCustomStart, setQuantitativoCustomStart] = useState('2026-01-01');
@@ -8555,10 +8557,10 @@ export default function App() {
               </div>
 
               {/* Reports Navigation Sub-Tabs */}
-              <div className="flex items-center gap-3 bg-white p-2 rounded-2xl border border-slate-200/80 shadow-sm overflow-x-auto">
+              <div className="flex items-center gap-2.5 bg-white p-2 rounded-2xl border border-slate-200/80 shadow-sm overflow-x-auto">
                 <button
                   onClick={() => setReportsTab('overview')}
-                  className={`px-5 py-2.5 rounded-xl text-xs sm:text-sm font-black flex items-center gap-2 transition-all shrink-0 ${
+                  className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-black flex items-center gap-2 transition-all shrink-0 cursor-pointer ${
                     reportsTab === 'overview'
                       ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-md shadow-blue-600/20'
                       : 'text-slate-600 hover:text-blue-700 hover:bg-slate-100'
@@ -8567,21 +8569,47 @@ export default function App() {
                   <BarChart3 size={17} /> Relatórios & Gráficos
                 </button>
                 <button
+                  onClick={() => setReportsTab('apurasus_producao')}
+                  className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-black flex items-center gap-2 transition-all relative shrink-0 cursor-pointer ${
+                    reportsTab === 'apurasus_producao'
+                      ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-md shadow-blue-600/20'
+                      : 'text-slate-600 hover:text-blue-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <Package size={17} /> Produção Mensal
+                  <span className="flex items-center gap-1 text-[10px] bg-blue-600 text-white px-2 py-0.5 rounded-full font-bold">
+                    ApuraSUS
+                  </span>
+                </button>
+                <button
+                  onClick={() => setReportsTab('apurasus_custos')}
+                  className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-black flex items-center gap-2 transition-all relative shrink-0 cursor-pointer ${
+                    reportsTab === 'apurasus_custos'
+                      ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-md shadow-blue-600/20'
+                      : 'text-slate-600 hover:text-blue-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <DollarSign size={17} /> Custo por Item e Setores
+                  <span className="flex items-center gap-1 text-[10px] bg-indigo-600 text-white px-2 py-0.5 rounded-full font-bold">
+                    ApuraSUS
+                  </span>
+                </button>
+                <button
                   onClick={() => setReportsTab('quantitativo')}
-                  className={`px-5 py-2.5 rounded-xl text-xs sm:text-sm font-black flex items-center gap-2 transition-all relative shrink-0 ${
+                  className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-black flex items-center gap-2 transition-all relative shrink-0 cursor-pointer ${
                     reportsTab === 'quantitativo'
                       ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-md shadow-blue-600/20'
                       : 'text-slate-600 hover:text-blue-700 hover:bg-slate-100'
                   }`}
                 >
                   <PieChartIcon size={17} /> Quantitativo por Setor
-                  <span className="flex items-center gap-1 text-[10px] bg-blue-600 text-white px-2 py-0.5 rounded-full font-bold">
+                  <span className="flex items-center gap-1 text-[10px] bg-emerald-600 text-white px-2 py-0.5 rounded-full font-bold">
                     Oficial
                   </span>
                 </button>
                 <button
                   onClick={() => setReportsTab('letterhead')}
-                  className={`px-5 py-2.5 rounded-xl text-xs sm:text-sm font-black flex items-center gap-2 transition-all relative shrink-0 ${
+                  className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-black flex items-center gap-2 transition-all relative shrink-0 cursor-pointer ${
                     reportsTab === 'letterhead'
                       ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-md shadow-blue-600/20'
                       : 'text-slate-600 hover:text-blue-700 hover:bg-slate-100'
@@ -8773,6 +8801,73 @@ export default function App() {
                     </div>
                   </div>
                 )}
+
+                {/* ApuraSUS Section (Destinados ao ApuraSUS) */}
+                <div className="col-span-full bg-gradient-to-br from-slate-900 via-blue-950 to-indigo-950 p-6 sm:p-7 rounded-3xl text-white shadow-md relative overflow-hidden">
+                  <div className="h-1.5 w-full bg-gradient-to-r from-blue-500 via-indigo-500 to-cyan-400 absolute top-0 left-0" />
+                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-white/10">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="px-3 py-1 rounded-full text-xs font-black bg-blue-500/20 text-blue-300 border border-blue-400/30">
+                          Módulo ApuraSUS
+                        </span>
+                        <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-white/10 text-white/80">
+                          Sistema de Apuração e Gestão do Custo do SUS
+                        </span>
+                      </div>
+                      <h3 className="text-xl font-black text-white mt-2">
+                        Relatórios Oficiais Destinados ao ApuraSUS
+                      </h3>
+                      <p className="text-xs sm:text-sm text-slate-300 font-normal mt-1 max-w-2xl">
+                        Acesse a produção física mensal de dispensação do almoxarifado por item e setor de destino, e o demonstrativo de rateio de custos financeiros por categoria de insumo.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-5">
+                    {/* Card 1: Produção Mensal */}
+                    <div className="bg-white/5 hover:bg-white/10 transition-all p-5 rounded-2xl border border-white/10 flex flex-col justify-between gap-4 group">
+                      <div className="flex items-start gap-3.5">
+                        <div className="p-3 bg-blue-600/30 text-blue-300 rounded-xl border border-blue-500/30 group-hover:scale-105 transition-transform shrink-0">
+                          <Package size={22} />
+                        </div>
+                        <div>
+                          <h4 className="text-base font-black text-white">Produção Mensal do Almoxarifado</h4>
+                          <p className="text-xs text-slate-300 font-medium mt-1 leading-relaxed">
+                            Total geral de itens dispensados no mês e a quantidade exata recebida por cada setor consumidor.
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => setReportsTab('apurasus_producao')}
+                        className="w-full mt-2 py-2.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-extrabold text-xs flex items-center justify-center gap-2 transition-all shadow-sm cursor-pointer"
+                      >
+                        <Package size={15} /> Acessar Produção Mensal &rarr;
+                      </button>
+                    </div>
+
+                    {/* Card 2: Custo por Item e Setor */}
+                    <div className="bg-white/5 hover:bg-white/10 transition-all p-5 rounded-2xl border border-white/10 flex flex-col justify-between gap-4 group">
+                      <div className="flex items-start gap-3.5">
+                        <div className="p-3 bg-indigo-600/30 text-indigo-300 rounded-xl border border-indigo-500/30 group-hover:scale-105 transition-transform shrink-0">
+                          <DollarSign size={22} />
+                        </div>
+                        <div>
+                          <h4 className="text-base font-black text-white">Relatório de Custo por Tipo de Item e Setores</h4>
+                          <p className="text-xs text-slate-300 font-medium mt-1 leading-relaxed">
+                            Valor total dispensado por tipo de insumo e distribuição analítica absorvida por cada setor de consumo.
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => setReportsTab('apurasus_custos')}
+                        className="w-full mt-2 py-2.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-xs flex items-center justify-center gap-2 transition-all shadow-sm cursor-pointer"
+                      >
+                        <DollarSign size={15} /> Acessar Demonstrativo de Custos &rarr;
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
 
               {/* KPI Stats Grid */}
@@ -9392,6 +9487,38 @@ export default function App() {
                 </div>
               )}
               </div>
+              )}
+
+              {reportsTab === 'apurasus_producao' && (
+                <ApuraSUSProducaoReport
+                  transactions={transactions}
+                  items={items}
+                  SECTORS={SECTORS}
+                  SECTOR_COLORS={SECTOR_COLORS}
+                  CATEGORY_COLORS={CATEGORY_COLORS}
+                  getCategoryColor={getCategoryColor}
+                  letterheadImage={letterheadImage}
+                  inventoryLocation={inventoryLocation}
+                  showToast={showToast}
+                  isAdmin={isAdmin}
+                  selectedSector={selectedSector}
+                />
+              )}
+
+              {reportsTab === 'apurasus_custos' && (
+                <ApuraSUSCustosReport
+                  transactions={transactions}
+                  items={items}
+                  SECTORS={SECTORS}
+                  SECTOR_COLORS={SECTOR_COLORS}
+                  CATEGORY_COLORS={CATEGORY_COLORS}
+                  getCategoryColor={getCategoryColor}
+                  letterheadImage={letterheadImage}
+                  inventoryLocation={inventoryLocation}
+                  showToast={showToast}
+                  isAdmin={isAdmin}
+                  selectedSector={selectedSector}
+                />
               )}
 
               {reportsTab === 'quantitativo' && (
