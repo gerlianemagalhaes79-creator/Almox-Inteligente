@@ -775,6 +775,8 @@ export default function App() {
   const [categoryModalNewCategory, setCategoryModalNewCategory] = useState('');
   const [customModalCategory, setCustomModalCategory] = useState('');
   const [isUpdatingCategory, setIsUpdatingCategory] = useState(false);
+  const [showCriticalReportModal, setShowCriticalReportModal] = useState(false);
+  const [criticalReportFilter, setCriticalReportFilter] = useState<'all' | 'low_stock' | 'expiry'>('all');
 
   const uniqueSuppliers = useMemo(() => {
     const fromItems = items.map(i => i.supplier).filter(Boolean) as string[];
@@ -3197,7 +3199,9 @@ export default function App() {
               return `${nextCount.toString().padStart(2, '0')}/${currentYear}`;
             })() : null;
 
-            const sectorValue = modalSector || (inventoryLocation === 'Farmácia' ? 'Farmácia (Consumo Interno)' : 'Almoxarifado');
+            const sectorValue = (exitReason === 'vencido' || exitReason === 'perda')
+              ? (exitReason === 'vencido' ? 'Descarte por Vencimento (Desperdício)' : 'Descarte por Perda/Avaria')
+              : (modalSector || (inventoryLocation === 'Farmácia' ? 'Farmácia (Consumo Interno)' : 'Almoxarifado'));
 
             transaction.set(newTransRef, {
               item_id: currentItemData.id || itemRef.id,
@@ -3315,12 +3319,18 @@ export default function App() {
 
       setShowTransactionModal({ show: false, type: 'entry' });
       
-      // Auto-generate delivery receipt for manual exit
-      if (showTransactionModal.type === 'exit' && basket.length > 0 && selectedSector) {
-        const itemsForReceipt = basket.map(b => ({
-          product_name: items.find(i => i.id === b.item_id)?.name || 'Produto Não Identificado',
-          quantity: b.quantity
-        }));
+      // Post-transaction receipt/term generation
+      if (showTransactionModal.type === 'exit' && basket.length > 0) {
+        const itemsForReceipt = basket.map(b => {
+          const it = items.find(i => i.id === b.item_id);
+          return {
+            product_name: it?.name || 'Produto Não Identificado',
+            quantity: b.quantity,
+            batch_number: it?.batch_number,
+            expiry_date: it?.expiry_date,
+            category: it?.category
+          };
+        });
         
         if (exitReason === 'doacao') {
           // Calculate donation number for this year
@@ -3344,7 +3354,7 @@ export default function App() {
           handleExportDonationTermPDF({
             donatingUnitName: donationUnitName || 'Policlínica de Sobral',
             receivingUnit: {
-              name: selectedSector || 'Unidade Receptora',
+              name: modalSector || selectedSector || 'Unidade Receptora',
               address: donationUnitAddress,
               cnpj: donationUnitCNPJ
             },
@@ -3353,9 +3363,19 @@ export default function App() {
             donationNumber: currentDonationNumber,
             date: new Date().toISOString()
           });
-        } else {
+        } else if (exitReason === 'vencido' || exitReason === 'perda') {
+          handleExportDisposalTermPDF({
+            items: itemsForReceipt,
+            reason: exitReason,
+            justification: expiryReason,
+            location: inventoryLocation,
+            responsible: userProfile?.name || user?.displayName || 'Responsável',
+            date: new Date().toISOString()
+          });
+          showToast(exitReason === 'vencido' ? "Baixa por vencimento (desperdício) concluída com sucesso!" : "Baixa por perda/avaria concluída!", "success");
+        } else if (selectedSector || modalSector) {
           handleExportDeliveryReceiptPDF({
-            sector: selectedSector,
+            sector: modalSector || selectedSector,
             items: itemsForReceipt,
             date: new Date().toISOString()
           });
@@ -3534,17 +3554,22 @@ export default function App() {
     }
   };
 
-  const handleExportLowStockPDF = () => {
+  const handleExportCriticalReportPDF = (type: 'low_stock' | 'expiry' | 'all' = 'all') => {
     try {
       const doc = new jsPDF();
       const dateStr = format(new Date(), 'dd/MM/yyyy HH:mm');
       const locationLabel = inventoryLocation === 'Farmácia' ? 'Farmácia (Medicamentos)' : 'Almoxarifado Geral';
       
-      const startY = drawPDFLetterhead(
-        doc,
-        `RELATÓRIO DE ITENS CRÍTICOS — ESTOQUE BAIXO`,
-        `Unidade: ${locationLabel} • Data de Emissão: ${dateStr}`
-      );
+      let title = 'RELATÓRIO GERAL DE ITENS CRÍTICOS';
+      let subtitle = `Unidade: ${locationLabel} • Data de Emissão: ${dateStr}`;
+
+      if (type === 'low_stock') {
+        title = 'RELATÓRIO DE ITENS CRÍTICOS — ESTOQUE BAIXO E RUPTURA';
+      } else if (type === 'expiry') {
+        title = 'RELATÓRIO DE ITENS CRÍTICOS — CONTROLE DE VALIDADE';
+      }
+
+      let currentY = drawPDFLetterhead(doc, title, subtitle);
 
       // Collect all active items for current location
       const activeLocationItems = items.filter(
@@ -3586,86 +3611,338 @@ export default function App() {
         return ratioA - ratioB;
       });
 
-      if (lowStockGroupsList.length === 0) {
-        doc.setFontSize(11);
-        doc.setTextColor(16, 185, 129); // emerald-600
+      // Filter expiry batches (expired or near expiry)
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const expiryBatches = activeLocationItems
+        .filter(i => isExpired(i) || isNearExpiry(i))
+        .sort((a, b) => {
+          const dateA = a.expiry_date && a.expiry_date !== 'Indeterminada' ? new Date(a.expiry_date).getTime() : 0;
+          const dateB = b.expiry_date && b.expiry_date !== 'Indeterminada' ? new Date(b.expiry_date).getTime() : 0;
+          return dateA - dateB;
+        });
+
+      // CASE 1: REPORT EXCLUSIVELY FOR EXPIRY (VALIDADE)
+      if (type === 'expiry') {
+        if (expiryBatches.length === 0) {
+          doc.setFontSize(11);
+          doc.setTextColor(16, 185, 129);
+          doc.setFont("helvetica", "bold");
+          doc.text("Nenhum item vencido ou com validade próxima registrado.", 14, currentY + 12);
+          
+          doc.setFontSize(9.5);
+          doc.setTextColor(100, 116, 139);
+          doc.setFont("helvetica", "normal");
+          doc.text(`Todos os lotes ativos no ${locationLabel} estão em conformidade de validade.`, 14, currentY + 20);
+
+          const dateFileStr = format(new Date(), 'dd-MM-yyyy');
+          doc.save(`Relatorio_Criticos_Validade_${inventoryLocation}_${dateFileStr}.pdf`);
+          showToast("Relatório de validade gerado com sucesso!", "info");
+          return;
+        }
+
+        const tableData = expiryBatches.map(item => {
+          const itemExpired = isExpired(item);
+          const expDate = item.expiry_date && item.expiry_date !== 'Indeterminada' ? new Date(item.expiry_date) : null;
+          let daysDiff = 0;
+          let prazoText = 'Indeterminado';
+          if (expDate) {
+            const diffTime = expDate.getTime() - today.getTime();
+            daysDiff = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+            if (itemExpired) {
+              prazoText = `Vencido há ${Math.abs(daysDiff)} dia(s)`;
+            } else {
+              prazoText = `Vence em ${daysDiff} dia(s)`;
+            }
+          }
+
+          const unitText = item.unit_measure ? ` ${item.unit_measure}` : ' UN';
+          const formattedDate = expDate ? format(expDate, 'dd/MM/yyyy') : '---';
+
+          return [
+            item.name,
+            item.batch_number || 'S/ Lote',
+            item.category || 'Geral',
+            `${item.quantity}${unitText}`,
+            formattedDate,
+            prazoText,
+            itemExpired ? 'VENCIDO' : 'PRÓXIMO AO VENCIMENTO'
+          ];
+        });
+
+        autoTable(doc, {
+          startY: currentY + 4,
+          head: [['Material / Medicamento', 'Lote', 'Categoria', 'Qtd Atual', 'Data Validade', 'Prazo / Situação', 'Status']],
+          body: tableData,
+          theme: 'striped',
+          headStyles: { fillColor: [190, 24, 93], halign: 'center', fontStyle: 'bold' }, // Rose-700
+          columnStyles: {
+            1: { halign: 'center' },
+            3: { halign: 'center', fontStyle: 'bold' },
+            4: { halign: 'center' },
+            5: { halign: 'center' },
+            6: { halign: 'center' }
+          },
+          styles: { fontSize: 8.5, cellPadding: 3 },
+          didParseCell: function(data) {
+            if (data.section === 'body' && data.column.index === 6) {
+              const text = data.cell.text[0];
+              if (text === 'VENCIDO') {
+                data.cell.styles.textColor = [220, 38, 38];
+                data.cell.styles.fontStyle = 'bold';
+              } else {
+                data.cell.styles.textColor = [3, 105, 161];
+                data.cell.styles.fontStyle = 'bold';
+              }
+            }
+          }
+        });
+
+        const finalY = (doc as any).lastAutoTable ? (doc as any).lastAutoTable.finalY + 10 : currentY + 50;
+        doc.setFontSize(9);
+        doc.setTextColor(30, 41, 59);
         doc.setFont("helvetica", "bold");
-        doc.text("Nenhum item com estoque baixo registrado no momento.", 14, startY + 12);
+        const expCount = expiryBatches.filter(i => isExpired(i)).length;
+        const nearCount = expiryBatches.filter(i => isNearExpiry(i)).length;
+        doc.text(`Total: ${expiryBatches.length} lote(s) com alerta de validade (${expCount} vencido(s) e ${nearCount} próximo(s) ao vencimento)`, 14, finalY);
+
+        const dateFileStr = format(new Date(), 'dd-MM-yyyy');
+        doc.save(`Relatorio_Criticos_Validade_${inventoryLocation}_${dateFileStr}.pdf`);
+        showToast("Relatório PDF de validade crítica gerado com sucesso!", "success");
+        return;
+      }
+
+      // CASE 2: REPORT EXCLUSIVELY FOR LOW STOCK (ESTOQUE BAIXO)
+      if (type === 'low_stock') {
+        if (lowStockGroupsList.length === 0) {
+          doc.setFontSize(11);
+          doc.setTextColor(16, 185, 129);
+          doc.setFont("helvetica", "bold");
+          doc.text("Nenhum item com estoque baixo registrado no momento.", 14, currentY + 12);
+          
+          doc.setFontSize(9.5);
+          doc.setTextColor(100, 116, 139);
+          doc.setFont("helvetica", "normal");
+          doc.text(`Todos os insumos cadastrados no ${locationLabel} estão acima do estoque mínimo.`, 14, currentY + 20);
+
+          const dateFileStr = format(new Date(), 'dd-MM-yyyy');
+          doc.save(`Relatorio_Criticos_Estoque_Baixo_${inventoryLocation}_${dateFileStr}.pdf`);
+          showToast("Relatório gerado: Nenhum item com estoque baixo encontrado.", "info");
+          return;
+        }
+
+        const tableData = lowStockGroupsList.map(group => {
+          const deficit = Math.max(0, group.min_quantity - group.total_quantity);
+          let status = 'ESTOQUE BAIXO';
+          if (group.total_quantity === 0) {
+            status = 'ZERADO / RUPTURA';
+          } else if (group.total_quantity <= (group.min_quantity * 0.5)) {
+            status = 'MUITO CRÍTICO';
+          }
+
+          const unitText = group.unit_measure ? ` ${group.unit_measure}` : '';
+
+          return [
+            group.name,
+            group.category || 'Geral',
+            `${group.total_quantity}${unitText}`,
+            `${group.min_quantity}${unitText}`,
+            `${deficit}${unitText}`,
+            status
+          ];
+        });
+
+        autoTable(doc, {
+          startY: currentY + 4,
+          head: [['Material / Medicamento', 'Categoria', 'Estoque Atual', 'Estoque Mínimo', 'Déficit (Reposição)', 'Status Crítico']],
+          body: tableData,
+          theme: 'striped',
+          headStyles: { fillColor: [180, 83, 9], halign: 'center', fontStyle: 'bold' }, // Amber-700
+          columnStyles: {
+            2: { halign: 'center' },
+            3: { halign: 'center' },
+            4: { halign: 'center', fontStyle: 'bold' },
+            5: { halign: 'center' }
+          },
+          styles: { fontSize: 8.5, cellPadding: 3 },
+          didParseCell: function(data) {
+            if (data.section === 'body' && data.column.index === 5) {
+              const text = data.cell.text[0];
+              if (text.includes('ZERADO') || text === 'MUITO CRÍTICO') {
+                data.cell.styles.textColor = [220, 38, 38];
+                data.cell.styles.fontStyle = 'bold';
+              } else if (text === 'ESTOQUE BAIXO') {
+                data.cell.styles.textColor = [217, 119, 6];
+                data.cell.styles.fontStyle = 'bold';
+              }
+            }
+          }
+        });
+
+        const finalY = (doc as any).lastAutoTable ? (doc as any).lastAutoTable.finalY + 10 : currentY + 50;
+        doc.setFontSize(9);
+        doc.setTextColor(30, 41, 59);
+        doc.setFont("helvetica", "bold");
+        doc.text(`Total de itens identificados com estoque baixo ou crítico: ${lowStockGroupsList.length}`, 14, finalY);
+
+        const dateFileStr = format(new Date(), 'dd-MM-yyyy');
+        doc.save(`Relatorio_Criticos_Estoque_Baixo_${inventoryLocation}_${dateFileStr}.pdf`);
+        showToast("Relatório PDF de estoque baixo gerado com sucesso!", "success");
+        return;
+      }
+
+      // CASE 3: COMBINED REPORT (VALIDADE + ESTOQUE BAIXO)
+      if (lowStockGroupsList.length === 0 && expiryBatches.length === 0) {
+        doc.setFontSize(11);
+        doc.setTextColor(16, 185, 129);
+        doc.setFont("helvetica", "bold");
+        doc.text("Nenhuma inconformidade crítica identificada no momento.", 14, currentY + 12);
         
         doc.setFontSize(9.5);
         doc.setTextColor(100, 116, 139);
         doc.setFont("helvetica", "normal");
-        doc.text(`Todos os insumos cadastrados no ${locationLabel} estão acima do estoque mínimo.`, 14, startY + 20);
+        doc.text(`Todos os insumos e lotes do ${locationLabel} estão com níveis e validades regulares.`, 14, currentY + 20);
 
         const dateFileStr = format(new Date(), 'dd-MM-yyyy');
-        doc.save(`Relatorio_Estoque_Baixo_${inventoryLocation}_${dateFileStr}.pdf`);
-        showToast("Relatório gerado: Nenhum item com estoque baixo encontrado.", "info");
+        doc.save(`Relatorio_Criticos_Geral_${inventoryLocation}_${dateFileStr}.pdf`);
+        showToast("Relatório gerado: Estoque 100% regular.", "info");
         return;
       }
 
-      // Prepare table data
-      const tableData = lowStockGroupsList.map(group => {
-        const deficit = Math.max(0, group.min_quantity - group.total_quantity);
-        let status = 'ESTOQUE BAIXO';
-        if (group.total_quantity === 0) {
-          status = 'ZERADO / SEM ESTOQUE';
-        } else if (group.total_quantity <= (group.min_quantity * 0.5)) {
-          status = 'MUITO CRÍTICO';
-        }
+      // Section 1: Validade
+      if (expiryBatches.length > 0) {
+        doc.setFontSize(10);
+        doc.setTextColor(159, 18, 57);
+        doc.setFont("helvetica", "bold");
+        doc.text(`1. CONTROLE DE VALIDADE (${expiryBatches.length} lote(s) requerem atenção)`, 14, currentY + 5);
 
-        const unitText = group.unit_measure ? ` ${group.unit_measure}` : '';
+        const expiryTableData = expiryBatches.map(item => {
+          const itemExpired = isExpired(item);
+          const expDate = item.expiry_date && item.expiry_date !== 'Indeterminada' ? new Date(item.expiry_date) : null;
+          let daysDiff = 0;
+          let prazoText = 'Indeterminado';
+          if (expDate) {
+            const diffTime = expDate.getTime() - today.getTime();
+            daysDiff = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+            prazoText = itemExpired ? `Vencido há ${Math.abs(daysDiff)} d` : `Vence em ${daysDiff} d`;
+          }
+          const unitText = item.unit_measure ? ` ${item.unit_measure}` : ' UN';
+          const formattedDate = expDate ? format(expDate, 'dd/MM/yyyy') : '---';
 
-        return [
-          group.name,
-          group.category || 'Geral',
-          `${group.total_quantity}${unitText}`,
-          `${group.min_quantity}${unitText}`,
-          `${deficit}${unitText}`,
-          status
-        ];
-      });
+          return [
+            item.name,
+            item.batch_number || 'S/ Lote',
+            item.category || 'Geral',
+            `${item.quantity}${unitText}`,
+            formattedDate,
+            prazoText,
+            itemExpired ? 'VENCIDO' : 'PRÓX. VENCER'
+          ];
+        });
 
-      autoTable(doc, {
-        startY: startY + 4,
-        head: [['Material / Medicamento', 'Categoria', 'Estoque Atual', 'Estoque Mínimo', 'Déficit (Reposição)', 'Status Crítico']],
-        body: tableData,
-        theme: 'striped',
-        headStyles: { fillColor: [180, 35, 24], halign: 'center', fontStyle: 'bold' }, // Dark Red/Amber
-        columnStyles: {
-          2: { halign: 'center' },
-          3: { halign: 'center' },
-          4: { halign: 'center', fontStyle: 'bold' },
-          5: { halign: 'center' }
-        },
-        styles: { fontSize: 8.5, cellPadding: 3 },
-        didParseCell: function(data) {
-          if (data.section === 'body' && data.column.index === 5) {
-            const text = data.cell.text[0];
-            if (text.includes('ZERADO') || text === 'MUITO CRÍTICO') {
-              data.cell.styles.textColor = [220, 38, 38]; // red-600
-              data.cell.styles.fontStyle = 'bold';
-            } else if (text === 'ESTOQUE BAIXO') {
-              data.cell.styles.textColor = [217, 119, 6]; // amber-600
-              data.cell.styles.fontStyle = 'bold';
+        autoTable(doc, {
+          startY: currentY + 8,
+          head: [['Material / Medicamento', 'Lote', 'Categoria', 'Qtd Atual', 'Validade', 'Prazo', 'Status']],
+          body: expiryTableData,
+          theme: 'striped',
+          headStyles: { fillColor: [190, 24, 93], halign: 'center', fontStyle: 'bold' },
+          columnStyles: {
+            1: { halign: 'center' },
+            3: { halign: 'center', fontStyle: 'bold' },
+            4: { halign: 'center' },
+            5: { halign: 'center' },
+            6: { halign: 'center' }
+          },
+          styles: { fontSize: 8, cellPadding: 2.5 },
+          didParseCell: function(data) {
+            if (data.section === 'body' && data.column.index === 6) {
+              const text = data.cell.text[0];
+              if (text === 'VENCIDO') {
+                data.cell.styles.textColor = [220, 38, 38];
+                data.cell.styles.fontStyle = 'bold';
+              } else {
+                data.cell.styles.textColor = [3, 105, 161];
+                data.cell.styles.fontStyle = 'bold';
+              }
             }
           }
-        }
-      });
+        });
 
-      // Add total count summary at bottom
-      const finalY = (doc as any).lastAutoTable ? (doc as any).lastAutoTable.finalY + 10 : startY + 50;
-      doc.setFontSize(9);
-      doc.setTextColor(30, 41, 59);
-      doc.setFont("helvetica", "bold");
-      doc.text(`Total de itens identificados com estoque baixo ou crítico: ${lowStockGroupsList.length}`, 14, finalY);
+        currentY = (doc as any).lastAutoTable ? (doc as any).lastAutoTable.finalY + 10 : currentY + 40;
+      }
+
+      // Section 2: Estoque Baixo
+      if (lowStockGroupsList.length > 0) {
+        if (currentY > 220) {
+          doc.addPage();
+          currentY = 20;
+        }
+
+        doc.setFontSize(10);
+        doc.setTextColor(146, 64, 14);
+        doc.setFont("helvetica", "bold");
+        doc.text(`2. ESTOQUE BAIXO E RUPTURA (${lowStockGroupsList.length} item(ns) para reposição)`, 14, currentY + 4);
+
+        const lowStockTableData = lowStockGroupsList.map(group => {
+          const deficit = Math.max(0, group.min_quantity - group.total_quantity);
+          let status = 'ESTOQUE BAIXO';
+          if (group.total_quantity === 0) {
+            status = 'ZERADO / RUPTURA';
+          } else if (group.total_quantity <= (group.min_quantity * 0.5)) {
+            status = 'MUITO CRÍTICO';
+          }
+          const unitText = group.unit_measure ? ` ${group.unit_measure}` : '';
+
+          return [
+            group.name,
+            group.category || 'Geral',
+            `${group.total_quantity}${unitText}`,
+            `${group.min_quantity}${unitText}`,
+            `${deficit}${unitText}`,
+            status
+          ];
+        });
+
+        autoTable(doc, {
+          startY: currentY + 7,
+          head: [['Material / Medicamento', 'Categoria', 'Estoque Atual', 'Estoque Mínimo', 'Déficit (Reposição)', 'Status Crítico']],
+          body: lowStockTableData,
+          theme: 'striped',
+          headStyles: { fillColor: [180, 83, 9], halign: 'center', fontStyle: 'bold' },
+          columnStyles: {
+            2: { halign: 'center' },
+            3: { halign: 'center' },
+            4: { halign: 'center', fontStyle: 'bold' },
+            5: { halign: 'center' }
+          },
+          styles: { fontSize: 8, cellPadding: 2.5 },
+          didParseCell: function(data) {
+            if (data.section === 'body' && data.column.index === 5) {
+              const text = data.cell.text[0];
+              if (text.includes('ZERADO') || text === 'MUITO CRÍTICO') {
+                data.cell.styles.textColor = [220, 38, 38];
+                data.cell.styles.fontStyle = 'bold';
+              } else if (text === 'ESTOQUE BAIXO') {
+                data.cell.styles.textColor = [217, 119, 6];
+                data.cell.styles.fontStyle = 'bold';
+              }
+            }
+          }
+        });
+      }
 
       const dateFileStr = format(new Date(), 'dd-MM-yyyy');
-      doc.save(`Relatorio_Estoque_Baixo_${inventoryLocation}_${dateFileStr}.pdf`);
-      showToast("Relatório PDF de estoque baixo gerado com sucesso!", "success");
+      doc.save(`Relatorio_Criticos_Geral_${inventoryLocation}_${dateFileStr}.pdf`);
+      showToast("Relatório PDF completo de itens críticos gerado com sucesso!", "success");
     } catch (error) {
-      console.error('Erro ao exportar PDF de estoque baixo:', error);
-      showToast("Erro ao exportar PDF de estoque baixo.", "error");
+      console.error('Erro ao exportar PDF de itens críticos:', error);
+      showToast("Erro ao exportar PDF de itens críticos.", "error");
     }
+  };
+
+  const handleExportLowStockPDF = () => {
+    handleExportCriticalReportPDF('low_stock');
   };
 
   const handleExportMaterialsCatalogPDF = () => {
@@ -3804,22 +4081,36 @@ export default function App() {
   useEffect(() => {
     if (showTransactionModal.show) {
       setTransactionQty(1);
-      setExitReason('consumo');
-      setExpiryReason('');
       setDonationUnitName('');
       setDonationUnitAddress('');
       setDonationUnitCNPJ('');
       setDonationRevisionDate('');
-      setBasket(showTransactionModal.item ? [{ item_id: showTransactionModal.item.id!, quantity: 1 }] : []);
+
+      const isItemExpired = showTransactionModal.item ? isExpired(showTransactionModal.item) : false;
       
-      // Default to item's current location or parent sector
-      if (showTransactionModal.item) {
-        setModalSector(showTransactionModal.item.location === 'Farmácia' ? 'Farmácia' : 'Almoxarifado');
+      if (showTransactionModal.type === 'exit' && isItemExpired && showTransactionModal.item) {
+        setExitReason('vencido');
+        setModalSector('Descarte/Vencimento (Desperdício)');
+        const expDateStr = showTransactionModal.item.expiry_date && showTransactionModal.item.expiry_date !== 'Indeterminada'
+          ? format(new Date(showTransactionModal.item.expiry_date), 'dd/MM/yyyy')
+          : '';
+        setExpiryReason(expDateStr 
+          ? `Material com validade expirada em ${expDateStr}. Baixa por descarte/desperdício.` 
+          : 'Material com validade expirada. Baixa por descarte/desperdício.');
+        setBasket([{ item_id: showTransactionModal.item.id!, quantity: showTransactionModal.item.quantity || 1 }]);
       } else {
-        setModalSector(userProfile?.sector || SECTORS[0]);
+        setExitReason('consumo');
+        setExpiryReason('');
+        setBasket(showTransactionModal.item ? [{ item_id: showTransactionModal.item.id!, quantity: 1 }] : []);
+        
+        if (showTransactionModal.item) {
+          setModalSector(showTransactionModal.item.location === 'Farmácia' ? 'Farmácia' : 'Almoxarifado');
+        } else {
+          setModalSector(userProfile?.sector || SECTORS[0]);
+        }
       }
     }
-  }, [showTransactionModal.show, showTransactionModal.item, userProfile?.sector]);
+  }, [showTransactionModal.show, showTransactionModal.item, showTransactionModal.type, userProfile?.sector]);
 
   const handleExportPCA = () => {
     if (selectedSector !== 'Almoxarifado') {
@@ -4473,11 +4764,11 @@ export default function App() {
   };
 
   const handleExportDonationTermPDF = async (data: {
-    donatingUnitName?: string;
-    receivingUnit: { name: string; address: string; cnpj: string };
-    items: { product_name: string; quantity: number }[];
-    revisionDate: string;
-    donationNumber?: string;
+    donatingUnitName?: string | null;
+    receivingUnit: { name: string; address?: string | null; cnpj?: string | null };
+    items: { product_name: string; quantity: number; batch_number?: string | null; expiry_date?: string | null }[];
+    revisionDate?: string | null;
+    donationNumber?: string | null;
     date: string;
   }) => {
     try {
@@ -5306,6 +5597,268 @@ export default function App() {
     }
   };
 
+  const handleExportDisposalTermPDF = async (data: {
+    items: { product_name: string; quantity: number; batch_number?: string | null; expiry_date?: string | null; category?: string | null }[];
+    reason?: 'vencido' | 'perda' | string;
+    justification?: string | null;
+    location?: string;
+    responsible?: string;
+    date: string;
+  }) => {
+    try {
+      showToast("Gerando Termo de Descarte...", "info");
+
+      let base64Image = letterheadImage || "";
+      if (!base64Image) {
+        try {
+          base64Image = await getImageDataURL("/official_letterhead.svg");
+        } catch (err) {
+          console.warn("Could not load logo image for Disposal Term, using fallback text header:", err);
+        }
+      }
+
+      // @ts-ignore
+      const doc = new jsPDF();
+      const pageWidth = doc.internal.pageSize.width;
+      const pageHeight = doc.internal.pageSize.height;
+      const margin = 20;
+
+      const drawLetterhead = (pdfDoc: any) => {
+        if (base64Image) {
+          try {
+            const format = base64Image.includes('image/png') ? 'PNG' : 'JPEG';
+            pdfDoc.addImage(base64Image, format, 0, 0, pageWidth, pageHeight, undefined, 'FAST');
+            return;
+          } catch (e) {
+            console.error("Error adding letterhead image to Disposal Term:", e);
+          }
+        }
+
+        const docLogo = appRectangularLogo || appLogo;
+        const logoWidth = 50;
+        const logoHeight = 16;
+        const logoY = 10;
+
+        if (docLogo) {
+          try {
+            const format = docLogo.includes('image/png') ? 'PNG' : 'JPEG';
+            pdfDoc.addImage(docLogo, format, margin, logoY, logoWidth, logoHeight, undefined, 'FAST');
+          } catch (e) {
+            console.error("Error adding docLogo:", e);
+          }
+        } else {
+          pdfDoc.setFillColor(240, 253, 244);
+          pdfDoc.roundedRect(margin, logoY, logoWidth, logoHeight, 2, 2, 'F');
+          pdfDoc.setFontSize(8);
+          pdfDoc.setFont('helvetica', 'bold');
+          pdfDoc.setTextColor(22, 101, 52);
+          pdfDoc.text('ALMOXARIFADO', margin + (logoWidth / 2), logoY + 10, { align: 'center' });
+        }
+
+        const centerX = (pageWidth / 2) - (logoWidth / 2);
+        if (policlinicaLogo) {
+          try {
+            const format = policlinicaLogo.includes('image/png') ? 'PNG' : 'JPEG';
+            pdfDoc.addImage(policlinicaLogo, format, centerX, logoY, logoWidth, logoHeight, undefined, 'FAST');
+          } catch (e) {
+            console.error("Error adding policlinicaLogo:", e);
+          }
+        } else {
+          pdfDoc.setFillColor(240, 249, 255);
+          pdfDoc.roundedRect(centerX, logoY, logoWidth, logoHeight, 2, 2, 'F');
+          pdfDoc.setFontSize(8);
+          pdfDoc.setFont('helvetica', 'bold');
+          pdfDoc.setTextColor(3, 105, 161);
+          pdfDoc.text('POLICLÍNICA DE SOBRAL', centerX + (logoWidth / 2), logoY + 10, { align: 'center' });
+        }
+
+        const consorcioWidth = 56;
+        const consorcioHeight = 18;
+        const consorcioY = 9;
+        const rightX = pageWidth - margin - consorcioWidth;
+        if (consorcioLogo) {
+          try {
+            const format = consorcioLogo.includes('image/png') ? 'PNG' : 'JPEG';
+            pdfDoc.addImage(consorcioLogo, format, rightX, consorcioY, consorcioWidth, consorcioHeight, undefined, 'FAST');
+          } catch (e) {
+            console.error("Error adding consorcioLogo:", e);
+          }
+        } else {
+          pdfDoc.setFillColor(255, 247, 237);
+          pdfDoc.roundedRect(rightX, consorcioY, consorcioWidth, consorcioHeight, 2, 2, 'F');
+          pdfDoc.setFontSize(8);
+          pdfDoc.setFont('helvetica', 'bold');
+          pdfDoc.setTextColor(194, 65, 12);
+          pdfDoc.text('CONSÓRCIO CPSMS', rightX + (consorcioWidth / 2), consorcioY + 11, { align: 'center' });
+        }
+
+        pdfDoc.setDrawColor(226, 232, 240);
+        pdfDoc.setLineWidth(0.5);
+        pdfDoc.line(margin, 29, pageWidth - margin, 29);
+
+        // Footer
+        pdfDoc.setFontSize(7.5);
+        pdfDoc.setTextColor(120, 113, 108);
+        pdfDoc.setFont('helvetica', 'normal');
+        const footer1 = 'Policlínica de Sobral. Av. Monsenhor Aloísio Pinto, 481, CEP 62050-255, Sobral-CE';
+        const footer2 = 'Fone: (88) 3614-3156 | Fax: (88) 3614-3245 | cpsms.ce.gov.br';
+        pdfDoc.text(footer1, pageWidth / 2, pageHeight - 12, { align: 'center' });
+        pdfDoc.text(footer2, pageWidth / 2, pageHeight - 8, { align: 'center' });
+      };
+
+      drawLetterhead(doc);
+
+      const isVencido = data.reason === 'vencido' || !data.reason;
+      const title = isVencido 
+        ? 'TERMO DE BAIXA E DESCARTE POR VENCIMENTO (DESPERDÍCIO)' 
+        : 'TERMO DE BAIXA POR PERDA / AVARIA';
+
+      doc.setFontSize(12);
+      doc.setTextColor(159, 18, 57); // rose-800
+      doc.setFont('helvetica', 'bold');
+      doc.text(title, pageWidth / 2, 38, { align: 'center' });
+
+      // Info box
+      doc.setFillColor(254, 242, 242); // rose-50
+      doc.roundedRect(margin, 43, pageWidth - (margin * 2), 26, 3, 3, 'F');
+      doc.setDrawColor(254, 205, 211); // rose-200
+      doc.setLineWidth(0.5);
+      doc.roundedRect(margin, 43, pageWidth - (margin * 2), 26, 3, 3, 'S');
+
+      doc.setFontSize(8.5);
+      doc.setTextColor(30, 41, 59);
+      doc.setFont('helvetica', 'bold');
+      doc.text(`DATA / HORA DA BAIXA:`, margin + 5, 50);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`${format(new Date(data.date), 'dd/MM/yyyy HH:mm')}`, margin + 48, 50);
+
+      doc.setFont('helvetica', 'bold');
+      doc.text(`LOCAL DE ORIGEM:`, margin + 105, 50);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`${data.location || 'Almoxarifado'}`, margin + 138, 50);
+
+      doc.setFont('helvetica', 'bold');
+      doc.text(`RESPONSÁVEL:`, margin + 5, 57);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`${data.responsible || 'Responsável pelo Estoque'}`, margin + 33, 57);
+
+      doc.setFont('helvetica', 'bold');
+      doc.text(`TIPO DE BAIXA:`, margin + 105, 57);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(190, 18, 60);
+      doc.text(`${isVencido ? 'DESCARTE / VENCIMENTO (DESPERDÍCIO)' : 'PERDA / AVARIA'}`, margin + 133, 57);
+
+      doc.setTextColor(30, 41, 59);
+      doc.setFont('helvetica', 'bold');
+      doc.text(`DESTINAÇÃO:`, margin + 5, 64);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`Inutilização e Descarte Conforme Normas Sanitárias (NÃO computado como consumo de setor)`, margin + 30, 64);
+
+      // Items Table
+      const tableData = data.items.map((item, idx) => {
+        const expStr = item.expiry_date && item.expiry_date !== 'Indeterminada' ? format(new Date(item.expiry_date), 'dd/MM/yyyy') : 'N/A';
+        return [
+          String(idx + 1).padStart(2, '0'),
+          item.product_name,
+          item.batch_number || 'S/N',
+          expStr,
+          item.category || 'Geral',
+          `${item.quantity} un.`
+        ];
+      });
+
+      // @ts-ignore
+      doc.autoTable({
+        startY: 73,
+        head: [['#', 'MATERIAL / DESCRIÇÃO', 'LOTE', 'VALIDADE', 'CATEGORIA', 'QTD DESCARTADA']],
+        body: tableData,
+        theme: 'grid',
+        headStyles: {
+          fillColor: [190, 18, 60], // rose-700
+          textColor: [255, 255, 255],
+          fontStyle: 'bold',
+          fontSize: 8.5,
+          halign: 'center'
+        },
+        bodyStyles: {
+          fontSize: 8,
+          cellPadding: 3.5,
+          lineColor: [226, 232, 240],
+          lineWidth: 0.1
+        },
+        columnStyles: {
+          0: { cellWidth: 10, halign: 'center' },
+          1: { cellWidth: 'auto', fontStyle: 'bold' },
+          2: { cellWidth: 26, halign: 'center' },
+          3: { cellWidth: 24, halign: 'center' },
+          4: { cellWidth: 32, halign: 'center' },
+          5: { cellWidth: 28, halign: 'center', fontStyle: 'bold' }
+        },
+        alternateRowStyles: {
+          fillColor: [254, 242, 242, 0.3]
+        },
+        didDrawPage: (pageData: any) => {
+          if (pageData.pageNumber > 1) {
+            drawLetterhead(doc);
+          }
+        }
+      });
+
+      const finalY = (doc as any).lastAutoTable.finalY + 8;
+
+      // Justification Box if provided
+      if (data.justification) {
+        doc.setFontSize(8);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(30, 41, 59);
+        doc.text('JUSTIFICATIVA / OBSERVAÇÕES:', margin, finalY);
+        
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7.5);
+        doc.setTextColor(71, 85, 105);
+        const splitText = doc.splitTextToSize(data.justification, pageWidth - (margin * 2));
+        doc.text(splitText, margin, finalY + 4);
+      }
+
+      // Legal Compliance Text
+      const textY = finalY + (data.justification ? 16 : 4);
+      doc.setFontSize(7.5);
+      doc.setTextColor(100, 116, 139);
+      doc.setFont('helvetica', 'italic');
+      const declaration = "Declaramos que os itens acima discriminados foram dados como baixa definitiva no sistema de gestão de estoque em razão de vencimento ou perda, sendo devidamente segregados para incineração ou descarte técnico especializado, não configurando consumo assistencial de nenhum setor da unidade.";
+      const splitDecl = doc.splitTextToSize(declaration, pageWidth - (margin * 2));
+      doc.text(splitDecl, margin, textY);
+
+      // Signatures
+      const signY = textY + 26;
+      const signLineWidth = 65;
+      
+      doc.setDrawColor(148, 163, 184);
+      doc.setLineWidth(0.5);
+      doc.line(margin, signY, margin + signLineWidth, signY);
+      doc.line(pageWidth - margin - signLineWidth, signY, pageWidth - margin, signY);
+
+      doc.setFontSize(7.5);
+      doc.setTextColor(30, 41, 59);
+      doc.setFont('helvetica', 'bold');
+      doc.text('RESPONSÁVEL PELO ESTOQUE / BAIXA', margin + (signLineWidth / 2), signY + 4, { align: 'center' });
+      doc.text('GESTOR TÉCNICO / FARMACÊUTICO', pageWidth - margin - (signLineWidth / 2), signY + 4, { align: 'center' });
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7);
+      doc.setTextColor(100, 116, 139);
+      doc.text(data.responsible || 'Responsável', margin + (signLineWidth / 2), signY + 8, { align: 'center' });
+      doc.text('Policlínica de Sobral', pageWidth - margin - (signLineWidth / 2), signY + 8, { align: 'center' });
+
+      const fileName = `TERMO-DESCARTE-${format(new Date(data.date), 'ddMMyy-HHmm')}.pdf`;
+      doc.save(fileName);
+      showToast("Termo de Descarte gerado com sucesso!", "success");
+    } catch (error) {
+      console.error("Disposal Term PDF Error:", error);
+      showToast("Erro ao gerar Termo de Descarte", "error");
+    }
+  };
+
 
   const handleExportConsumptionPDF = () => {
     try {
@@ -5593,11 +6146,11 @@ export default function App() {
       categoryValueData[cat] = (categoryValueData[cat] || 0) + (qty * price);
     });
 
-    // Group by sector for bar chart (stacked by category)
+    // Group by sector for bar chart (stacked by category) - only departmental consumption
     const sectorData: Record<string, any> = {};
     const categoriesInSector: Set<string> = new Set();
 
-    filteredTrans.filter(t => t.type === 'exit' && t.sector).forEach(t => {
+    filteredTrans.filter(t => t.type === 'exit' && t.sector && (t.exitReason === 'consumo' || !t.exitReason)).forEach(t => {
       const item = items.find(i => i.id === t.item_id);
       const category = item?.category || 'Outros';
       categoriesInSector.add(category);
@@ -5623,7 +6176,7 @@ export default function App() {
       sectorData[sectorKey][category] = (sectorData[sectorKey][category] || 0) - t.quantity;
     });
 
-    // Consumption report with sector breakdown
+    // Consumption report with sector breakdown (only actual department consumption)
     const consumptionReport: Record<string, { 
       name: string, 
       totalQuantity: number, 
@@ -5645,8 +6198,8 @@ export default function App() {
       }>
     }> = {};
 
-    // Process exits
-    filteredTrans.filter(t => t.type === 'exit').forEach(t => {
+    // Process exits (only regular consumption)
+    filteredTrans.filter(t => t.type === 'exit' && (t.exitReason === 'consumo' || !t.exitReason)).forEach(t => {
       const item = items.find(i => i.id === t.item_id);
       const price = Number(item?.unit_price) || 0;
       const value = t.quantity * price;
@@ -5980,9 +6533,9 @@ export default function App() {
     const expiry = new Date(dateStr);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const oneMonthFromNow = new Date();
-    oneMonthFromNow.setMonth(today.getMonth() + 1);
-    return expiry >= today && expiry <= oneMonthFromNow;
+    const twoMonthsFromNow = new Date();
+    twoMonthsFromNow.setMonth(today.getMonth() + 2);
+    return expiry >= today && expiry <= twoMonthsFromNow;
   };
 
   const filteredItems = items.filter(i => {
@@ -6682,12 +7235,12 @@ export default function App() {
                       <span className="hidden sm:inline">Alterar Categoria</span>
                     </button>
                     <button 
-                      onClick={handleExportLowStockPDF}
+                      onClick={() => setShowCriticalReportModal(true)}
                       className="px-3 py-2 bg-amber-50 border border-amber-200 rounded-2xl text-amber-700 hover:text-amber-800 hover:border-amber-300 hover:bg-amber-100 transition-all shadow-sm flex items-center gap-1.5 text-xs font-bold"
-                      title="Imprimir Relatório de Itens Críticos / Estoque Baixo"
+                      title="Gerar Relatório de Itens Críticos (Validade / Estoque Baixo / Geral)"
                     >
                       <Printer size={16} className="text-amber-600" />
-                      <span className="hidden sm:inline">Relatório Estoque Baixo</span>
+                      <span className="hidden sm:inline">Relatórios Críticos</span>
                     </button>
                     <button 
                       onClick={handleExportInventory}
@@ -6971,9 +7524,9 @@ export default function App() {
                     </div>
                     <div className="flex items-center gap-2">
                       <button
-                        onClick={handleExportLowStockPDF}
+                        onClick={() => setShowCriticalReportModal(true)}
                         className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-400/40 rounded-xl text-[11px] font-extrabold transition-all flex items-center gap-1 shadow-xs"
-                        title="Imprimir Relatório PDF dos Itens Críticos / Estoque Baixo"
+                        title="Escolher e Imprimir Relatório PDF (Validade / Estoque Baixo / Geral)"
                       >
                         <Printer size={13} /> Relatório PDF
                       </button>
@@ -7015,7 +7568,7 @@ export default function App() {
                           onClick={() => setShowTransactionModal({ show: true, type: 'exit', item })}
                           className="px-3 py-1.5 rounded-xl text-xs font-bold bg-rose-600 text-white hover:bg-rose-700 transition-all shadow-sm shrink-0 ml-2"
                         >
-                          Retirar
+                          Retirar por Desperdício
                         </button>
                       </div>
                     ))}
@@ -7784,10 +8337,22 @@ export default function App() {
                         </td>
                         <td className="px-6 py-5">
                           <div className="font-bold whitespace-nowrap">{t.item_name}</div>
-                          {t.exitReason && t.exitReason !== 'consumo' && (
-                            <div className="text-[10px] text-rose-500 font-bold mt-1 uppercase">
-                              Motivo: {t.exitReason === 'vencido' ? 'Vencimento' : t.exitReason === 'doacao' ? 'Doação' : t.exitReason === 'perda' ? 'Perda/Avaria' : t.exitReason}
-                              {t.expiryReason && <span className="text-[#78716C] lowercase font-normal ml-1">({t.expiryReason})</span>}
+                          {t.exitReason && (
+                            <div className={`text-[10px] font-bold mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-md ${
+                              t.exitReason === 'vencido' 
+                                ? 'bg-rose-100 text-rose-800 border border-rose-200' 
+                                : t.exitReason === 'perda' 
+                                ? 'bg-amber-100 text-amber-800 border border-amber-200' 
+                                : t.exitReason === 'doacao' 
+                                ? 'bg-indigo-100 text-indigo-800 border border-indigo-200' 
+                                : 'bg-slate-100 text-slate-700'
+                            }`}>
+                              <span>
+                                {t.exitReason === 'vencido' ? 'Descarte / Vencimento (Desperdício)' : 
+                                 t.exitReason === 'perda' ? 'Perda / Avaria' : 
+                                 t.exitReason === 'doacao' ? 'Doação' : 'Consumo do Setor'}
+                              </span>
+                              {t.expiryReason && <span className="text-slate-600 font-normal lowercase ml-1">({t.expiryReason})</span>}
                             </div>
                           )}
                           {t.deletionReason && (
@@ -7849,9 +8414,24 @@ export default function App() {
                                         address: t.donationUnitAddress || '',
                                         cnpj: t.donationUnitCNPJ || ''
                                       },
-                                      items: [{ product_name: t.item_name, quantity: t.quantity }],
+                                      items: [{ product_name: t.item_name, quantity: t.quantity, batch_number: t.batch_number, expiry_date: t.expiry_date }],
                                       revisionDate: t.donationRevisionDate || '',
                                       donationNumber: t.donationNumber,
+                                      date: t.date
+                                    });
+                                  } else if (t.exitReason === 'vencido' || t.exitReason === 'perda') {
+                                    handleExportDisposalTermPDF({
+                                      items: [{
+                                        product_name: t.item_name,
+                                        quantity: t.quantity,
+                                        batch_number: t.batch_number,
+                                        expiry_date: t.expiry_date,
+                                        category: items.find(i => i.id === t.item_id)?.category
+                                      }],
+                                      reason: t.exitReason,
+                                      justification: t.expiryReason,
+                                      location: t.location,
+                                      responsible: t.responsible || 'Responsável',
                                       date: t.date
                                     });
                                   } else {
@@ -7862,10 +8442,22 @@ export default function App() {
                                     });
                                   }
                                 }}
-                                className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
-                                title={t.exitReason === 'doacao' ? 'Reimprimir Termo de Doação' : 'Reimprimir Recibo de Entrega'}
+                                className={`p-2 rounded-lg transition-all ${
+                                  t.exitReason === 'vencido' || t.exitReason === 'perda'
+                                    ? 'text-rose-600 hover:bg-rose-50'
+                                    : t.exitReason === 'doacao'
+                                    ? 'text-indigo-600 hover:bg-indigo-50'
+                                    : 'text-blue-600 hover:bg-blue-50'
+                                }`}
+                                title={
+                                  t.exitReason === 'doacao' ? 'Reimprimir Termo de Doação' : 
+                                  (t.exitReason === 'vencido' || t.exitReason === 'perda') ? 'Reimprimir Termo de Descarte' : 
+                                  'Reimprimir Recibo de Entrega'
+                                }
                               >
-                                {t.exitReason === 'doacao' ? <FileText size={18} /> : <Printer size={18} />}
+                                {t.exitReason === 'doacao' ? <FileText size={18} /> : 
+                                 (t.exitReason === 'vencido' || t.exitReason === 'perda') ? <Trash2 size={18} /> : 
+                                 <Printer size={18} />}
                               </button>
                             )}
                             {t.deletedAt ? (
@@ -8117,6 +8709,49 @@ export default function App() {
                     </div>
                   </div>
                 )}
+
+                {/* Critical Materials Report Section */}
+                <div className="bg-white p-6 rounded-3xl border border-amber-100/90 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group">
+                  <div className="h-1.5 w-full bg-gradient-to-r from-amber-500 via-rose-500 to-rose-600 absolute top-0 left-0" />
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-5 pt-2">
+                    <div className="flex items-center gap-4">
+                      <div className="bg-gradient-to-br from-amber-500 to-rose-600 text-white p-3.5 rounded-2xl shadow-md shadow-amber-600/20 group-hover:scale-105 transition-transform">
+                        <AlertTriangle size={22} />
+                      </div>
+                      <div>
+                        <h3 className="text-base font-black text-slate-900">Relatório de Materiais Críticos</h3>
+                        <p className="text-slate-500 text-xs font-medium">Exportação em PDF por tipo: Validade vencida/próxima ou Estoque baixo</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2.5 mt-5 pt-4 border-t border-slate-100">
+                    <button 
+                      onClick={() => handleExportCriticalReportPDF('expiry')}
+                      className="flex-1 min-w-[130px] bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 px-3.5 py-2.5 rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 transition-all shadow-xs"
+                      title="Gerar PDF exclusivo de itens vencidos e próximos ao vencimento"
+                    >
+                      <Clock size={14} className="text-rose-600" />
+                      <span>Validade ({expiredItems.length + nearExpiryItems.length})</span>
+                    </button>
+                    <button 
+                      onClick={() => handleExportCriticalReportPDF('low_stock')}
+                      className="flex-1 min-w-[130px] bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 px-3.5 py-2.5 rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 transition-all shadow-xs"
+                      title="Gerar PDF exclusivo de estoque baixo e ruptura"
+                    >
+                      <TrendingDown size={14} className="text-amber-600" />
+                      <span>Estoque Baixo ({lowStockItems.length})</span>
+                    </button>
+                    <button 
+                      onClick={() => handleExportCriticalReportPDF('all')}
+                      className="flex-1 min-w-[130px] bg-gradient-to-r from-slate-900 via-blue-950 to-slate-900 hover:from-slate-800 hover:to-slate-950 text-white px-3.5 py-2.5 rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 transition-all shadow-sm"
+                      title="Gerar PDF completo e consolidado"
+                    >
+                      <Printer size={14} />
+                      <span>Completo ({totalAlertsCount})</span>
+                    </button>
+                  </div>
+                </div>
 
                 {/* Materials Catalog Section - For Leaders */}
                 {!isAdmin && (
@@ -10984,7 +11619,15 @@ export default function App() {
             className="bg-white w-full max-w-lg rounded-3xl p-8 shadow-2xl max-h-[90vh] overflow-y-auto"
           >
             <h3 className="text-2xl font-bold mb-6">
-              {showTransactionModal.type === 'entry' ? 'Registrar Entrada' : 'Registrar Saída'}
+              {showTransactionModal.type === 'entry' 
+                ? 'Registrar Entrada' 
+                : exitReason === 'vencido' 
+                ? 'Registrar Baixa por Vencimento (Desperdício)' 
+                : exitReason === 'perda'
+                ? 'Registrar Baixa por Perda / Avaria'
+                : exitReason === 'doacao'
+                ? 'Registrar Saída por Doação'
+                : 'Registrar Saída de Estoque'}
             </h3>
             
             <form onSubmit={handleTransaction} className="space-y-6">
@@ -11452,9 +12095,27 @@ export default function App() {
                 <button 
                   type="submit"
                   disabled={showTransactionModal.type === 'exit' && basket.length === 0}
-                  className={`flex-1 px-4 py-3 text-white rounded-xl font-bold transition-all disabled:opacity-50 ${showTransactionModal.type === 'entry' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-rose-600 hover:bg-rose-700'}`}
+                  className={`flex-1 px-4 py-3 text-white rounded-xl font-bold transition-all disabled:opacity-50 ${
+                    showTransactionModal.type === 'entry' 
+                      ? 'bg-emerald-600 hover:bg-emerald-700' 
+                      : exitReason === 'vencido'
+                      ? 'bg-rose-700 hover:bg-rose-800'
+                      : exitReason === 'perda'
+                      ? 'bg-amber-600 hover:bg-amber-700'
+                      : exitReason === 'doacao'
+                      ? 'bg-indigo-600 hover:bg-indigo-700'
+                      : 'bg-rose-600 hover:bg-rose-700'
+                  }`}
                 >
-                  Confirmar {showTransactionModal.type === 'exit' && basket.length > 0 && `(${basket.length})`}
+                  {showTransactionModal.type === 'entry' 
+                    ? 'Confirmar Entrada' 
+                    : exitReason === 'vencido'
+                    ? `Confirmar Descarte (Vencido) ${basket.length > 0 ? `(${basket.length})` : ''}`
+                    : exitReason === 'perda'
+                    ? `Confirmar Baixa (Perda) ${basket.length > 0 ? `(${basket.length})` : ''}`
+                    : exitReason === 'doacao'
+                    ? `Confirmar Doação ${basket.length > 0 ? `(${basket.length})` : ''}`
+                    : `Confirmar Saída ${basket.length > 0 ? `(${basket.length})` : ''}`}
                 </button>
               </div>
             </form>
@@ -11528,11 +12189,19 @@ export default function App() {
               </div>
               <div className="flex items-center gap-3">
                 <button
-                  onClick={handleExportLowStockPDF}
+                  onClick={() => {
+                    if (showDetailModal.type === 'low_stock') {
+                      handleExportCriticalReportPDF('low_stock');
+                    } else if (showDetailModal.type === 'expiry') {
+                      handleExportCriticalReportPDF('expiry');
+                    } else {
+                      setShowCriticalReportModal(true);
+                    }
+                  }}
                   className="px-3.5 py-2 bg-gradient-to-r from-amber-600 via-rose-600 to-rose-700 hover:from-amber-700 hover:to-rose-800 text-white font-extrabold text-xs rounded-2xl shadow-md transition-all flex items-center gap-2"
-                  title="Imprimir Relatório de Itens Críticos / Estoque Baixo"
+                  title={showDetailModal.type === 'expiry' ? 'Imprimir Relatório de Validade' : showDetailModal.type === 'low_stock' ? 'Imprimir Relatório de Estoque Baixo' : 'Escolher e Imprimir Relatório de Críticos'}
                 >
-                  <Printer size={16} /> Imprimir Relatório
+                  <Printer size={16} /> Imprimir Relatório {showDetailModal.type === 'expiry' ? '(Validade)' : showDetailModal.type === 'low_stock' ? '(Estoque)' : ''}
                 </button>
                 <button 
                   onClick={() => setShowDetailModal({ show: false, type: 'low_stock', items: [] })}
@@ -11566,7 +12235,7 @@ export default function App() {
                   tagLabel = 'VENCIDO';
                   tagColor = 'bg-rose-200 text-rose-800 font-black';
                   actionType = 'exit';
-                  actionLabel = 'Retirar';
+                  actionLabel = 'Retirar (Desperdício)';
                   buttonStyle = 'bg-rose-600 hover:bg-rose-700';
                 } else if (itemIsNearExpiry) {
                   cardBg = 'bg-sky-50 border-sky-200';
@@ -12349,6 +13018,147 @@ export default function App() {
                   )}
                 </button>
               </div>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Critical Materials Report Type Selection Modal */}
+      {showCriticalReportModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[85] flex items-center justify-center p-4 sm:p-6">
+          <motion.div 
+            initial={{ scale: 0.92, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0.92, opacity: 0 }}
+            className="bg-white w-full max-w-xl rounded-3xl p-6 sm:p-8 shadow-2xl border border-slate-100 overflow-hidden relative"
+          >
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-5 border-b border-slate-100 mb-6">
+              <div className="flex items-center gap-3">
+                <div className="p-3 bg-gradient-to-br from-amber-500 to-rose-600 text-white rounded-2xl shadow-md">
+                  <Printer size={22} />
+                </div>
+                <div>
+                  <h3 className="text-xl font-black text-slate-900 tracking-tight">
+                    Relatório de Materiais Críticos
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium mt-0.5">
+                    Selecione o tipo de relatório que deseja exportar em PDF
+                  </p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setShowCriticalReportModal(false)}
+                className="p-2 hover:bg-slate-100 rounded-full transition-all text-slate-400 hover:text-slate-600"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Options List */}
+            <div className="space-y-3.5">
+              {/* Option 1: Validade */}
+              <div 
+                onClick={() => {
+                  setShowCriticalReportModal(false);
+                  handleExportCriticalReportPDF('expiry');
+                }}
+                className="p-4 rounded-2xl border-2 border-rose-200 bg-rose-50/40 hover:bg-rose-50 hover:border-rose-400 transition-all cursor-pointer group flex items-center justify-between gap-4"
+              >
+                <div className="flex items-start gap-3.5 min-w-0">
+                  <div className="p-2.5 bg-rose-600 text-white rounded-xl shadow-xs shrink-0 group-hover:scale-105 transition-transform mt-0.5">
+                    <Clock size={20} />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h4 className="font-extrabold text-sm text-slate-900 group-hover:text-rose-700 transition-colors">
+                        Crítico por Validade
+                      </h4>
+                      <span className="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-rose-100 text-rose-800 border border-rose-300">
+                        {expiredItems.length + nearExpiryItems.length} lote(s)
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                      Lotes já vencidos e insumos que expiram nos próximos 60 dias (2 meses) com data, prazo em dias e status de risco.
+                    </p>
+                  </div>
+                </div>
+                <div className="shrink-0 flex items-center text-rose-600 group-hover:translate-x-1 transition-transform">
+                  <ChevronRight size={20} />
+                </div>
+              </div>
+
+              {/* Option 2: Estoque Baixo */}
+              <div 
+                onClick={() => {
+                  setShowCriticalReportModal(false);
+                  handleExportCriticalReportPDF('low_stock');
+                }}
+                className="p-4 rounded-2xl border-2 border-amber-200 bg-amber-50/40 hover:bg-amber-50 hover:border-amber-400 transition-all cursor-pointer group flex items-center justify-between gap-4"
+              >
+                <div className="flex items-start gap-3.5 min-w-0">
+                  <div className="p-2.5 bg-amber-600 text-white rounded-xl shadow-xs shrink-0 group-hover:scale-105 transition-transform mt-0.5">
+                    <TrendingDown size={20} />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h4 className="font-extrabold text-sm text-slate-900 group-hover:text-amber-700 transition-colors">
+                        Crítico por Estoque Baixo
+                      </h4>
+                      <span className="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-amber-100 text-amber-800 border border-amber-300">
+                        {lowStockItems.length} insumo(s)
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                      Insumos zerados ou com quantidade abaixo do estoque mínimo, exibindo déficit necessário para reposição.
+                    </p>
+                  </div>
+                </div>
+                <div className="shrink-0 flex items-center text-amber-600 group-hover:translate-x-1 transition-transform">
+                  <ChevronRight size={20} />
+                </div>
+              </div>
+
+              {/* Option 3: Consolidado Geral */}
+              <div 
+                onClick={() => {
+                  setShowCriticalReportModal(false);
+                  handleExportCriticalReportPDF('all');
+                }}
+                className="p-4 rounded-2xl border-2 border-indigo-200 bg-indigo-50/40 hover:bg-indigo-50 hover:border-indigo-400 transition-all cursor-pointer group flex items-center justify-between gap-4"
+              >
+                <div className="flex items-start gap-3.5 min-w-0">
+                  <div className="p-2.5 bg-indigo-600 text-white rounded-xl shadow-xs shrink-0 group-hover:scale-105 transition-transform mt-0.5">
+                    <FileText size={20} />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h4 className="font-extrabold text-sm text-slate-900 group-hover:text-indigo-700 transition-colors">
+                        Relatório Consolidado Geral
+                      </h4>
+                      <span className="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-indigo-100 text-indigo-800 border border-indigo-300">
+                        Completo ({totalAlertsCount})
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                      Documento unificado contendo as duas seções: 1. Controle de Validade e 2. Estoque Baixo / Ruptura.
+                    </p>
+                  </div>
+                </div>
+                <div className="shrink-0 flex items-center text-indigo-600 group-hover:translate-x-1 transition-transform">
+                  <ChevronRight size={20} />
+                </div>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="mt-6 pt-4 border-t border-slate-100 flex justify-end">
+              <button 
+                onClick={() => setShowCriticalReportModal(false)}
+                className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-2xl transition-all text-xs"
+              >
+                Fechar
+              </button>
             </div>
           </motion.div>
         </div>
