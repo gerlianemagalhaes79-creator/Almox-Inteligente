@@ -8602,32 +8602,30 @@ export default function App() {
 
               {reportsTab === 'overview' && (
                 <div className="space-y-8">
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
                 {/* Print Requests Section - Only for Admin */}
                 {isAdmin && (
-                  <div className="bg-white p-6 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group">
+                  <div className="bg-white p-6 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group flex flex-col justify-between h-full">
                     <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 to-indigo-600 absolute top-0 left-0" />
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-5 pt-2">
-                      <div className="flex items-center gap-4">
-                        <div className="bg-gradient-to-br from-blue-600 to-blue-800 text-white p-3.5 rounded-2xl shadow-md shadow-blue-600/20 group-hover:scale-105 transition-transform">
-                          <Printer size={22} />
-                        </div>
-                        <div>
-                          <h3 className="text-base font-black text-slate-900">Impressão de Solicitações</h3>
-                          <p className="text-slate-500 text-xs font-medium">Imprima as solicitações pendentes e em separação por período</p>
-                        </div>
+                    <div className="flex items-start gap-4 pt-2">
+                      <div className="bg-gradient-to-br from-blue-600 to-blue-800 text-white p-3 rounded-2xl shadow-md shadow-blue-600/20 group-hover:scale-105 transition-transform shrink-0">
+                        <Printer size={20} />
+                      </div>
+                      <div>
+                        <h3 className="text-base font-black text-slate-900 leading-tight">Impressão de Solicitações</h3>
+                        <p className="text-slate-500 text-xs font-medium mt-1 leading-snug">Imprima as solicitações pendentes e em separação por período</p>
                       </div>
                     </div>
 
-                    <div className="flex flex-col sm:flex-row items-end gap-3 mt-5 pt-4 border-t border-slate-100">
-                      <div className="grid grid-cols-2 gap-3 w-full">
+                    <div className="flex flex-col gap-3 mt-5 pt-4 border-t border-slate-100">
+                      <div className="grid grid-cols-2 gap-2 w-full">
                         <div>
                           <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 ml-1">Início</label>
                           <input 
                             type="date" 
                             value={printRange.start}
                             onChange={(e) => setPrintRange({...printRange, start: e.target.value})}
-                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-bold text-xs text-slate-800 cursor-pointer"
+                            className="w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-bold text-xs text-slate-800 cursor-pointer"
                           />
                         </div>
                         <div>
@@ -8636,13 +8634,13 @@ export default function App() {
                             type="date" 
                             value={printRange.end}
                             onChange={(e) => setPrintRange({...printRange, end: e.target.value})}
-                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-bold text-xs text-slate-800 cursor-pointer"
+                            className="w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-bold text-xs text-slate-800 cursor-pointer"
                           />
                         </div>
                       </div>
                       <button 
                         onClick={handlePrintRequests}
-                        className="w-full sm:w-auto bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white px-5 py-2.5 rounded-xl font-extrabold text-xs flex items-center justify-center gap-2 hover:from-blue-800 hover:to-indigo-950 transition-all shadow-md shadow-blue-600/20 whitespace-nowrap"
+                        className="w-full bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white px-4 py-2.5 rounded-xl font-extrabold text-xs flex items-center justify-center gap-2 hover:from-blue-800 hover:to-indigo-950 transition-all shadow-md shadow-blue-600/20 whitespace-nowrap cursor-pointer"
                       >
                         <Printer size={15} /> Imprimir Relatório
                       </button>
@@ -8652,29 +8650,27 @@ export default function App() {
 
                 {/* PCA Report Section */}
                 {selectedSector === 'Almoxarifado' && (
-                  <div className="bg-white p-6 rounded-3xl border border-emerald-100/80 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group">
+                  <div className="bg-white p-6 rounded-3xl border border-emerald-100/80 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group flex flex-col justify-between h-full">
                     <div className="h-1.5 w-full bg-gradient-to-r from-emerald-600 to-teal-600 absolute top-0 left-0" />
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-5 pt-2">
-                      <div className="flex items-center gap-4">
-                        <div className="bg-gradient-to-br from-emerald-600 to-teal-700 text-white p-3.5 rounded-2xl shadow-md shadow-emerald-600/20 group-hover:scale-105 transition-transform">
-                          <Calendar size={22} />
-                        </div>
-                        <div>
-                          <h3 className="text-base font-black text-slate-900">Relatório PCA</h3>
-                          <p className="text-slate-500 text-xs font-medium">Plano Anual de Contratação - Consumo por tipo no período</p>
-                        </div>
+                    <div className="flex items-start gap-4 pt-2">
+                      <div className="bg-gradient-to-br from-emerald-600 to-teal-700 text-white p-3 rounded-2xl shadow-md shadow-emerald-600/20 group-hover:scale-105 transition-transform shrink-0">
+                        <Calendar size={20} />
+                      </div>
+                      <div>
+                        <h3 className="text-base font-black text-slate-900 leading-tight">Relatório PCA</h3>
+                        <p className="text-slate-500 text-xs font-medium mt-1 leading-snug">Plano Anual de Contratação - Consumo por tipo no período</p>
                       </div>
                     </div>
 
-                    <div className="flex flex-col sm:flex-row items-end gap-3 mt-5 pt-4 border-t border-slate-100">
-                      <div className="grid grid-cols-3 gap-2 w-full">
+                    <div className="flex flex-col gap-2.5 mt-5 pt-4 border-t border-slate-100">
+                      <div className="grid grid-cols-2 gap-2 w-full">
                         <div>
                           <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 ml-1">Início</label>
                           <input 
                             type="date" 
                             value={pcaRange.start}
                             onChange={(e) => setPcaRange({...pcaRange, start: e.target.value})}
-                            className="w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 font-bold text-xs text-slate-800 cursor-pointer"
+                            className="w-full px-2 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 font-bold text-xs text-slate-800 cursor-pointer"
                           />
                         </div>
                         <div>
@@ -8683,79 +8679,80 @@ export default function App() {
                             type="date" 
                             value={pcaRange.end}
                             onChange={(e) => setPcaRange({...pcaRange, end: e.target.value})}
-                            className="w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 font-bold text-xs text-slate-800 cursor-pointer"
+                            className="w-full px-2 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 font-bold text-xs text-slate-800 cursor-pointer"
                           />
                         </div>
-                        <div>
-                          <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 ml-1">Categoria</label>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1">
                           <select 
                             value={pcaCategory}
                             onChange={(e) => setPcaCategory(e.target.value)}
-                            className="w-full px-2 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 font-bold text-xs text-slate-800 cursor-pointer"
+                            className="w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 font-bold text-xs text-slate-800 cursor-pointer"
                           >
-                            <option value="all">Todas</option>
+                            <option value="all">Todas Categorias</option>
                             {Object.keys(CATEGORY_COLORS).sort().map(cat => (
                               <option key={cat} value={cat}>{cat}</option>
                             ))}
                           </select>
                         </div>
+                        <button 
+                          onClick={handleExportPCA}
+                          className="bg-gradient-to-r from-emerald-600 to-teal-700 text-white px-3.5 py-2 rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 hover:from-emerald-700 hover:to-teal-800 transition-all shadow-md shadow-emerald-600/20 whitespace-nowrap cursor-pointer shrink-0"
+                        >
+                          <Download size={14} /> Gerar PCA
+                        </button>
                       </div>
-                      <button 
-                        onClick={handleExportPCA}
-                        className="w-full sm:w-auto bg-gradient-to-r from-emerald-600 to-teal-700 text-white px-5 py-2.5 rounded-xl font-extrabold text-xs flex items-center justify-center gap-2 hover:from-emerald-700 hover:to-teal-800 transition-all shadow-md shadow-emerald-600/20 whitespace-nowrap"
-                      >
-                        <Download size={15} /> Gerar PCA
-                      </button>
                     </div>
                   </div>
                 )}
 
                 {/* Critical Materials Report Section */}
-                <div className="bg-white p-6 rounded-3xl border border-amber-100/90 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group">
+                <div className="bg-white p-6 rounded-3xl border border-amber-100/90 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group flex flex-col justify-between h-full">
                   <div className="h-1.5 w-full bg-gradient-to-r from-amber-500 via-rose-500 to-rose-600 absolute top-0 left-0" />
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-5 pt-2">
-                    <div className="flex items-center gap-4">
-                      <div className="bg-gradient-to-br from-amber-500 to-rose-600 text-white p-3.5 rounded-2xl shadow-md shadow-amber-600/20 group-hover:scale-105 transition-transform">
-                        <AlertTriangle size={22} />
-                      </div>
-                      <div>
-                        <h3 className="text-base font-black text-slate-900">Relatório de Materiais Críticos</h3>
-                        <p className="text-slate-500 text-xs font-medium">Exportação em PDF por tipo: Validade vencida/próxima ou Estoque baixo</p>
-                      </div>
+                  <div className="flex items-start gap-4 pt-2">
+                    <div className="bg-gradient-to-br from-amber-500 to-rose-600 text-white p-3 rounded-2xl shadow-md shadow-amber-600/20 group-hover:scale-105 transition-transform shrink-0">
+                      <AlertTriangle size={20} />
+                    </div>
+                    <div>
+                      <h3 className="text-base font-black text-slate-900 leading-tight">Relatório de Materiais Críticos</h3>
+                      <p className="text-slate-500 text-xs font-medium mt-1 leading-snug">Exportação em PDF: Validade vencida/próxima e Estoque baixo</p>
                     </div>
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-2.5 mt-5 pt-4 border-t border-slate-100">
-                    <button 
-                      onClick={() => handleExportCriticalReportPDF('expiry')}
-                      className="flex-1 min-w-[130px] bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 px-3.5 py-2.5 rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 transition-all shadow-xs"
-                      title="Gerar PDF exclusivo de itens vencidos e próximos ao vencimento"
-                    >
-                      <Clock size={14} className="text-rose-600" />
-                      <span>Validade ({expiredItems.length + nearExpiryItems.length})</span>
-                    </button>
-                    <button 
-                      onClick={() => handleExportCriticalReportPDF('low_stock')}
-                      className="flex-1 min-w-[130px] bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 px-3.5 py-2.5 rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 transition-all shadow-xs"
-                      title="Gerar PDF exclusivo de estoque baixo e ruptura"
-                    >
-                      <TrendingDown size={14} className="text-amber-600" />
-                      <span>Estoque Baixo ({lowStockItems.length})</span>
-                    </button>
+                  <div className="flex flex-col gap-2 mt-5 pt-4 border-t border-slate-100">
+                    <div className="grid grid-cols-2 gap-2 w-full">
+                      <button 
+                        onClick={() => handleExportCriticalReportPDF('expiry')}
+                        className="w-full bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 px-2.5 py-2 rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 transition-all shadow-2xs cursor-pointer"
+                        title="Gerar PDF exclusivo de itens vencidos e próximos ao vencimento"
+                      >
+                        <Clock size={13} className="text-rose-600 shrink-0" />
+                        <span className="truncate">Validade ({expiredItems.length + nearExpiryItems.length})</span>
+                      </button>
+                      <button 
+                        onClick={() => handleExportCriticalReportPDF('low_stock')}
+                        className="w-full bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 px-2.5 py-2 rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 transition-all shadow-2xs cursor-pointer"
+                        title="Gerar PDF exclusivo de estoque baixo e ruptura"
+                      >
+                        <TrendingDown size={13} className="text-amber-600 shrink-0" />
+                        <span className="truncate">Estoque Baixo ({lowStockItems.length})</span>
+                      </button>
+                    </div>
                     <button 
                       onClick={() => handleExportCriticalReportPDF('all')}
-                      className="flex-1 min-w-[130px] bg-gradient-to-r from-slate-900 via-blue-950 to-slate-900 hover:from-slate-800 hover:to-slate-950 text-white px-3.5 py-2.5 rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 transition-all shadow-sm"
+                      className="w-full bg-gradient-to-r from-slate-900 via-blue-950 to-slate-900 hover:from-slate-800 hover:to-slate-950 text-white px-4 py-2 rounded-xl font-extrabold text-xs flex items-center justify-center gap-2 transition-all shadow-sm cursor-pointer"
                       title="Gerar PDF completo e consolidado"
                     >
                       <Printer size={14} />
-                      <span>Completo ({totalAlertsCount})</span>
+                      <span>Relatório Completo ({totalAlertsCount})</span>
                     </button>
                   </div>
                 </div>
 
                 {/* Materials Catalog Section - For Leaders */}
                 {!isAdmin && (
-                  <div className="bg-white p-6 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group lg:col-span-2">
+                  <div className="bg-white p-6 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group col-span-full">
                     <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 to-cyan-500 absolute top-0 left-0" />
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-5 pt-2">
                       <div className="flex items-center gap-4">
