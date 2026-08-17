@@ -441,6 +441,15 @@ export default function App() {
     }
   }, [selectedSector, userProfile?.sector, isAdmin]);
 
+  useEffect(() => {
+    if (userProfile && !isAdmin) {
+      const allowedTabs = ['my-requests', 'new-request', 'devolution', 'leader-stats'];
+      if (!allowedTabs.includes(activeTab)) {
+        setActiveTab('my-requests');
+      }
+    }
+  }, [isAdmin, userProfile, activeTab]);
+
   const weeklyExitRates = useMemo(() => {
     const twentyOneDaysAgo = new Date();
     twentyOneDaysAgo.setDate(twentyOneDaysAgo.getDate() - 21);
@@ -6834,20 +6843,6 @@ export default function App() {
               ) : (
                 <>
                   <button 
-                    onClick={() => { setActiveTab('inventory'); setIsMobileMenuOpen(false); }}
-                    className={`group flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all duration-200 text-xs ${
-                      activeTab === 'inventory' 
-                        ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white font-extrabold shadow-md shadow-blue-600/20' 
-                        : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50/80 font-bold'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <Package size={18} className={activeTab === 'inventory' ? 'text-white' : 'text-slate-400 group-hover:text-blue-600 transition-colors'} />
-                      <span>{selectedSector === 'Farmácia' || userProfile?.sector === 'Farmácia' ? 'Estoque da Farmácia' : 'Estoque'}</span>
-                    </div>
-                  </button>
-
-                  <button 
                     onClick={() => { setActiveTab('new-request'); setIsMobileMenuOpen(false); }}
                     className={`group flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all duration-200 text-xs ${
                       activeTab === 'new-request' 
@@ -6886,20 +6881,6 @@ export default function App() {
                     <div className="flex items-center gap-3">
                       <FileText size={18} className={activeTab === 'my-requests' ? 'text-white' : 'text-slate-400 group-hover:text-blue-600 transition-colors'} />
                       <span>Minhas Solicitações</span>
-                    </div>
-                  </button>
-
-                  <button 
-                    onClick={() => { setActiveTab('reports'); setIsMobileMenuOpen(false); }}
-                    className={`group flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all duration-200 text-xs ${
-                      activeTab === 'reports' 
-                        ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white font-extrabold shadow-md shadow-blue-600/20' 
-                        : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50/80 font-bold'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <BarChart3 size={18} className={activeTab === 'reports' ? 'text-white' : 'text-slate-400 group-hover:text-blue-600 transition-colors'} />
-                      <span>Relatórios</span>
                     </div>
                   </button>
 
@@ -7180,7 +7161,7 @@ export default function App() {
                 onChange={(e) => setSearchTerm(e.target.value)}
               />
             </div>
-            {activeTab === 'inventory' && (
+            {activeTab === 'inventory' && isAdmin && (
               <div className="flex flex-wrap items-center gap-2">
                 <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-2xl border border-slate-200/90 shadow-sm hover:border-blue-300 transition-all">
                   <Filter size={15} className="text-blue-600" />
@@ -7282,7 +7263,7 @@ export default function App() {
         </header>
 
         <AnimatePresence mode="wait">
-          {activeTab === 'dashboard' && (
+          {activeTab === 'dashboard' && isAdmin && (
             <motion.div 
               key="dashboard"
               initial={{ opacity: 0, y: 12 }}
@@ -7713,7 +7694,7 @@ export default function App() {
             </motion.div>
           )}
 
-          {activeTab === 'inventory' && (
+          {activeTab === 'inventory' && isAdmin && (
             <motion.div 
               key="inventory"
               initial={{ opacity: 0, x: 20 }}
@@ -8257,7 +8238,7 @@ export default function App() {
             </motion.div>
           )}
 
-          {activeTab === 'history' && (
+          {activeTab === 'history' && isAdmin && (
             <motion.div 
               key="history"
               initial={{ opacity: 0, x: 20 }}
@@ -8499,7 +8480,7 @@ export default function App() {
               </div>
             </motion.div>
           )}
-          {activeTab === 'reports' && (
+          {activeTab === 'reports' && isAdmin && (
             <motion.div 
               key="reports"
               initial={{ opacity: 0, scale: 0.98 }}
@@ -10175,7 +10156,7 @@ export default function App() {
             </motion.div>
           )}
 
-          {activeTab === 'trash' && (
+          {activeTab === 'trash' && isAdmin && (
             <motion.div 
               key="trash"
               initial={{ opacity: 0, x: 20 }}
@@ -10357,7 +10338,7 @@ export default function App() {
             </motion.div>
           )}
 
-          {activeTab === 'requests' && (
+          {activeTab === 'requests' && isAdmin && (
             <motion.div 
               key="requests"
               initial={{ opacity: 0, x: 20 }}
@@ -10445,7 +10426,7 @@ export default function App() {
             </motion.div>
           )}
 
-          {activeTab === 'admin-devolutions' && (
+          {activeTab === 'admin-devolutions' && isAdmin && (
             <motion.div 
               key="admin-devolutions"
               initial={{ opacity: 0, x: 20 }}
