@@ -4199,15 +4199,9 @@ export default function App() {
       // @ts-ignore
       const doc = new jsPDF();
       const dateStr = format(new Date(), 'dd/MM/yyyy HH:mm');
-      const locationLabel = planningLocation === 'all' 
-        ? 'Almoxarifado & Farmácia' 
-        : planningLocation === 'Farmácia' ? 'Farmácia (Medicamentos)' : 'Almoxarifado Geral';
       
       const title = 'PLANEJAMENTO DE COMPRAS — ESTIMATIVA DE AQUISIÇÃO';
-      const categoryLabel = planningCategory === 'all' ? 'Todas as Categorias' : `Categoria: ${planningCategory}`;
-      const subtitle = `Previsão de Cobertura até ${purchasePlanningSummary.targetPeriodLabel} (${purchasePlanningSummary.totalTargetWeeks} semanas) • ${locationLabel} • ${categoryLabel} • Emissão: ${dateStr}`;
-
-      let currentY = drawPDFLetterhead(doc, title, subtitle);
+      let currentY = drawPDFLetterhead(doc, title);
       const pageWidth = doc.internal.pageSize.width;
       const pageHeight = doc.internal.pageSize.height;
 
