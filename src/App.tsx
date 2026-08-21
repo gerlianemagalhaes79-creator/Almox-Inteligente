@@ -40,7 +40,10 @@ import {
   Activity,
   PieChart as PieChartIcon,
   Image as ImageIcon,
-  Tag
+  Tag,
+  ShoppingCart,
+  Calculator,
+  Sparkles
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as XLSX from 'xlsx';
@@ -124,6 +127,100 @@ const getSafeDocId = (name: string | null | undefined) => {
   const normalized = normalizeString(name);
   return normalized.replace(/[^a-z0-9]/gi, '_');
 };
+
+interface DurationMonthInfo {
+  key: string;
+  monthYear: string;
+  shortMonthYear: string;
+  sectionTitle: string;
+  isCurrentMonth: boolean;
+  sortOrder: number;
+  monthName: string;
+  year: number;
+  isInfinite: boolean;
+}
+
+const getDurationMonthInfo = (durationWeeks: number | 'infinite' | undefined | null): DurationMonthInfo => {
+  if (durationWeeks === 'infinite' || durationWeeks === undefined || durationWeeks === null || isNaN(Number(durationWeeks))) {
+    return {
+      key: '9999-99',
+      monthYear: 'Indeterminado (∞)',
+      shortMonthYear: '∞',
+      sectionTitle: 'ESTOQUE SEM CONSUMO RECENTE / DURAÇÃO INDETERMINADA (∞)',
+      isCurrentMonth: false,
+      sortOrder: 999999,
+      monthName: 'Indeterminado',
+      year: 9999,
+      isInfinite: true
+    };
+  }
+
+  const now = new Date();
+  const numWeeks = Number(durationWeeks);
+  const days = Math.max(0, Math.round(numWeeks * 7));
+  const targetDate = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
+  
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth(); // 0-11
+  
+  const targetYear = targetDate.getFullYear();
+  const targetMonth = targetDate.getMonth(); // 0-11
+
+  const monthNames = [
+    'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+    'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
+  ];
+  const shortMonthNames = [
+    'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun',
+    'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'
+  ];
+
+  const monthName = monthNames[targetMonth];
+  const shortMonthName = shortMonthNames[targetMonth];
+  const isCurrentMonth = (targetYear === currentYear && targetMonth === currentMonth);
+  
+  const key = `${targetYear}-${String(targetMonth + 1).padStart(2, '0')}`;
+  const monthYear = `${monthName}/${targetYear}`;
+  const shortMonthYear = `${shortMonthName}/${targetYear}`;
+  
+  const sectionTitle = isCurrentMonth 
+    ? `PREVISÃO DE ESGOTAMENTO: ${monthName.toUpperCase()}/${targetYear} (MÊS ATUAL)`
+    : `PREVISÃO DE ESGOTAMENTO: ${monthName.toUpperCase()}/${targetYear}`;
+
+  const sortOrder = targetYear * 100 + targetMonth;
+
+  return {
+    key,
+    monthYear,
+    shortMonthYear,
+    sectionTitle,
+    isCurrentMonth,
+    sortOrder,
+    monthName,
+    year: targetYear,
+    isInfinite: false
+  };
+};
+
+interface PurchasePlanningItem {
+  name: string;
+  category: string;
+  supplier: string;
+  unit_measure: string;
+  currentStock: number;
+  weeklyRate: number;
+  monthlyRate: number;
+  durationWeeks: number | 'infinite';
+  durationMonthInfo: DurationMonthInfo;
+  periodDemand: number;
+  safetyStock: number;
+  totalRequired: number;
+  quantityToBuy: number;
+  unitPrice: number;
+  totalEstimatedCost: number;
+  willCoverTarget: boolean;
+  status: 'COBRE_TOTAL' | 'DEFICIT_MODERADO' | 'DEFICIT_CRITICO' | 'ZERADO_SEM_ESTOQUE';
+}
 
 const SECTORS = [
   'Imagem', 'Ilha', 'Pé Diabético', 'Direção', 'Setor Pessoal', 
@@ -787,6 +884,24 @@ export default function App() {
   const [isUpdatingCategory, setIsUpdatingCategory] = useState(false);
   const [showCriticalReportModal, setShowCriticalReportModal] = useState(false);
   const [criticalReportFilter, setCriticalReportFilter] = useState<'all' | 'low_stock' | 'expiry'>('all');
+  
+  // Purchase Planning States
+  const [showPurchasePlanningModal, setShowPurchasePlanningModal] = useState(false);
+  const [planningTargetMonth, setPlanningTargetMonth] = useState<number>(() => {
+    // Default to April (index 3)
+    return 3;
+  });
+  const [planningTargetYear, setPlanningTargetYear] = useState<number>(() => {
+    const now = new Date();
+    // If we are currently past April (month > 3), default to next year's April
+    return now.getMonth() >= 3 ? now.getFullYear() + 1 : now.getFullYear();
+  });
+  const [planningSafetyOption, setPlanningSafetyOption] = useState<'standard_8w' | 'none' | 'margin_10' | 'margin_20'>('standard_8w');
+  const [planningLocation, setPlanningLocation] = useState<'Almoxarifado' | 'Farmácia' | 'all'>('Almoxarifado');
+  const [planningCategory, setPlanningCategory] = useState<string>('all');
+  const [planningOnlyWithDeficit, setPlanningOnlyWithDeficit] = useState<boolean>(true);
+  const [planningSearch, setPlanningSearch] = useState<string>('');
+  const [planningSort, setPlanningSort] = useState<'deficit_desc' | 'cost_desc' | 'cost_asc' | 'name_asc' | 'duration_asc'>('deficit_desc');
 
   const uniqueSuppliers = useMemo(() => {
     const fromItems = items.map(i => i.supplier).filter(Boolean) as string[];
@@ -3476,13 +3591,16 @@ export default function App() {
           if (group.durationWeeks <= 4) status = 'MUITO CRÍTICO';
           else if (group.durationWeeks <= 8) status = 'CRÍTICO';
         }
+        const monthInfo = getDurationMonthInfo(group.durationWeeks);
         
         return {
           'Item': group.name,
           'Categoria': group.category || '---',
           'Estoque Total': group.total_quantity,
-          'Mínimo': group.min_quantity,
-          'Duração (Semanas)': group.durationWeeks === 'infinite' ? '∞' : group.durationWeeks.toFixed(1),
+          'Consumo Semanal': group.weeklyExitRate > 0 ? Number(group.weeklyExitRate.toFixed(1)) : 0,
+          'Duração (Semanas)': group.durationWeeks === 'infinite' ? '∞' : Number(group.durationWeeks.toFixed(1)),
+          'Previsão até Mês': monthInfo.monthYear,
+          'Mínimo (8 Semanas)': group.min_quantity,
           'Status': status
         };
       });
@@ -3502,57 +3620,178 @@ export default function App() {
   const handleExportInventoryPDF = () => {
     try {
       const doc = new jsPDF();
-      const startY = drawPDFLetterhead(
-        doc,
-        'Relatório de Estoque Atual',
-        `Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`
-      );
+      const isDurationSorted = inventorySort === 'duration_asc' || inventorySort === 'duration_desc';
+      const title = 'Relatório de Estoque Atual';
+      const subtitle = isDurationSorted
+        ? `Ordenação: Previsão de Duração (Menor para Maior) • Separado por Mês • Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`
+        : `Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`;
 
-      // Prepare data for table
-      const tableData = groupedArray.map(group => {
-        let status = group.total_quantity <= group.min_quantity ? 'BAIXO' : 'OK';
-        if (group.durationWeeks !== 'infinite') {
-          if (group.durationWeeks <= 4) status = 'MUITO CRÍTICO';
-          else if (group.durationWeeks <= 8) status = 'CRÍTICO';
-        }
-        
-        return [
-          group.name,
-          group.category || '---',
-          group.total_quantity.toString(),
-          group.durationWeeks === 'infinite' ? '∞' : group.durationWeeks.toFixed(1),
-          group.min_quantity.toString(),
-          status
-        ];
-      });
-      
-      // Generate table
-      autoTable(doc, {
-        startY: startY + 4,
-        head: [['Item', 'Categoria', 'Estoque', 'Duração (Sem)', 'Mínimo', 'Status']],
-        body: tableData,
-        theme: 'striped',
-        headStyles: { fillColor: [28, 25, 23], halign: 'center' }, // #1C1917
-        columnStyles: {
-          2: { halign: 'center' },
-          3: { halign: 'center' },
-          4: { halign: 'center' },
-          5: { halign: 'center' }
-        },
-        styles: { fontSize: 9, cellPadding: 3 },
-        didParseCell: function(data) {
-          if (data.section === 'body' && data.column.index === 5) {
-            const text = data.cell.text[0];
-            if (text === 'BAIXO' || text === 'MUITO CRÍTICO') {
-              data.cell.styles.textColor = [225, 29, 72]; // rose-600
-              data.cell.styles.fontStyle = 'bold';
-            } else if (text === 'CRÍTICO') {
-              data.cell.styles.textColor = [249, 115, 22]; // orange-500
-              data.cell.styles.fontStyle = 'bold';
+      const startY = drawPDFLetterhead(doc, title, subtitle);
+      const pageWidth = doc.internal.pageSize.width;
+      const pageHeight = doc.internal.pageSize.height;
+
+      // Group items by month if sorted by duration
+      if (inventorySort === 'duration_asc' || inventorySort === 'duration_desc') {
+        const monthGroupsMap = new Map<string, { info: DurationMonthInfo; items: ItemGroup[] }>();
+
+        groupedArray.forEach(group => {
+          const info = getDurationMonthInfo(group.durationWeeks);
+          if (!monthGroupsMap.has(info.key)) {
+            monthGroupsMap.set(info.key, { info, items: [] });
+          }
+          monthGroupsMap.get(info.key)!.items.push(group);
+        });
+
+        const monthGroupsList = Array.from(monthGroupsMap.values());
+        let currentY = startY + 4;
+
+        monthGroupsList.forEach((mGroup) => {
+          // Check if we need page break before new section banner + header row
+          if (currentY > pageHeight - 45) {
+            doc.addPage();
+            currentY = 20;
+          }
+
+          // Section Header Banner
+          const isCurr = mGroup.info.isCurrentMonth;
+          const isInf = mGroup.info.isInfinite;
+          
+          if (isCurr) {
+            doc.setFillColor(225, 29, 72); // Rose-600 (Urgent/Current month)
+          } else if (isInf) {
+            doc.setFillColor(71, 85, 105); // Slate-600
+          } else {
+            doc.setFillColor(30, 58, 138); // Blue-900
+          }
+
+          doc.roundedRect(14, currentY, pageWidth - 28, 7.5, 1.5, 1.5, 'F');
+          doc.setFontSize(8.5);
+          doc.setFont('helvetica', 'bold');
+          doc.setTextColor(255, 255, 255);
+          doc.text(
+            `${mGroup.info.sectionTitle}  •  ${mGroup.items.length} ${mGroup.items.length === 1 ? 'item' : 'itens'}`,
+            18,
+            currentY + 5.2
+          );
+
+          currentY += 9.5;
+
+          const tableData = mGroup.items.map(group => {
+            let status = group.total_quantity <= group.min_quantity ? 'BAIXO' : 'OK';
+            if (group.durationWeeks !== 'infinite') {
+              if (group.durationWeeks <= 4) status = 'MUITO CRÍTICO';
+              else if (group.durationWeeks <= 8) status = 'CRÍTICO';
+            }
+            const info = getDurationMonthInfo(group.durationWeeks);
+            const durationStr = group.durationWeeks === 'infinite' ? '∞' : `${group.durationWeeks.toFixed(1)} sem`;
+            const exitRateStr = group.weeklyExitRate > 0 ? `${group.weeklyExitRate.toFixed(1)}/sem` : '---';
+
+            return [
+              group.name,
+              group.category || '---',
+              group.total_quantity.toString(),
+              exitRateStr,
+              durationStr,
+              info.shortMonthYear,
+              group.min_quantity.toString(),
+              status
+            ];
+          });
+
+          autoTable(doc, {
+            startY: currentY,
+            head: [['Item / Insumo', 'Categoria', 'Estoque', 'Consumo/Sem', 'Duração', 'Dura até', 'Mínimo (8 sem)', 'Status']],
+            body: tableData,
+            theme: 'striped',
+            headStyles: { 
+              fillColor: isCurr ? [159, 18, 57] : isInf ? [51, 65, 85] : [28, 25, 23],
+              halign: 'center',
+              fontSize: 8,
+              fontStyle: 'bold'
+            },
+            columnStyles: {
+              0: { halign: 'left' },
+              1: { halign: 'left' },
+              2: { halign: 'center', fontStyle: 'bold' },
+              3: { halign: 'center' },
+              4: { halign: 'center', fontStyle: 'bold' },
+              5: { halign: 'center' },
+              6: { halign: 'center' },
+              7: { halign: 'center' }
+            },
+            styles: { fontSize: 8, cellPadding: 2.5 },
+            didParseCell: function(data) {
+              if (data.section === 'body' && data.column.index === 7) {
+                const text = data.cell.text[0];
+                if (text === 'BAIXO' || text === 'MUITO CRÍTICO') {
+                  data.cell.styles.textColor = [225, 29, 72];
+                  data.cell.styles.fontStyle = 'bold';
+                } else if (text === 'CRÍTICO') {
+                  data.cell.styles.textColor = [234, 88, 12];
+                  data.cell.styles.fontStyle = 'bold';
+                }
+              }
+            }
+          });
+
+          currentY = (doc as any).lastAutoTable.finalY + 7;
+        });
+
+      } else {
+        // Standard single table for alphabetical or other sorting
+        const tableData = groupedArray.map(group => {
+          let status = group.total_quantity <= group.min_quantity ? 'BAIXO' : 'OK';
+          if (group.durationWeeks !== 'infinite') {
+            if (group.durationWeeks <= 4) status = 'MUITO CRÍTICO';
+            else if (group.durationWeeks <= 8) status = 'CRÍTICO';
+          }
+          const info = getDurationMonthInfo(group.durationWeeks);
+          const durationStr = group.durationWeeks === 'infinite' ? '∞' : `${group.durationWeeks.toFixed(1)} sem`;
+          const exitRateStr = group.weeklyExitRate > 0 ? `${group.weeklyExitRate.toFixed(1)}/sem` : '---';
+
+          return [
+            group.name,
+            group.category || '---',
+            group.total_quantity.toString(),
+            exitRateStr,
+            durationStr,
+            info.shortMonthYear,
+            group.min_quantity.toString(),
+            status
+          ];
+        });
+
+        autoTable(doc, {
+          startY: startY + 4,
+          head: [['Item / Insumo', 'Categoria', 'Estoque', 'Consumo/Sem', 'Duração', 'Dura até', 'Mínimo (8 sem)', 'Status']],
+          body: tableData,
+          theme: 'striped',
+          headStyles: { fillColor: [28, 25, 23], halign: 'center', fontSize: 8.5 },
+          columnStyles: {
+            0: { halign: 'left' },
+            1: { halign: 'left' },
+            2: { halign: 'center', fontStyle: 'bold' },
+            3: { halign: 'center' },
+            4: { halign: 'center', fontStyle: 'bold' },
+            5: { halign: 'center' },
+            6: { halign: 'center' },
+            7: { halign: 'center' }
+          },
+          styles: { fontSize: 8, cellPadding: 2.5 },
+          didParseCell: function(data) {
+            if (data.section === 'body' && data.column.index === 7) {
+              const text = data.cell.text[0];
+              if (text === 'BAIXO' || text === 'MUITO CRÍTICO') {
+                data.cell.styles.textColor = [225, 29, 72];
+                data.cell.styles.fontStyle = 'bold';
+              } else if (text === 'CRÍTICO') {
+                data.cell.styles.textColor = [234, 88, 12];
+                data.cell.styles.fontStyle = 'bold';
+              }
             }
           }
-        }
-      });
+        });
+      }
       
       // Save PDF
       const dateStr = format(new Date(), 'dd-MM-yyyy');
@@ -3953,6 +4192,219 @@ export default function App() {
 
   const handleExportLowStockPDF = () => {
     handleExportCriticalReportPDF('low_stock');
+  };
+
+  const handleExportPurchasePlanningPDF = () => {
+    try {
+      // @ts-ignore
+      const doc = new jsPDF();
+      const dateStr = format(new Date(), 'dd/MM/yyyy HH:mm');
+      const locationLabel = planningLocation === 'all' 
+        ? 'Almoxarifado & Farmácia' 
+        : planningLocation === 'Farmácia' ? 'Farmácia (Medicamentos)' : 'Almoxarifado Geral';
+      
+      const title = 'PLANEJAMENTO DE COMPRAS — ESTIMATIVA DE AQUISIÇÃO';
+      const categoryLabel = planningCategory === 'all' ? 'Todas as Categorias' : `Categoria: ${planningCategory}`;
+      const subtitle = `Previsão de Cobertura até ${purchasePlanningSummary.targetPeriodLabel} (${purchasePlanningSummary.totalTargetWeeks} semanas) • ${locationLabel} • ${categoryLabel} • Emissão: ${dateStr}`;
+
+      let currentY = drawPDFLetterhead(doc, title, subtitle);
+      const pageWidth = doc.internal.pageSize.width;
+      const pageHeight = doc.internal.pageSize.height;
+
+      // Executive Summary Metric Box in PDF
+      doc.setFillColor(248, 250, 252); // slate-50
+      doc.roundedRect(14, currentY, pageWidth - 28, 22, 2, 2, 'F');
+      doc.setDrawColor(203, 213, 225);
+      doc.roundedRect(14, currentY, pageWidth - 28, 22, 2, 2, 'S');
+
+      // Metric 1: Cobertura
+      doc.setFontSize(7);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(100, 116, 139);
+      doc.text('PERÍODO DE COBERTURA', 18, currentY + 6.5);
+      doc.setFontSize(10.5);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(15, 23, 42);
+      doc.text(`Até ${purchasePlanningSummary.targetPeriodLabel}`, 18, currentY + 13.5);
+      doc.setFontSize(7);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(71, 85, 105);
+      doc.text(`${purchasePlanningSummary.totalTargetWeeks} sem (~${purchasePlanningSummary.totalTargetMonths} meses)`, 18, currentY + 18.5);
+
+      // Metric 2: Itens com Déficit
+      doc.setFontSize(7);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(100, 116, 139);
+      doc.text('ITENS A COMPRAR', 66, currentY + 6.5);
+      doc.setFontSize(10.5);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(225, 29, 72); // rose-600
+      doc.text(`${purchasePlanningSummary.totalItemsWithDeficit} de ${purchasePlanningSummary.totalAnalyzed} itens`, 66, currentY + 13.5);
+      doc.setFontSize(7);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(71, 85, 105);
+      doc.text('Com necessidade de reposição', 66, currentY + 18.5);
+
+      // Metric 3: Volume de Unidades
+      doc.setFontSize(7);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(100, 116, 139);
+      doc.text('VOLUME FÍSICO TOTAL', 116, currentY + 6.5);
+      doc.setFontSize(10.5);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(30, 58, 138); // blue-900
+      doc.text(`${purchasePlanningSummary.totalUnitsToBuy.toLocaleString('pt-BR')} un`, 116, currentY + 13.5);
+      doc.setFontSize(7);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(71, 85, 105);
+      doc.text('Quantidade total a adquirir', 116, currentY + 18.5);
+
+      // Metric 4: Custo Financeiro Estimado
+      doc.setFontSize(7);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(100, 116, 139);
+      doc.text('VALOR ESTIMADO GLOBAL', 160, currentY + 6.5);
+      doc.setFontSize(10.5);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(16, 185, 129); // emerald-600
+      doc.text(
+        new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 }).format(purchasePlanningSummary.totalEstimatedFinancialCost),
+        160,
+        currentY + 13.5
+      );
+      doc.setFontSize(7);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(71, 85, 105);
+      doc.text('Preços unitários médios', 160, currentY + 18.5);
+
+      currentY += 26;
+
+      // Table data
+      const itemsToExport = planningOnlyWithDeficit 
+        ? purchasePlanningSummary.allItems.filter(i => i.quantityToBuy > 0)
+        : purchasePlanningSummary.allItems;
+
+      if (itemsToExport.length === 0) {
+        doc.setFontSize(9.5);
+        doc.setTextColor(71, 85, 105);
+        doc.text('Nenhum item com necessidade de compra encontrado para os filtros selecionados.', 14, currentY + 10);
+      } else {
+        const tableData = itemsToExport.map((item, idx) => {
+          const unit = item.unit_measure ? ` ${item.unit_measure}` : '';
+          const weeklyStr = item.weeklyRate > 0 ? `${item.weeklyRate.toFixed(1)}` : '0.0';
+          const duraStr = item.durationWeeks === 'infinite' ? '∞' : `${item.durationWeeks.toFixed(1)} sem`;
+          const unitPriceStr = item.unitPrice > 0 ? item.unitPrice.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '---';
+          const totalCostStr = item.totalEstimatedCost > 0 ? item.totalEstimatedCost.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '---';
+
+          return [
+            (idx + 1).toString(),
+            item.name,
+            item.category || 'Geral',
+            `${item.currentStock}${unit}`,
+            weeklyStr,
+            duraStr,
+            `${item.periodDemand}${unit}`,
+            `${item.quantityToBuy}${unit}`,
+            unitPriceStr,
+            totalCostStr
+          ];
+        });
+
+        autoTable(doc, {
+          startY: currentY,
+          head: [['Nº', 'Material / Insumo', 'Categoria', 'Estoque', 'Cons./Sem', 'Duração', 'Demanda', 'QTD A COMPRAR', 'Vlr. Unit. (R$)', 'Total Est. (R$)']],
+          body: tableData,
+          theme: 'striped',
+          headStyles: {
+            fillColor: [15, 23, 42], // Slate-900
+            halign: 'center',
+            fontSize: 7.5,
+            fontStyle: 'bold'
+          },
+          columnStyles: {
+            0: { halign: 'center', cellWidth: 8 },
+            1: { halign: 'left', cellWidth: 'auto' },
+            2: { halign: 'left', cellWidth: 24 },
+            3: { halign: 'center', cellWidth: 16 },
+            4: { halign: 'center', cellWidth: 14 },
+            5: { halign: 'center', cellWidth: 16 },
+            6: { halign: 'center', cellWidth: 16 },
+            7: { halign: 'center', cellWidth: 20, fontStyle: 'bold', textColor: [225, 29, 72] },
+            8: { halign: 'right', cellWidth: 18 },
+            9: { halign: 'right', cellWidth: 22, fontStyle: 'bold' }
+          },
+          styles: { fontSize: 7.5, cellPadding: 2 },
+          didParseCell: function(data) {
+            if (data.section === 'body' && data.column.index === 7) {
+              data.cell.styles.textColor = [190, 18, 60];
+              data.cell.styles.fontStyle = 'bold';
+            }
+          }
+        });
+
+        // Add Signature / Dispatch Box
+        let finalY = (doc as any).lastAutoTable.finalY + 14;
+        if (finalY > pageHeight - 35) {
+          doc.addPage();
+          finalY = 25;
+        }
+
+        doc.setFontSize(8);
+        doc.setTextColor(71, 85, 105);
+        doc.text('________________________________________________________', pageWidth / 2, finalY, { align: 'center' });
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(15, 23, 42);
+        doc.text('Responsável pelo Planejamento de Compras / Almoxarifado', pageWidth / 2, finalY + 5, { align: 'center' });
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7);
+        doc.text(`Documento emitido automaticamente pelo Sistema de Gestão de Estoque • ${dateStr}`, pageWidth / 2, finalY + 9.5, { align: 'center' });
+      }
+
+      const dateFileStr = format(new Date(), 'dd-MM-yyyy');
+      doc.save(`Planejamento_Compras_${purchasePlanningSummary.targetPeriodLabel.replace('/', '_')}_${dateFileStr}.pdf`);
+      showToast("PDF de Planejamento de Compras gerado com sucesso!", "success");
+    } catch (error) {
+      console.error('Erro ao gerar PDF de compras:', error);
+      showToast("Erro ao exportar PDF de Planejamento de Compras.", "error");
+    }
+  };
+
+  const handleExportPurchasePlanningExcel = () => {
+    try {
+      const itemsToExport = planningOnlyWithDeficit
+        ? purchasePlanningSummary.allItems.filter(i => i.quantityToBuy > 0)
+        : purchasePlanningSummary.allItems;
+
+      const excelData = itemsToExport.map((item, idx) => ({
+        'Nº': idx + 1,
+        'Item / Insumo': item.name,
+        'Categoria': item.category || 'Geral',
+        'Unidade': item.unit_measure || 'UN',
+        'Estoque Atual (Saldo)': item.currentStock,
+        'Consumo Semanal Médio': item.weeklyRate > 0 ? Number(item.weeklyRate.toFixed(2)) : 0,
+        'Consumo Mensal Médio': item.monthlyRate > 0 ? Number(item.monthlyRate.toFixed(2)) : 0,
+        'Duração do Estoque Atual (Semanas)': item.durationWeeks === 'infinite' ? '∞' : Number(item.durationWeeks.toFixed(1)),
+        'Previsão de Término Atual': item.durationMonthInfo.monthYear,
+        [`Demanda Prevista até ${purchasePlanningSummary.targetPeriodLabel}`]: item.periodDemand,
+        'Estoque de Segurança': item.safetyStock,
+        'Necessidade Total Período': item.totalRequired,
+        'QUANTIDADE A COMPRAR': item.quantityToBuy,
+        'Preço Unitário Estimado (R$)': item.unitPrice > 0 ? item.unitPrice : 0,
+        'Custo Total Estimado (R$)': item.totalEstimatedCost > 0 ? item.totalEstimatedCost : 0,
+        'Status': item.quantityToBuy > 0 ? 'COMPRA NECESSÁRIA' : 'ESTOQUE ATENDE ATÉ O PERÍODO'
+      }));
+
+      const ws = XLSX.utils.json_to_sheet(excelData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Planejamento Compras");
+      
+      const dateFileStr = format(new Date(), 'dd-MM-yyyy');
+      XLSX.writeFile(wb, `Planejamento_Compras_${purchasePlanningSummary.targetPeriodLabel.replace('/', '_')}_${dateFileStr}.xlsx`);
+      showToast("Planilha de compras exportada com sucesso!", "success");
+    } catch (error) {
+      console.error('Erro ao exportar Excel de compras:', error);
+      showToast("Erro ao exportar planilha Excel.", "error");
+    }
   };
 
   const handleExportMaterialsCatalogPDF = () => {
@@ -6457,6 +6909,192 @@ export default function App() {
       .slice(0, 12);
   }, [items, inventoryLocation, distribViewMode]);
 
+  // Purchase Planning Engine (Must be declared before any conditional returns)
+  const purchasePlanningSummary = useMemo(() => {
+    const now = new Date();
+    
+    // Target Date calculation (last day of the chosen target month in target year)
+    const targetDate = new Date(planningTargetYear, planningTargetMonth + 1, 0, 23, 59, 59);
+    const diffTime = targetDate.getTime() - now.getTime();
+    const diffDays = Math.max(1, Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
+    const totalTargetWeeks = Math.max(0.5, Number((diffDays / 7).toFixed(1)));
+    const totalTargetMonths = Math.max(0.1, Number((totalTargetWeeks / 4.33).toFixed(1)));
+
+    const monthNames = [
+      'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+      'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
+    ];
+    const targetMonthName = monthNames[planningTargetMonth] || 'Abril';
+    const targetPeriodLabel = `${targetMonthName}/${planningTargetYear}`;
+
+    // Filter items based on planning location and deletedAt
+    const filteredActiveItems = items.filter(i => {
+      if (i.deletedAt) return false;
+      if (planningLocation === 'all') return true;
+      return (i.location || 'Almoxarifado') === planningLocation;
+    });
+
+    // Group items by name
+    const groupedByName: Record<string, {
+      name: string;
+      category: string;
+      supplier: string;
+      unit_measure: string;
+      total_quantity: number;
+      batches: Item[];
+    }> = {};
+
+    filteredActiveItems.forEach(i => {
+      if (!groupedByName[i.name]) {
+        groupedByName[i.name] = {
+          name: i.name,
+          category: i.category || 'Geral',
+          supplier: i.supplier || 'Diversos',
+          unit_measure: i.unit_measure || 'UN',
+          total_quantity: 0,
+          batches: []
+        };
+      }
+      groupedByName[i.name].total_quantity += (Number(i.quantity) || 0);
+      groupedByName[i.name].batches.push(i);
+      if (i.unit_measure) groupedByName[i.name].unit_measure = i.unit_measure;
+      if (i.category) groupedByName[i.name].category = i.category;
+    });
+
+    const calculatedItems: PurchasePlanningItem[] = Object.values(groupedByName).map(group => {
+      const currentStock = group.total_quantity;
+      const weeklyRate = weeklyExitRates[group.name] || 0;
+      const monthlyRate = weeklyRate * 4.33;
+      
+      const durationWeeks = weeklyRate > 0 ? (currentStock / weeklyRate) : 'infinite';
+      const durationMonthInfo = getDurationMonthInfo(durationWeeks);
+
+      const periodDemand = Math.ceil(weeklyRate * totalTargetWeeks);
+      
+      let safetyStock = 0;
+      if (planningSafetyOption === 'standard_8w') {
+        safetyStock = Math.ceil(weeklyRate * 8);
+      } else if (planningSafetyOption === 'margin_10') {
+        safetyStock = Math.ceil(periodDemand * 0.10);
+      } else if (planningSafetyOption === 'margin_20') {
+        safetyStock = Math.ceil(periodDemand * 0.20);
+      } else {
+        safetyStock = 0;
+      }
+
+      const totalRequired = periodDemand + safetyStock;
+      const quantityToBuy = Math.max(0, totalRequired - currentStock);
+
+      // Determine unit price from most recent batch with price > 0, or average
+      let unitPrice = 0;
+      const batchesWithPrice = group.batches.filter(b => (Number(b.unit_price) || 0) > 0);
+      if (batchesWithPrice.length > 0) {
+        unitPrice = Number(batchesWithPrice[batchesWithPrice.length - 1].unit_price) || 0;
+      }
+
+      const totalEstimatedCost = quantityToBuy * unitPrice;
+      const willCoverTarget = durationWeeks === 'infinite' || durationWeeks >= totalTargetWeeks;
+
+      let status: PurchasePlanningItem['status'] = 'COBRE_TOTAL';
+      if (currentStock === 0 && weeklyRate > 0) {
+        status = 'ZERADO_SEM_ESTOQUE';
+      } else if (quantityToBuy > 0 && durationWeeks !== 'infinite' && durationWeeks <= 4) {
+        status = 'DEFICIT_CRITICO';
+      } else if (quantityToBuy > 0) {
+        status = 'DEFICIT_MODERADO';
+      } else {
+        status = 'COBRE_TOTAL';
+      }
+
+      return {
+        name: group.name,
+        category: group.category,
+        supplier: group.supplier,
+        unit_measure: group.unit_measure,
+        currentStock,
+        weeklyRate,
+        monthlyRate,
+        durationWeeks,
+        durationMonthInfo,
+        periodDemand,
+        safetyStock,
+        totalRequired,
+        quantityToBuy,
+        unitPrice,
+        totalEstimatedCost,
+        willCoverTarget,
+        status
+      };
+    });
+
+    // Filter by category and search first
+    const filteredByCategoryAndSearch = calculatedItems.filter(item => {
+      if (planningCategory !== 'all' && item.category !== planningCategory) return false;
+      if (planningSearch.trim()) {
+        const search = normalizeString(planningSearch);
+        const matchName = normalizeString(item.name).includes(search);
+        const matchCat = normalizeString(item.category).includes(search);
+        if (!matchName && !matchCat) return false;
+      }
+      return true;
+    });
+
+    // Filter by deficit-only for the active display
+    const filtered = filteredByCategoryAndSearch.filter(item => {
+      if (planningOnlyWithDeficit && item.quantityToBuy <= 0) return false;
+      return true;
+    });
+
+    // Sorting
+    filtered.sort((a, b) => {
+      if (planningSort === 'deficit_desc') {
+        return b.quantityToBuy - a.quantityToBuy;
+      } else if (planningSort === 'cost_desc') {
+        return b.totalEstimatedCost - a.totalEstimatedCost;
+      } else if (planningSort === 'cost_asc') {
+        return a.totalEstimatedCost - b.totalEstimatedCost;
+      } else if (planningSort === 'name_asc') {
+        return a.name.localeCompare(b.name);
+      } else if (planningSort === 'duration_asc') {
+        const durA = a.durationWeeks === 'infinite' ? 999999 : a.durationWeeks;
+        const durB = b.durationWeeks === 'infinite' ? 999999 : b.durationWeeks;
+        return durA - durB;
+      }
+      return 0;
+    });
+
+    // Metrics calculated based on the chosen category/filters
+    const totalItemsWithDeficit = filteredByCategoryAndSearch.filter(i => i.quantityToBuy > 0).length;
+    const totalUnitsToBuy = filteredByCategoryAndSearch.reduce((acc, i) => acc + i.quantityToBuy, 0);
+    const totalEstimatedFinancialCost = filteredByCategoryAndSearch.reduce((acc, i) => acc + i.totalEstimatedCost, 0);
+    const totalAnalyzed = filteredByCategoryAndSearch.length;
+
+    return {
+      targetDate,
+      totalTargetWeeks,
+      totalTargetMonths,
+      targetMonthName,
+      targetPeriodLabel,
+      items: filtered,
+      allItems: filteredByCategoryAndSearch,
+      totalAnalyzed,
+      totalItemsWithDeficit,
+      totalUnitsToBuy,
+      totalEstimatedFinancialCost
+    };
+  }, [
+    items,
+    weeklyExitRates,
+    planningTargetMonth,
+    planningTargetYear,
+    planningSafetyOption,
+    planningLocation,
+    planningCategory,
+    planningOnlyWithDeficit,
+    planningSearch,
+    planningSort
+  ]);
+
   if (loading) {
     return (
       <div className="min-h-screen bg-[#F5F5F4] flex items-center justify-center">
@@ -7204,27 +7842,6 @@ export default function App() {
                 {isAdmin && (
                   <div className="flex gap-2">
                     <button 
-                      onClick={() => {
-                        setCategoryModalMaterial('');
-                        setCategoryModalNewCategory('');
-                        setCustomModalCategory('');
-                        setShowChangeCategoryModal(true);
-                      }}
-                      className="px-3 py-2 bg-indigo-50 border border-indigo-200/90 rounded-2xl text-indigo-700 hover:text-indigo-800 hover:border-indigo-300 hover:bg-indigo-100 transition-all shadow-xs flex items-center gap-1.5 text-xs font-bold"
-                      title="Alterar Categoria do Material / Insumo"
-                    >
-                      <Tag size={15} className="text-indigo-600" />
-                      <span className="hidden sm:inline">Alterar Categoria</span>
-                    </button>
-                    <button 
-                      onClick={() => setShowCriticalReportModal(true)}
-                      className="px-3 py-2 bg-amber-50 border border-amber-200 rounded-2xl text-amber-700 hover:text-amber-800 hover:border-amber-300 hover:bg-amber-100 transition-all shadow-sm flex items-center gap-1.5 text-xs font-bold"
-                      title="Gerar Relatório de Itens Críticos (Validade / Estoque Baixo / Geral)"
-                    >
-                      <Printer size={16} className="text-amber-600" />
-                      <span className="hidden sm:inline">Relatórios Críticos</span>
-                    </button>
-                    <button 
                       onClick={handleExportInventory}
                       className="p-2 bg-white border border-slate-200 rounded-2xl text-slate-600 hover:text-blue-700 hover:border-blue-300 hover:bg-blue-50/50 transition-all shadow-sm"
                       title="Baixar Planilha Excel"
@@ -7772,8 +8389,47 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-blue-50/80">
-                  {groupedArray.map(group => (
+                  {groupedArray.map((group, index) => {
+                    const currentMonthInfo = getDurationMonthInfo(group.durationWeeks);
+                    const prevMonthInfo = index > 0 ? getDurationMonthInfo(groupedArray[index - 1].durationWeeks) : null;
+                    const isNewMonthSection = (inventorySort === 'duration_asc' || inventorySort === 'duration_desc') && (index === 0 || currentMonthInfo.key !== prevMonthInfo?.key);
+
+                    return (
                     <React.Fragment key={group.name}>
+                      {isNewMonthSection && (
+                        <tr className="bg-slate-100/95 border-y-2 border-slate-300">
+                          <td colSpan={isAdmin ? 9 : 8} className="px-6 py-2.5">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2.5">
+                                <div className={`p-1.5 rounded-lg ${
+                                  currentMonthInfo.isCurrentMonth ? 'bg-rose-100 text-rose-700' :
+                                  currentMonthInfo.isInfinite ? 'bg-slate-200 text-slate-700' :
+                                  'bg-blue-100 text-blue-800'
+                                }`}>
+                                  <Calendar size={14} />
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <span className={`text-xs font-black uppercase tracking-wide ${
+                                    currentMonthInfo.isCurrentMonth ? 'text-rose-700' :
+                                    currentMonthInfo.isInfinite ? 'text-slate-700' :
+                                    'text-slate-900'
+                                  }`}>
+                                    {currentMonthInfo.sectionTitle}
+                                  </span>
+                                  <span className="text-[10px] font-bold text-slate-500">
+                                    ({groupedArray.filter(g => getDurationMonthInfo(g.durationWeeks).key === currentMonthInfo.key).length} {groupedArray.filter(g => getDurationMonthInfo(g.durationWeeks).key === currentMonthInfo.key).length === 1 ? 'item' : 'itens'})
+                                  </span>
+                                </div>
+                              </div>
+                              {currentMonthInfo.isCurrentMonth && (
+                                <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-rose-600 text-white animate-pulse">
+                                  Esgota este Mês
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
                       <tr 
                         className="bg-white hover:bg-blue-50/40 transition-all cursor-pointer group/row"
                         onClick={() => toggleExpand(group.name)}
@@ -8014,6 +8670,13 @@ export default function App() {
                             <span className="text-xs font-black">
                               {group.durationWeeks === 'infinite' ? '∞' : `${group.durationWeeks.toFixed(1)} sem`}
                             </span>
+                            {group.durationWeeks !== 'infinite' && (
+                              <span className={`text-[9px] font-extrabold mt-0.5 tracking-tight ${
+                                currentMonthInfo.isCurrentMonth ? 'text-rose-700 font-black' : 'text-slate-600'
+                              }`}>
+                                Até {currentMonthInfo.shortMonthYear}
+                              </span>
+                            )}
                           </div>
                         </td>
                         <td className="px-6 py-4.5 text-xs">
@@ -8208,7 +8871,8 @@ export default function App() {
                         </tr>
                       ))}
                     </React.Fragment>
-                  ))}
+                    );
+                  })}
                 </tbody>
                 <tfoot className="bg-slate-900 text-white border-t-2 border-slate-800">
                   <tr>
@@ -8538,9 +9202,99 @@ export default function App() {
 
               {reportsTab === 'overview' && (
                 <div className="space-y-8">
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-                {/* Print Requests Section - Only for Admin */}
-                {isAdmin && (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 items-stretch">
+                {/* Purchase Planning Card - Left Column Spanning 2 Rows */}
+                <div className="lg:row-span-2 bg-white p-6 rounded-3xl border border-indigo-100/90 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group flex flex-col justify-between bg-gradient-to-b from-white via-white to-indigo-50/20">
+                  <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 via-indigo-600 to-indigo-800 absolute top-0 left-0" />
+                  <div className="flex items-start gap-4 pt-2">
+                    <div className="bg-gradient-to-br from-blue-600 via-indigo-600 to-indigo-800 text-white p-3 rounded-2xl shadow-md shadow-indigo-600/20 group-hover:scale-105 transition-transform shrink-0">
+                      <ShoppingCart size={20} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <span className="px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider bg-indigo-100 text-indigo-800">
+                          Novo Recurso
+                        </span>
+                        <span className="text-[10px] font-bold text-slate-400">
+                          Estimativa Precisa
+                        </span>
+                      </div>
+                      <h3 className="text-base font-black text-slate-900 leading-tight">Planejamento de Compras</h3>
+                      <p className="text-slate-500 text-xs font-medium mt-1 leading-snug">
+                        Calcula a quantidade necessária de cada item para durar até o mês de interesse (ex: Abril).
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-3 mt-4 pt-3.5 border-t border-slate-100">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 ml-1">Mês Alvo</label>
+                        <select 
+                          value={planningTargetMonth}
+                          onChange={(e) => setPlanningTargetMonth(Number(e.target.value))}
+                          className="w-full px-2 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 font-bold text-xs text-slate-800 cursor-pointer"
+                        >
+                          {['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'].map((m, idx) => (
+                            <option key={idx} value={idx}>{m}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 ml-1">Ano</label>
+                        <select 
+                          value={planningTargetYear}
+                          onChange={(e) => setPlanningTargetYear(Number(e.target.value))}
+                          className="w-full px-2 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 font-bold text-xs text-slate-800 cursor-pointer"
+                        >
+                          {Array.from({ length: 4 }).map((_, i) => {
+                            const y = new Date().getFullYear() + i;
+                            return <option key={y} value={y}>{y}</option>;
+                          })}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="bg-indigo-50/70 p-2.5 rounded-xl border border-indigo-100 flex items-center justify-between text-xs">
+                      <div>
+                        <span className="text-[10px] font-extrabold uppercase tracking-wider text-indigo-600 block">Demanda Estimada</span>
+                        <span className="font-black text-slate-800 text-sm">
+                          {purchasePlanningSummary.totalItemsWithDeficit} itens <span className="text-slate-400 text-xs font-semibold">({purchasePlanningSummary.totalUnitsToBuy.toLocaleString('pt-BR')} un)</span>
+                        </span>
+                      </div>
+                      <span className="text-[10px] font-bold bg-white px-2 py-1 rounded-lg border border-indigo-200 text-indigo-700 shadow-2xs">
+                        ~{purchasePlanningSummary.totalTargetWeeks} sem
+                      </span>
+                    </div>
+
+                    <button 
+                      onClick={() => setShowPurchasePlanningModal(true)}
+                      className="w-full bg-gradient-to-r from-blue-700 via-indigo-700 to-indigo-900 text-white px-4 py-2.5 rounded-xl font-extrabold text-xs flex items-center justify-center gap-2 hover:from-blue-800 hover:to-indigo-950 transition-all shadow-md shadow-indigo-600/20 whitespace-nowrap cursor-pointer"
+                    >
+                      <ShoppingCart size={15} /> Abrir Painel de Compras
+                    </button>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <button 
+                        onClick={handleExportPurchasePlanningPDF}
+                        className="w-full bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 px-2 py-1.5 rounded-xl font-bold text-[11px] flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                        title="Baixar Relatório PDF de Compras"
+                      >
+                        <Printer size={12} className="text-rose-600" /> Exportar PDF
+                      </button>
+                      <button 
+                        onClick={handleExportPurchasePlanningExcel}
+                        className="w-full bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 px-2 py-1.5 rounded-xl font-bold text-[11px] flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                        title="Baixar Planilha Excel de Compras"
+                      >
+                        <Download size={12} className="text-emerald-600" /> Planilha Excel
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Top Row - Col 2: Print Requests Section */}
+                {isAdmin ? (
                   <div className="bg-white p-6 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group flex flex-col justify-between h-full">
                     <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 to-indigo-600 absolute top-0 left-0" />
                     <div className="flex items-start gap-4 pt-2">
@@ -8582,68 +9336,87 @@ export default function App() {
                       </button>
                     </div>
                   </div>
-                )}
-
-                {/* PCA Report Section */}
-                {selectedSector === 'Almoxarifado' && (
-                  <div className="bg-white p-6 rounded-3xl border border-emerald-100/80 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group flex flex-col justify-between h-full">
-                    <div className="h-1.5 w-full bg-gradient-to-r from-emerald-600 to-teal-600 absolute top-0 left-0" />
+                ) : (
+                  <div className="bg-white p-6 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group flex flex-col justify-between h-full">
+                    <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 to-cyan-500 absolute top-0 left-0" />
                     <div className="flex items-start gap-4 pt-2">
-                      <div className="bg-gradient-to-br from-emerald-600 to-teal-700 text-white p-3 rounded-2xl shadow-md shadow-emerald-600/20 group-hover:scale-105 transition-transform shrink-0">
-                        <Calendar size={20} />
+                      <div className="bg-gradient-to-br from-blue-600 to-blue-800 text-white p-3.5 rounded-2xl shadow-md shadow-blue-600/20 group-hover:scale-105 transition-transform shrink-0">
+                        <BookOpen size={20} />
                       </div>
                       <div>
-                        <h3 className="text-base font-black text-slate-900 leading-tight">Relatório PCA</h3>
-                        <p className="text-slate-500 text-xs font-medium mt-1 leading-snug">Plano Anual de Contratação - Consumo por tipo no período</p>
+                        <h3 className="text-base font-black text-slate-900">Catálogo de Itens</h3>
+                        <p className="text-slate-500 text-xs font-medium mt-1">Baixe o catálogo contendo os nomes dos materiais e categorias cadastradas.</p>
                       </div>
                     </div>
-
-                    <div className="flex flex-col gap-2.5 mt-5 pt-4 border-t border-slate-100">
-                      <div className="grid grid-cols-2 gap-2 w-full">
-                        <div>
-                          <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 ml-1">Início</label>
-                          <input 
-                            type="date" 
-                            value={pcaRange.start}
-                            onChange={(e) => setPcaRange({...pcaRange, start: e.target.value})}
-                            className="w-full px-2 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 font-bold text-xs text-slate-800 cursor-pointer"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 ml-1">Fim</label>
-                          <input 
-                            type="date" 
-                            value={pcaRange.end}
-                            onChange={(e) => setPcaRange({...pcaRange, end: e.target.value})}
-                            className="w-full px-2 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 font-bold text-xs text-slate-800 cursor-pointer"
-                          />
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1">
-                          <select 
-                            value={pcaCategory}
-                            onChange={(e) => setPcaCategory(e.target.value)}
-                            className="w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 font-bold text-xs text-slate-800 cursor-pointer"
-                          >
-                            <option value="all">Todas Categorias</option>
-                            {Object.keys(CATEGORY_COLORS).sort().map(cat => (
-                              <option key={cat} value={cat}>{cat}</option>
-                            ))}
-                          </select>
-                        </div>
-                        <button 
-                          onClick={handleExportPCA}
-                          className="bg-gradient-to-r from-emerald-600 to-teal-700 text-white px-3.5 py-2 rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 hover:from-emerald-700 hover:to-teal-800 transition-all shadow-md shadow-emerald-600/20 whitespace-nowrap cursor-pointer shrink-0"
-                        >
-                          <Download size={14} /> Gerar PCA
-                        </button>
-                      </div>
+                    <div className="mt-5 pt-4 border-t border-slate-100">
+                      <button 
+                        onClick={handleExportMaterialsCatalogPDF}
+                        className="w-full bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white px-4 py-2.5 rounded-xl font-extrabold text-xs flex items-center justify-center gap-2 hover:from-blue-800 hover:to-indigo-950 transition-all shadow-md shadow-blue-600/20 whitespace-nowrap cursor-pointer"
+                      >
+                        <Printer size={15} /> Ver Catálogo
+                      </button>
                     </div>
                   </div>
                 )}
 
-                {/* Critical Materials Report Section */}
+                {/* Top Row - Col 3: PCA Report Section */}
+                <div className="bg-white p-6 rounded-3xl border border-emerald-100/80 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group flex flex-col justify-between h-full">
+                  <div className="h-1.5 w-full bg-gradient-to-r from-emerald-600 to-teal-600 absolute top-0 left-0" />
+                  <div className="flex items-start gap-4 pt-2">
+                    <div className="bg-gradient-to-br from-emerald-600 to-teal-700 text-white p-3 rounded-2xl shadow-md shadow-emerald-600/20 group-hover:scale-105 transition-transform shrink-0">
+                      <Calendar size={20} />
+                    </div>
+                    <div>
+                      <h3 className="text-base font-black text-slate-900 leading-tight">Relatório PCA</h3>
+                      <p className="text-slate-500 text-xs font-medium mt-1 leading-snug">Plano Anual de Contratação - Consumo por tipo no período</p>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-2.5 mt-5 pt-4 border-t border-slate-100">
+                    <div className="grid grid-cols-2 gap-2 w-full">
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 ml-1">Início</label>
+                        <input 
+                          type="date" 
+                          value={pcaRange.start}
+                          onChange={(e) => setPcaRange({...pcaRange, start: e.target.value})}
+                          className="w-full px-2 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 font-bold text-xs text-slate-800 cursor-pointer"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 ml-1">Fim</label>
+                        <input 
+                          type="date" 
+                          value={pcaRange.end}
+                          onChange={(e) => setPcaRange({...pcaRange, end: e.target.value})}
+                          className="w-full px-2 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 font-bold text-xs text-slate-800 cursor-pointer"
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1">
+                        <select 
+                          value={pcaCategory}
+                          onChange={(e) => setPcaCategory(e.target.value)}
+                          className="w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 font-bold text-xs text-slate-800 cursor-pointer"
+                        >
+                          <option value="all">Todas Categorias</option>
+                          {Object.keys(CATEGORY_COLORS).sort().map(cat => (
+                            <option key={cat} value={cat}>{cat}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <button 
+                        onClick={handleExportPCA}
+                        className="bg-gradient-to-r from-emerald-600 to-teal-700 text-white px-3.5 py-2 rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 hover:from-emerald-700 hover:to-teal-800 transition-all shadow-md shadow-emerald-600/20 whitespace-nowrap cursor-pointer shrink-0"
+                      >
+                        <Download size={14} /> Gerar PCA
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Bottom Row - Col 2: Critical Materials Report Section (Directly under Impressao de Solicitacoes) */}
                 <div className="bg-white p-6 rounded-3xl border border-amber-100/90 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group flex flex-col justify-between h-full">
                   <div className="h-1.5 w-full bg-gradient-to-r from-amber-500 via-rose-500 to-rose-600 absolute top-0 left-0" />
                   <div className="flex items-start gap-4 pt-2">
@@ -8686,31 +9459,7 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Materials Catalog Section - For Leaders */}
-                {!isAdmin && (
-                  <div className="bg-white p-6 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group col-span-full">
-                    <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 to-cyan-500 absolute top-0 left-0" />
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-5 pt-2">
-                      <div className="flex items-center gap-4">
-                        <div className="bg-gradient-to-br from-blue-600 to-blue-800 text-white p-3.5 rounded-2xl shadow-md shadow-blue-600/20 group-hover:scale-105 transition-transform">
-                          <BookOpen size={22} />
-                        </div>
-                        <div>
-                          <h3 className="text-base font-black text-slate-900">Dúvidas sobre o que pedir?</h3>
-                          <p className="text-slate-500 text-xs font-medium">Baixe o catálogo simplificado contendo todos os nomes dos materiais e categorias cadastradas.</p>
-                        </div>
-                      </div>
-                      <button 
-                        onClick={handleExportMaterialsCatalogPDF}
-                        className="bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white px-6 py-3 rounded-xl font-extrabold text-xs flex items-center justify-center gap-2 hover:from-blue-800 hover:to-indigo-950 transition-all shadow-md shadow-blue-600/20 whitespace-nowrap"
-                      >
-                        <Printer size={16} /> Ver Catálogo de Itens
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {/* ApuraSUS Section (Destinados ao ApuraSUS) - Harmonizado com o restante do sistema */}
+                {/* Bottom Row - Col 3: ApuraSUS Section (Directly under Relatorio PCA) */}
                 <div className="bg-white p-6 rounded-3xl border border-blue-100/90 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group flex flex-col justify-between h-full">
                   <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-500 absolute top-0 left-0" />
                   <div className="flex items-start gap-4 pt-2">
@@ -13167,6 +13916,395 @@ export default function App() {
               >
                 Fechar
               </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Purchase Planning Modal */}
+      {showPurchasePlanningModal && (
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-[90] flex items-center justify-center p-3 sm:p-6 overflow-hidden">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.96 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.96 }}
+            className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-7xl h-[92vh] flex flex-col overflow-hidden"
+          >
+            {/* Header */}
+            <div className="px-6 py-5 border-b border-slate-200 bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-3.5">
+                <div className="bg-gradient-to-br from-blue-500 to-indigo-600 p-3 rounded-2xl shadow-md shadow-indigo-500/20 text-white shrink-0">
+                  <ShoppingCart size={24} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-xl font-black tracking-tight text-white">Planejamento de Compras (Estimativa de Aquisição)</h3>
+                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-blue-500/20 border border-blue-400/30 text-blue-200">
+                      Previsão de Consumo
+                    </span>
+                  </div>
+                  <p className="text-slate-300 text-xs mt-0.5 font-medium">
+                    Calcula a quantidade exata de insumos e medicamentos necessária para suprir o estoque até o mês de interesse.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button 
+                  onClick={handleExportPurchasePlanningPDF}
+                  className="px-3.5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-extrabold text-xs flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
+                  title="Exportar Relatório Oficial em PDF"
+                >
+                  <Printer size={15} /> Exportar PDF
+                </button>
+                <button 
+                  onClick={handleExportPurchasePlanningExcel}
+                  className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-extrabold text-xs flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
+                  title="Exportar Planilha Completa em Excel"
+                >
+                  <Download size={15} /> Exportar Excel
+                </button>
+                <button 
+                  onClick={() => setShowPurchasePlanningModal(false)}
+                  className="p-2 text-slate-300 hover:text-white hover:bg-slate-800 rounded-xl transition-all ml-2"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+            </div>
+
+            {/* Filter Configuration Toolbar */}
+            <div className="p-4 bg-slate-50 border-b border-slate-200 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-3 items-center shrink-0">
+              {/* Target Month */}
+              <div>
+                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">
+                  Mês Alvo de Cobertura
+                </label>
+                <select 
+                  value={planningTargetMonth}
+                  onChange={(e) => setPlanningTargetMonth(Number(e.target.value))}
+                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-800 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer shadow-2xs"
+                >
+                  {['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'].map((m, idx) => (
+                    <option key={idx} value={idx}>{m}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Target Year */}
+              <div>
+                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">
+                  Ano Alvo
+                </label>
+                <select 
+                  value={planningTargetYear}
+                  onChange={(e) => setPlanningTargetYear(Number(e.target.value))}
+                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-800 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer shadow-2xs"
+                >
+                  {Array.from({ length: 4 }).map((_, i) => {
+                    const y = new Date().getFullYear() + i;
+                    return <option key={y} value={y}>{y}</option>;
+                  })}
+                </select>
+              </div>
+
+              {/* Safety Margin */}
+              <div>
+                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">
+                  Margem de Segurança
+                </label>
+                <select 
+                  value={planningSafetyOption}
+                  onChange={(e) => setPlanningSafetyOption(e.target.value as any)}
+                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-800 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer shadow-2xs"
+                >
+                  <option value="standard_8w">Padrão: +8 semanas (2 meses)</option>
+                  <option value="margin_10">+10% de Segurança</option>
+                  <option value="margin_20">+20% de Segurança</option>
+                  <option value="none">Sem Margem Adicional</option>
+                </select>
+              </div>
+
+              {/* Stock Location */}
+              <div>
+                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">
+                  Local do Estoque
+                </label>
+                <select 
+                  value={planningLocation}
+                  onChange={(e) => setPlanningLocation(e.target.value as any)}
+                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-800 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer shadow-2xs"
+                >
+                  <option value="Almoxarifado">Almoxarifado Geral</option>
+                  <option value="Farmácia">Farmácia (Medicamentos)</option>
+                  <option value="all">Almoxarifado & Farmácia</option>
+                </select>
+              </div>
+
+              {/* Category Filter */}
+              <div>
+                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">
+                  Categoria
+                </label>
+                <select 
+                  value={planningCategory}
+                  onChange={(e) => setPlanningCategory(e.target.value)}
+                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-800 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer shadow-2xs"
+                >
+                  <option value="all">Todas as Categorias</option>
+                  {Object.keys(CATEGORY_COLORS).sort().map(cat => (
+                    <option key={cat} value={cat}>{cat}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Search & Sort */}
+              <div>
+                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">
+                  Ordenar Por
+                </label>
+                <select 
+                  value={planningSort}
+                  onChange={(e) => setPlanningSort(e.target.value as any)}
+                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-800 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer shadow-2xs"
+                >
+                  <option value="deficit_desc">Maior Quantidade a Comprar</option>
+                  <option value="cost_desc">Maior Custo Estimado (R$)</option>
+                  <option value="cost_asc">Menor Custo Estimado (R$)</option>
+                  <option value="duration_asc">Menor Duração do Estoque Atual</option>
+                  <option value="name_asc">Ordem Alfabética (A-Z)</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Quick KPI Bar & Toggle */}
+            <div className="px-6 py-3.5 bg-indigo-50/60 border-b border-indigo-100 flex flex-wrap items-center justify-between gap-4 shrink-0">
+              <div className="flex flex-wrap items-center gap-6">
+                <div className="flex items-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-full bg-blue-600"></div>
+                  <span className="text-xs font-bold text-slate-600">Período Alvo:</span>
+                  <span className="text-xs font-black text-slate-900 bg-white px-2.5 py-1 rounded-lg border border-indigo-200 shadow-2xs">
+                    {purchasePlanningSummary.targetPeriodLabel} ({purchasePlanningSummary.totalTargetWeeks} sem • ~{purchasePlanningSummary.totalTargetMonths} meses)
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-full bg-rose-600"></div>
+                  <span className="text-xs font-bold text-slate-600">Itens com Déficit:</span>
+                  <span className="text-xs font-black text-rose-600 bg-white px-2.5 py-1 rounded-lg border border-rose-200 shadow-2xs">
+                    {purchasePlanningSummary.totalItemsWithDeficit} de {purchasePlanningSummary.totalAnalyzed} itens
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-full bg-indigo-600"></div>
+                  <span className="text-xs font-bold text-slate-600">Volume Total a Comprar:</span>
+                  <span className="text-xs font-black text-indigo-700 bg-white px-2.5 py-1 rounded-lg border border-indigo-200 shadow-2xs">
+                    {purchasePlanningSummary.totalUnitsToBuy.toLocaleString('pt-BR')} unidades
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-full bg-emerald-600"></div>
+                  <span className="text-xs font-bold text-slate-600">Custo Total Estimado:</span>
+                  <span className="text-xs font-black text-emerald-700 bg-white px-2.5 py-1 rounded-lg border border-emerald-200 shadow-2xs">
+                    {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(purchasePlanningSummary.totalEstimatedFinancialCost)}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-4">
+                <div className="relative">
+                  <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />
+                  <input 
+                    type="text" 
+                    placeholder="Filtrar por nome..." 
+                    value={planningSearch}
+                    onChange={(e) => setPlanningSearch(e.target.value)}
+                    className="pl-8 pr-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 w-48"
+                  />
+                </div>
+
+                <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer select-none">
+                  <input 
+                    type="checkbox" 
+                    checked={planningOnlyWithDeficit}
+                    onChange={(e) => setPlanningOnlyWithDeficit(e.target.checked)}
+                    className="w-4 h-4 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500 cursor-pointer"
+                  />
+                  <span>Apenas itens a comprar (Déficit &gt; 0)</span>
+                </label>
+              </div>
+            </div>
+
+            {/* Table Area */}
+            <div className="flex-1 overflow-y-auto overflow-x-auto p-4 custom-scrollbar">
+              {purchasePlanningSummary.items.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-center p-8">
+                  <div className="w-16 h-16 bg-emerald-50 text-emerald-600 rounded-3xl flex items-center justify-center mb-3">
+                    <CheckCircle size={32} />
+                  </div>
+                  <h4 className="text-base font-black text-slate-800">Nenhum item com necessidade de compra!</h4>
+                  <p className="text-xs text-slate-500 max-w-md mt-1">
+                    Todos os materiais filtrados possuem estoque suficiente para cobrir o consumo previsto até {purchasePlanningSummary.targetPeriodLabel}.
+                  </p>
+                </div>
+              ) : (
+                <table className="w-full text-left border-collapse">
+                  <thead className="sticky top-0 z-10 bg-slate-100/95 backdrop-blur-xs text-[11px] font-black text-slate-600 uppercase tracking-wider border-b border-slate-200">
+                    <tr>
+                      <th className="py-3 px-3">Material / Insumo</th>
+                      <th className="py-3 px-2.5 text-center">Estoque Atual</th>
+                      <th className="py-3 px-2.5 text-center">Consumo Semanal</th>
+                      <th className="py-3 px-2.5 text-center">Duração Atual</th>
+                      <th className="py-3 px-2.5 text-center">Demanda ({purchasePlanningSummary.totalTargetWeeks} sem)</th>
+                      <th className="py-3 px-2.5 text-center">Estoque Seg.</th>
+                      <th className="py-3 px-2.5 text-center">Necessidade Total</th>
+                      <th className="py-3 px-3 text-center bg-rose-100/60 text-rose-900 border-x border-rose-200">QTD A COMPRAR</th>
+                      <th className="py-3 px-2.5 text-right">Vlr. Unitário</th>
+                      <th className="py-3 px-2.5 text-right">Custo Estimado</th>
+                      <th className="py-3 px-3 text-center">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-xs">
+                    {purchasePlanningSummary.items.map((item) => {
+                      const unit = item.unit_measure ? ` ${item.unit_measure}` : '';
+                      const isDeficit = item.quantityToBuy > 0;
+                      
+                      return (
+                        <tr key={item.name} className="hover:bg-slate-50/80 transition-colors">
+                          {/* Name & Category */}
+                          <td className="py-3 px-3">
+                            <div className="font-extrabold text-slate-900">{item.name}</div>
+                            <div className="flex items-center gap-1.5 mt-0.5">
+                              <span 
+                                className="inline-block w-2 h-2 rounded-full shrink-0"
+                                style={{ backgroundColor: CATEGORY_COLORS[item.category] || '#64748b' }}
+                              />
+                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                                {item.category || 'Geral'}
+                              </span>
+                            </div>
+                          </td>
+
+                          {/* Current Stock */}
+                          <td className="py-3 px-2.5 text-center">
+                            <span className={`font-black ${item.currentStock === 0 ? 'text-rose-600' : 'text-slate-800'}`}>
+                              {item.currentStock}{unit}
+                            </span>
+                          </td>
+
+                          {/* Weekly Consumption */}
+                          <td className="py-3 px-2.5 text-center font-bold text-slate-600">
+                            {item.weeklyRate > 0 ? `${item.weeklyRate.toFixed(1)}/sem` : '0.0/sem'}
+                          </td>
+
+                          {/* Current Duration */}
+                          <td className="py-3 px-2.5 text-center">
+                            {item.durationWeeks === 'infinite' ? (
+                              <span className="px-2 py-0.5 rounded-md text-[10px] font-extrabold bg-slate-100 text-slate-600">
+                                Indeterminado (∞)
+                              </span>
+                            ) : (
+                              <div className="flex flex-col items-center">
+                                <span className={`font-black ${item.durationWeeks <= 4 ? 'text-rose-600' : item.durationWeeks <= 8 ? 'text-amber-600' : 'text-slate-800'}`}>
+                                  {item.durationWeeks.toFixed(1)} sem
+                                </span>
+                                <span className="text-[9px] font-semibold text-slate-400">
+                                  Dura até {item.durationMonthInfo.monthYear}
+                                </span>
+                              </div>
+                            )}
+                          </td>
+
+                          {/* Period Demand */}
+                          <td className="py-3 px-2.5 text-center font-bold text-slate-700">
+                            {item.periodDemand}{unit}
+                          </td>
+
+                          {/* Safety Stock */}
+                          <td className="py-3 px-2.5 text-center font-bold text-slate-500">
+                            +{item.safetyStock}{unit}
+                          </td>
+
+                          {/* Total Required */}
+                          <td className="py-3 px-2.5 text-center font-black text-slate-800">
+                            {item.totalRequired}{unit}
+                          </td>
+
+                          {/* Quantity to Buy */}
+                          <td className="py-3 px-3 text-center bg-rose-50/50 border-x border-rose-100">
+                            {isDeficit ? (
+                              <span className="px-3 py-1 rounded-xl text-xs font-black bg-rose-600 text-white shadow-2xs inline-block">
+                                +{item.quantityToBuy.toLocaleString('pt-BR')}{unit}
+                              </span>
+                            ) : (
+                              <span className="px-2.5 py-1 rounded-xl text-[11px] font-black bg-emerald-100 text-emerald-800 inline-block">
+                                Suficiente (0)
+                              </span>
+                            )}
+                          </td>
+
+                          {/* Unit Price */}
+                          <td className="py-3 px-2.5 text-right font-bold text-slate-600">
+                            {item.unitPrice > 0 
+                              ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.unitPrice)
+                              : '---'}
+                          </td>
+
+                          {/* Total Cost */}
+                          <td className="py-3 px-2.5 text-right font-black text-slate-900">
+                            {item.totalEstimatedCost > 0 
+                              ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.totalEstimatedCost)
+                              : '---'}
+                          </td>
+
+                          {/* Status */}
+                          <td className="py-3 px-3 text-center">
+                            {item.status === 'ZERADO_SEM_ESTOQUE' && (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-rose-100 text-rose-800 border border-rose-300">
+                                Zerado / Ruptura
+                              </span>
+                            )}
+                            {item.status === 'DEFICIT_CRITICO' && (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-100 text-amber-800 border border-amber-300">
+                                Déficit Imediato
+                              </span>
+                            )}
+                            {item.status === 'DEFICIT_MODERADO' && (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-blue-100 text-blue-800 border border-blue-300">
+                                Repor p/ Período
+                              </span>
+                            )}
+                            {item.status === 'COBRE_TOTAL' && (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                Atende até o Mês
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 bg-slate-100 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
+              <div className="flex items-center gap-2 text-xs font-semibold text-slate-500">
+                <Sparkles size={15} className="text-indigo-600 shrink-0" />
+                <span>Os cálculos usam a média semanal de saídas reais dos últimos 21 dias para projetar o consumo com precisão.</span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button 
+                  onClick={() => setShowPurchasePlanningModal(false)}
+                  className="px-5 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold rounded-xl transition-all text-xs cursor-pointer"
+                >
+                  Fechar Painel
+                </button>
+              </div>
             </div>
           </motion.div>
         </div>
