@@ -476,19 +476,18 @@ export default function App() {
   const [adminObservation, setAdminObservation] = useState('');
   const [isSyncingStock, setIsSyncingStock] = useState(false);
 
-  // Auto-update Minimum Stock based on consumption velocity (5 weeks coverage)
+  // Auto-update Minimum Stock based on consumption velocity (8 weeks / 2 months coverage)
   useEffect(() => {
     if (!isAdmin || items.length === 0 || transactions.length === 0 || isSyncingStock) return;
 
     const syncStockVelocity = async () => {
       const updates: { id: string, newMin: number }[] = [];
-      const now = new Date();
       
-      // We only consider items with enough history (e.g., at least 1 exit in the last 21 days)
+      // We analyze items with history to ensure minimum stock covers 2 months (8 weeks)
       Object.keys(weeklyExitRates).forEach(itemName => {
         const weeklyRate = weeklyExitRates[itemName];
         if (weeklyRate > 0) {
-          const recommendedMin = Math.ceil(weeklyRate * 5);
+          const recommendedMin = Math.ceil(weeklyRate * 8);
           
           // Find all batches of this item and check if their min_quantity needs update
           items.forEach(item => {
@@ -728,11 +727,11 @@ export default function App() {
           }
           const updatedItem = { ...item, [field]: processedValue };
           
-          // Auto-fill min_quantity if name is changed and we have a calculated rate
+          // Auto-fill min_quantity if name is changed and we have a calculated rate (8 weeks / 2 months)
           if (field === 'name' && processedValue) {
             const weeklyRate = weeklyExitRates[processedValue] || 0;
             if (weeklyRate > 0) {
-              updatedItem.min_quantity = Math.ceil(weeklyRate * 5);
+              updatedItem.min_quantity = Math.ceil(weeklyRate * 8);
             } else {
               // Try to find if the item exists but has no history yet, use its current min_quantity
               const existingItem = items.find(i => i.name === processedValue);
@@ -2999,9 +2998,9 @@ export default function App() {
 
         const initial_qty = isNaN(itemData.initial_quantity) ? 0 : itemData.initial_quantity;
         
-        // Dynamic min stock calculation (5 weeks coverage)
+        // Dynamic min stock calculation (8 weeks / 2 months coverage)
         const weeklyRate = weeklyExitRates[trimmedName] || 0;
-        const calculatedMin = weeklyRate > 0 ? Math.ceil(weeklyRate * 5) : 5;
+        const calculatedMin = weeklyRate > 0 ? Math.ceil(weeklyRate * 8) : 5;
         const min_qty = isNaN(itemData.min_quantity) ? calculatedMin : itemData.min_quantity;
         
         // Inherit price from existing batches if not provided
@@ -3289,7 +3288,7 @@ export default function App() {
         }
 
         const weeklyRate = weeklyExitRates[item.name] || 0;
-        const calculatedMin = weeklyRate > 0 ? Math.ceil(weeklyRate * 5) : item.min_quantity;
+        const calculatedMin = weeklyRate > 0 ? Math.ceil(weeklyRate * 8) : item.min_quantity;
         const finalMinStock = isNaN(transactionMinStock) ? calculatedMin : transactionMinStock;
         
         await runTransaction(db, async (transaction) => {
@@ -3594,7 +3593,7 @@ export default function App() {
           locationGrouped[item.name] = {
             name: item.name,
             total_quantity: 0,
-            min_quantity: weeklyRate > 0 ? Math.ceil(weeklyRate * 5) : item.min_quantity,
+            min_quantity: weeklyRate > 0 ? Math.ceil(weeklyRate * 8) : item.min_quantity,
             category: item.category,
             supplier: item.supplier,
             unit_measure: item.unit_measure || null,
@@ -6570,7 +6569,7 @@ export default function App() {
       acc[item.name] = {
         name: item.name,
         total_quantity: 0,
-        min_quantity: weeklyExitRate > 0 ? Math.ceil(weeklyExitRate * 5) : item.min_quantity,
+        min_quantity: weeklyExitRate > 0 ? Math.ceil(weeklyExitRate * 8) : item.min_quantity,
         category: item.category,
         supplier: item.supplier,
         unit_measure: item.unit_measure || null,
@@ -11695,7 +11694,7 @@ export default function App() {
                   </div>
 
                   <div>
-                    <label className="block text-sm font-bold text-[#57534E] mb-2">Estoque Mínimo (5 Semanas)</label>
+                    <label className="block text-sm font-bold text-[#57534E] mb-2">Estoque Mínimo (2 Meses / 8 Semanas)</label>
                     <input 
                       type="number"
                       placeholder="Calculando..."
@@ -11705,7 +11704,7 @@ export default function App() {
                           const item = showTransactionModal.item || items.find(i => i.id === selectedItemId);
                           if (item) {
                             const weeklyRate = weeklyExitRates[item.name] || 0;
-                            return weeklyRate > 0 ? Math.ceil(weeklyRate * 5) : item.min_quantity;
+                            return weeklyRate > 0 ? Math.ceil(weeklyRate * 8) : item.min_quantity;
                           }
                           return '';
                         })()
@@ -11713,7 +11712,7 @@ export default function App() {
                       onChange={e => setTransactionMinStock(parseInt(e.target.value))}
                     />
                     <p className="text-[10px] text-[#A8A29E] mt-1 font-medium italic">
-                      Deixe em branco para usar o cálculo automático do sistema.
+                      Deixe em branco para usar o cálculo automático de 2 meses (8 semanas) do sistema.
                     </p>
                   </div>
                 </>
