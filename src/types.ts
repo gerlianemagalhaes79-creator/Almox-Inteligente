@@ -68,6 +68,43 @@ export interface Item {
   deletedBy?: string;
 }
 
+export interface BalanceAdjustmentItem {
+  itemId: string;
+  itemName: string;
+  description?: string;
+  category?: string;
+  unit_measure?: string;
+  batch_number?: string;
+  expiry_date?: string | null;
+  location?: 'Almoxarifado' | 'Farmácia';
+  room?: string;
+  unit_price: number;
+  systemQuantity: number;
+  countedQuantity: number;
+  difference: number;
+  reason?: string;
+  notes?: string;
+  adjusted: boolean;
+}
+
+export interface BalanceRecord {
+  id: string;
+  date: string;
+  responsibleName: string;
+  responsibleEmail: string;
+  location: 'Almoxarifado' | 'Farmácia' | 'Geral';
+  title?: string;
+  status: 'CONCLUÍDO' | 'EM_ANDAMENTO';
+  totalItemsAudited: number;
+  divergentItemsCount: number;
+  totalStockBefore: number;
+  totalStockAfter: number;
+  financialImpact: number;
+  justificationGeneral?: string;
+  items: BalanceAdjustmentItem[];
+  createdAt: string;
+}
+
 export interface Transaction {
   id: string;
   item_id: string;
@@ -98,3 +135,4 @@ export interface Transaction {
   returnReason?: string;
   observation?: string;
 }
+

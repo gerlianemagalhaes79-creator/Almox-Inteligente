@@ -43,7 +43,8 @@ import {
   Tag,
   ShoppingCart,
   Calculator,
-  Sparkles
+  Sparkles,
+  Scale
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as XLSX from 'xlsx';
@@ -85,9 +86,10 @@ import {
 import { initializeApp } from 'firebase/app';
 import { db, auth } from './firebase';
 import firebaseConfig from '../firebase-applet-config.json';
-import { Item, Transaction, UserProfile, MaterialRequest, RequestItem, Notification } from './types';
+import { Item, Transaction, UserProfile, MaterialRequest, RequestItem, Notification, BalanceRecord } from './types';
 import { ApuraSUSProducaoReport } from './components/ApuraSUSProducaoReport';
 import { ApuraSUSCustosReport } from './components/ApuraSUSCustosReport';
+import { StockBalance } from './components/StockBalance';
 import { 
   BarChart, 
   Bar, 
@@ -455,7 +457,8 @@ export default function App() {
   const [isEditingQuantitativoAnalysis, setIsEditingQuantitativoAnalysis] = useState(false);
   const quantitativoReportRef = useRef<HTMLDivElement>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'inventory' | 'history' | 'requests' | 'admin-devolutions' | 'reports' | 'my-requests' | 'new-request' | 'devolution' | 'users' | 'trash' | 'leader-stats'>('dashboard');
+  const [balances, setBalances] = useState<BalanceRecord[]>([]);
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'inventory' | 'balance' | 'history' | 'requests' | 'admin-devolutions' | 'reports' | 'my-requests' | 'new-request' | 'devolution' | 'users' | 'trash' | 'leader-stats'>('dashboard');
   const leaderStatistics = useMemo(() => {
     if (userProfile?.role !== 'LÃDER' && userProfile?.role !== 'SETOR') return { topRequested: [], topDelivered: [] };
 
@@ -953,6 +956,94 @@ export default function App() {
     }
   }, [activeTab]);
 
+  const handleSaveItemAdjustmentFromBalance = async (
+    updatedItem: Partial<Item> & { id: string },
+    auditData: {
+      previousQty: number;
+      newQty: number;
+      difference: number;
+      reason: string;
+      notes?: string;
+    }
+  ) => {
+    if (!isAdmin) {
+      showToast('Apenas administradores podem realizar alteraÃ§Ãµes no BalanÃ§o.', 'error');
+      return;
+    }
+
+    try {
+      const itemRef = doc(db, 'items', updatedItem.id);
+      const itemSnap = await getDoc(itemRef);
+      if (!itemSnap.exists()) {
+        showToast('Item nÃ£o encontrado.', 'error');
+        return;
+      }
+      const currentItem = itemSnap.data() as Item;
+      const { id, ...dataToUpdate } = updatedItem;
+
+      await updateDoc(itemRef, {
+        ...dataToUpdate,
+        updatedAt: serverTimestamp()
+      });
+
+      if (auditData.difference !== 0) {
+        const isPositive = auditData.difference > 0;
+        await addDoc(collection(db, 'transactions'), {
+          item_id: id,
+          item_name: dataToUpdate.name || currentItem.name,
+          type: isPositive ? 'entry' : 'exit',
+          origin: currentItem.origin || 'contract',
+          quantity: Math.abs(auditData.difference),
+          sector: 'BalanÃ§o Geral / Auditoria',
+          location: dataToUpdate.location || currentItem.location || 'Almoxarifado',
+          room: dataToUpdate.room || currentItem.room || '',
+          date: new Date().toISOString(),
+          responsible: userProfile?.name || user?.displayName || user?.email || 'Administrador',
+          responsibleEmail: user?.email || '',
+          supplier: currentItem.supplier || 'N/A',
+          batch_number: dataToUpdate.batch_number || currentItem.batch_number || 'S/N',
+          expiry_date: dataToUpdate.expiry_date || currentItem.expiry_date || 'Indeterminada',
+          observation: `[BalanÃ§o Quadrimestral] ${auditData.reason}${auditData.notes ? ` - ${auditData.notes}` : ''} (Saldo anterior: ${auditData.previousQty}, Novo saldo: ${auditData.newQty})`
+        });
+      }
+
+      if (dataToUpdate.name && dataToUpdate.name !== currentItem.name) {
+        const otherBatches = items.filter(i => i.name === currentItem.name && i.id !== id && !i.deletedAt);
+        if (otherBatches.length > 0) {
+          const batch = writeBatch(db);
+          otherBatches.forEach(b => {
+            batch.update(doc(db, 'items', b.id), { name: dataToUpdate.name });
+          });
+          await batch.commit();
+        }
+      }
+
+      if (dataToUpdate.name) {
+        await checkStockAndNotify(dataToUpdate.name);
+      }
+    } catch (error: any) {
+      console.error('Error saving item adjustment from balance:', error);
+      throw error;
+    }
+  };
+
+  const handleFinalizeBalanceFromComponent = async (balanceData: Omit<BalanceRecord, 'id'>) => {
+    if (!isAdmin) {
+      showToast('Apenas administradores podem registrar o BalanÃ§o Oficial.', 'error');
+      return;
+    }
+
+    try {
+      await addDoc(collection(db, 'balances'), {
+        ...balanceData,
+        createdAt: new Date().toISOString()
+      });
+    } catch (error: any) {
+      console.error('Error finalizing balance:', error);
+      throw error;
+    }
+  };
+
   const handleUpdatePrice = async () => {
     if (!editingPrice) return;
     try {
@@ -1382,11 +1473,20 @@ export default function App() {
       handleFirestoreError(error, OperationType.LIST, 'request_items');
     });
 
+    const qBalances = query(collection(db, 'balances'), orderBy('date', 'desc'));
+    const unsubscribeBalances = onSnapshot(qBalances, (snapshot) => {
+      const balancesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as BalanceRecord));
+      setBalances(balancesData);
+    }, (error) => {
+      console.warn("Balances listener error:", error);
+    });
+
     return () => {
       unsubscribeItems();
       unsubscribeTrans();
       unsubscribeRequests();
       unsubscribeReqItems();
+      unsubscribeBalances();
     };
   }, [user]);
 
@@ -1996,10 +2096,13 @@ export default function App() {
             .header-table td { padding: 3px 5px; border: 1px solid #E7E5E4; font-size: 8.5px; }
             h1 { text-align: left; margin: 0 0 5px 0; font-size: 11px; text-transform: uppercase; border-bottom: 1.5px solid #1C1917; padding-bottom: 2px; }
             .items-table { width: 100%; border-collapse: collapse; margin-top: 6px; }
-            .items-table th, .items-table td { border: 1px solid #1C1917; padding: 4px; text-align: left; font-size: 8.5px; }
+            .items-table th, .items-table td { border: 1px solid #1C1917; padding: 4px; text-align: left; font-size: 8.5px; vertical-align: middle; }
             .items-table th { background-color: #FAFAF9; }
             .blank-col { width: 70px; text-align: center; }
             .footer { margin-top: 8px; text-align: center; font-size: 7px; color: #78716C; border-top: 1px dashed #E7E5E4; padding-top: 3px; }
+            .badge-multiple { display: inline-block; background-color: #F59E0B; color: #FFFFFF; font-size: 7px; font-weight: 800; padding: 1px 4px; border-radius: 3px; margin-top: 2px; letter-spacing: 0.5px; }
+            .lot-warning-box { background-color: #FEF3C7; border: 1px solid #F59E0B; border-radius: 3px; padding: 2px 4px; margin-bottom: 2px; font-weight: bold; color: #92400E; font-size: 7.5px; }
+            .lot-item-line { font-size: 7.5px; color: #1C1917; line-height: 1.25; }
             @media print {
               .no-print { display: none; }
             }
@@ -2007,7 +2110,7 @@ export default function App() {
         </head>
         <body>
           ${filteredRequests.map((req, idx) => {
-            const items = allRequestItems.filter(ri => ri.request_id === req.id);
+            const reqItemsList = allRequestItems.filter(ri => ri.request_id === req.id);
             return `
               <div class="request-card">
                 <h1>SolicitaÃ§Ã£o de Material</h1>
@@ -2026,25 +2129,68 @@ export default function App() {
                   ${req.observation ? `<tr><td colspan="2"><strong>ObservaÃ§Ãµes:</strong> ${req.observation}</td></tr>` : ''}
                 </table>
 
-                <h3 style="margin: 6px 0 3px 0; font-size: 9px; border-bottom: 1px solid #1C1917; padding-bottom: 2px; text-transform: uppercase;">ITENS DA SOLICITAÃ‡ÃƒO (Para separaÃ§Ã£o fÃ­sica)</h3>
+                <h3 style="margin: 6px 0 3px 0; font-size: 9px; border-bottom: 1.5px solid #1C1917; padding-bottom: 2px; text-transform: uppercase;">ITENS DA SOLICITAÃ‡ÃƒO (Para separaÃ§Ã£o fÃ­sica)</h3>
                 <table class="items-table">
                   <thead>
                     <tr>
-                      <th>Produto / DescriÃ§Ã£o</th>
-                      <th style="width: 70px; text-align: center;">Qtd Solicitada</th>
-                      <th class="blank-col">Qtd Separada</th>
-                      <th>Obs. / Lote do Material</th>
+                      <th style="width: 32%;">Produto / DescriÃ§Ã£o</th>
+                      <th style="width: 10%; text-align: center;">Qtd Solicitada</th>
+                      <th class="blank-col" style="width: 14%; text-align: center;">Qtd Separada</th>
+                      <th style="width: 44%;">Lotes DisponÃ­veis em Estoque / SeparaÃ§Ã£o</th>
                     </tr>
                   </thead>
                   <tbody>
-                    ${items.map(item => `
-                      <tr>
-                        <td style="font-weight: bold; font-size: 8.5px;">${item.product_name}</td>
-                        <td style="text-align: center; font-size: 8.5px; font-weight: bold;">${item.quantity_requested}</td>
-                        <td class="blank-col" style="border-bottom: 1px solid #1C1917;"></td>
-                        <td style="border-bottom: 1px solid #1C1917;"></td>
-                      </tr>
-                    `).join('')}
+                    ${reqItemsList.map(item => {
+                      const normalizedReqName = normalizeString(item.product_name);
+                      const productBatches = items.filter(i => !i.deletedAt && normalizeString(i.name) === normalizedReqName && (i.quantity || 0) > 0);
+                      productBatches.sort((a, b) => {
+                        if (a.expiry_date === 'Indeterminada' || !a.expiry_date) return 1;
+                        if (b.expiry_date === 'Indeterminada' || !b.expiry_date) return -1;
+                        return new Date(a.expiry_date).getTime() - new Date(b.expiry_date).getTime();
+                      });
+                      const hasMultipleBatches = productBatches.length > 1;
+                      const hasSingleBatch = productBatches.length === 1;
+
+                      let batchDisplay = '';
+                      if (hasMultipleBatches) {
+                        batchDisplay = `
+                          <div class="lot-warning-box">âš ï¸ ATENÃ‡ÃƒO: POSSUI ${productBatches.length} LOTES EM ESTOQUE</div>
+                          <div class="lot-item-line">
+                            ${productBatches.map((b, bIdx) => {
+                              const expDate = b.expiry_date && b.expiry_date !== 'Indeterminada' ? new Date(b.expiry_date + 'T12:00:00').toLocaleDateString('pt-BR') : 'Indet.';
+                              const isFirst = bIdx === 0 ? ' <span style="color: #059669; font-weight: bold;">[PrioritÃ¡rio/FEFO]</span>' : '';
+                              return `<div>â€¢ <strong>Lote ${b.batch_number || 'S/N'}:</strong> ${b.quantity} un (Val: ${expDate})${isFirst}</div>`;
+                            }).join('')}
+                          </div>
+                        `;
+                      } else if (hasSingleBatch) {
+                        const b = productBatches[0];
+                        const expDate = b.expiry_date && b.expiry_date !== 'Indeterminada' ? new Date(b.expiry_date + 'T12:00:00').toLocaleDateString('pt-BR') : 'Indet.';
+                        batchDisplay = `
+                          <div style="font-size: 8px; color: #1C1917;">
+                            <strong>Lote:</strong> ${b.batch_number || 'S/N'} â€¢ <strong>Saldo:</strong> ${b.quantity} un (Val: ${expDate})
+                          </div>
+                        `;
+                      } else {
+                        batchDisplay = `
+                          <div style="font-size: 7.5px; color: #DC2626; font-weight: bold;">
+                            âš ï¸ Sem saldo ativo em estoque
+                          </div>
+                        `;
+                      }
+
+                      return `
+                        <tr>
+                          <td style="font-weight: bold; font-size: 8.5px;">
+                            <div>${item.product_name}</div>
+                            ${hasMultipleBatches ? `<div class="badge-multiple">âš ï¸ MÃšLTIPLOS LOTES (${productBatches.length})</div>` : ''}
+                          </td>
+                          <td style="text-align: center; font-size: 8.5px; font-weight: bold;">${item.quantity_requested}</td>
+                          <td class="blank-col" style="border-bottom: 1px solid #1C1917;"></td>
+                          <td style="vertical-align: top; padding: 3px 5px;">${batchDisplay}</td>
+                        </tr>
+                      `;
+                    }).join('')}
                   </tbody>
                 </table>
 
@@ -2273,6 +2419,15 @@ export default function App() {
           return new Date(a.expiry_date).getTime() - new Date(b.expiry_date).getTime();
         });
 
+        // Se o usuÃ¡rio selecionou um lote especÃ­fico, priorizar esse lote na baixa
+        if (reqItem.batch_id && reqItem.batch_id !== 'auto') {
+          const chosenIndex = batches.findIndex(b => b.id === reqItem.batch_id);
+          if (chosenIndex > -1) {
+            const [chosen] = batches.splice(chosenIndex, 1);
+            batches = [chosen, ...batches];
+          }
+        }
+
         let pharmItems: any[] = [];
         if (requestData.sector === 'FarmÃ¡cia') {
           pharmItems = allActiveItems
@@ -2312,10 +2467,13 @@ export default function App() {
           updatedAt: serverTimestamp()
         });
 
-        // Also update all the request_items quantity_approved in the database
+        // Also update all the request_items quantity_approved and batch_id in the database
         currentRequestItems.forEach(item => {
           const itemRef = doc(db, 'request_items', item.id);
-          transaction.update(itemRef, { quantity_approved: item.quantity_approved });
+          transaction.update(itemRef, { 
+            quantity_approved: item.quantity_approved,
+            batch_id: item.batch_id || ''
+          });
         });
 
         for (const { reqItem, batches, pharmItems } of itemsStockData) {
@@ -2865,7 +3023,10 @@ export default function App() {
       
       items.forEach(item => {
         const itemRef = doc(db, 'request_items', item.id);
-        batch.update(itemRef, { quantity_approved: item.quantity_approved });
+        batch.update(itemRef, { 
+          quantity_approved: item.quantity_approved,
+          batch_id: item.batch_id || ''
+        });
       });
 
       await batch.commit();
@@ -2925,6 +3086,15 @@ export default function App() {
           if (b.expiry_date === 'Indeterminada' || !b.expiry_date) return -1;
           return new Date(a.expiry_date).getTime() - new Date(b.expiry_date).getTime();
         });
+
+        // Se o usuÃ¡rio selecionou um lote especÃ­fico, priorizar esse lote na baixa
+        if (reqItem.batch_id && reqItem.batch_id !== 'auto') {
+          const chosenIndex = batches.findIndex(b => b.id === reqItem.batch_id);
+          if (chosenIndex > -1) {
+            const [chosen] = batches.splice(chosenIndex, 1);
+            batches = [chosen, ...batches];
+          }
+        }
 
         let pharmItems: any[] = [];
         if (requestData.sector === 'FarmÃ¡cia') {
@@ -7381,6 +7551,20 @@ export default function App() {
                   </button>
 
                   <button 
+                    onClick={() => { setActiveTab('balance'); setIsMobileMenuOpen(false); }}
+                    className={`group flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all duration-200 text-xs ${
+                      activeTab === 'balance' 
+                        ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white font-extrabold shadow-md shadow-blue-600/20' 
+                        : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50/80 font-bold'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <Scale size={18} className={activeTab === 'balance' ? 'text-white' : 'text-slate-400 group-hover:text-blue-600 transition-colors'} />
+                      <span>BalanÃ§o</span>
+                    </div>
+                  </button>
+
+                  <button 
                     onClick={() => { setActiveTab('history'); setIsMobileMenuOpen(false); }}
                     className={`group flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all duration-200 text-xs ${
                       activeTab === 'history' 
@@ -7582,6 +7766,7 @@ export default function App() {
             <h2 className="text-xl lg:text-3xl font-bold tracking-tight mb-1">
               {activeTab === 'dashboard' && 'VisÃ£o Geral'}
               {activeTab === 'inventory' && 'Gerenciamento de Estoque'}
+              {activeTab === 'balance' && 'BalanÃ§o e Auditoria de Estoque'}
               {activeTab === 'history' && 'HistÃ³rico de MovimentaÃ§Ãµes'}
               {activeTab === 'requests' && 'SolicitaÃ§Ãµes de Materiais'}
               {activeTab === 'admin-devolutions' && 'DevoluÃ§Ãµes de Materiais'}
@@ -8351,6 +8536,14 @@ export default function App() {
                 )}
 
                 <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setActiveTab('balance')}
+                    className="px-4 py-2 bg-gradient-to-r from-blue-700 via-indigo-800 to-slate-900 hover:from-blue-800 hover:to-indigo-900 text-white font-extrabold text-xs rounded-2xl shadow-md hover:shadow-lg transition-all flex items-center gap-2"
+                    title="Realizar BalanÃ§o e AlteraÃ§Ã£o de EspecificaÃ§Ãµes de Estoque"
+                  >
+                    <Scale size={16} className="text-blue-300" />
+                    <span>BalanÃ§o de Estoque</span>
+                  </button>
                   {inventoryLocation === 'FarmÃ¡cia' && (
                     <button 
                       onClick={() => setActiveTab('new-request')}
@@ -8433,182 +8626,31 @@ export default function App() {
                             <div className={`p-1.5 rounded-lg bg-slate-100 text-slate-500 group-hover/row:bg-blue-100 group-hover/row:text-blue-700 transition-all ${expandedItems.has(group.name) ? 'rotate-90 bg-blue-100 text-blue-700' : ''}`}>
                               <ChevronRight size={16} />
                             </div>
-                            {isAdmin && editingMaterialName?.oldName === group.name ? (
-                              <div className="flex flex-col gap-2 p-3 bg-slate-50 border border-slate-200 rounded-2xl shadow-sm" onClick={(e) => e.stopPropagation()}>
-                                <div className="flex items-center gap-2">
-                                  <input 
-                                    type="text" 
-                                    value={editingMaterialName.newName}
-                                    onChange={(e) => setEditingMaterialName({ ...editingMaterialName, newName: e.target.value })}
-                                    className="px-3 py-1 bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 font-bold text-sm text-slate-900"
-                                    autoFocus
-                                  />
-                                  <button 
-                                    onClick={handleUpdateMaterialName}
-                                    className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-xl"
-                                    title="Salvar"
-                                  >
-                                    <Check size={18} />
-                                  </button>
-                                  <button 
-                                    onClick={() => setEditingMaterialName(null)}
-                                    className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-xl"
-                                    title="Cancelar"
-                                  >
-                                    <X size={18} />
-                                  </button>
-                                </div>
-                                {group.category === 'Medicamentos' && (
-                                  <div className="flex flex-col gap-1 bg-white p-2 rounded-xl border border-slate-200">
-                                    <div className="flex flex-wrap gap-1 items-center">
-                                      <span className="text-[8px] font-black text-slate-500 uppercase tracking-wider mr-1">Unidades:</span>
-                                      {['mg', 'mcg', 'UI', 'g', 'ml', '%'].map(unit => (
-                                        <button
-                                          key={unit}
-                                          type="button"
-                                          onClick={() => {
-                                            let currentName = editingMaterialName.newName.trim();
-                                            if (currentName) {
-                                              if (!currentName.endsWith(' ')) {
-                                                currentName += ' ';
-                                              }
-                                              currentName += unit;
-                                              setEditingMaterialName({ ...editingMaterialName, newName: currentName });
-                                            }
-                                          }}
-                                          className="px-1.5 py-0.5 bg-slate-100 hover:bg-blue-700 hover:text-white text-slate-700 rounded text-[9px] font-bold transition-all uppercase"
-                                        >
-                                          +{unit}
-                                        </button>
-                                      ))}
-                                    </div>
-                                    <div className="flex flex-wrap gap-1 items-center">
-                                      <span className="text-[8px] font-black text-slate-500 uppercase tracking-wider mr-1">Dosagem:</span>
-                                      {['500 mg', '1000 mg', '1000 UI', '5000 UI', '10.000 UI', '50.000 UI'].map(dose => (
-                                        <button
-                                          key={dose}
-                                          type="button"
-                                          onClick={() => {
-                                            let currentName = editingMaterialName.newName.trim();
-                                            if (currentName) {
-                                              if (!currentName.endsWith(' ')) {
-                                                currentName += ' ';
-                                              }
-                                              currentName += dose;
-                                              setEditingMaterialName({ ...editingMaterialName, newName: currentName });
-                                            }
-                                          }}
-                                          className="px-1.5 py-0.5 bg-emerald-50 hover:bg-emerald-600 hover:text-white text-emerald-700 rounded text-[9px] font-bold transition-all uppercase"
-                                        >
-                                          +{dose}
-                                        </button>
-                                      ))}
-                                    </div>
-                                  </div>
+                            <div className="flex flex-col">
+                              <div className="flex items-center gap-2 group/name flex-wrap">
+                                <p className="font-extrabold text-sm text-slate-900 group-hover/row:text-blue-700 transition-colors">{group.name}</p>
+                                {group.unit_measure && (
+                                  <span className="text-[9px] font-black px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200/80 uppercase tracking-wider">
+                                    {group.unit_measure}
+                                  </span>
                                 )}
+                                {Array.from(new Set(group.batches.map(b => b.medication_type).filter(Boolean))).map(type => (
+                                  <span key={type} className="text-[9px] font-black px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-100/80 uppercase tracking-wider">
+                                    {type}
+                                  </span>
+                                ))}
                               </div>
-                            ) : (
-                              <div className="flex flex-col">
-                                <div className="flex items-center gap-2 group/name flex-wrap">
-                                  <p className="font-extrabold text-sm text-slate-900 group-hover/row:text-blue-700 transition-colors">{group.name}</p>
-                                  {group.unit_measure && (
-                                    <span className="text-[9px] font-black px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200/80 uppercase tracking-wider">
-                                      {group.unit_measure}
-                                    </span>
-                                  )}
-                                  {Array.from(new Set(group.batches.map(b => b.medication_type).filter(Boolean))).map(type => (
-                                    <span key={type} className="text-[9px] font-black px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-100/80 uppercase tracking-wider">
-                                      {type}
-                                    </span>
-                                  ))}
-                                  {isAdmin && (
-                                    <button 
-                                      onClick={(e) => { e.stopPropagation(); setEditingMaterialName({ oldName: group.name, newName: group.name }); }}
-                                      className="opacity-0 group-hover/name:opacity-100 p-1 text-slate-400 hover:text-blue-700 transition-all"
-                                      title="Editar Nome do Material"
-                                    >
-                                      <Edit2 size={14} />
-                                    </button>
-                                  )}
-                                </div>
-                                {group.batches[0]?.description && (
-                                  <p className="text-[10px] text-slate-400 italic mt-0.5 line-clamp-1">{group.batches[0].description}</p>
-                                )}
-                              </div>
-                            )}
+                              {group.batches[0]?.description && (
+                                <p className="text-[10px] text-slate-400 italic mt-0.5 line-clamp-1">{group.batches[0].description}</p>
+                              )}
+                            </div>
                           </div>
                         </td>
-                        <td className="px-6 py-4.5" onClick={(e) => e.stopPropagation()}>
-                          {isAdmin && editingCategory?.name === group.name && !editingCategory?.itemId ? (
-                            <div className="flex flex-col gap-1.5 bg-indigo-50/90 p-2.5 border border-indigo-200 rounded-2xl shadow-md min-w-[210px]">
-                              <label className="text-[10px] font-black text-indigo-900 uppercase tracking-wider">Nova Categoria:</label>
-                              <select 
-                                value={editingCategory.currentCategory === '__NEW__' ? '__NEW__' : editingCategory.currentCategory}
-                                onChange={(e) => {
-                                  const val = e.target.value;
-                                  if (val === '__NEW__') {
-                                    setEditingCategory({ ...editingCategory, currentCategory: '__NEW__' });
-                                  } else {
-                                    setEditingCategory({ ...editingCategory, currentCategory: val });
-                                  }
-                                }}
-                                className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-xl text-xs font-extrabold text-slate-800 focus:ring-2 focus:ring-indigo-500"
-                              >
-                                {categories.map(cat => (
-                                  <option key={`cat-select-${cat}`} value={cat}>{cat}</option>
-                                ))}
-                                <option value="__NEW__">+ Cadastrar Nova Categoria...</option>
-                              </select>
-
-                              {editingCategory.currentCategory === '__NEW__' && (
-                                <input 
-                                  type="text"
-                                  placeholder="Digite a nova categoria"
-                                  value={customNewCategory}
-                                  onChange={(e) => setCustomNewCategory(e.target.value)}
-                                  className="w-full px-2.5 py-1 bg-white border border-indigo-300 rounded-xl text-xs font-extrabold text-indigo-900 focus:ring-2 focus:ring-indigo-500"
-                                  autoFocus
-                                />
-                              )}
-
-                              <div className="flex items-center gap-1.5 mt-1">
-                                <button 
-                                  onClick={() => handleUpdateCategory()}
-                                  className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-1 shadow-xs"
-                                  title="Salvar Categoria"
-                                >
-                                  <Check size={14} /> Salvar
-                                </button>
-                                <button 
-                                  onClick={() => { setEditingCategory(null); setCustomNewCategory(''); }}
-                                  className="py-1.5 px-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl font-bold text-xs transition-all"
-                                  title="Cancelar"
-                                >
-                                  <X size={14} />
-                                </button>
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="flex items-center gap-1.5 group/cat">
-                              <div>
-                                <p className="text-xs font-bold text-slate-800">{group.category || '---'}</p>
-                                {isAdmin && <p className="text-[10px] font-medium text-slate-400 mt-0.5">{group.supplier || '---'}</p>}
-                              </div>
-                              {isAdmin && (
-                                <button 
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setEditingCategory({ name: group.name, currentCategory: group.category || categories[0] || 'Expediente' });
-                                    setCustomNewCategory('');
-                                  }}
-                                  className="opacity-0 group-hover/cat:opacity-100 p-1 text-slate-400 hover:text-indigo-700 hover:bg-indigo-50 rounded-lg transition-all"
-                                  title="Alterar Categoria deste Material"
-                                >
-                                  <Edit2 size={13} />
-                                </button>
-                              )}
-                            </div>
-                          )}
+                        <td className="px-6 py-4.5">
+                          <div className="flex flex-col">
+                            <p className="text-xs font-bold text-slate-800">{group.category || '---'}</p>
+                            {isAdmin && <p className="text-[10px] font-medium text-slate-400 mt-0.5">{group.supplier || '---'}</p>}
+                          </div>
                         </td>
                         <td className="px-6 py-4.5">
                           {isAdmin ? (
@@ -8736,95 +8778,15 @@ export default function App() {
                           </td>
                           <td className="px-6 py-3.5 text-xs text-slate-700 font-medium">
                             {isAdmin ? (
-                              editingPrice?.id === item.id ? (
-                                <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                                  <input 
-                                    type="number" 
-                                    step="0.01"
-                                    value={editingPrice.price}
-                                    onChange={(e) => setEditingPrice({ ...editingPrice, price: parseFloat(e.target.value) || 0 })}
-                                    className="w-24 px-2 py-1 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 font-bold text-xs"
-                                    autoFocus
-                                  />
-                                  <button 
-                                    onClick={handleUpdatePrice}
-                                    className="p-1 text-emerald-600 hover:bg-emerald-50 rounded-md"
-                                    title="Salvar"
-                                  >
-                                    <Check size={14} />
-                                  </button>
-                                  <button 
-                                    onClick={() => setEditingPrice(null)}
-                                    className="p-1 text-rose-600 hover:bg-rose-50 rounded-md"
-                                    title="Cancelar"
-                                  >
-                                    <X size={14} />
-                                  </button>
-                                </div>
-                              ) : (
-                                <div className="flex items-center gap-2 group/price">
-                                  <span className="font-bold text-slate-900">{new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.unit_price)}</span>
-                                  <button 
-                                    onClick={(e) => { e.stopPropagation(); setEditingPrice({ id: item.id, price: item.unit_price }); }}
-                                    className="opacity-0 group-hover/price:opacity-100 p-1 text-slate-400 hover:text-blue-700 transition-all"
-                                    title="Editar PreÃ§o"
-                                  >
-                                    <Edit2 size={12} />
-                                  </button>
-                                </div>
-                              )
+                              <span className="font-bold text-slate-900">{new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.unit_price)}</span>
                             ) : (
                               '---'
                             )}
                           </td>
                           <td className="px-6 py-3.5 text-center">
-                            {isAdmin ? (
-                              editingQuantity?.id === item.id ? (
-                                <div className="flex items-center justify-center gap-2" onClick={(e) => e.stopPropagation()}>
-                                  <input 
-                                    type="number" 
-                                    min="0"
-                                    value={editingQuantity.quantity}
-                                    onChange={(e) => setEditingQuantity({ ...editingQuantity, quantity: parseInt(e.target.value) || 0 })}
-                                    className="w-20 px-2 py-1 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 font-bold text-xs"
-                                    autoFocus
-                                  />
-                                  <button 
-                                    onClick={handleUpdateQuantity}
-                                    className="p-1 text-emerald-600 hover:bg-emerald-50 rounded-md"
-                                    title="Salvar"
-                                  >
-                                    <Check size={14} />
-                                  </button>
-                                  <button 
-                                    onClick={() => setEditingQuantity(null)}
-                                    className="p-1 text-rose-600 hover:bg-rose-50 rounded-md"
-                                    title="Cancelar"
-                                  >
-                                    <X size={14} />
-                                  </button>
-                                </div>
-                              ) : (
-                                <div className="flex flex-col items-center group/qty">
-                                  <div className="flex items-center gap-1.5">
-                                    <span className={`text-sm font-black ${item.quantity <= (item.min_quantity || 0) ? 'text-amber-600' : 'text-slate-900'}`}>
-                                      {item.quantity} un
-                                    </span>
-                                    <button 
-                                      onClick={(e) => { e.stopPropagation(); setEditingQuantity({ id: item.id, quantity: item.quantity }); }}
-                                      className="opacity-0 group-hover/qty:opacity-100 p-1 text-slate-400 hover:text-blue-700 transition-all"
-                                      title="Editar Quantidade"
-                                    >
-                                      <Edit2 size={12} />
-                                    </button>
-                                  </div>
-                                </div>
-                              )
-                            ) : (
-                              <span className={`text-sm font-black ${item.quantity <= (item.min_quantity || 0) ? 'text-amber-600' : 'text-slate-900'}`}>
-                                {item.quantity} un
-                              </span>
-                            )}
+                            <span className={`text-sm font-black ${item.quantity <= (item.min_quantity || 0) ? 'text-amber-600' : 'text-slate-900'}`}>
+                              {item.quantity} un
+                            </span>
                           </td>
                           <td className="px-6 py-3.5 text-xs text-slate-300">---</td>
                           <td className="px-6 py-3.5 text-center">
@@ -8892,6 +8854,29 @@ export default function App() {
                 </div>
               )}
               </div>
+            </motion.div>
+          )}
+
+          {activeTab === 'balance' && isAdmin && (
+            <motion.div 
+              key="balance"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+            >
+              <StockBalance
+                items={items}
+                transactions={transactions}
+                balances={balances}
+                isAdmin={isAdmin}
+                currentUserEmail={user?.email || ''}
+                currentUserName={userProfile?.name || user?.displayName || user?.email || ''}
+                categories={categories}
+                onSaveItemAdjustment={handleSaveItemAdjustmentFromBalance}
+                onFinalizeBalance={handleFinalizeBalanceFromComponent}
+                showToast={showToast}
+                appLogo={appLogo}
+              />
             </motion.div>
           )}
 
@@ -10891,4500 +10876,143 @@ export default function App() {
                         <tr key={req.id} className="hover:bg-[#FAFAF9] transition-all">
                           <td className="px-6 py-4">
                             <p className="font-bold text-sm">#{req.id.slice(-5).toUpperCase()}</p>
-                            <p className="text-xs text-[#A8A29E]">{req.sector}</p>
-                          </td>
-                          <td className="px-6 py-4 text-sm text-[#57534E]">
-                            {req.deletedAt && new Date(req.deletedAt).toLocaleString('pt-BR')}
-                          </td>
-                          <td className="px-6 py-4 text-sm text-[#78716C]">
-                            {req.deletedBy || '---'}
-                          </td>
-                          <td className="px-6 py-4 text-right">
-                            <button 
-                              onClick={async () => {
-                                if (window.confirm('Deseja restaurar esta solicitaÃ§Ã£o?')) {
-                                  await updateDoc(doc(db, 'requests', req.id), { 
-                                    deletedAt: deleteField(),
-                                    deletedBy: deleteField()
-                                  });
-                                  setToast({ show: true, message: 'SolicitaÃ§Ã£o restaurada!', type: 'success' });
-                                }
-                              }}
-                              className="text-emerald-600 font-bold text-xs hover:underline"
-                            >
-                              Restaurar
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  </div>
-                  {requests.filter(r => r.deletedAt).length === 0 && (
-                    <div className="p-12 text-center">
-                      <p className="text-[#A8A29E] text-sm">Nenhuma solicitaÃ§Ã£o na lixeira.</p>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Deleted Transactions */}
-              <div className="space-y-4">
-                <div className="flex items-center gap-2 px-2">
-                  <History className="text-[#78716C]" size={20} />
-                  <h3 className="font-bold text-[#1C1917]">MovimentaÃ§Ãµes ExcluÃ­das</h3>
-                </div>
-                <div className="bg-white rounded-3xl border border-[#E7E5E4] shadow-sm overflow-hidden">
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse min-w-[500px]">
-                    <thead>
-                      <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
-                        <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">MovimentaÃ§Ã£o</th>
-                        <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">ExcluÃ­do em</th>
-                        <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">AÃ§Ãµes</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-[#E7E5E4]">
-                      {transactions.filter(t => t.deletedAt).map(trans => (
-                        <tr key={trans.id} className="hover:bg-[#FAFAF9] transition-all">
-                          <td className="px-6 py-4">
-                            <p className="font-bold text-sm">{trans.item_name}</p>
-                            <p className="text-xs text-[#A8A29E]">{trans.type === 'entry' ? 'Entrada' : 'SaÃ­da'} - {trans.quantity} un.</p>
-                          </td>
-                          <td className="px-6 py-4 text-sm text-[#57534E]">
-                            {trans.deletedAt && new Date(trans.deletedAt).toLocaleString('pt-BR')}
-                          </td>
-                          <td className="px-6 py-4 text-right">
-                            <button 
-                              onClick={async () => {
-                                if (window.confirm('Deseja restaurar esta movimentaÃ§Ã£o?')) {
-                                  await updateDoc(doc(db, 'transactions', trans.id), { 
-                                    deletedAt: deleteField()
-                                  });
-                                  setToast({ show: true, message: 'MovimentaÃ§Ã£o restaurada!', type: 'success' });
-                                }
-                              }}
-                              className="text-emerald-600 font-bold text-xs hover:underline"
-                            >
-                              Restaurar
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  </div>
-                  {transactions.filter(t => t.deletedAt).length === 0 && (
-                    <div className="p-12 text-center">
-                      <p className="text-[#A8A29E] text-sm">Nenhuma movimentaÃ§Ã£o na lixeira.</p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </motion.div>
-          )}
-
-          {activeTab === 'requests' && isAdmin && (
-            <motion.div 
-              key="requests"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-              className="space-y-6"
-            >
-              <div className="bg-white rounded-3xl border border-[#E7E5E4] shadow-sm overflow-hidden">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
-                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">NÂº / Data</th>
-                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Setor</th>
-                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Status</th>
-                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Itens</th>
-                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">AÃ§Ãµes</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#E7E5E4]">
-                    {requests.filter(req => !req.deletedAt && !req.isReturn).map(req => (
-                      <tr key={req.id} className="hover:bg-[#FAFAF9] transition-all">
-                        <td className="px-6 py-4">
-                          <p className="font-bold text-sm">#{req.id.slice(-5).toUpperCase()}</p>
-                          <p className="text-xs text-[#A8A29E]">{new Date(req.date).toLocaleDateString('pt-BR')}</p>
-                        </td>
-                        <td className="px-6 py-4">
-                          <span className="text-sm font-bold px-2 py-1 rounded-lg" style={{ backgroundColor: `${SECTOR_COLORS[req.sector]}20`, color: SECTOR_COLORS[req.sector] }}>
-                            {req.sector}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4">
-                          <span className={`text-[10px] font-black px-2 py-1 rounded-full uppercase tracking-widest border ${
-                            req.status === 'PENDENTE' ? 'bg-amber-50 text-amber-600 border-amber-200' :
-                            req.status === 'EM_SEPARACAO' ? 'bg-purple-50 text-purple-600 border-purple-200' :
-                            req.status === 'APROVADO' ? 'bg-blue-50 text-blue-600 border-blue-200' :
-                            req.status === 'ENTREGUE' ? 'bg-emerald-50 text-emerald-600 border-emerald-200' :
-                            req.status === 'RECUSADO' ? 'bg-rose-50 text-rose-600 border-rose-200' :
-                            req.status === 'DEVOLUCAO_PENDENTE' ? 'bg-amber-50 text-amber-700 border-amber-200' :
-                            req.status === 'DEVOLUCAO_APROVADA' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                            req.status === 'DEVOLUCAO_RECUSADA' ? 'bg-rose-50 text-rose-700 border-rose-200' :
-                            'bg-gray-50 text-gray-600 border-gray-200'
-                          }`}>
-                            {req.status === 'EM_SEPARACAO' ? 'EM SEPARAÃ‡ÃƒO' : 
-                             req.status === 'DEVOLUCAO_PENDENTE' ? 'DEVOLUÃ‡ÃƒO PENDENTE' :
-                             req.status === 'DEVOLUCAO_APROVADA' ? 'DEVOLUÃ‡ÃƒO APROVADA' :
-                             req.status === 'DEVOLUCAO_RECUSADA' ? 'DEVOLUÃ‡ÃƒO RECUSADA' :
-                             req.status}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4">
-                          <p className="text-xs font-bold text-[#57534E]">
-                            {allRequestItems.filter(ri => ri.request_id === req.id).length} itens solicitados
-                          </p>
-                        </td>
-                        <td className="px-6 py-4 text-right">
-                          <div className="flex justify-end items-center gap-2">
-                            <button 
-                              onClick={() => setShowRequestDetailModal({ show: true, request: req })}
-                              className="bg-[#1C1917] text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-[#292524] transition-all"
-                            >
-                              Ver Detalhes
-                            </button>
-                            {isAdmin && req.status !== 'ENTREGUE' && (
-                              <button 
-                                onClick={() => handleDeleteRequest(req.id)}
-                                className="p-2 text-rose-400 hover:bg-rose-50 hover:text-rose-600 rounded-xl transition-all"
-                                title="Excluir"
-                              >
-                                <Trash2 size={18} />
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {requests.filter(req => !req.deletedAt && !req.isReturn).length === 0 && (
-                  <div className="p-20 text-center">
-                    <FileText className="mx-auto text-[#E7E5E4] mb-4" size={48} />
-                    <p className="text-[#78716C]">Nenhuma solicitaÃ§Ã£o encontrada.</p>
-                  </div>
-                )}
-              </div>
-            </motion.div>
-          )}
-
-          {activeTab === 'admin-devolutions' && isAdmin && (
-            <motion.div 
-              key="admin-devolutions"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-              className="space-y-6"
-            >
-              <div className="bg-white rounded-3xl border border-[#E7E5E4] shadow-sm overflow-hidden">
-                <div className="p-6 border-b border-[#E7E5E4]">
-                  <h3 className="text-lg font-black">SolicitaÃ§Ãµes de DevoluÃ§Ã£o pendentes de aprovaÃ§Ã£o</h3>
-                  <p className="text-xs text-[#78716C]">Visualize e aprove o retorno de materiais ao estoque.</p>
-                </div>
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="bg-[#FAFAF9] border-b border-[#E7E5E4]">
-                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">NÂº / Data</th>
-                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Setor</th>
-                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Status</th>
-                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Motivo</th>
-                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Itens</th>
-                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">AÃ§Ãµes</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#E7E5E4]">
-                    {requests.filter(req => !req.deletedAt && req.isReturn).map(req => (
-                      <tr key={req.id} className="hover:bg-[#FAFAF9] transition-all">
-                        <td className="px-6 py-4">
-                          <p className="font-bold text-sm">#{req.id.slice(-5).toUpperCase()}</p>
-                          <p className="text-xs text-[#A8A29E]">{new Date(req.date).toLocaleDateString('pt-BR')}</p>
-                        </td>
-                        <td className="px-6 py-4">
-                          <span className="text-sm font-bold px-2 py-1 rounded-lg" style={{ backgroundColor: `${SECTOR_COLORS[req.sector]}20`, color: SECTOR_COLORS[req.sector] }}>
-                            {req.sector}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4">
-                          <span className={`text-[10px] font-black px-2 py-1 rounded-full uppercase tracking-widest border ${
-                            req.status === 'DEVOLUCAO_PENDENTE' ? 'bg-amber-50 text-amber-700 border-amber-200' :
-                            req.status === 'DEVOLUCAO_APROVADA' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                            req.status === 'DEVOLUCAO_RECUSADA' ? 'bg-rose-50 text-rose-700 border-rose-200' :
-                            'bg-gray-50 text-gray-600 border-gray-200'
-                          }`}>
-                            {req.status === 'DEVOLUCAO_PENDENTE' ? 'PENDENTE' :
-                             req.status === 'DEVOLUCAO_APROVADA' ? 'APROVADA' :
-                             req.status === 'DEVOLUCAO_RECUSADA' ? 'RECUSADA' :
-                             req.status}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4">
-                          <span className="text-xs font-bold text-amber-800 bg-amber-50 px-2 py-1 rounded-lg">
-                            {req.returnReason || 'NÃ£o especificado'}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4">
-                          <p className="text-xs font-bold text-[#57534E]">
-                            {allRequestItems.filter(ri => ri.request_id === req.id).length} itens a devolver
-                          </p>
-                        </td>
-                        <td className="px-6 py-4 text-right">
-                          <div className="flex justify-end items-center gap-2">
-                            <button 
-                              onClick={() => setShowRequestDetailModal({ show: true, request: req })}
-                              className="bg-[#1C1917] text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-[#292524] transition-all"
-                            >
-                              Ver Detalhes e Aprovar
-                            </button>
-                            {isAdmin && (
-                              <button 
-                                onClick={() => handleDeleteRequest(req.id)}
-                                className="p-2 text-rose-400 hover:bg-rose-50 hover:text-rose-600 rounded-xl transition-all"
-                                title="Excluir"
-                              >
-                                <Trash2 size={18} />
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {requests.filter(req => !req.deletedAt && req.isReturn).length === 0 && (
-                  <div className="p-20 text-center">
-                    <RotateCcw className="mx-auto text-[#E7E5E4] mb-4" size={48} />
-                    <p className="text-[#78716C] font-bold">Nenhuma devoluÃ§Ã£o encontrada.</p>
-                  </div>
-                )}
-              </div>
-            </motion.div>
-          )}
-
-          {activeTab === 'my-requests' && (
-            <motion.div 
-              key="my-requests"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-              className="space-y-6"
-            >
-              <div className="bg-white rounded-3xl border border-[#E7E5E4] shadow-sm overflow-hidden">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
-                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">NÂº / Data</th>
-                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Status</th>
-                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Itens</th>
-                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">AÃ§Ãµes</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#E7E5E4]">
-                    {requests.filter(r => r.sector === selectedSector && !r.deletedAt).map(req => (
-                      <tr key={req.id} className="hover:bg-[#FAFAF9] transition-all">
-                        <td className="px-6 py-4">
-                          <p className="font-bold text-sm">#{req.id.slice(-5).toUpperCase()}</p>
-                          <p className="text-xs text-[#A8A29E]">{new Date(req.date).toLocaleDateString('pt-BR')}</p>
-                        </td>
-                        <td className="px-6 py-4">
-                          <span className={`text-[10px] font-black px-2 py-1 rounded-full uppercase tracking-widest border ${
-                            req.status === 'PENDENTE' ? 'bg-amber-50 text-amber-600 border-amber-200' :
-                            req.status === 'EM_SEPARACAO' ? 'bg-purple-50 text-purple-600 border-purple-200' :
-                            req.status === 'APROVADO' ? 'bg-blue-50 text-blue-600 border-blue-200' :
-                            req.status === 'ENTREGUE' ? 'bg-emerald-50 text-emerald-600 border-emerald-200' :
-                            req.status === 'RECUSADO' ? 'bg-rose-50 text-rose-600 border-rose-200' :
-                            req.status === 'DEVOLUCAO_PENDENTE' ? 'bg-amber-50 text-amber-700 border-amber-200' :
-                            req.status === 'DEVOLUCAO_APROVADA' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                            req.status === 'DEVOLUCAO_RECUSADA' ? 'bg-rose-50 text-rose-700 border-rose-200' :
-                            'bg-gray-50 text-gray-600 border-gray-200'
-                          }`}>
-                            {req.status === 'EM_SEPARACAO' ? 'EM SEPARAÃ‡ÃƒO' : 
-                             req.status === 'DEVOLUCAO_PENDENTE' ? 'DEVOLUÃ‡ÃƒO PENDENTE' :
-                             req.status === 'DEVOLUCAO_APROVADA' ? 'DEVOLUÃ‡ÃƒO APROVADA' :
-                             req.status === 'DEVOLUCAO_RECUSADA' ? 'DEVOLUÃ‡ÃƒO RECUSADA' :
-                             req.status}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4">
-                          <p className="text-xs font-bold text-[#57534E]">
-                            {allRequestItems.filter(ri => ri.request_id === req.id).length} itens
-                          </p>
-                        </td>
-                        <td className="px-6 py-4 text-right">
-                          <div className="flex justify-end items-center gap-2">
-                            <button 
-                              onClick={() => setShowRequestDetailModal({ show: true, request: req })}
-                              className="bg-[#1C1917] text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-[#292524] transition-all"
-                            >
-                              Ver Detalhes
-                            </button>
-                            {req.status === 'PENDENTE' && (
-                              <>
-                                <button 
-                                  onClick={() => handleEditRequest(req)}
-                                  className="p-2 text-blue-400 hover:bg-blue-50 hover:text-blue-600 rounded-xl transition-all"
-                                  title="Editar SolicitaÃ§Ã£o"
-                                >
-                                  <Edit2 size={18} />
-                                </button>
-                                <button 
-                                  onClick={() => handleDeleteRequest(req.id)}
-                                  className="p-2 text-rose-400 hover:bg-rose-50 hover:text-rose-600 rounded-xl transition-all"
-                                  title="Excluir SolicitaÃ§Ã£o"
-                                >
-                                  <Trash2 size={18} />
-                                </button>
-                              </>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {requests.filter(r => r.sector === selectedSector).length === 0 && (
-                  <div className="p-20 text-center">
-                    <FileText className="mx-auto text-[#E7E5E4] mb-4" size={48} />
-                    <p className="text-[#78716C]">VocÃª ainda nÃ£o fez nenhuma solicitaÃ§Ã£o.</p>
-                  </div>
-                )}
-              </div>
-            </motion.div>
-          )}
-
-          {activeTab === 'leader-stats' && (
-            <motion.div 
-              key="leader-stats"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-              className="space-y-8"
-            >
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                {/* Top Requested */}
-                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
-                  <div className="flex items-center gap-3 mb-6">
-                    <div className="bg-amber-100 p-2 rounded-xl">
-                      <TrendingUp className="text-amber-600" size={24} />
-                    </div>
-                    <div>
-                      <h3 className="text-xl font-black">Top 10 Mais Solicitados</h3>
-                      <p className="text-xs text-[#78716C] font-medium uppercase tracking-wider">Baseado na quantidade solicitada</p>
-                    </div>
-                  </div>
-                  
-                  <div className="space-y-4">
-                    {leaderStatistics.topRequested.map((item, index) => (
-                      <div key={item.name} className="flex items-center gap-4 group">
-                        <div className="w-8 h-8 flex items-center justify-center bg-[#F5F5F4] rounded-lg text-xs font-black text-[#78716C]">
-                          {index + 1}
-                        </div>
-                        <div className="flex-1">
-                          <p className="text-sm font-bold text-[#1C1917] line-clamp-1">{item.name}</p>
-                          <div className="w-full h-1.5 bg-[#F5F5F4] rounded-full mt-1.5 overflow-hidden">
-                            <motion.div 
-                              initial={{ width: 0 }}
-                              animate={{ width: `${leaderStatistics.topRequested[0]?.qty ? (item.qty / leaderStatistics.topRequested[0].qty) * 100 : 0}%` }}
-                              className="h-full bg-amber-500 rounded-full"
-                            />
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <p className="text-sm font-black text-[#1C1917]">{item.qty}</p>
-                          <p className="text-[10px] font-bold text-[#A8A29E] uppercase">Unidades</p>
-                        </div>
-                      </div>
-                    ))}
-                    {leaderStatistics.topRequested.length === 0 && (
-                      <p className="text-center py-8 text-[#A8A29E] text-sm">Sem dados suficientes.</p>
-                    )}
-                  </div>
-                </div>
-
-                {/* Top Delivered */}
-                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
-                  <div className="flex items-center gap-3 mb-6">
-                    <div className="bg-emerald-100 p-2 rounded-xl">
-                      <CheckCircle className="text-emerald-600" size={24} />
-                    </div>
-                    <div>
-                      <h3 className="text-xl font-black">Top 10 Mais Entregues</h3>
-                      <p className="text-xs text-[#78716C] font-medium uppercase tracking-wider">Baseado na quantidade aprovada e entregue</p>
-                    </div>
-                  </div>
-                  
-                  <div className="space-y-4">
-                    {leaderStatistics.topDelivered.map((item, index) => (
-                      <div key={item.name} className="flex items-center gap-4 group">
-                        <div className="w-8 h-8 flex items-center justify-center bg-[#F5F5F4] rounded-lg text-xs font-black text-[#78716C]">
-                          {index + 1}
-                        </div>
-                        <div className="flex-1">
-                          <p className="text-sm font-bold text-[#1C1917] line-clamp-1">{item.name}</p>
-                          <div className="w-full h-1.5 bg-[#F5F5F4] rounded-full mt-1.5 overflow-hidden">
-                            <motion.div 
-                              initial={{ width: 0 }}
-                              animate={{ width: `${leaderStatistics.topDelivered[0]?.qty ? (item.qty / leaderStatistics.topDelivered[0].qty) * 100 : 0}%` }}
-                              className="h-full bg-emerald-500 rounded-full"
-                            />
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <p className="text-sm font-black text-[#1C1917]">{item.qty}</p>
-                          <p className="text-[10px] font-bold text-[#A8A29E] uppercase">Unidades</p>
-                        </div>
-                      </div>
-                    ))}
-                    {leaderStatistics.topDelivered.length === 0 && (
-                      <p className="text-center py-8 text-[#A8A29E] text-sm">Sem dados suficientes.</p>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </motion.div>
-          )}
-
-          {activeTab === 'new-request' && (
-            <motion.div 
-              key="new-request"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              className="max-w-2xl mx-auto space-y-8"
-            >
-              <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm">
-                <div className="flex justify-between items-center mb-6">
-                  <h3 className="text-2xl font-black">
-                    {editingRequest ? 'Editar SolicitaÃ§Ã£o' : 'Nova SolicitaÃ§Ã£o'}
-                  </h3>
-                  {editingRequest && (
-                    <button 
-                      onClick={() => {
-                        setEditingRequest(null);
-                        setRequestBasket([]);
-                        setRequestObservation('');
-                        setActiveTab('my-requests');
-                      }}
-                      className="text-xs font-bold text-rose-600 hover:underline"
-                    >
-                      Cancelar EdiÃ§Ã£o
-                    </button>
-                  )}
-                </div>
-                <div className="space-y-6">
-                  <div>
-                    <label className="block text-xs font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Setor Solicitante</label>
-                    <input 
-                      type="text" 
-                      value={selectedSector || ''} 
-                      disabled 
-                      className="w-full px-4 py-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-2xl font-bold text-[#78716C]"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-[#A8A29E] uppercase tracking-widest mb-2">Adicionar Item</label>
-                    <div className="relative">
-                      <div className="relative">
-                        <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-[#A8A29E]" size={18} />
-                        <input 
-                          type="text" 
-                          placeholder="Digite o nome do material..."
-                          className="w-full pl-12 pr-4 py-4 bg-white border border-[#E7E5E4] rounded-2xl focus:outline-none focus:ring-2 focus:ring-[#1C1917]/10 font-bold transition-all"
-                          value={requestSearchTerm}
-                          onChange={(e) => setRequestSearchTerm(e.target.value)}
-                        />
-                      </div>
-
-                      {requestSearchTerm.length >= 2 && (
-                        <motion.div 
-                          initial={{ opacity: 0, y: -10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          className="absolute left-0 right-0 top-full mt-2 bg-white border border-[#E7E5E4] rounded-2xl shadow-xl z-50 max-h-60 overflow-y-auto overflow-x-hidden"
-                        >
-                          {(() => {
-                            const allActiveGroups: Record<string, {name: string, category: string, id: string}> = {};
-                            items.filter(i => !i.deletedAt && i.quantity > 0).forEach(i => {
-                              if (!allActiveGroups[i.name]) {
-                                allActiveGroups[i.name] = { name: i.name, category: i.category || 'Outros', id: i.id };
-                              }
-                            });
-
-                            const filtered = Object.values(allActiveGroups)
-                            .filter(group => normalizeString(group.name).includes(normalizeString(requestSearchTerm)))
-                            .sort((a, b) => a.name.localeCompare(b.name))
-                            .slice(0, 15);
-
-                            if (filtered.length === 0) {
-                              return (
-                                <div className="p-8 text-center text-[#78716C]">
-                                  <p className="text-sm font-medium">Nenhum material encontrado.</p>
-                                </div>
-                              );
-                            }
-
-                            return filtered.map(group => (
-                              <button
-                                key={group.name}
-                                type="button"
-                                onClick={() => {
-                                  const existing = requestBasket.find(bi => bi.product_name === group.name);
-                                  if (existing) {
-                                    setRequestBasket(requestBasket.map(bi => bi.product_name === group.name ? { ...bi, quantity: bi.quantity + 1 } : bi));
-                                  } else {
-                                    setRequestBasket([...requestBasket, { product_id: group.id, product_name: group.name, quantity: 1 }]);
-                                  }
-                                  setRequestSearchTerm('');
-                                }}
-                                className="w-full px-6 py-4 text-left hover:bg-[#F5F5F4] transition-all flex items-center justify-between border-b border-[#F5F5F4] last:border-none"
-                              >
-                                <div>
-                                  <p className="font-bold text-[#1C1917]">{group.name}</p>
-                                  <p className="text-[10px] text-[#A8A29E] uppercase font-black tracking-widest">{group.category}</p>
-                                </div>
-                                <div className="flex items-center gap-2 text-emerald-600">
-                                  <Plus size={16} />
-                                  <span className="text-xs font-bold">Adicionar</span>
-                                </div>
-                              </button>
-                            ));
-                          })()}
-                        </motion.div>
-                      )}
-                    </div>
-                  </div>
-
-                  {requestBasket.length > 0 && (
-                    <div className="space-y-3">
-                      <label className="block text-xs font-bold text-[#A8A29E] uppercase tracking-widest">Itens na Cesta</label>
-                      {requestBasket.map(item => (
-                        <div key={item.product_id} className="flex items-center justify-between p-4 bg-[#FAFAF9] rounded-2xl border border-[#E7E5E4]">
-                          <p className="font-bold text-sm">{item.product_name}</p>
-                          <div className="flex items-center gap-4">
-                            <input 
-                              type="number" 
-                              min="1"
-                              value={item.quantity}
-                              onChange={(e) => setRequestBasket(requestBasket.map(bi => bi.product_id === item.product_id ? { ...bi, quantity: parseInt(e.target.value) || 1 } : bi))}
-                              className="w-20 px-3 py-1 bg-white border border-[#E7E5E4] rounded-lg text-center font-bold text-sm"
-                            />
-                            <button 
-                              onClick={() => setRequestBasket(requestBasket.filter(bi => bi.product_id !== item.product_id))}
-                              className="text-rose-600 hover:bg-rose-50 p-2 rounded-lg transition-all"
-                            >
-                              <Trash2 size={18} />
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  <div>
-                    <label className="block text-xs font-bold text-[#A8A29E] uppercase tracking-widest mb-2">ObservaÃ§Ã£o (Opcional)</label>
-                    <textarea 
-                      value={requestObservation}
-                      onChange={(e) => setRequestObservation(e.target.value)}
-                      placeholder="Alguma observaÃ§Ã£o importante?"
-                      className="w-full px-4 py-3 bg-white border border-[#E7E5E4] rounded-2xl focus:outline-none focus:ring-2 focus:ring-[#1C1917]/10 font-medium min-h-[100px]"
-                    />
-                  </div>
-
-                  <button 
-                    onClick={handleSubmitRequest}
-                    disabled={isSubmittingRequest || requestBasket.length === 0}
-                    className="w-full py-4 bg-[#1C1917] text-white rounded-2xl font-bold hover:bg-[#292524] transition-all shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                  >
-                    {isSubmittingRequest ? 'Enviando...' : <><Save size={20} /> {editingRequest ? 'Salvar AlteraÃ§Ãµes' : 'Enviar SolicitaÃ§Ã£o'}</>}
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          )}
-
-          {activeTab === 'devolution' && (
-            <motion.div 
-              key="devolution"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              className="max-w-5xl mx-auto space-y-6"
-            >
-              {/* Refined Banner Header */}
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-5 bg-gradient-to-r from-amber-500/10 via-orange-500/5 to-transparent p-6 sm:p-8 rounded-3xl border border-amber-200/80 shadow-xs relative overflow-hidden">
-                <div className="space-y-1.5 z-10">
-                  <div className="flex items-center gap-2">
-                    <span className="p-2 rounded-xl bg-amber-600 text-white shadow-md shadow-amber-500/20">
-                      <RotateCcw size={20} />
-                    </span>
-                    <h2 className="text-2xl font-black text-slate-900 tracking-tight">
-                      DevoluÃ§Ã£o de Materiais
-                    </h2>
-                  </div>
-                  <p className="text-xs sm:text-sm text-slate-600 font-medium max-w-xl">
-                    Gerencie o retorno de materiais do setor <strong className="text-amber-700">{selectedSector}</strong> ao almoxarifado de forma simples e organizada.
-                  </p>
-                </div>
-                <button
-                  onClick={() => {
-                    setDevolutionBasket([]);
-                    setSelectedDevProduct('');
-                    setDevolutionReason('NÃ£o teve uso');
-                    setDevolutionObservation('');
-                    setShowDevolutionModal({ show: true });
-                  }}
-                  className="z-10 bg-gradient-to-r from-amber-600 to-amber-700 text-white px-6 py-3.5 rounded-2xl text-xs font-black uppercase tracking-wider hover:from-amber-700 hover:to-amber-800 transition-all shadow-md shadow-amber-600/20 flex items-center justify-center gap-2 whitespace-nowrap self-start md:self-auto hover:-translate-y-0.5 active:translate-y-0"
-                >
-                  <RotateCcw size={16} />
-                  Solicitar DevoluÃ§Ã£o
-                </button>
-              </div>
-
-              {/* Statistics KPI Row */}
-              {(() => {
-                const devRequests = requests.filter(r => r.sector === selectedSector && r.isReturn && !r.deletedAt);
-                const pendingCount = devRequests.filter(r => r.status === 'DEVOLUCAO_PENDENTE').length;
-                const approvedCount = devRequests.filter(r => r.status === 'DEVOLUCAO_APROVADA').length;
-                const rejectedCount = devRequests.filter(r => r.status === 'DEVOLUCAO_RECUSADA').length;
-
-                return (
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
-                    <div className="bg-white border border-slate-100/80 rounded-2xl p-4 shadow-xs flex items-center gap-3 hover:shadow-md transition-all">
-                      <div className="p-3 bg-amber-50 text-amber-600 rounded-xl">
-                        <RotateCcw size={18} />
-                      </div>
-                      <div>
-                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Total Enviadas</p>
-                        <p className="text-xl font-black text-slate-900">{devRequests.length}</p>
-                      </div>
-                    </div>
-                    <div className="bg-white border border-slate-100/80 rounded-2xl p-4 shadow-xs flex items-center gap-3 hover:shadow-md transition-all">
-                      <div className="p-3 bg-yellow-50 text-yellow-600 rounded-xl">
-                        <Clock size={18} />
-                      </div>
-                      <div>
-                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Pendentes</p>
-                        <p className="text-xl font-black text-yellow-600">{pendingCount}</p>
-                      </div>
-                    </div>
-                    <div className="bg-white border border-slate-100/80 rounded-2xl p-4 shadow-xs flex items-center gap-3 hover:shadow-md transition-all">
-                      <div className="p-3 bg-emerald-50 text-emerald-600 rounded-xl">
-                        <CheckCircle size={18} />
-                      </div>
-                      <div>
-                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Aprovadas</p>
-                        <p className="text-xl font-black text-emerald-600">{approvedCount}</p>
-                      </div>
-                    </div>
-                    <div className="bg-white border border-slate-100/80 rounded-2xl p-4 shadow-xs flex items-center gap-3 hover:shadow-md transition-all">
-                      <div className="p-3 bg-rose-50 text-rose-600 rounded-xl">
-                        <X size={18} />
-                      </div>
-                      <div>
-                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Recusadas</p>
-                        <p className="text-xl font-black text-rose-600">{rejectedCount}</p>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })()}
-
-              {/* Modern Segmented Controller */}
-              <div className="bg-slate-100/80 p-1.5 rounded-2xl inline-flex flex-wrap gap-1 w-full sm:w-auto border border-slate-200/60">
-                <button
-                  onClick={() => setDevolutionSubTab('my_returns')}
-                  className={`flex-1 sm:flex-none px-5 py-2.5 rounded-xl text-xs font-black transition-all ${
-                    devolutionSubTab === 'my_returns'
-                      ? 'bg-white text-amber-700 shadow-sm border border-amber-100/80'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  Minhas DevoluÃ§Ãµes
-                </button>
-                <button
-                  onClick={() => setDevolutionSubTab('sector_stock')}
-                  className={`flex-1 sm:flex-none px-5 py-2.5 rounded-xl text-xs font-black transition-all ${
-                    devolutionSubTab === 'sector_stock'
-                      ? 'bg-white text-amber-700 shadow-sm border border-amber-100/80'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  Estoque do Setor ({selectedSector})
-                </button>
-                <button
-                  onClick={() => setDevolutionSubTab('eligible_deliveries')}
-                  className={`flex-1 sm:flex-none px-5 py-2.5 rounded-xl text-xs font-black transition-all ${
-                    devolutionSubTab === 'eligible_deliveries'
-                      ? 'bg-white text-amber-700 shadow-sm border border-amber-100/80'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  Entregas ElegÃ­veis para DevoluÃ§Ã£o
-                </button>
-              </div>
-
-              {/* Subtab Content */}
-              {devolutionSubTab === 'my_returns' && (
-                <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">
-                  <div className="p-6 border-b border-slate-100">
-                    <h3 className="text-base font-black text-slate-900">HistÃ³rico de SolicitaÃ§Ãµes de DevoluÃ§Ã£o</h3>
-                    <p className="text-xs text-slate-500 font-medium">Acompanhe o andamento e o parecer das solicitaÃ§Ãµes de devoluÃ§Ã£o do seu setor.</p>
-                  </div>
-
-                  <div className="p-4 sm:p-6 space-y-3">
-                    {requests
-                      .filter(r => r.sector === selectedSector && r.isReturn && !r.deletedAt)
-                      .map(req => {
-                        const reqItems = allRequestItems.filter(ri => ri.request_id === req.id);
-                        return (
-                          <div 
-                            key={req.id} 
-                            className="bg-slate-50/60 border border-slate-200/60 hover:border-amber-200 rounded-2xl p-4 sm:p-5 transition-all hover:bg-amber-50/10 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
-                          >
-                            <div className="space-y-2 flex-1">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="font-black text-xs text-slate-900 bg-white px-2.5 py-1 rounded-lg border border-slate-200">
-                                  #{req.id.slice(-5).toUpperCase()}
-                                </span>
-                                <span className="text-xs text-slate-500 font-semibold">
-                                  â€¢ {new Date(req.date).toLocaleDateString('pt-BR')}
-                                </span>
-                                <span className={`text-[10px] font-black px-3 py-1 rounded-full uppercase tracking-wider border ${
-                                  req.status === 'DEVOLUCAO_PENDENTE' ? 'bg-amber-50 text-amber-700 border-amber-200' :
-                                  req.status === 'DEVOLUCAO_APROVADA' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                                  req.status === 'DEVOLUCAO_RECUSADA' ? 'bg-rose-50 text-rose-700 border-rose-200' :
-                                  'bg-slate-100 text-slate-700 border-slate-200'
-                                }`}>
-                                  {req.status === 'DEVOLUCAO_PENDENTE' ? 'PENDENTE' :
-                                   req.status === 'DEVOLUCAO_APROVADA' ? 'APROVADO' :
-                                   req.status === 'DEVOLUCAO_RECUSADA' ? 'RECUSADO' :
-                                   req.status}
-                                </span>
-                                {req.returnReason && (
-                                  <span className="text-[10px] font-bold text-amber-800 bg-amber-100/80 px-2.5 py-0.5 rounded-md">
-                                    Motivo: {req.returnReason}
-                                  </span>
-                                )}
-                              </div>
-
-                              <div className="flex flex-wrap gap-1.5 pt-1">
-                                {reqItems.map(item => (
-                                  <span key={item.id} className="text-xs font-bold px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-slate-800 shadow-2xs">
-                                    {item.product_name} <strong className="text-amber-700">({item.quantity_requested})</strong>
-                                  </span>
-                                ))}
-                              </div>
-
-                              {req.observation && (
-                                <p className="text-xs text-slate-500 italic bg-white/60 p-2 rounded-xl border border-slate-100">
-                                  "{req.observation}"
-                                </p>
-                              )}
-                            </div>
-
-                            <button 
-                              onClick={() => setShowRequestDetailModal({ show: true, request: req })}
-                              className="bg-slate-900 text-white px-4 py-2.5 rounded-xl text-xs font-bold hover:bg-slate-800 transition-all shadow-xs self-end sm:self-center whitespace-nowrap"
-                            >
-                              Ver Detalhes
-                            </button>
-                          </div>
-                        );
-                      })}
-
-                    {requests.filter(r => r.sector === selectedSector && r.isReturn && !r.deletedAt).length === 0 && (
-                      <div className="p-12 text-center text-slate-500 space-y-2">
-                        <RotateCcw className="mx-auto text-slate-300" size={40} />
-                        <p className="font-bold text-sm text-slate-700">Nenhuma solicitaÃ§Ã£o de devoluÃ§Ã£o enviada.</p>
-                        <p className="text-xs text-slate-500">Utilize o botÃ£o acima "Solicitar DevoluÃ§Ã£o" para registrar o retorno de algum material ao almoxarifado.</p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {devolutionSubTab === 'sector_stock' && (
-                <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">
-                  <div className="p-6 border-b border-slate-100">
-                    <h3 className="text-base font-black text-slate-900">Itens em Estoque no Setor ({selectedSector})</h3>
-                    <p className="text-xs text-slate-500 font-medium">Selecione qualquer material guardado neste setor (inclusive vencidos) para devolver ao almoxarifado.</p>
-                  </div>
-
-                  <div className="p-4 sm:p-6 space-y-3">
-                    {(() => {
-                      const currentSectorStock = items.filter(i => 
-                        !i.deletedAt && 
-                        (i.location === selectedSector || (selectedSector === 'FarmÃ¡cia' && i.location === 'FarmÃ¡cia')) && 
-                        i.quantity > 0
-                      );
-
-                      if (currentSectorStock.length === 0) {
-                        return (
-                          <div className="p-12 text-center text-slate-500 space-y-2">
-                            <Package className="mx-auto text-slate-300" size={40} />
-                            <p className="font-bold text-sm text-slate-700">Nenhum item em estoque no setor.</p>
-                            <p className="text-xs text-slate-500">Quando a farmÃ¡cia/setor possuir saldo em estoque, os itens aparecerÃ£o aqui para devoluÃ§Ã£o imediata.</p>
-                          </div>
-                        );
-                      }
-
-                      return currentSectorStock.map(item => {
-                        const expired = isExpired(item);
-                        const nearExpiry = isNearExpiry(item);
-
-                        return (
-                          <div 
-                            key={item.id} 
-                            className={`border rounded-2xl p-4 sm:p-5 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
-                              expired 
-                                ? 'bg-rose-50/50 border-rose-200 hover:border-rose-300' 
-                                : nearExpiry 
-                                ? 'bg-amber-50/40 border-amber-200 hover:border-amber-300' 
-                                : 'bg-slate-50/60 border-slate-200/60 hover:border-amber-200'
-                            }`}
-                          >
-                            <div className="space-y-1.5 flex-1">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="font-black text-sm text-slate-900">{item.name}</span>
-                                {item.category && (
-                                  <span className="text-[10px] font-bold text-slate-500 bg-white px-2 py-0.5 rounded-md border border-slate-200">
-                                    {item.category}
-                                  </span>
-                                )}
-                                {expired ? (
-                                  <span className="text-[10px] font-black text-rose-700 bg-rose-100 border border-rose-300 px-2.5 py-0.5 rounded-full uppercase tracking-wider flex items-center gap-1">
-                                    <AlertTriangle size={12} /> Vencido
-                                  </span>
-                                ) : nearExpiry ? (
-                                  <span className="text-[10px] font-black text-amber-700 bg-amber-100 border border-amber-300 px-2.5 py-0.5 rounded-full uppercase tracking-wider flex items-center gap-1">
-                                    <AlertTriangle size={12} /> Validade PrÃ³xima
-                                  </span>
-                                ) : (
-                                  <span className="text-[10px] font-black text-emerald-700 bg-emerald-100 border border-emerald-300 px-2 py-0.5 rounded-full uppercase tracking-wider">
-                                    Em dia
-                                  </span>
-                                )}
-                              </div>
-
-                              <p className="text-xs text-slate-500 font-medium">
-                                Quantidade no Estoque: <span className="font-bold text-slate-900">{item.quantity} {item.unit_measure || 'unid'}</span>
-                                {item.batch_number && (
-                                  <> â€¢ Lote: <span className="font-bold text-slate-700">{item.batch_number}</span></>
-                                )}
-                                {item.expiry_date && item.expiry_date !== 'Indeterminada' && (
-                                  <> â€¢ Validade: <span className={`font-bold ${expired ? 'text-rose-600' : 'text-slate-700'}`}>{new Date(item.expiry_date).toLocaleDateString('pt-BR')}</span></>
-                                )}
-                              </p>
-                            </div>
-
-                            <button 
-                              onClick={() => {
-                                setDevolutionBasket([{
-                                  product_id: item.id,
-                                  product_name: item.name,
-                                  quantity: item.quantity,
-                                  maxQty: item.quantity,
-                                  selectedBatchId: item.id
-                                }]);
-                                setDevolutionReason(expired ? 'Vencido' : 'NÃ£o teve uso');
-                                setDevolutionObservation(expired ? `Material vencido em ${new Date(item.expiry_date).toLocaleDateString('pt-BR')}` : '');
-                                setShowDevolutionModal({ show: true });
-                              }}
-                              className={`px-4 py-2.5 rounded-xl text-xs font-black transition-all shadow-xs self-end sm:self-center whitespace-nowrap flex items-center gap-1.5 ${
-                                expired 
-                                  ? 'bg-rose-600 hover:bg-rose-700 text-white' 
-                                  : 'bg-amber-600 hover:bg-amber-700 text-white'
-                              }`}
-                            >
-                              <RotateCcw size={14} /> Devolver ao Almoxarifado
-                            </button>
-                          </div>
-                        );
-                      });
-                    })()}
-                  </div>
-                </div>
-              )}
-
-              {devolutionSubTab === 'eligible_deliveries' && (
-                <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">
-                  <div className="p-6 border-b border-slate-100">
-                    <h3 className="text-base font-black text-slate-900">Entregas Realizadas ao Setor</h3>
-                    <p className="text-xs text-slate-500 font-medium">Selecione uma das entregas recebidas abaixo para selecionar itens e devolver.</p>
-                  </div>
-
-                  <div className="p-4 sm:p-6 space-y-3">
-                    {requests
-                      .filter(r => r.sector === selectedSector && r.status === 'ENTREGUE' && !r.deletedAt)
-                      .map(req => {
-                        const reqItems = allRequestItems.filter(ri => ri.request_id === req.id);
-                        return (
-                          <div 
-                            key={req.id} 
-                            className="bg-slate-50/60 border border-slate-200/60 hover:border-amber-200 rounded-2xl p-4 sm:p-5 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-4"
-                          >
-                            <div className="space-y-2 flex-1">
-                              <div className="flex items-center gap-2">
-                                <span className="font-black text-xs text-slate-900 bg-white px-2.5 py-1 rounded-lg border border-slate-200">
-                                  Entrega #{req.id.slice(-5).toUpperCase()}
-                                </span>
-                                <span className="text-xs text-slate-500 font-semibold">
-                                  â€¢ {req.deliveredAt 
-                                    ? `Entregue em: ${new Date(req.deliveredAt).toLocaleDateString('pt-BR')}` 
-                                    : `Criada em: ${new Date(req.date).toLocaleDateString('pt-BR')}`}
-                                </span>
-                              </div>
-
-                              <div className="flex flex-wrap gap-1.5 pt-1">
-                                {reqItems.map(item => {
-                                  const alreadyReturned = item.quantity_returned || 0;
-                                  const remaining = item.quantity_approved - alreadyReturned;
-                                  return (
-                                    <span 
-                                      key={item.id} 
-                                      className={`text-xs font-bold px-2.5 py-1 rounded-lg border ${
-                                        remaining <= 0 
-                                          ? 'bg-slate-100 text-slate-400 line-through border-slate-200' 
-                                          : 'bg-white text-slate-800 border-amber-200/80 shadow-2xs'
-                                      }`}
-                                    >
-                                      {item.product_name} ({remaining}/{item.quantity_approved} disp.)
-                                    </span>
-                                  );
-                                })}
-                              </div>
-                            </div>
-
-                            <button 
-                              onClick={() => {
-                                const basketItems = reqItems.map(ri => {
-                                  const alreadyReturned = ri.quantity_returned || 0;
-                                  const remaining = ri.quantity_approved - alreadyReturned;
-                                  const productBatches = items.filter(item => !item.deletedAt && item.name === ri.product_name);
-                                  return {
-                                    product_id: ri.product_id,
-                                    product_name: ri.product_name,
-                                    quantity: remaining,
-                                    maxQty: remaining,
-                                    selectedBatchId: ri.batch_id || productBatches[0]?.id || ''
-                                  };
-                                }).filter(item => item.quantity > 0);
-
-                                if (basketItems.length === 0) {
-                                  showToast("Todos os itens desta entrega jÃ¡ foram totalmente devolvidos.", "info");
-                                  return;
-                                }
-
-                                setDevolutionBasket(basketItems);
-                                setDevolutionReason('NÃ£o teve uso');
-                                setDevolutionObservation('');
-                                setShowDevolutionModal({ show: true, request: req });
-                              }}
-                              className="bg-amber-600 text-white px-4 py-2.5 rounded-xl text-xs font-black hover:bg-amber-700 transition-all shadow-sm whitespace-nowrap self-end sm:self-center"
-                            >
-                              Devolver Materiais
-                            </button>
-                          </div>
-                        );
-                      })}
-
-                    {requests.filter(r => r.sector === selectedSector && r.status === 'ENTREGUE' && !r.deletedAt).length === 0 && (
-                      <div className="p-12 text-center text-slate-500 space-y-2">
-                        <RotateCcw className="mx-auto text-slate-300" size={40} />
-                        <p className="font-bold text-sm text-slate-700">Nenhuma entrega elegÃ­vel encontrada.</p>
-                        <p className="text-xs text-slate-500">Seu setor precisa ter entregas concluÃ­das ("ENTREGUE") no sistema para devolvÃª-las ao estoque.</p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </main>
-
-      {/* Modals */}
-      {showAddModal && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-6">
-          <motion.div 
-            initial={{ scale: 0.9, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            className="bg-white w-full max-w-5xl rounded-[40px] p-10 shadow-2xl max-h-[90vh] overflow-y-auto"
-          >
-            <div className="flex justify-between items-center mb-8">
-              <div>
-                <h3 className="text-3xl font-black text-[#1C1917]">Entrada de Materiais</h3>
-                <p className="text-[#78716C] font-medium">Cadastre mÃºltiplos itens de uma vez</p>
-              </div>
-              <button 
-                onClick={() => setShowAddModal(false)}
-                className="p-2 hover:bg-[#F5F5F4] rounded-full transition-colors"
-              >
-                <X size={24} className="text-[#A8A29E]" />
-              </button>
-            </div>
-
-            <form onSubmit={handleAddItem} className="space-y-8">
-              {/* Common Fields Section */}
-              <div className="bg-[#FAFAF9] p-8 rounded-[32px] border border-[#E7E5E4] grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                <div className="lg:col-span-1">
-                  <label className="block text-xs font-black text-[#78716C] uppercase tracking-widest mb-2">Fornecedor</label>
-                  <input 
-                    required
-                    list="supplier-suggestions"
-                    type="text" 
-                    placeholder="Nome do fornecedor"
-                    className="w-full px-4 py-3 bg-white border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
-                    value={bulkEntry.supplier}
-                    onChange={e => setBulkEntry({...bulkEntry, supplier: e.target.value.toUpperCase()})}
-                  />
-                </div>
-                
-                <div className="lg:col-span-1">
-                  <label className="block text-xs font-black text-[#78716C] uppercase tracking-widest mb-2">Tipo de Item (Categoria)</label>
-                  <div className="flex gap-2">
-                    {showNewCategoryInput ? (
-                      <div className="flex-1 flex gap-2">
-                        <input 
-                          type="text"
-                          className="flex-1 px-4 py-3 bg-white border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
-                          placeholder="Nova..."
-                          value={newCategoryName}
-                          onChange={e => setNewCategoryName(e.target.value)}
-                          autoFocus
-                        />
-                        <button 
-                          type="button"
-                          onClick={() => {
-                            if (newCategoryName.trim()) {
-                              setCategories(prev => Array.from(new Set([...prev, newCategoryName.trim()])));
-                              setBulkEntry({...bulkEntry, category: newCategoryName.trim()});
-                              setNewCategoryName('');
-                              setShowNewCategoryInput(false);
-                            }
-                          }}
-                          className="bg-[#1C1917] text-white p-3 rounded-xl"
-                        >
-                          <Plus size={18} />
-                        </button>
-                      </div>
-                    ) : (
-                      <>
-                        <select 
-                          className="flex-1 px-4 py-3 bg-white border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
-                          value={bulkEntry.category}
-                          onChange={e => setBulkEntry({...bulkEntry, category: e.target.value})}
-                        >
-                          {categories.map(cat => (
-                            <option key={cat} value={cat}>{cat}</option>
-                          ))}
-                        </select>
-                        <button 
-                          type="button"
-                          onClick={() => setShowNewCategoryInput(true)}
-                          className="bg-white text-[#1C1917] p-3 rounded-xl border border-[#E7E5E4] hover:bg-[#F5F5F4]"
-                        >
-                          <Plus size={18} />
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
-
-                <div className="lg:col-span-1">
-                  <label className="block text-xs font-black text-[#78716C] uppercase tracking-widest mb-2">Origem</label>
-                  <select 
-                    className="w-full px-4 py-3 bg-white border border-[#E7E5E4] rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
-                    value={bulkEntry.origin}
-                    onChange={e => setBulkEntry({...bulkEntry, origin: e.target.value as any})}
-                  >
-                    <option value="contract">Contrato</option>
-                    <option value="extra">Produto Extra</option>
-                    <option value="donation">DoaÃ§Ã£o</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Items List Section */}
-              <div className="space-y-4">
-                <div className="flex justify-between items-center">
-                  <h4 className="text-sm font-black text-[#1C1917] uppercase tracking-widest">Lista de Itens</h4>
-                  <button 
-                    type="button"
-                    onClick={addBulkItemRow}
-                    className="text-xs font-bold bg-emerald-50 text-emerald-600 px-4 py-2 rounded-xl border border-emerald-100 flex items-center gap-2 hover:bg-emerald-100 transition-all"
-                  >
-                    <Plus size={14} /> Adicionar Outro Item
-                  </button>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full border-separate border-spacing-y-2">
-                    <thead>
-                      <tr className="text-left">
-                        <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest min-w-[180px] md:min-w-[240px]">Nome do Item</th>
-                        {bulkEntry.category === 'Medicamentos' && (
-                          <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-36 min-w-[110px]">Tipo de Material</th>
-                        )}
-                        <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-36 min-w-[120px]">Unidade / Emb.</th>
-                        <th className="px-4 py-2 text-[10px] font-black text-emerald-800 uppercase tracking-widest min-w-[110px] bg-emerald-100/70 rounded-t-xl text-center">Qtd. Entrada</th>
-                        <th className="px-4 py-2 text-[10px] font-black text-amber-800 uppercase tracking-widest min-w-[100px] bg-amber-100/70 rounded-t-xl text-center">Estoque MÃ­n</th>
-                        <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-24">Lote</th>
-                        <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-40">Validade</th>
-                        <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-28">PreÃ§o Un.</th>
-                        <th className="px-4 py-2 text-[10px] font-black text-[#A8A29E] uppercase tracking-widest w-20"></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {bulkEntry.items.map((item, index) => (
-                        <tr key={item.id} className="group">
-                          <td className="px-2 min-w-[180px] md:min-w-[240px]">
-                            <input 
-                              required
-                              list="item-suggestions"
-                              type="text"
-                              placeholder="Nome do produto"
-                              className="w-full px-3 py-2 bg-[#F5F5F4] border-none rounded-lg focus:ring-2 focus:ring-[#1C1917]/10 text-xs text-stone-900 font-bold"
-                              value={item.name}
-                              onChange={e => updateBulkItem(item.id, 'name', e.target.value)}
-                            />
-                            {/* Quick unit helpers for medications */}
-                            {bulkEntry.category === 'Medicamentos' && (
-                              <div className="mt-1.5 flex flex-col gap-1 bg-[#FAFAF9] p-2 rounded-lg border border-[#E7E5E4] max-w-[280px]">
-                                <div className="flex flex-wrap gap-1 items-center">
-                                  <span className="text-[8px] font-black text-[#78716C] uppercase tracking-wider mr-1">Unidades:</span>
-                                  {['mg', 'mcg', 'UI', 'g', 'ml', '%'].map(unit => (
-                                    <button
-                                      key={unit}
-                                      type="button"
-                                      onClick={() => {
-                                        let currentName = item.name.trim();
-                                        if (currentName) {
-                                          if (!currentName.endsWith(' ')) {
-                                            currentName += ' ';
-                                          }
-                                          currentName += unit;
-                                          updateBulkItem(item.id, 'name', currentName);
-                                        }
-                                      }}
-                                      className="px-1.5 py-0.5 bg-stone-200 hover:bg-[#1C1917] hover:text-white text-stone-700 rounded text-[9px] font-bold transition-all uppercase"
-                                    >
-                                      +{unit}
-                                    </button>
-                                  ))}
-                                </div>
-                                <div className="flex flex-wrap gap-1 items-center">
-                                  <span className="text-[8px] font-black text-[#78716C] uppercase tracking-wider mr-1">Dosagem:</span>
-                                  {['500 mg', '1000 mg', '1000 UI', '5000 UI', '10.000 UI', '50.000 UI'].map(dose => (
-                                    <button
-                                      key={dose}
-                                      type="button"
-                                      onClick={() => {
-                                        let currentName = item.name.trim();
-                                        if (currentName) {
-                                          if (!currentName.endsWith(' ')) {
-                                            currentName += ' ';
-                                          }
-                                          currentName += dose;
-                                          updateBulkItem(item.id, 'name', currentName);
-                                        }
-                                      }}
-                                      className="px-1.5 py-0.5 bg-emerald-50 hover:bg-emerald-600 hover:text-white text-emerald-600 rounded text-[9px] font-bold transition-all uppercase"
-                                    >
-                                      +{dose}
-                                    </button>
-                                  ))}
-                                </div>
-                              </div>
-                            )}
-                          </td>
-                          {bulkEntry.category === 'Medicamentos' && (
-                            <td className="px-2 min-w-[110px]">
-                              <select 
-                                required
-                                className="w-full px-3 py-2 bg-[#F5F5F4] border-none rounded-lg focus:ring-2 focus:ring-[#1C1917]/10 text-[11px] text-stone-900 font-bold"
-                                value={item.medication_type || ''}
-                                onChange={e => updateBulkItem(item.id, 'medication_type', e.target.value)}
-                              >
-                                <option value="">Selecione...</option>
-                                <option value="PORTARIA 344">PORTARIA 344</option>
-                                <option value="COMPRIMIDO">COMPRIMIDO</option>
-                                <option value="AMPOLA">AMPOLA</option>
-                                <option value="SOLUÃ‡ÃƒO">SOLUÃ‡ÃƒO</option>
-                                <option value="SOLUÃ‡ÃƒO SPRAY">SOLUÃ‡ÃƒO SPRAY</option>
-                                <option value="POMADA">POMADA</option>
-                                <option value="GOTA">GOTA</option>
-                                <option value="COLÃRIO">COLÃRIO</option>
-                              </select>
-                            </td>
-                          )}
-                          <td className="px-2 min-w-[140px]">
-                            <select 
-                              required
-                              className="w-full px-3 py-2 bg-[#F5F5F4] border-none rounded-lg focus:ring-2 focus:ring-[#1C1917]/10 text-xs text-stone-900 font-bold"
-                              value={
-                                ['Unidade (UN)', 'Pacote (PCT)', 'Caixa (CX)', 'Frasco (FR)', 'Ampola (AMP)', 'Bisnaga (BSG)', 'Envelope (ENV)', 'GalÃ£o (GL)', 'Rolo (RL)', 'Par (PR)', 'Metro (M)', 'Quilo (KG)', 'Litro (L)', 'Resma'].includes(item.unit_measure || '')
-                                  ? (item.unit_measure || 'Unidade (UN)')
-                                  : 'Outro'
-                              }
-                              onChange={e => {
-                                const val = e.target.value;
-                                if (val === 'Outro') {
-                                  updateBulkItem(item.id, 'unit_measure', '');
-                                } else {
-                                  updateBulkItem(item.id, 'unit_measure', val);
-                                }
-                              }}
-                            >
-                              <option value="Unidade (UN)">Unidade (UN)</option>
-                              <option value="Pacote (PCT)">Pacote (PCT)</option>
-                              <option value="Caixa (CX)">Caixa (CX)</option>
-                              <option value="Frasco (FR)">Frasco (FR)</option>
-                              <option value="Ampola (AMP)">Ampola (AMP)</option>
-                              <option value="Bisnaga (BSG)">Bisnaga (BSG)</option>
-                              <option value="Envelope (ENV)">Envelope (ENV)</option>
-                              <option value="GalÃ£o (GL)">GalÃ£o (GL)</option>
-                              <option value="Rolo (RL)">Rolo (RL)</option>
-                              <option value="Par (PR)">Par (PR)</option>
-                              <option value="Metro (M)">Metro (M)</option>
-                              <option value="Quilo (KG)">Quilo (KG)</option>
-                              <option value="Litro (L)">Litro (L)</option>
-                              <option value="Resma">Resma</option>
-                              <option value="Outro">Outro (digitar...)</option>
-                            </select>
-                            {!['Unidade (UN)', 'Pacote (PCT)', 'Caixa (CX)', 'Frasco (FR)', 'Ampola (AMP)', 'Bisnaga (BSG)', 'Envelope (ENV)', 'GalÃ£o (GL)', 'Rolo (RL)', 'Par (PR)', 'Metro (M)', 'Quilo (KG)', 'Litro (L)', 'Resma'].includes(item.unit_measure || '') && (
-                              <input 
-                                type="text"
-                                placeholder="Especifique a embalagem..."
-                                className="w-full mt-1 px-2.5 py-1 bg-white border border-stone-300 rounded-lg text-xs text-stone-900 font-bold focus:ring-2 focus:ring-[#1C1917]/10"
-                                value={item.unit_measure || ''}
-                                onChange={e => updateBulkItem(item.id, 'unit_measure', e.target.value)}
-                              />
-                            )}
-                          </td>
-                          <td className="px-2 min-w-[110px]">
-                            <input 
-                              required
-                              type="number"
-                              min="1"
-                              placeholder="Qtd"
-                              className="w-full px-3 py-2 bg-emerald-50 border-2 border-emerald-300 rounded-xl focus:ring-2 focus:ring-emerald-500 text-sm text-emerald-950 font-black shadow-sm text-center"
-                              value={isNaN(item.initial_quantity) ? '' : item.initial_quantity}
-                              onChange={e => updateBulkItem(item.id, 'initial_quantity', e.target.value === '' ? NaN : parseInt(e.target.value))}
-                            />
-                          </td>
-                          <td className="px-2 min-w-[100px]">
-                            <input 
-                              required
-                              type="number"
-                              min="0"
-                              placeholder="MÃ­n"
-                              className="w-full px-3 py-2 bg-amber-50 border border-amber-300 rounded-xl focus:ring-2 focus:ring-amber-500 text-sm text-amber-950 font-extrabold text-center"
-                              value={isNaN(item.min_quantity) ? '' : item.min_quantity}
-                              onChange={e => updateBulkItem(item.id, 'min_quantity', e.target.value === '' ? NaN : parseInt(e.target.value))}
-                            />
-                          </td>
-                          <td className="px-2 w-24">
-                            <input 
-                              type="text"
-                              placeholder="Lote"
-                              className="w-full px-3 py-2 bg-[#F5F5F4] border-none rounded-lg focus:ring-2 focus:ring-[#1C1917]/10 text-xs text-stone-900 font-bold"
-                              value={item.batch_number}
-                              onChange={e => updateBulkItem(item.id, 'batch_number', e.target.value)}
-                            />
-                          </td>
-                          <td className="px-2 w-40">
-                            <div className="flex flex-col gap-1">
-                              <input 
-                                type="date"
-                                disabled={item.is_indeterminate_expiry}
-                                className="w-full px-3 py-1.5 bg-[#F5F5F4] border-none rounded-lg focus:ring-2 focus:ring-[#1C1917]/10 text-[11px] text-stone-900 font-bold disabled:opacity-30"
-                                value={item.expiry_date}
-                                onChange={e => updateBulkItem(item.id, 'expiry_date', e.target.value)}
-                              />
-                              <label className="flex items-center gap-1 cursor-pointer">
-                                <input 
-                                  type="checkbox"
-                                  className="w-3 h-3 rounded border-gray-300 text-[#1C1917]"
-                                  checked={item.is_indeterminate_expiry}
-                                  onChange={e => updateBulkItem(item.id, 'is_indeterminate_expiry', e.target.checked)}
-                                />
-                                <span className="text-[9px] font-bold text-[#78716C] uppercase">Indeterminada</span>
-                              </label>
-                            </div>
-                          </td>
-                          <td className="px-2 w-28">
-                            <input 
-                              type="number"
-                              step="0.01"
-                              placeholder="0,00"
-                              className="w-full px-3 py-2 bg-[#F5F5F4] border-none rounded-lg focus:ring-2 focus:ring-[#1C1917]/10 text-xs text-stone-900 font-bold"
-                              value={isNaN(item.unit_price) ? '' : item.unit_price}
-                              onChange={e => updateBulkItem(item.id, 'unit_price', e.target.value === '' ? NaN : parseFloat(e.target.value))}
-                            />
-                          </td>
-                          <td className="px-2 w-20">
-                            <div className="flex items-center gap-1">
-                              <button 
-                                type="button"
-                                onClick={() => duplicateBulkItem(item.id)}
-                                className="p-2 text-blue-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
-                                title="Duplicar para outro lote"
-                              >
-                                <Copy size={18} />
-                              </button>
-                              {bulkEntry.items.length > 1 && (
-                                <button 
-                                  type="button"
-                                  onClick={() => removeBulkItemRow(item.id)}
-                                  className="p-2 text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
-                                  title="Remover"
-                                >
-                                  <Trash2 size={18} />
-                                </button>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <datalist id="item-suggestions">
-                  {Array.from(new Set(items.map(i => i.name))).map(name => (
-                    <option key={name} value={name} />
-                  ))}
-                </datalist>
-                <datalist id="supplier-suggestions">
-                  {uniqueSuppliers.map(s => (
-                    <option key={s} value={s} />
-                  ))}
-                </datalist>
-              </div>
-
-              <div className="flex gap-4 pt-6 border-t border-[#E7E5E4]">
-                <button 
-                  type="button"
-                  onClick={() => setShowAddModal(false)}
-                  className="flex-1 px-6 py-4 rounded-2xl font-bold text-[#78716C] hover:bg-[#F5F5F4] transition-all"
-                >
-                  Cancelar
-                </button>
-                <button 
-                  type="submit"
-                  className="flex-[2] px-6 py-4 bg-[#1C1917] text-white rounded-2xl font-bold hover:bg-[#292524] transition-all shadow-lg shadow-[#1C1917]/20 flex items-center justify-center gap-3"
-                >
-                  <Save size={20} /> Finalizar Entrada de {bulkEntry.items.length} Itens
-                </button>
-              </div>
-            </form>
-          </motion.div>
-        </div>
-      )}
-
-      {showRoomInventoryModal && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[60] flex items-center justify-center p-6">
-          <motion.div 
-            initial={{ scale: 0.9, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            className="bg-white w-full max-w-md rounded-3xl p-8 shadow-2xl"
-          >
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-xl font-bold flex items-center gap-2">
-                <Printer className="text-blue-600" size={24} /> Mapa de Estoque (Porta)
-              </h3>
-              <button onClick={() => setShowRoomInventoryModal(false)} className="text-[#A8A29E] hover:text-[#1C1917]">
-                <X size={20} />
-              </button>
-            </div>
-
-            <div className="space-y-6">
-              <div>
-                <label className="block text-xs font-black text-[#78716C] uppercase tracking-widest mb-2 ml-1">Selecione a Sala</label>
-                <div className="grid grid-cols-2 gap-2">
-                  {ROOMS.map(room => (
-                    <button
-                      key={room}
-                      onClick={() => setSelectedRoom(room)}
-                      className={`px-4 py-3 rounded-xl text-xs font-bold border transition-all ${selectedRoom === room ? 'bg-[#1C1917] text-white border-[#1C1917]' : 'bg-[#F5F5F4] text-[#78716C] border-[#E7E5E4] hover:bg-[#E7E5E4]'}`}
-                    >
-                      {room}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-black text-[#78716C] uppercase tracking-widest mb-2 ml-1">Filtrar Categorias</label>
-                <div className="max-h-48 overflow-y-auto space-y-2 p-2 bg-[#F5F5F4] rounded-xl border border-[#E7E5E4]">
-                  {categories.map(cat => (
-                    <label key={cat} className="flex items-center gap-3 p-2 hover:bg-white rounded-lg cursor-pointer transition-all">
-                      <input 
-                        type="checkbox"
-                        className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                        checked={selectedRoomCategories.includes(cat)}
-                        onChange={e => {
-                          if (e.target.checked) {
-                            setSelectedRoomCategories([...selectedRoomCategories, cat]);
-                          } else {
-                            setSelectedRoomCategories(selectedRoomCategories.filter(c => c !== cat));
-                          }
-                        }}
-                      />
-                      <span className="text-xs font-bold text-[#44403C]">{cat}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              <div className="flex gap-4">
-                <button 
-                  onClick={() => setShowRoomInventoryModal(false)}
-                  className="flex-1 px-6 py-4 rounded-2xl font-bold text-[#78716C] hover:bg-[#F5F5F4] transition-all"
-                >
-                  Cancelar
-                </button>
-                <button 
-                  onClick={() => {
-                    handleExportRoomInventoryPDF(selectedRoom, customRoomName, selectedRoomCategories);
-                    setShowRoomInventoryModal(false);
-                  }}
-                  className="flex-[2] px-6 py-4 bg-[#1C1917] text-white rounded-2xl font-bold hover:bg-[#292524] transition-all shadow-lg shadow-blue-500/20 flex items-center justify-center gap-3"
-                >
-                  <Printer size={20} /> Gerar Documento
-                </button>
-              </div>
-            </div>
-          </motion.div>
-        </div>
-      )}
-
-      {showTransactionModal.show && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-6">
-          <motion.div 
-            initial={{ scale: 0.9, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            className="bg-white w-full max-w-lg rounded-3xl p-8 shadow-2xl max-h-[90vh] overflow-y-auto"
-          >
-            <h3 className="text-2xl font-bold mb-6">
-              {showTransactionModal.type === 'entry' 
-                ? 'Registrar Entrada' 
-                : exitReason === 'vencido' 
-                ? 'Registrar Baixa por Vencimento (DesperdÃ­cio)' 
-                : exitReason === 'perda'
-                ? 'Registrar Baixa por Perda / Avaria'
-                : exitReason === 'doacao'
-                ? 'Registrar SaÃ­da por DoaÃ§Ã£o'
-                : 'Registrar SaÃ­da de Estoque'}
-            </h3>
-            
-            <form onSubmit={handleTransaction} className="space-y-6">
-              {showTransactionModal.type === 'entry' ? (
-                <>
-                  {showTransactionModal.item ? (
-                    <div className="mb-6">
-                      <p className="text-[#78716C] font-medium">{showTransactionModal.item.name}</p>
-                      <p className="text-xs font-bold text-emerald-600 mt-1">
-                        DisponÃ­vel em estoque: {showTransactionModal.item.quantity} unidades
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="mb-6">
-                      <label className="block text-sm font-bold text-[#57534E] mb-2">Selecionar Item</label>
-                      <select 
-                        required
-                        className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10"
-                        value={selectedItemId}
-                        onChange={e => setSelectedItemId(e.target.value)}
-                      >
-                        <option value="">Selecione um item...</option>
-                        {items.map(item => (
-                          <option key={item.id} value={item.id}>
-                            {item.name} (Lote: {item.batch_number || 'N/A'}) - {item.quantity} un.
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-                  <div>
-                    <label className="block text-sm font-extrabold text-[#57534E] mb-2 text-center uppercase tracking-wider">Quantidade a Adicionar</label>
-                    <div className="flex items-center justify-center gap-4 py-2">
-                      <button 
-                        type="button"
-                        onClick={() => setTransactionQty(Math.max(1, transactionQty - 1))}
-                        className="w-12 h-12 rounded-2xl bg-slate-100 hover:bg-slate-200 border border-slate-300 flex items-center justify-center text-2xl font-black text-slate-800 shadow-sm transition-all"
-                      >
-                        -
-                      </button>
-                      <input 
-                        type="number"
-                        min="1"
-                        value={transactionQty}
-                        onChange={e => setTransactionQty(Math.max(1, parseInt(e.target.value) || 0))}
-                        className="text-3xl font-black w-32 py-2 px-3 text-center bg-emerald-50 text-emerald-950 border-2 border-emerald-500 rounded-2xl shadow-inner focus:ring-2 focus:ring-emerald-500/30"
-                      />
-                      <button 
-                        type="button"
-                        onClick={() => setTransactionQty(transactionQty + 1)}
-                        className="w-12 h-12 rounded-2xl bg-slate-100 hover:bg-slate-200 border border-slate-300 flex items-center justify-center text-2xl font-black text-slate-800 shadow-sm transition-all"
-                      >
-                        +
-                      </button>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-bold text-[#57534E] mb-2">Estoque MÃ­nimo (2 Meses / 8 Semanas)</label>
-                    <input 
-                      type="number"
-                      placeholder="Calculando..."
-                      className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
-                      value={isNaN(transactionMinStock) ? (
-                        (() => {
-                          const item = showTransactionModal.item || items.find(i => i.id === selectedItemId);
-                          if (item) {
-                            const weeklyRate = weeklyExitRates[item.name] || 0;
-                            return weeklyRate > 0 ? Math.ceil(weeklyRate * 8) : item.min_quantity;
-                          }
-                          return '';
-                        })()
-                      ) : transactionMinStock}
-                      onChange={e => setTransactionMinStock(parseInt(e.target.value))}
-                    />
-                    <p className="text-[10px] text-[#A8A29E] mt-1 font-medium italic">
-                      Deixe em branco para usar o cÃ¡lculo automÃ¡tico de 2 meses (8 semanas) do sistema.
-                    </p>
-                  </div>
-                </>
-              ) : (
-                <div className="space-y-6">
-                  <div>
-                    <label className="block text-sm font-bold text-[#57534E] mb-2">Motivo da SaÃ­da</label>
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setExitReason('consumo');
-                          setSelectedSector(SECTORS[0]);
-                        }}
-                        className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all ${exitReason === 'consumo' ? 'bg-[#1C1917] text-white border-[#1C1917]' : 'bg-white text-[#78716C] border-[#E7E5E4] hover:bg-[#F5F5F4]'}`}
-                      >
-                        Consumo
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setExitReason('doacao');
-                          setModalSector('');
-                        }}
-                        className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all ${exitReason === 'doacao' ? 'bg-[#1C1917] text-white border-[#1C1917]' : 'bg-white text-[#78716C] border-[#E7E5E4] hover:bg-[#F5F5F4]'}`}
-                      >
-                        DoaÃ§Ã£o
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setExitReason('vencido');
-                          setModalSector('Descarte/Vencimento');
-                          setExpiryReason('');
-                        }}
-                        className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all ${exitReason === 'vencido' ? 'bg-[#1C1917] text-white border-[#1C1917]' : 'bg-white text-[#78716C] border-[#E7E5E4] hover:bg-[#F5F5F4]'}`}
-                      >
-                        Vencido
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setExitReason('perda');
-                          setModalSector('Perda/Avaria');
-                          setExpiryReason('');
-                        }}
-                        className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all ${exitReason === 'perda' ? 'bg-[#1C1917] text-white border-[#1C1917]' : 'bg-white text-[#78716C] border-[#E7E5E4] hover:bg-[#F5F5F4]'}`}
-                      >
-                        Perda/Avaria
-                      </button>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-bold text-[#57534E] mb-2">
-                      {exitReason === 'doacao' ? 'DestinatÃ¡rio da DoaÃ§Ã£o' : 
-                       (exitReason === 'vencido' || exitReason === 'perda') ? 'ClassificaÃ§Ã£o' : 'Setor de Destino'}
-                    </label>
-                    {exitReason === 'doacao' ? (
-                      <div className="space-y-4">
-                        <div>
-                          <label className="block text-[10px] font-bold text-[#A8A29E] uppercase mb-1 ml-1">Unidade Doadora</label>
-                          <input 
-                            required
-                            type="text"
-                            placeholder="PoliclÃ­nica de Sobral"
-                            className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
-                            value={donationUnitName || 'PoliclÃ­nica de Sobral'}
-                            onChange={e => setDonationUnitName(e.target.value)}
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-bold text-[#A8A29E] uppercase mb-1 ml-1">Unidade Receptora (Nome)</label>
-                          <input 
-                            required
-                            type="text"
-                            placeholder="Nome da unidade receptora..."
-                            className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
-                            value={modalSector}
-                            onChange={e => setModalSector(e.target.value)}
-                          />
-                        </div>
-                        <div className="grid grid-cols-2 gap-3">
-                          <div>
-                            <label className="block text-[10px] font-bold text-[#A8A29E] uppercase mb-1 ml-1">EndereÃ§o Receptora</label>
-                            <input 
-                              required
-                              type="text"
-                              placeholder="EndereÃ§o..."
-                              className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-xs"
-                              value={donationUnitAddress}
-                              onChange={e => setDonationUnitAddress(e.target.value)}
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-[10px] font-bold text-[#A8A29E] uppercase mb-1 ml-1">CNPJ Receptora</label>
-                            <input 
-                              required
-                              type="text"
-                              placeholder="00.000.000/0000-00"
-                              className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-xs"
-                              value={donationUnitCNPJ}
-                              onChange={e => setDonationUnitCNPJ(e.target.value)}
-                            />
-                          </div>
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-bold text-[#A8A29E] uppercase mb-1 ml-1">Papel Timbrado (Opcional - JPEG/PNG)</label>
-                          <div className="flex items-center gap-3">
-                            <label className="flex-1 cursor-pointer group">
-                              <div className="flex items-center gap-2 px-4 py-3 bg-[#F5F5F4] border-2 border-dashed border-[#E7E5E4] rounded-xl hover:border-[#1C1917]/20 transition-all">
-                                <Upload size={16} className="text-[#A8A29E] group-hover:text-[#1C1917]" />
-                                <span className="text-xs font-bold text-[#78716C] group-hover:text-[#1C1917]">
-                                  {letterheadImage ? 'Alterar Imagem' : 'Selecionar Timbrado'}
-                                </span>
-                              </div>
-                              <input 
-                                type="file" 
-                                accept="image/*" 
-                                className="hidden" 
-                                onChange={(e) => {
-                                  const file = e.target.files?.[0];
-                                  if (file) {
-                                    const reader = new FileReader();
-                                    reader.onloadend = () => {
-                                      setLetterheadImage(reader.result as string);
-                                    };
-                                    reader.readAsDataURL(file);
-                                  }
-                                }}
-                              />
-                            </label>
-                            {letterheadImage && (
-                              <button 
-                                type="button"
-                                onClick={() => setLetterheadImage(null)}
-                                className="p-3 bg-red-50 text-red-500 rounded-xl hover:bg-red-100 transition-colors"
-                                title="Remover imagem"
-                              >
-                                <Trash2 size={16} />
-                              </button>
-                            )}
-                          </div>
-                          {letterheadImage && (
-                            <div className="mt-2 relative w-full h-12 bg-white rounded-lg border border-[#E7E5E4] overflow-hidden">
-                              <img 
-                                src={letterheadImage} 
-                                alt="Preview" 
-                                className="w-full h-full object-contain"
-                              />
-                            </div>
-                          )}
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-bold text-[#A8A29E] uppercase mb-1 ml-1">Data da Ãšltima RevisÃ£o</label>
-                          <input 
-                            required
-                            type="text"
-                            placeholder="Ex: 24/04/2026"
-                            className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
-                            value={donationRevisionDate}
-                            onChange={e => setDonationRevisionDate(e.target.value)}
-                          />
-                        </div>
-                      </div>
-                    ) : (exitReason === 'vencido' || exitReason === 'perda') ? (
-                      <div className="bg-rose-50 p-4 rounded-2xl border border-rose-100">
-                        <p className="text-xs font-bold text-rose-700 uppercase tracking-widest mb-1">Descarte por {exitReason === 'vencido' ? 'Vencimento' : 'Perda/Avaria'}</p>
-                        <p className="text-sm text-rose-600">Esta movimentaÃ§Ã£o serÃ¡ registrada como {modalSector}.</p>
-                      </div>
-                    ) : (
-                      <select 
-                        required
-                        className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
-                        value={modalSector}
-                        onChange={e => setModalSector(e.target.value)}
-                      >
-                        <option value="">Selecione o setor de destino...</option>
-                        <option value="FarmÃ¡cia (Consumo Interno)">FarmÃ¡cia (Consumo Interno)</option>
-                        {SECTORS.map(sector => (
-                          <option key={sector} value={sector}>{sector}</option>
-                        ))}
-                      </select>
-                    )}
-                  </div>
-
-                  {(exitReason === 'vencido' || exitReason === 'perda') && (
-                    <motion.div 
-                      initial={{ opacity: 0, y: -10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      className="space-y-2"
-                    >
-                      <label className="block text-sm font-bold text-[#57534E]">Justificativa do {exitReason === 'vencido' ? 'Vencimento' : 'Descarte'}</label>
-                      <textarea 
-                        required
-                        placeholder={exitReason === 'vencido' ? "Explique por que o item venceu no estoque..." : "Explique o motivo da perda ou avaria..."}
-                        className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm min-h-[100px] resize-none"
-                        value={expiryReason}
-                        onChange={e => setExpiryReason(e.target.value)}
-                      />
-                    </motion.div>
-                  )}
-
-                  <div className="space-y-4">
-                    <label className="block text-sm font-bold text-[#57534E]">Itens para SaÃ­da</label>
-                    {basket.map((b, index) => {
-                      const item = items.find(i => i.id === b.item_id);
-                      return (
-                        <div key={index} className="flex items-center gap-4 bg-[#F5F5F4] p-4 rounded-2xl">
-                          <div className="flex-1">
-                            <p className="font-bold text-sm">{item?.name || 'Item nÃ£o encontrado'}</p>
-                            <p className="text-[10px] text-[#78716C]">Lote: {item?.batch_number || 'N/A'} | Estoque: {item?.quantity || 0}</p>
-                          </div>
-                          <div className="flex items-center gap-3">
-                            <button 
-                              type="button"
-                              onClick={() => {
-                                const newBasket = [...basket];
-                                newBasket[index].quantity = Math.max(1, newBasket[index].quantity - 1);
-                                setBasket(newBasket);
-                              }}
-                              className="w-8 h-8 rounded-lg bg-white flex items-center justify-center font-bold hover:bg-gray-100"
-                            >
-                              -
-                            </button>
-                            <input 
-                              type="number"
-                              min="1"
-                              max={item?.quantity || 999}
-                              value={b.quantity}
-                              onChange={e => {
-                                const val = Math.max(1, Math.min(item?.quantity || 999, parseInt(e.target.value) || 0));
-                                const newBasket = [...basket];
-                                newBasket[index].quantity = val;
-                                setBasket(newBasket);
-                              }}
-                              className="font-bold w-16 text-center bg-transparent border-none focus:ring-0 text-sm"
-                            />
-                            <button 
-                              type="button"
-                              onClick={() => {
-                                const newBasket = [...basket];
-                                newBasket[index].quantity = Math.min(item?.quantity || 999, newBasket[index].quantity + 1);
-                                setBasket(newBasket);
-                              }}
-                              className="w-8 h-8 rounded-lg bg-white flex items-center justify-center font-bold hover:bg-gray-100"
-                            >
-                              +
-                            </button>
-                            <button 
-                              type="button"
-                              onClick={() => setBasket(basket.filter((_, i) => i !== index))}
-                              className="text-rose-500 hover:text-rose-700 ml-2"
-                            >
-                              <X size={18} />
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-
-                    <div className="space-y-4">
-                      <div className="flex flex-col gap-4">
-                        <div className="flex-1">
-                          <label className="block text-[10px] font-bold text-[#A8A29E] uppercase mb-1 ml-1">1. Escolha o Item</label>
-                          <div className="relative">
-                            <div className="relative">
-                              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[#A8A29E]" size={16} />
-                              <input 
-                                autoFocus
-                                type="text" 
-                                placeholder="Pesquisar item..."
-                                className="w-full pl-10 pr-4 py-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#1C1917]/10 font-bold"
-                                value={modalSearchTerm}
-                                onChange={(e) => {
-                                  setModalSearchTerm(e.target.value);
-                                  if (selectedItemName) setSelectedItemName('');
-                                }}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter' && !modalSearchTerm && basket.length > 0) {
-                                    e.preventDefault();
-                                    // Submit the form
-                                    const form = e.currentTarget.closest('form');
-                                    if (form) form.requestSubmit();
-                                  }
-                                }}
-                              />
-                            </div>
-
-                            {modalSearchTerm.length >= 2 && !selectedItemName && (
-                              <motion.div 
-                                initial={{ opacity: 0, y: -5 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                className="absolute left-0 right-0 top-full mt-1 bg-white border border-[#E7E5E4] rounded-xl shadow-lg z-50 max-h-48 overflow-y-auto"
-                              >
-                                {(items.filter(i => i.quantity > 0) as Item[])
-                                  .filter(item => {
-                                    const combined = `${item.name} ${item.batch_number || ''}`;
-                                    return normalizeString(combined).includes(normalizeString(modalSearchTerm));
-                                  })
-                                  .sort((a, b) => a.name.localeCompare(b.name))
-                                  .slice(0, 10)
-                                  .map(item => (
-                                    <button
-                                      key={item.id}
-                                      type="button"
-                                      onClick={() => {
-                                        if (basket.some(b => b.item_id === item.id)) {
-                                          showToast('Este lote jÃ¡ estÃ¡ na lista de saÃ­da.', 'error');
-                                          return;
-                                        }
-                                        setBasket([...basket, { item_id: item.id, quantity: 1 }]);
-                                        setModalSearchTerm('');
-                                        setSelectedItemName('');
-                                      }}
-                                      className="w-full px-4 py-3 text-left hover:bg-[#F5F5F4] transition-all border-b border-[#F5F5F4] last:border-none flex justify-between items-center"
-                                    >
-                                      <div>
-                                        <p className="font-bold text-sm text-[#1C1917]">{item.name}</p>
-                                        <p className="text-[10px] text-[#78716C] font-mono">Lote: {item.batch_number || '---'}</p>
-                                      </div>
-                                      <div className="flex flex-col items-end">
-                                        <span className="text-[10px] font-black text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded uppercase">
-                                          {item.quantity} un.
-                                        </span>
-                                        {item.expiry_date && (
-                                          <span className={`text-[8px] font-bold ${isNearExpiry(item) ? 'text-rose-600' : 'text-[#A8A29E]'}`}>
-                                            {item.expiry_date === 'Indeterminada' ? 'Indeterminada' : new Date(item.expiry_date).toLocaleDateString('pt-BR')}
-                                          </span>
-                                        )}
-                                      </div>
-                                    </button>
-                                  ))
-                                }
-                              </motion.div>
-                            )}
-                          </div>
-                        </div>
-
-                        {selectedItemName && (
-                          <div className="flex-1">
-                            <label className="block text-[10px] font-bold text-[#A8A29E] uppercase mb-1 ml-1">2. Escolha o Lote</label>
-                            <select 
-                              className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl text-sm focus:ring-2 focus:ring-[#1C1917]/10"
-                              value={selectedItemId}
-                              onChange={e => {
-                                const id = e.target.value;
-                                if (!id) return;
-                                if (basket.some(b => b.item_id === id)) {
-                                  alert('Este lote jÃ¡ estÃ¡ na lista de saÃ­da.');
-                                  return;
-                                }
-                                setBasket([...basket, { item_id: id, quantity: 1 }]);
-                                setSelectedItemId('');
-                                setSelectedItemName('');
-                                setModalSearchTerm('');
-                              }}
-                            >
-                              <option value="">Selecione o lote...</option>
-                              {items
-                                .filter(i => i.name === selectedItemName && i.quantity > 0 && !basket.some(b => b.item_id === i.id))
-                                .map(item => (
-                                  <option key={item.id} value={item.id}>
-                                    Lote: {item.batch_number || 'S/N'} ({item.quantity} un.) {item.expiry_date ? `- Venc: ${new Date(item.expiry_date).toLocaleDateString('pt-BR')}` : ''}
-                                  </option>
-                                ))
-                              }
-                            </select>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-              
-              <div className="flex gap-3 pt-4">
-                <button 
-                  type="button"
-                  onClick={() => {
-                    setShowTransactionModal({ show: false, type: 'entry' });
-                    setLetterheadImage(null);
-                  }}
-                  className="flex-1 px-4 py-3 rounded-xl font-bold text-[#78716C] hover:bg-[#F5F5F4] transition-all"
-                >
-                  Cancelar
-                </button>
-                <button 
-                  type="submit"
-                  disabled={showTransactionModal.type === 'exit' && basket.length === 0}
-                  className={`flex-1 px-4 py-3 text-white rounded-xl font-bold transition-all disabled:opacity-50 ${
-                    showTransactionModal.type === 'entry' 
-                      ? 'bg-emerald-600 hover:bg-emerald-700' 
-                      : exitReason === 'vencido'
-                      ? 'bg-rose-700 hover:bg-rose-800'
-                      : exitReason === 'perda'
-                      ? 'bg-amber-600 hover:bg-amber-700'
-                      : exitReason === 'doacao'
-                      ? 'bg-indigo-600 hover:bg-indigo-700'
-                      : 'bg-rose-600 hover:bg-rose-700'
-                  }`}
-                >
-                  {showTransactionModal.type === 'entry' 
-                    ? 'Confirmar Entrada' 
-                    : exitReason === 'vencido'
-                    ? `Confirmar Descarte (Vencido) ${basket.length > 0 ? `(${basket.length})` : ''}`
-                    : exitReason === 'perda'
-                    ? `Confirmar Baixa (Perda) ${basket.length > 0 ? `(${basket.length})` : ''}`
-                    : exitReason === 'doacao'
-                    ? `Confirmar DoaÃ§Ã£o ${basket.length > 0 ? `(${basket.length})` : ''}`
-                    : `Confirmar SaÃ­da ${basket.length > 0 ? `(${basket.length})` : ''}`}
-                </button>
-              </div>
-            </form>
-          </motion.div>
-        </div>
-      )}
-
-      {showDeleteModal.show && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[60] flex items-center justify-center p-6">
-          <motion.div 
-            initial={{ scale: 0.9, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            className="bg-white w-full max-w-md rounded-3xl p-8 shadow-2xl"
-          >
-            <h3 className="text-2xl font-bold mb-4 text-rose-600 flex items-center gap-2">
-              <Trash2 size={24} /> Excluir MovimentaÃ§Ã£o
-            </h3>
-            <p className="text-[#78716C] mb-6">
-              Esta aÃ§Ã£o marcarÃ¡ a movimentaÃ§Ã£o como excluÃ­da (ex: teste). VocÃª poderÃ¡ recuperÃ¡-la no histÃ³rico de excluÃ­dos.
-            </p>
-            
-            <div className="space-y-4">
-              <label className="block text-sm font-bold text-[#57534E]">Justificativa / Motivo</label>
-              <input 
-                type="text"
-                className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-rose-500/20"
-                placeholder="Ex: LanÃ§amento de teste"
-                value={deletionReason}
-                onChange={e => setDeletionReason(e.target.value)}
-                autoFocus
-              />
-            </div>
-
-            <div className="flex gap-3 mt-8">
-              <button 
-                onClick={() => setShowDeleteModal({ show: false })}
-                className="flex-1 px-4 py-3 rounded-xl font-bold text-[#78716C] hover:bg-[#F5F5F4] transition-all"
-              >
-                Cancelar
-              </button>
-              <button 
-                onClick={() => handleDeleteTransaction(showDeleteModal.transactionId!, deletionReason)}
-                className="flex-1 px-4 py-3 bg-rose-600 text-white rounded-xl font-bold hover:bg-rose-700 transition-all"
-              >
-                Confirmar ExclusÃ£o
-              </button>
-            </div>
-          </motion.div>
-        </div>
-      )}
-
-      {showDetailModal.show && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-6">
-          <motion.div 
-            initial={{ scale: 0.9, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            className="bg-white w-[95vw] lg:w-full lg:max-w-2xl rounded-3xl p-4 sm:p-8 shadow-2xl max-h-[85vh] overflow-y-auto"
-          >
-            <div className="flex justify-between items-center mb-6">
-              <div>
-                <h3 className="text-xl sm:text-2xl font-bold text-slate-900">
-                  {showDetailModal.type === 'low_stock' 
-                    ? 'Itens com Estoque Baixo' 
-                    : showDetailModal.type === 'expiry'
-                    ? 'Itens PrÃ³ximos ao Vencimento'
-                    : 'AtenÃ§Ã£o NecessÃ¡ria â€” Central de Alertas'}
-                </h3>
-                <p className="text-xs text-slate-500 font-medium mt-1">
-                  Listagem de insumos que requerem providÃªncia imediata
-                </p>
-              </div>
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => {
-                    if (showDetailModal.type === 'low_stock') {
-                      handleExportCriticalReportPDF('low_stock');
-                    } else if (showDetailModal.type === 'expiry') {
-                      handleExportCriticalReportPDF('expiry');
-                    } else {
-                      setShowCriticalReportModal(true);
-                    }
-                  }}
-                  className="px-3.5 py-2 bg-gradient-to-r from-amber-600 via-rose-600 to-rose-700 hover:from-amber-700 hover:to-rose-800 text-white font-extrabold text-xs rounded-2xl shadow-md transition-all flex items-center gap-2"
-                  title={showDetailModal.type === 'expiry' ? 'Imprimir RelatÃ³rio de Validade' : showDetailModal.type === 'low_stock' ? 'Imprimir RelatÃ³rio de Estoque Baixo' : 'Escolher e Imprimir RelatÃ³rio de CrÃ­ticos'}
-                >
-                  <Printer size={16} /> Imprimir RelatÃ³rio {showDetailModal.type === 'expiry' ? '(Validade)' : showDetailModal.type === 'low_stock' ? '(Estoque)' : ''}
-                </button>
-                <button 
-                  onClick={() => setShowDetailModal({ show: false, type: 'low_stock', items: [] })}
-                  className="p-2 hover:bg-slate-100 rounded-full transition-all text-slate-500"
-                >
-                  <X size={24} />
-                </button>
-              </div>
-            </div>
-
-            <div className="space-y-3">
-              {showDetailModal.items.map((item, idx) => {
-                const isGroup = 'total_quantity' in item;
-                const quantity = isGroup ? (item as ItemGroup).total_quantity : (item as Item).quantity;
-                const minQuantity = isGroup ? (item as ItemGroup).min_quantity : (item as Item).min_quantity;
-                const name = item.name;
-                const id = isGroup ? `group-${idx}` : (item as Item).id;
-
-                const itemIsExpired = !isGroup && isExpired(item as Item);
-                const itemIsNearExpiry = !isGroup && isNearExpiry(item as Item);
-
-                let cardBg = 'bg-amber-50 border-amber-200';
-                let tagLabel = 'Estoque Baixo';
-                let tagColor = 'bg-amber-100 text-amber-900 font-bold';
-                let actionType: 'entry' | 'exit' = 'entry';
-                let actionLabel = 'Repor';
-                let buttonStyle = 'bg-amber-600 hover:bg-amber-700';
-
-                if (itemIsExpired) {
-                  cardBg = 'bg-rose-50 border-rose-200';
-                  tagLabel = 'VENCIDO';
-                  tagColor = 'bg-rose-200 text-rose-800 font-black';
-                  actionType = 'exit';
-                  actionLabel = 'Retirar (DesperdÃ­cio)';
-                  buttonStyle = 'bg-rose-600 hover:bg-rose-700';
-                } else if (itemIsNearExpiry) {
-                  cardBg = 'bg-sky-50 border-sky-200';
-                  tagLabel = 'PRÃ“X. VENCER';
-                  tagColor = 'bg-sky-200 text-sky-900 font-black';
-                  actionType = 'exit';
-                  actionLabel = 'Retirar';
-                  buttonStyle = 'bg-sky-700 hover:bg-sky-800';
-                }
-
-                return (
-                  <div 
-                    key={`modal-${id}`} 
-                    className={`flex items-center justify-between p-4 sm:p-5 rounded-2xl border ${cardBg}`}
-                  >
-                    <div className="flex items-center gap-3 sm:gap-4 min-w-0 flex-1">
-                      <div className={`w-10 h-10 sm:w-12 sm:h-12 rounded-2xl flex items-center justify-center font-extrabold text-sm shrink-0 border ${itemIsExpired ? 'bg-rose-100 text-rose-800 border-rose-200' : itemIsNearExpiry ? 'bg-sky-100 text-sky-900 border-sky-200' : 'bg-amber-100 text-amber-900 border-amber-200'}`}>
-                        {!isGroup && (itemIsExpired || itemIsNearExpiry) ? <Calendar size={20} /> : quantity}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <p className="font-extrabold text-sm sm:text-base text-slate-900 truncate">{name}</p>
-                          <span className={`text-[9px] px-2 py-0.5 rounded-full uppercase ${tagColor}`}>
-                            {tagLabel}
-                          </span>
-                        </div>
-                        <p className="text-xs font-semibold mt-0.5 text-slate-700">
-                          {!isGroup && itemIsExpired ? (
-                            <span className="text-rose-700 font-bold">Expirou em: {new Date((item as Item).expiry_date!).toLocaleDateString('pt-BR')} ({quantity} un)</span>
-                          ) : !isGroup && itemIsNearExpiry ? (
-                            <span className="text-sky-800 font-bold">Vence em: {new Date((item as Item).expiry_date!).toLocaleDateString('pt-BR')} ({quantity} un)</span>
-                          ) : (
-                            <span>Estoque total: {quantity} un (MÃ­nimo: {minQuantity} un)</span>
-                          )}
-                        </p>
-                        {!isGroup && <p className="text-[11px] text-slate-500 mt-1">Lote: {(item as Item).batch_number || 'N/A'} | Fornecedor: {(item as Item).supplier || 'N/A'}</p>}
-                        {isGroup && <p className="text-[11px] text-slate-500 mt-1">{(item as ItemGroup).batches.length} lotes ativos</p>}
-                      </div>
-                    </div>
-                    <button 
-                      onClick={() => {
-                        setShowDetailModal({ show: false, type: 'low_stock', items: [] });
-                        const targetItem = isGroup ? (item as ItemGroup).batches[0] : (item as Item);
-                        setShowTransactionModal({ show: true, type: actionType, item: targetItem });
-                      }}
-                      className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold text-white transition-all shadow-sm shrink-0 ml-3 ${buttonStyle}`}
-                    >
-                      {actionLabel}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          </motion.div>
-        </div>
-      )}
-      {showSettingsModal && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[70] flex items-center justify-center p-6">
-          <motion.div 
-            initial={{ scale: 0.9, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            className="bg-white w-full max-w-lg rounded-[32px] p-8 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
-          >
-            <div className="flex justify-between items-center mb-6">
-              <div>
-                <h3 className="text-2xl font-black text-slate-900">ConfiguraÃ§Ãµes do Sistema</h3>
-                <p className="text-xs font-bold text-slate-500 mt-0.5">Gerenciamento de logo e ferramentas administrativas</p>
-              </div>
-              <button 
-                onClick={() => setShowSettingsModal(false)}
-                className="p-2 hover:bg-slate-100 rounded-full transition-all text-slate-500 hover:text-slate-800"
-              >
-                <X size={24} />
-              </button>
-            </div>
-
-            {/* Navigation Tabs */}
-            <div className="flex gap-2 p-1.5 bg-slate-100/80 rounded-2xl mb-6">
-              <button
-                type="button"
-                onClick={() => setSettingsTab('logo')}
-                className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-extrabold transition-all flex items-center justify-center gap-2 ${
-                  settingsTab === 'logo'
-                    ? 'bg-white text-blue-700 shadow-sm'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <ImageIcon size={16} />
-                <span>Logo do Sistema</span>
-              </button>
-
-              {isAdmin && (
-                <button
-                  type="button"
-                  onClick={() => setSettingsTab('tools')}
-                  className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-extrabold transition-all flex items-center justify-center gap-2 ${
-                    settingsTab === 'tools'
-                      ? 'bg-white text-blue-700 shadow-sm'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  <Users size={16} />
-                  <span>Ferramentas Admin</span>
-                </button>
-              )}
-
-              <button
-                type="button"
-                onClick={() => setSettingsTab('info')}
-                className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-extrabold transition-all flex items-center justify-center gap-2 ${
-                  settingsTab === 'info'
-                    ? 'bg-white text-blue-700 shadow-sm'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <Info size={16} />
-                <span>Sobre</span>
-              </button>
-            </div>
-
-            <div className="space-y-6 overflow-y-auto pr-1">
-              {settingsTab === 'logo' && (
-                <div className="space-y-6">
-                  <div className="p-4 bg-blue-50/80 rounded-2xl border border-blue-100 text-blue-900">
-                    <h4 className="text-xs font-black uppercase tracking-wider text-blue-800 mb-1 flex items-center gap-2">
-                      <ImageIcon size={16} className="text-blue-600" />
-                      Gerenciamento Completo de Logotipos
-                    </h4>
-                    <p className="text-xs leading-relaxed text-blue-700 font-medium">
-                      Cadastre os logotipos oficiais da <strong>PoliclÃ­nica</strong>, do <strong>ConsÃ³rcio CPSMS</strong>, do <strong>Governo/SUS</strong> e do <strong>Sistema</strong>. Eles serÃ£o inseridos automaticamente em todos os documentos PDF, relatÃ³rios e recibos.
-                    </p>
-                  </div>
-
-                  {/* Live Document Header Preview */}
-                  <div className="p-4 bg-slate-900 text-white rounded-2xl space-y-3 shadow-md">
-                    <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                      <span className="text-[10px] font-black uppercase tracking-widest text-emerald-400 flex items-center gap-1.5">
-                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                        PrÃ©-VisualizaÃ§Ã£o do CabeÃ§alho dos Documentos
-                      </span>
-                      <span className="text-[9px] font-semibold text-slate-400">Modelo PDF A4</span>
-                    </div>
-
-                    <div className="bg-white p-4 rounded-xl border border-slate-700 text-slate-900 space-y-3 shadow-inner">
-                      {/* Top Row: ALL 3 Logos as Homogeneous Rectangles */}
-                      <div className="flex items-center justify-between gap-3">
-                        {/* 1. Logo Almoxarifado (Left - Rectangular) */}
-                        <div className="flex-1 h-12 bg-emerald-50/50 border border-emerald-100 rounded-xl p-1.5 flex items-center justify-center overflow-hidden">
-                          {appRectangularLogo ? (
-                            <img src={appRectangularLogo} alt="Logo Almoxarifado" className="max-h-full max-w-full object-contain" />
-                          ) : appLogo ? (
-                            <img src={appLogo} alt="Logo Sistema" className="max-h-full max-w-full object-contain" />
-                          ) : (
-                            <div className="text-[9px] font-black text-emerald-800 uppercase tracking-tight text-center">ALMOXARIFADO</div>
-                          )}
-                        </div>
-
-                        {/* 2. Logo PoliclÃ­nica (Center - Rectangular) */}
-                        <div className="flex-1 h-12 bg-sky-50/50 border border-sky-100 rounded-xl p-1.5 flex items-center justify-center overflow-hidden">
-                          {policlinicaLogo ? (
-                            <img src={policlinicaLogo} alt="Logo PoliclÃ­nica" className="max-h-full max-w-full object-contain" />
-                          ) : (
-                            <div className="text-[9px] font-black text-sky-800 uppercase tracking-tight text-center">POLICLÃNICA DE SOBRAL</div>
-                          )}
-                        </div>
-
-                        {/* 3. Logo ConsÃ³rcio CPSMS (Right - Rectangular) */}
-                        <div className="flex-[1.15] h-14 bg-orange-50/50 border border-orange-100 rounded-xl p-1 flex items-center justify-center overflow-hidden">
-                          {consorcioLogo ? (
-                            <img src={consorcioLogo} alt="Logo ConsÃ³rcio" className="max-h-full max-w-full object-contain scale-105" />
-                          ) : (
-                            <div className="text-[9px] font-black text-orange-800 uppercase tracking-tight text-center">CONSÃ“RCIO CPSMS</div>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Divider Line */}
-                      <div className="border-t border-slate-200" />
-
-                      {/* Title & Emission Date below logos */}
-                      <div className="text-center space-y-0.5">
-                        <h5 className="font-black text-xs text-slate-900 uppercase tracking-tight">
-                          RECIBO DE ENTREGA DE MATERIAL
-                        </h5>
-                        <p className="text-[9px] font-semibold text-slate-500">
-                          Data de EmissÃ£o: {format(new Date(), 'dd/MM/yyyy HH:mm')}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Grid de 4 Logotipos */}
-                  <div className="grid grid-cols-1 gap-5">
-                    {/* 1. Logo da PoliclÃ­nica */}
-                    <div className="p-5 bg-white rounded-2xl border border-sky-200 shadow-xs space-y-3">
-                      <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
-                        <div>
-                          <h4 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
-                            <span className="w-2.5 h-2.5 rounded-full bg-sky-600 inline-block"></span>
-                            Logo Oficial da PoliclÃ­nica
-                          </h4>
-                          <p className="text-[11px] text-slate-500 font-medium mt-0.5">
-                            Substitui a marca da PoliclÃ­nica no canto superior do cabeÃ§alho dos documentos.
-                          </p>
-                        </div>
-                        {policlinicaLogo && (
-                          <button 
-                            onClick={handleRemovePoliclinicaLogo}
-                            className="text-xs font-extrabold text-rose-600 hover:text-rose-700 hover:underline flex items-center gap-1"
-                          >
-                            <Trash2 size={13} /> Remover
-                          </button>
-                        )}
-                      </div>
-
-                      <label className="block w-full cursor-pointer group">
-                        <div className={`overflow-hidden rounded-2xl border-2 border-dashed transition-all flex flex-col items-center justify-center gap-2 p-4 ${policlinicaLogo ? 'border-sky-300 bg-sky-50/20 hover:bg-sky-50/40' : 'border-slate-300 hover:border-sky-500 hover:bg-slate-50'}`}>
-                          {policlinicaLogo ? (
-                            <div className="flex flex-col items-center gap-2">
-                              <img src={policlinicaLogo} alt="Logo PoliclÃ­nica" className="max-h-16 object-contain" />
-                              <span className="text-xs font-bold text-sky-700 bg-sky-100/80 px-3 py-1 rounded-full flex items-center gap-1.5">
-                                <Upload size={13} /> Alterar Logo da PoliclÃ­nica
-                              </span>
-                            </div>
-                          ) : (
-                            <div className="flex items-center gap-3">
-                              <div className="p-2.5 bg-sky-50 text-sky-600 rounded-full group-hover:scale-110 transition-transform">
-                                <Upload size={18} />
-                              </div>
-                              <div>
-                                <p className="text-xs font-black text-slate-800">Clique para enviar a logo da PoliclÃ­nica</p>
-                                <p className="text-[10px] font-bold text-slate-400">PNG, JPG ou SVG (MÃ¡x. 2MB)</p>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                        <input type="file" accept="image/*" className="hidden" onChange={handlePoliclinicaLogoUpload} />
-                      </label>
-                    </div>
-
-                    {/* 2. Logo do ConsÃ³rcio CPSMS */}
-                    <div className="p-5 bg-white rounded-2xl border border-orange-200 shadow-xs space-y-3">
-                      <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
-                        <div>
-                          <h4 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
-                            <span className="w-2.5 h-2.5 rounded-full bg-orange-500 inline-block"></span>
-                            Logo Oficial do ConsÃ³rcio CPSMS
-                          </h4>
-                          <p className="text-[11px] text-slate-500 font-medium mt-0.5">
-                            Substitui a marca do ConsÃ³rcio no canto superior do cabeÃ§alho dos documentos.
-                          </p>
-                        </div>
-                        {consorcioLogo && (
-                          <button 
-                            onClick={handleRemoveConsorcioLogo}
-                            className="text-xs font-extrabold text-rose-600 hover:text-rose-700 hover:underline flex items-center gap-1"
-                          >
-                            <Trash2 size={13} /> Remover
-                          </button>
-                        )}
-                      </div>
-
-                      <label className="block w-full cursor-pointer group">
-                        <div className={`overflow-hidden rounded-2xl border-2 border-dashed transition-all flex flex-col items-center justify-center gap-2 p-4 ${consorcioLogo ? 'border-orange-300 bg-orange-50/20 hover:bg-orange-50/40' : 'border-slate-300 hover:border-orange-500 hover:bg-slate-50'}`}>
-                          {consorcioLogo ? (
-                            <div className="flex flex-col items-center gap-2">
-                              <img src={consorcioLogo} alt="Logo ConsÃ³rcio" className="max-h-16 object-contain" />
-                              <span className="text-xs font-bold text-orange-700 bg-orange-100/80 px-3 py-1 rounded-full flex items-center gap-1.5">
-                                <Upload size={13} /> Alterar Logo do ConsÃ³rcio
-                              </span>
-                            </div>
-                          ) : (
-                            <div className="flex items-center gap-3">
-                              <div className="p-2.5 bg-orange-50 text-orange-600 rounded-full group-hover:scale-110 transition-transform">
-                                <Upload size={18} />
-                              </div>
-                              <div>
-                                <p className="text-xs font-black text-slate-800">Clique para enviar a logo do ConsÃ³rcio CPSMS</p>
-                                <p className="text-[10px] font-bold text-slate-400">PNG, JPG ou SVG (MÃ¡x. 2MB)</p>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                        <input type="file" accept="image/*" className="hidden" onChange={handleConsorcioLogoUpload} />
-                      </label>
-                    </div>
-
-                    {/* 3. Logo Estado / SUS / Governo (Login e Canto Esquerdo) */}
-                    <div className="p-5 bg-white rounded-2xl border border-emerald-200 shadow-xs space-y-3">
-                      <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
-                        <div>
-                          <h4 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
-                            <span className="w-2.5 h-2.5 rounded-full bg-emerald-600 inline-block"></span>
-                            Logo Estado / SUS / Governo (Login e Canto Esquerdo)
-                          </h4>
-                          <p className="text-[11px] text-slate-500 font-medium mt-0.5">
-                            Exibida no canto superior esquerdo dos relatÃ³rios e na tela de login.
-                          </p>
-                        </div>
-                        {appRectangularLogo && (
-                          <button 
-                            onClick={handleRemoveRectangularLogo}
-                            className="text-xs font-extrabold text-rose-600 hover:text-rose-700 hover:underline flex items-center gap-1"
-                          >
-                            <Trash2 size={13} /> Remover
-                          </button>
-                        )}
-                      </div>
-
-                      <label className="block w-full cursor-pointer group">
-                        <div className={`overflow-hidden rounded-2xl border-2 border-dashed transition-all flex flex-col items-center justify-center gap-2 p-4 ${appRectangularLogo ? 'border-emerald-300 bg-emerald-50/20 hover:bg-emerald-50/40' : 'border-slate-300 hover:border-emerald-500 hover:bg-slate-50'}`}>
-                          {appRectangularLogo ? (
-                            <div className="flex flex-col items-center gap-2">
-                              <img src={appRectangularLogo} alt="Logo Estado/SUS" className="max-h-16 object-contain" />
-                              <span className="text-xs font-bold text-emerald-700 bg-emerald-100/80 px-3 py-1 rounded-full flex items-center gap-1.5">
-                                <Upload size={13} /> Alterar Logo Estado/SUS
-                              </span>
-                            </div>
-                          ) : (
-                            <div className="flex items-center gap-3">
-                              <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-full group-hover:scale-110 transition-transform">
-                                <Upload size={18} />
-                              </div>
-                              <div>
-                                <p className="text-xs font-black text-slate-800">Clique para enviar a logo retangular (Estado/SUS)</p>
-                                <p className="text-[10px] font-bold text-slate-400">PNG, JPG ou SVG (MÃ¡x. 2MB)</p>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                        <input type="file" accept="image/*" className="hidden" onChange={handleRectangularLogoUpload} />
-                      </label>
-                    </div>
-
-                    {/* 4. Logo Quadrada (Menu do Sistema) */}
-                    <div className="p-5 bg-white rounded-2xl border border-blue-200 shadow-xs space-y-3">
-                      <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
-                        <div>
-                          <h4 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
-                            <span className="w-2.5 h-2.5 rounded-full bg-blue-600 inline-block"></span>
-                            Logo Quadrada (Menu do Sistema)
-                          </h4>
-                          <p className="text-[11px] text-slate-500 font-medium mt-0.5">
-                            Exibida no menu lateral e topo da navegaÃ§Ã£o do almoxarifado.
-                          </p>
-                        </div>
-                        {appLogo && (
-                          <button 
-                            onClick={handleRemoveLogo}
-                            className="text-xs font-extrabold text-rose-600 hover:text-rose-700 hover:underline flex items-center gap-1"
-                          >
-                            <Trash2 size={13} /> Remover
-                          </button>
-                        )}
-                      </div>
-
-                      <label className="block w-full cursor-pointer group">
-                        <div className={`overflow-hidden rounded-2xl border-2 border-dashed transition-all flex flex-col items-center justify-center gap-2 p-4 ${appLogo ? 'border-blue-300 bg-blue-50/20 hover:bg-blue-50/40' : 'border-slate-300 hover:border-blue-500 hover:bg-slate-50'}`}>
-                          {appLogo ? (
-                            <div className="flex flex-col items-center gap-2">
-                              <img src={appLogo} alt="Logo Quadrada Menu" className="max-h-16 object-contain" />
-                              <span className="text-xs font-bold text-blue-700 bg-blue-100/80 px-3 py-1 rounded-full flex items-center gap-1.5">
-                                <Upload size={13} /> Alterar Logo Quadrada
-                              </span>
-                            </div>
-                          ) : (
-                            <div className="flex items-center gap-3">
-                              <div className="p-2.5 bg-blue-50 text-blue-600 rounded-full group-hover:scale-110 transition-transform">
-                                <Upload size={18} />
-                              </div>
-                              <div>
-                                <p className="text-xs font-black text-slate-800">Clique para enviar a logo quadrada do sistema</p>
-                                <p className="text-[10px] font-bold text-slate-400">Formato 1:1 (PNG, JPG ou SVG - MÃ¡x. 2MB)</p>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                        <input type="file" accept="image/*" className="hidden" onChange={handleLogoUpload} />
-                      </label>
-                    </div>
-
-                    {/* 5. Papel Timbrado Completo (Imagem A4) */}
-                    <div className="p-5 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-3">
-                      <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
-                        <div>
-                          <h4 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
-                            <span className="w-2.5 h-2.5 rounded-full bg-indigo-600 inline-block"></span>
-                            Papel Timbrado Completo (Imagem de Fundo A4)
-                          </h4>
-                          <p className="text-[11px] text-slate-500 font-medium mt-0.5">
-                            Caso sua instituiÃ§Ã£o jÃ¡ possua um papel timbrado em imagem Ãºnica para o fundo do PDF.
-                          </p>
-                        </div>
-                        {letterheadImage && (
-                          <button 
-                            onClick={handleRemoveLetterhead}
-                            className="text-xs font-extrabold text-rose-600 hover:text-rose-700 hover:underline flex items-center gap-1"
-                          >
-                            <Trash2 size={13} /> Remover Timbrado
-                          </button>
-                        )}
-                      </div>
-
-                      <label className="block w-full cursor-pointer group">
-                        <div className={`overflow-hidden rounded-2xl border-2 border-dashed transition-all flex flex-col items-center justify-center gap-2 p-4 ${letterheadImage ? 'border-indigo-300 bg-indigo-50/20 hover:bg-indigo-50/40' : 'border-slate-300 hover:border-indigo-500 hover:bg-slate-50'}`}>
-                          {letterheadImage ? (
-                            <div className="flex flex-col items-center gap-2">
-                              <img src={letterheadImage} alt="Papel Timbrado A4" className="max-h-20 object-contain rounded-md border border-slate-200 shadow-xs" />
-                              <span className="text-xs font-bold text-indigo-700 bg-indigo-100/80 px-3 py-1 rounded-full flex items-center gap-1.5">
-                                <Upload size={13} /> Alterar imagem de Papel Timbrado
-                              </span>
-                            </div>
-                          ) : (
-                            <div className="flex items-center gap-3">
-                              <div className="p-2.5 bg-indigo-50 text-indigo-600 rounded-full group-hover:scale-110 transition-transform">
-                                <Upload size={18} />
-                              </div>
-                              <div>
-                                <p className="text-xs font-black text-slate-800">Clique para enviar imagem de papel timbrado completa</p>
-                                <p className="text-[10px] font-bold text-slate-400">PNG ou JPG (MÃ¡x. 5MB)</p>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                        <input 
-                          type="file" 
-                          accept="image/*" 
-                          className="hidden" 
-                          onChange={(e) => {
-                            const file = e.target.files?.[0];
-                            if (file) handleLetterheadUpload(file);
-                          }} 
-                        />
-                      </label>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {settingsTab === 'tools' && isAdmin && (
-                <div className="p-6 bg-blue-50/80 rounded-2xl border border-blue-100">
-                  <div className="flex items-center gap-3 mb-3 text-blue-700">
-                    <Users size={22} />
-                    <h4 className="font-extrabold text-base">Ferramentas de Dados do Admin</h4>
-                  </div>
-                  <p className="text-xs text-blue-800 mb-5 leading-relaxed font-medium">
-                    Corrija inconsistÃªncias unificando fornecedores cadastrados com nomes diferentes ou mesclando itens duplicados no estoque.
-                  </p>
-                  <div className="grid grid-cols-1 gap-3">
-                    <button 
-                      onClick={() => {
-                        setShowSettingsModal(false);
-                        setShowMergeSuppliers(true);
-                      }}
-                      className="w-full py-3.5 bg-blue-700 text-white rounded-xl font-extrabold text-xs uppercase tracking-wider hover:bg-blue-800 transition-all flex items-center justify-center gap-2 shadow-md shadow-blue-700/20"
-                    >
-                      <RotateCcw size={16} /> Mesclar Fornecedores
-                    </button>
-                    <button 
-                      onClick={() => {
-                        setShowSettingsModal(false);
-                        setShowMergeItems(true);
-                      }}
-                      className="w-full py-3.5 bg-emerald-700 text-white rounded-xl font-extrabold text-xs uppercase tracking-wider hover:bg-emerald-800 transition-all flex items-center justify-center gap-2 shadow-md shadow-emerald-700/20"
-                    >
-                      <Package size={16} /> Mesclar Itens Duplicados
-                    </button>
-                    <button 
-                      onClick={() => {
-                        setShowSettingsModal(false);
-                        setCategoryModalMaterial('');
-                        setCategoryModalNewCategory('');
-                        setCustomModalCategory('');
-                        setShowChangeCategoryModal(true);
-                      }}
-                      className="w-full py-3.5 bg-indigo-700 text-white rounded-xl font-extrabold text-xs uppercase tracking-wider hover:bg-indigo-800 transition-all flex items-center justify-center gap-2 shadow-md shadow-indigo-700/20"
-                    >
-                      <Tag size={16} /> Alterar Categoria de Material
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {settingsTab === 'info' && (
-                <div className="p-6 bg-slate-50 rounded-2xl border border-slate-200">
-                  <h4 className="font-extrabold text-slate-900 mb-3 text-sm">InformaÃ§Ãµes do Sistema</h4>
-                  <div className="space-y-2.5 text-xs text-slate-600 font-medium">
-                    <div className="flex justify-between items-center pb-2 border-b border-slate-200">
-                      <span>VersÃ£o</span>
-                      <span className="font-mono font-bold text-slate-900 bg-slate-200/80 px-2 py-0.5 rounded">1.2.0</span>
-                    </div>
-                    <div className="flex justify-between items-center pb-2 border-b border-slate-200">
-                      <span>Total de Itens em Estoque</span>
-                      <span className="font-extrabold text-slate-900">{items.length}</span>
-                    </div>
-                    <div className="pt-2">
-                      <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">Suporte e Desenvolvimento</p>
-                      <p className="font-extrabold text-slate-900">gerlianemagalhaes79@gmail.com</p>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          </motion.div>
-        </div>
-      )}
-      {showMergeSuppliers && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[80] flex items-center justify-center p-6">
-          <motion.div 
-            initial={{ scale: 0.9, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            className="bg-white w-full max-w-md rounded-[32px] p-8 shadow-2xl"
-          >
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-2xl font-black text-[#1C1917]">Mesclar Fornecedores</h3>
-              <button 
-                onClick={() => setShowMergeSuppliers(false)}
-                className="p-2 hover:bg-[#F5F5F4] rounded-full transition-all"
-              >
-                <X size={24} />
-              </button>
-            </div>
-
-            <div className="space-y-6">
-              <div className="p-4 bg-blue-50 rounded-2xl border border-blue-100 mb-4">
-                <p className="text-xs text-blue-700 font-medium">
-                  Esta aÃ§Ã£o irÃ¡ substituir o nome do fornecedor em todos os itens e transaÃ§Ãµes do histÃ³rico.
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1.5 ml-1">Fornecedor de Origem (SerÃ¡ substituÃ­do)</label>
-                <select 
-                  className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
-                  value={sourceSupplier}
-                  onChange={e => setSourceSupplier(e.target.value)}
-                >
-                  <option value="">Selecione o nome incorreto...</option>
-                  {uniqueSuppliers.map(s => (
-                    <option key={`source-${s}`} value={s}>{s}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="flex justify-center">
-                <div className="bg-[#F5F5F4] p-2 rounded-full">
-                  <ArrowDownLeft className="text-[#A8A29E] rotate-45" size={20} />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1.5 ml-1">Fornecedor de Destino (Nome Correto)</label>
-                <select 
-                  className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
-                  value={targetSupplier}
-                  onChange={e => setTargetSupplier(e.target.value)}
-                >
-                  <option value="">Selecione o nome correto...</option>
-                  {uniqueSuppliers.map(s => (
-                    <option key={`target-${s}`} value={s}>{s}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="pt-4 flex gap-3">
-                <button 
-                  onClick={() => setShowMergeSuppliers(false)}
-                  className="flex-1 py-3 bg-[#F5F5F4] text-[#57534E] rounded-xl font-bold hover:bg-[#E7E5E4] transition-all"
-                >
-                  Cancelar
-                </button>
-                <button 
-                  onClick={handleMergeSuppliers}
-                  disabled={isMerging || !sourceSupplier || !targetSupplier || sourceSupplier === targetSupplier}
-                  className={`flex-1 py-3 bg-blue-600 text-white rounded-xl font-bold transition-all flex items-center justify-center gap-2 ${isMerging || !sourceSupplier || !targetSupplier || sourceSupplier === targetSupplier ? 'opacity-50 cursor-not-allowed' : 'hover:bg-blue-700'}`}
-                >
-                  {isMerging ? (
-                    <>
-                      <RotateCcw className="animate-spin" size={18} /> Processando...
-                    </>
-                  ) : (
-                    <>
-                      <CheckCircle size={18} /> Confirmar Mesclagem
-                    </>
-                  )}
-                </button>
-              </div>
-            </div>
-          </motion.div>
-        </div>
-      )}
-
-      {showMergeItems && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[80] flex items-center justify-center p-6">
-          <motion.div 
-            initial={{ scale: 0.9, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            className="bg-white w-full max-w-md rounded-[32px] p-8 shadow-2xl"
-          >
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-2xl font-black text-[#1C1917]">Mesclar Itens Duplicados</h3>
-              <button 
-                onClick={() => setShowMergeItems(false)}
-                className="p-2 hover:bg-[#F5F5F4] rounded-full transition-all"
-              >
-                <X size={24} />
-              </button>
-            </div>
-
-            <div className="space-y-6">
-              <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100 mb-4">
-                <p className="text-xs text-emerald-700 font-medium">
-                  Esta aÃ§Ã£o irÃ¡ unificar dois itens com nomes diferentes. Todos os registros de estoque e histÃ³rico serÃ£o movidos para o nome correto.
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1.5 ml-1">Item de Origem (Nome Incorreto)</label>
-                <select 
-                  className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
-                  value={sourceItemName}
-                  onChange={e => setSourceItemName(e.target.value)}
-                >
-                  <option value="">Selecione o nome duplicado...</option>
-                  {uniqueItemNames.map(name => (
-                    <option key={`source-item-${name}`} value={name}>{name}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="flex justify-center">
-                <div className="bg-[#F5F5F4] p-2 rounded-full">
-                  <ArrowDownLeft className="text-[#A8A29E] rotate-45" size={20} />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1.5 ml-1">Item de Destino (Nome Correto)</label>
-                <select 
-                  className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
-                  value={targetItemName}
-                  onChange={e => setTargetItemName(e.target.value)}
-                >
-                  <option value="">Selecione o nome que deve permanecer...</option>
-                  {uniqueItemNames.map(name => (
-                    <option key={`target-item-${name}`} value={name}>{name}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="pt-4 flex gap-3">
-                <button 
-                  onClick={() => setShowMergeItems(false)}
-                  className="flex-1 py-3 bg-[#F5F5F4] text-[#57534E] rounded-xl font-bold hover:bg-[#E7E5E4] transition-all"
-                >
-                  Cancelar
-                </button>
-                <button 
-                  onClick={handleMergeItems}
-                  disabled={isMerging || !sourceItemName || !targetItemName || sourceItemName === targetItemName}
-                  className={`flex-1 py-3 bg-emerald-600 text-white rounded-xl font-bold transition-all flex items-center justify-center gap-2 ${isMerging || !sourceItemName || !targetItemName || sourceItemName === targetItemName ? 'opacity-50 cursor-not-allowed' : 'hover:bg-emerald-700'}`}
-                >
-                  {isMerging ? (
-                    <>
-                      <RotateCcw className="animate-spin" size={18} /> Processando...
-                    </>
-                  ) : (
-                    <>
-                      <CheckCircle size={18} /> Confirmar Mesclagem
-                    </>
-                  )}
-                </button>
-              </div>
-            </div>
-          </motion.div>
-        </div>
-      )}
-
-      {showChangeCategoryModal && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[80] flex items-center justify-center p-6">
-          <motion.div 
-            initial={{ scale: 0.9, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            className="bg-white w-full max-w-md rounded-[32px] p-8 shadow-2xl"
-          >
-            <div className="flex justify-between items-center mb-6">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2.5 bg-indigo-100 text-indigo-700 rounded-2xl">
-                  <Tag size={22} />
-                </div>
-                <div>
-                  <h3 className="text-xl font-black text-[#1C1917]">Alterar Categoria de Material</h3>
-                  <p className="text-xs text-slate-500 font-medium">Corrija a categoria de insumos cadastrados incorretamente</p>
-                </div>
-              </div>
-              <button 
-                onClick={() => setShowChangeCategoryModal(false)}
-                className="p-2 hover:bg-[#F5F5F4] rounded-full transition-all text-slate-400"
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            <div className="space-y-5">
-              <div>
-                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5 ml-1">Selecione o Material / Insumo</label>
-                <select 
-                  className="w-full px-4 py-3 bg-[#F5F5F4] border border-slate-200 rounded-2xl focus:ring-2 focus:ring-indigo-500 font-bold text-sm text-slate-800"
-                  value={categoryModalMaterial}
-                  onChange={e => {
-                    const selectedName = e.target.value;
-                    setCategoryModalMaterial(selectedName);
-                    const itemGroup = items.find(i => i.name === selectedName);
-                    if (itemGroup && itemGroup.category) {
-                      setCategoryModalNewCategory(itemGroup.category);
-                    }
-                  }}
-                >
-                  <option value="">Selecione um material do estoque...</option>
-                  {uniqueItemNames.map(name => {
-                    const currentCat = items.find(i => i.name === name)?.category || 'Sem Categoria';
-                    return (
-                      <option key={`cat-modal-${name}`} value={name}>
-                        {name} ({currentCat})
-                      </option>
-                    );
-                  })}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5 ml-1">Nova Categoria</label>
-                <select 
-                  className="w-full px-4 py-3 bg-[#F5F5F4] border border-slate-200 rounded-2xl focus:ring-2 focus:ring-indigo-500 font-bold text-sm text-slate-800"
-                  value={categoryModalNewCategory}
-                  onChange={e => setCategoryModalNewCategory(e.target.value)}
-                >
-                  <option value="">Selecione a categoria correta...</option>
-                  {categories.map(cat => (
-                    <option key={`cat-opt-${cat}`} value={cat}>{cat}</option>
-                  ))}
-                  <option value="__NEW__">+ Cadastrar Nova Categoria...</option>
-                </select>
-              </div>
-
-              {categoryModalNewCategory === '__NEW__' && (
-                <motion.div initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }}>
-                  <label className="block text-[10px] font-black text-indigo-700 uppercase tracking-widest mb-1.5 ml-1">Nome da Nova Categoria</label>
-                  <input 
-                    type="text"
-                    placeholder="Ex: OdontolÃ³gico, Laboratorial..."
-                    value={customModalCategory}
-                    onChange={e => setCustomModalCategory(e.target.value)}
-                    className="w-full px-4 py-3 bg-indigo-50/50 border border-indigo-200 rounded-2xl focus:ring-2 focus:ring-indigo-500 font-bold text-sm text-indigo-900"
-                    autoFocus
-                  />
-                </motion.div>
-              )}
-
-              <div className="pt-2 flex gap-3">
-                <button 
-                  onClick={() => setShowChangeCategoryModal(false)}
-                  className="flex-1 py-3.5 bg-[#F5F5F4] text-[#57534E] rounded-2xl font-bold hover:bg-[#E7E5E4] transition-all text-xs"
-                >
-                  Cancelar
-                </button>
-                <button 
-                  onClick={handleModalChangeCategory}
-                  disabled={isUpdatingCategory || !categoryModalMaterial || !categoryModalNewCategory}
-                  className={`flex-1 py-3.5 bg-indigo-600 text-white rounded-2xl font-bold transition-all text-xs flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/20 ${isUpdatingCategory || !categoryModalMaterial || !categoryModalNewCategory ? 'opacity-50 cursor-not-allowed' : 'hover:bg-indigo-700'}`}
-                >
-                  {isUpdatingCategory ? (
-                    <>
-                      <RotateCcw className="animate-spin" size={16} /> Salvando...
-                    </>
-                  ) : (
-                    <>
-                      <CheckCircle size={16} /> Salvar Categoria
-                    </>
-                  )}
-                </button>
-              </div>
-            </div>
-          </motion.div>
-        </div>
-      )}
-
-      {/* Critical Materials Report Type Selection Modal */}
-      {showCriticalReportModal && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[85] flex items-center justify-center p-4 sm:p-6">
-          <motion.div 
-            initial={{ scale: 0.92, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            exit={{ scale: 0.92, opacity: 0 }}
-            className="bg-white w-full max-w-xl rounded-3xl p-6 sm:p-8 shadow-2xl border border-slate-100 overflow-hidden relative"
-          >
-            {/* Modal Header */}
-            <div className="flex items-center justify-between pb-5 border-b border-slate-100 mb-6">
-              <div className="flex items-center gap-3">
-                <div className="p-3 bg-gradient-to-br from-amber-500 to-rose-600 text-white rounded-2xl shadow-md">
-                  <Printer size={22} />
-                </div>
-                <div>
-                  <h3 className="text-xl font-black text-slate-900 tracking-tight">
-                    RelatÃ³rio de Materiais CrÃ­ticos
-                  </h3>
-                  <p className="text-xs text-slate-500 font-medium mt-0.5">
-                    Selecione o tipo de relatÃ³rio que deseja exportar em PDF
-                  </p>
-                </div>
-              </div>
-              <button 
-                onClick={() => setShowCriticalReportModal(false)}
-                className="p-2 hover:bg-slate-100 rounded-full transition-all text-slate-400 hover:text-slate-600"
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            {/* Options List */}
-            <div className="space-y-3.5">
-              {/* Option 1: Validade */}
-              <div 
-                onClick={() => {
-                  setShowCriticalReportModal(false);
-                  handleExportCriticalReportPDF('expiry');
-                }}
-                className="p-4 rounded-2xl border-2 border-rose-200 bg-rose-50/40 hover:bg-rose-50 hover:border-rose-400 transition-all cursor-pointer group flex items-center justify-between gap-4"
-              >
-                <div className="flex items-start gap-3.5 min-w-0">
-                  <div className="p-2.5 bg-rose-600 text-white rounded-xl shadow-xs shrink-0 group-hover:scale-105 transition-transform mt-0.5">
-                    <Clock size={20} />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h4 className="font-extrabold text-sm text-slate-900 group-hover:text-rose-700 transition-colors">
-                        CrÃ­tico por Validade
-                      </h4>
-                      <span className="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-rose-100 text-rose-800 border border-rose-300">
-                        {expiredItems.length + nearExpiryItems.length} lote(s)
-                      </span>
-                    </div>
-                    <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                      Lotes jÃ¡ vencidos e insumos que expiram nos prÃ³ximos 60 dias (2 meses) com data, prazo em dias e status de risco.
-                    </p>
-                  </div>
-                </div>
-                <div className="shrink-0 flex items-center text-rose-600 group-hover:translate-x-1 transition-transform">
-                  <ChevronRight size={20} />
-                </div>
-              </div>
-
-              {/* Option 2: Estoque Baixo */}
-              <div 
-                onClick={() => {
-                  setShowCriticalReportModal(false);
-                  handleExportCriticalReportPDF('low_stock');
-                }}
-                className="p-4 rounded-2xl border-2 border-amber-200 bg-amber-50/40 hover:bg-amber-50 hover:border-amber-400 transition-all cursor-pointer group flex items-center justify-between gap-4"
-              >
-                <div className="flex items-start gap-3.5 min-w-0">
-                  <div className="p-2.5 bg-amber-600 text-white rounded-xl shadow-xs shrink-0 group-hover:scale-105 transition-transform mt-0.5">
-                    <TrendingDown size={20} />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h4 className="font-extrabold text-sm text-slate-900 group-hover:text-amber-700 transition-colors">
-                        CrÃ­tico por Estoque Baixo
-                      </h4>
-                      <span className="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-amber-100 text-amber-800 border border-amber-300">
-                        {lowStockItems.length} insumo(s)
-                      </span>
-                    </div>
-                    <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                      Insumos zerados ou com quantidade abaixo do estoque mÃ­nimo, exibindo dÃ©ficit necessÃ¡rio para reposiÃ§Ã£o.
-                    </p>
-                  </div>
-                </div>
-                <div className="shrink-0 flex items-center text-amber-600 group-hover:translate-x-1 transition-transform">
-                  <ChevronRight size={20} />
-                </div>
-              </div>
-
-              {/* Option 3: Consolidado Geral */}
-              <div 
-                onClick={() => {
-                  setShowCriticalReportModal(false);
-                  handleExportCriticalReportPDF('all');
-                }}
-                className="p-4 rounded-2xl border-2 border-indigo-200 bg-indigo-50/40 hover:bg-indigo-50 hover:border-indigo-400 transition-all cursor-pointer group flex items-center justify-between gap-4"
-              >
-                <div className="flex items-start gap-3.5 min-w-0">
-                  <div className="p-2.5 bg-indigo-600 text-white rounded-xl shadow-xs shrink-0 group-hover:scale-105 transition-transform mt-0.5">
-                    <FileText size={20} />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h4 className="font-extrabold text-sm text-slate-900 group-hover:text-indigo-700 transition-colors">
-                        RelatÃ³rio Consolidado Geral
-                      </h4>
-                      <span className="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-indigo-100 text-indigo-800 border border-indigo-300">
-                        Completo ({totalAlertsCount})
-                      </span>
-                    </div>
-                    <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                      Documento unificado contendo as duas seÃ§Ãµes: 1. Controle de Validade e 2. Estoque Baixo / Ruptura.
-                    </p>
-                  </div>
-                </div>
-                <div className="shrink-0 flex items-center text-indigo-600 group-hover:translate-x-1 transition-transform">
-                  <ChevronRight size={20} />
-                </div>
-              </div>
-            </div>
-
-            {/* Footer */}
-            <div className="mt-6 pt-4 border-t border-slate-100 flex justify-end">
-              <button 
-                onClick={() => setShowCriticalReportModal(false)}
-                className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-2xl transition-all text-xs"
-              >
-                Fechar
-              </button>
-            </div>
-          </motion.div>
-        </div>
-      )}
-
-      {/* Purchase Planning Modal */}
-      {showPurchasePlanningModal && (
-        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-[90] flex items-center justify-center p-3 sm:p-6 overflow-hidden">
-          <motion.div 
-            initial={{ opacity: 0, scale: 0.96 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.96 }}
-            className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-7xl h-[92vh] flex flex-col overflow-hidden"
-          >
-            {/* Header */}
-            <div className="px-6 py-5 border-b border-slate-200 bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white flex items-center justify-between shrink-0">
-              <div className="flex items-center gap-3.5">
-                <div className="bg-gradient-to-br from-blue-500 to-indigo-600 p-3 rounded-2xl shadow-md shadow-indigo-500/20 text-white shrink-0">
-                  <ShoppingCart size={24} />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-xl font-black tracking-tight text-white">Planejamento de Compras (Estimativa de AquisiÃ§Ã£o)</h3>
-                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-blue-500/20 border border-blue-400/30 text-blue-200">
-                      PrevisÃ£o de Consumo
-                    </span>
-                  </div>
-                  <p className="text-slate-300 text-xs mt-0.5 font-medium">
-                    Calcula a quantidade exata de insumos e medicamentos necessÃ¡ria para suprir o estoque atÃ© o mÃªs de interesse.
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button 
-                  onClick={handleExportPurchasePlanningPDF}
-                  className="px-3.5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-extrabold text-xs flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
-                  title="Exportar RelatÃ³rio Oficial em PDF"
-                >
-                  <Printer size={15} /> Exportar PDF
-                </button>
-                <button 
-                  onClick={handleExportPurchasePlanningExcel}
-                  className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-extrabold text-xs flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
-                  title="Exportar Planilha Completa em Excel"
-                >
-                  <Download size={15} /> Exportar Excel
-                </button>
-                <button 
-                  onClick={() => setShowPurchasePlanningModal(false)}
-                  className="p-2 text-slate-300 hover:text-white hover:bg-slate-800 rounded-xl transition-all ml-2"
-                >
-                  <X size={20} />
-                </button>
-              </div>
-            </div>
-
-            {/* Filter Configuration Toolbar */}
-            <div className="p-4 bg-slate-50 border-b border-slate-200 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-3 items-center shrink-0">
-              {/* Target Month */}
-              <div>
-                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">
-                  MÃªs Alvo de Cobertura
-                </label>
-                <select 
-                  value={planningTargetMonth}
-                  onChange={(e) => setPlanningTargetMonth(Number(e.target.value))}
-                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-800 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer shadow-2xs"
-                >
-                  {['Janeiro', 'Fevereiro', 'MarÃ§o', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'].map((m, idx) => (
-                    <option key={idx} value={idx}>{m}</option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Target Year */}
-              <div>
-                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">
-                  Ano Alvo
-                </label>
-                <select 
-                  value={planningTargetYear}
-                  onChange={(e) => setPlanningTargetYear(Number(e.target.value))}
-                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-800 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer shadow-2xs"
-                >
-                  {Array.from({ length: 4 }).map((_, i) => {
-                    const y = new Date().getFullYear() + i;
-                    return <option key={y} value={y}>{y}</option>;
-                  })}
-                </select>
-              </div>
-
-              {/* Safety Margin */}
-              <div>
-                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">
-                  Margem de SeguranÃ§a
-                </label>
-                <select 
-                  value={planningSafetyOption}
-                  onChange={(e) => setPlanningSafetyOption(e.target.value as any)}
-                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-800 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer shadow-2xs"
-                >
-                  <option value="standard_8w">PadrÃ£o: +8 semanas (2 meses)</option>
-                  <option value="margin_10">+10% de SeguranÃ§a</option>
-                  <option value="margin_20">+20% de SeguranÃ§a</option>
-                  <option value="none">Sem Margem Adicional</option>
-                </select>
-              </div>
-
-              {/* Stock Location */}
-              <div>
-                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">
-                  Local do Estoque
-                </label>
-                <select 
-                  value={planningLocation}
-                  onChange={(e) => setPlanningLocation(e.target.value as any)}
-                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-800 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer shadow-2xs"
-                >
-                  <option value="Almoxarifado">Almoxarifado Geral</option>
-                  <option value="FarmÃ¡cia">FarmÃ¡cia (Medicamentos)</option>
-                  <option value="all">Almoxarifado & FarmÃ¡cia</option>
-                </select>
-              </div>
-
-              {/* Category Filter */}
-              <div>
-                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">
-                  Categoria
-                </label>
-                <select 
-                  value={planningCategory}
-                  onChange={(e) => setPlanningCategory(e.target.value)}
-                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-800 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer shadow-2xs"
-                >
-                  <option value="all">Todas as Categorias</option>
-                  {Object.keys(CATEGORY_COLORS).sort().map(cat => (
-                    <option key={cat} value={cat}>{cat}</option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Search & Sort */}
-              <div>
-                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">
-                  Ordenar Por
-                </label>
-                <select 
-                  value={planningSort}
-                  onChange={(e) => setPlanningSort(e.target.value as any)}
-                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-black text-slate-800 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer shadow-2xs"
-                >
-                  <option value="deficit_desc">Maior Quantidade a Comprar</option>
-                  <option value="cost_desc">Maior Custo Estimado (R$)</option>
-                  <option value="cost_asc">Menor Custo Estimado (R$)</option>
-                  <option value="duration_asc">Menor DuraÃ§Ã£o do Estoque Atual</option>
-                  <option value="name_asc">Ordem AlfabÃ©tica (A-Z)</option>
-                </select>
-              </div>
-            </div>
-
-            {/* Quick KPI Bar & Toggle */}
-            <div className="px-6 py-3.5 bg-indigo-50/60 border-b border-indigo-100 flex flex-wrap items-center justify-between gap-4 shrink-0">
-              <div className="flex flex-wrap items-center gap-6">
-                <div className="flex items-center gap-2">
-                  <div className="w-2.5 h-2.5 rounded-full bg-blue-600"></div>
-                  <span className="text-xs font-bold text-slate-600">PerÃ­odo Alvo:</span>
-                  <span className="text-xs font-black text-slate-900 bg-white px-2.5 py-1 rounded-lg border border-indigo-200 shadow-2xs">
-                    {purchasePlanningSummary.targetPeriodLabel} ({purchasePlanningSummary.totalTargetWeeks} sem â€¢ ~{purchasePlanningSummary.totalTargetMonths} meses)
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <div className="w-2.5 h-2.5 rounded-full bg-rose-600"></div>
-                  <span className="text-xs font-bold text-slate-600">Itens com DÃ©ficit:</span>
-                  <span className="text-xs font-black text-rose-600 bg-white px-2.5 py-1 rounded-lg border border-rose-200 shadow-2xs">
-                    {purchasePlanningSummary.totalItemsWithDeficit} de {purchasePlanningSummary.totalAnalyzed} itens
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <div className="w-2.5 h-2.5 rounded-full bg-indigo-600"></div>
-                  <span className="text-xs font-bold text-slate-600">Volume Total a Comprar:</span>
-                  <span className="text-xs font-black text-indigo-700 bg-white px-2.5 py-1 rounded-lg border border-indigo-200 shadow-2xs">
-                    {purchasePlanningSummary.totalUnitsToBuy.toLocaleString('pt-BR')} unidades
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <div className="w-2.5 h-2.5 rounded-full bg-emerald-600"></div>
-                  <span className="text-xs font-bold text-slate-600">Custo Total Estimado:</span>
-                  <span className="text-xs font-black text-emerald-700 bg-white px-2.5 py-1 rounded-lg border border-emerald-200 shadow-2xs">
-                    {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(purchasePlanningSummary.totalEstimatedFinancialCost)}
-                  </span>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-4">
-                <div className="relative">
-                  <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />
-                  <input 
-                    type="text" 
-                    placeholder="Filtrar por nome..." 
-                    value={planningSearch}
-                    onChange={(e) => setPlanningSearch(e.target.value)}
-                    className="pl-8 pr-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 w-48"
-                  />
-                </div>
-
-                <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer select-none">
-                  <input 
-                    type="checkbox" 
-                    checked={planningOnlyWithDeficit}
-                    onChange={(e) => setPlanningOnlyWithDeficit(e.target.checked)}
-                    className="w-4 h-4 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500 cursor-pointer"
-                  />
-                  <span>Apenas itens a comprar (DÃ©ficit &gt; 0)</span>
-                </label>
-              </div>
-            </div>
-
-            {/* Table Area */}
-            <div className="flex-1 overflow-y-auto overflow-x-auto p-4 custom-scrollbar">
-              {purchasePlanningSummary.items.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center text-center p-8">
-                  <div className="w-16 h-16 bg-emerald-50 text-emerald-600 rounded-3xl flex items-center justify-center mb-3">
-                    <CheckCircle size={32} />
-                  </div>
-                  <h4 className="text-base font-black text-slate-800">Nenhum item com necessidade de compra!</h4>
-                  <p className="text-xs text-slate-500 max-w-md mt-1">
-                    Todos os materiais filtrados possuem estoque suficiente para cobrir o consumo previsto atÃ© {purchasePlanningSummary.targetPeriodLabel}.
-                  </p>
-                </div>
-              ) : (
-                <table className="w-full text-left border-collapse">
-                  <thead className="sticky top-0 z-10 bg-slate-100/95 backdrop-blur-xs text-[11px] font-black text-slate-600 uppercase tracking-wider border-b border-slate-200">
-                    <tr>
-                      <th className="py-3 px-3">Material / Insumo</th>
-                      <th className="py-3 px-2.5 text-center">Estoque Atual</th>
-                      <th className="py-3 px-2.5 text-center">Consumo Semanal</th>
-                      <th className="py-3 px-2.5 text-center">DuraÃ§Ã£o Atual</th>
-                      <th className="py-3 px-2.5 text-center">Demanda ({purchasePlanningSummary.totalTargetWeeks} sem)</th>
-                      <th className="py-3 px-2.5 text-center">Estoque Seg.</th>
-                      <th className="py-3 px-2.5 text-center">Necessidade Total</th>
-                      <th className="py-3 px-3 text-center bg-rose-100/60 text-rose-900 border-x border-rose-200">QTD A COMPRAR</th>
-                      <th className="py-3 px-2.5 text-right">Vlr. UnitÃ¡rio</th>
-                      <th className="py-3 px-2.5 text-right">Custo Estimado</th>
-                      <th className="py-3 px-3 text-center">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 text-xs">
-                    {purchasePlanningSummary.items.map((item) => {
-                      const unit = item.unit_measure ? ` ${item.unit_measure}` : '';
-                      const isDeficit = item.quantityToBuy > 0;
-                      
-                      return (
-                        <tr key={item.name} className="hover:bg-slate-50/80 transition-colors">
-                          {/* Name & Category */}
-                          <td className="py-3 px-3">
-                            <div className="font-extrabold text-slate-900">{item.name}</div>
-                            <div className="flex items-center gap-1.5 mt-0.5">
-                              <span 
-                                className="inline-block w-2 h-2 rounded-full shrink-0"
-                                style={{ backgroundColor: CATEGORY_COLORS[item.category] || '#64748b' }}
-                              />
-                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                                {item.category || 'Geral'}
-                              </span>
-                            </div>
-                          </td>
-
-                          {/* Current Stock */}
-                          <td className="py-3 px-2.5 text-center">
-                            <span className={`font-black ${item.currentStock === 0 ? 'text-rose-600' : 'text-slate-800'}`}>
-                              {item.currentStock}{unit}
-                            </span>
-                          </td>
-
-                          {/* Weekly Consumption */}
-                          <td className="py-3 px-2.5 text-center font-bold text-slate-600">
-                            {item.weeklyRate > 0 ? `${item.weeklyRate.toFixed(1)}/sem` : '0.0/sem'}
-                          </td>
-
-                          {/* Current Duration */}
-                          <td className="py-3 px-2.5 text-center">
-                            {item.durationWeeks === 'infinite' ? (
-                              <span className="px-2 py-0.5 rounded-md text-[10px] font-extrabold bg-slate-100 text-slate-600">
-                                Indeterminado (âˆž)
-                              </span>
-                            ) : (
-                              <div className="flex flex-col items-center">
-                                <span className={`font-black ${item.durationWeeks <= 4 ? 'text-rose-600' : item.durationWeeks <= 8 ? 'text-amber-600' : 'text-slate-800'}`}>
-                                  {item.durationWeeks.toFixed(1)} sem
-                                </span>
-                                <span className="text-[9px] font-semibold text-slate-400">
-                                  Dura atÃ© {item.durationMonthInfo.monthYear}
-                                </span>
-                              </div>
-                            )}
-                          </td>
-
-                          {/* Period Demand */}
-                          <td className="py-3 px-2.5 text-center font-bold text-slate-700">
-                            {item.periodDemand}{unit}
-                          </td>
-
-                          {/* Safety Stock */}
-                          <td className="py-3 px-2.5 text-center font-bold text-slate-500">
-                            +{item.safetyStock}{unit}
-                          </td>
-
-                          {/* Total Required */}
-                          <td className="py-3 px-2.5 text-center font-black text-slate-800">
-                            {item.totalRequired}{unit}
-                          </td>
-
-                          {/* Quantity to Buy */}
-                          <td className="py-3 px-3 text-center bg-rose-50/50 border-x border-rose-100">
-                            {isDeficit ? (
-                              <span className="px-3 py-1 rounded-xl text-xs font-black bg-rose-600 text-white shadow-2xs inline-block">
-                                +{item.quantityToBuy.toLocaleString('pt-BR')}{unit}
-                              </span>
-                            ) : (
-                              <span className="px-2.5 py-1 rounded-xl text-[11px] font-black bg-emerald-100 text-emerald-800 inline-block">
-                                Suficiente (0)
-                              </span>
-                            )}
-                          </td>
-
-                          {/* Unit Price */}
-                          <td className="py-3 px-2.5 text-right font-bold text-slate-600">
-                            {item.unitPrice > 0 
-                              ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.unitPrice)
-                              : '---'}
-                          </td>
-
-                          {/* Total Cost */}
-                          <td className="py-3 px-2.5 text-right font-black text-slate-900">
-                            {item.totalEstimatedCost > 0 
-                              ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.totalEstimatedCost)
-                              : '---'}
-                          </td>
-
-                          {/* Status */}
-                          <td className="py-3 px-3 text-center">
-                            {item.status === 'ZERADO_SEM_ESTOQUE' && (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-rose-100 text-rose-800 border border-rose-300">
-                                Zerado / Ruptura
-                              </span>
-                            )}
-                            {item.status === 'DEFICIT_CRITICO' && (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-100 text-amber-800 border border-amber-300">
-                                DÃ©ficit Imediato
-                              </span>
-                            )}
-                            {item.status === 'DEFICIT_MODERADO' && (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-blue-100 text-blue-800 border border-blue-300">
-                                Repor p/ PerÃ­odo
-                              </span>
-                            )}
-                            {item.status === 'COBRE_TOTAL' && (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-100 text-emerald-800 border border-emerald-300">
-                                Atende atÃ© o MÃªs
-                              </span>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              )}
-            </div>
-
-            {/* Modal Footer */}
-            <div className="p-4 bg-slate-100 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
-              <div className="flex items-center gap-2 text-xs font-semibold text-slate-500">
-                <Sparkles size={15} className="text-indigo-600 shrink-0" />
-                <span>Os cÃ¡lculos usam a mÃ©dia semanal de saÃ­das reais dos Ãºltimos 21 dias para projetar o consumo com precisÃ£o.</span>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button 
-                  onClick={() => setShowPurchasePlanningModal(false)}
-                  className="px-5 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold rounded-xl transition-all text-xs cursor-pointer"
-                >
-                  Fechar Painel
-                </button>
-              </div>
-            </div>
-          </motion.div>
-        </div>
-      )}
-
-      {/* Room Inventory Modal */}
-      <AnimatePresence>
-        {showRoomInventoryModal && (
-          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[80] flex items-center justify-center p-6">
-            <motion.div 
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-white w-[95vw] lg:w-full lg:max-w-2xl rounded-[32px] p-4 sm:p-8 shadow-2xl max-h-[90vh] flex flex-col"
-            >
-              <div className="flex justify-between items-center mb-6">
-                <div>
-                  <h3 className="text-2xl font-black text-[#1C1917] flex items-center gap-3">
-                    <Printer className="text-blue-600" size={28} />
-                    Mapa de Sala (Porta)
-                  </h3>
-                  <p className="text-sm text-[#78716C] mt-1 font-medium italic">Selecione a sala e as categorias para o documento de estoque</p>
-                </div>
-                <button 
-                  onClick={() => setShowRoomInventoryModal(false)}
-                  className="p-2 hover:bg-[#F5F5F4] rounded-full transition-all"
-                >
-                  <X size={24} />
-                </button>
-              </div>
-
-              <div className="space-y-8 flex-1 overflow-y-auto pr-2 custom-scrollbar">
-                {/* Room Selection */}
-                <div className="space-y-4">
-                  <h3 className="text-xs font-black text-[#1C1917] uppercase tracking-widest flex items-center gap-2">
-                    <div className="w-1.5 h-1.5 rounded-full bg-blue-600"></div>
-                    1. Selecione a Sala
-                  </h3>
-                  <div className="grid grid-cols-2 gap-3">
-                    {ROOMS.map(room => (
-                      <button 
-                        key={room}
-                        onClick={() => {
-                          setSelectedRoom(room);
-                          setCustomRoomName(room);
-                        }}
-                        className={`p-4 rounded-2xl border-2 text-sm font-bold transition-all text-left flex flex-col gap-1 ${
-                          selectedRoom === room 
-                            ? 'border-blue-600 bg-blue-50 text-blue-700 shadow-md' 
-                            : 'border-[#E7E5E4] hover:border-blue-200 hover:bg-slate-50 text-[#44403C]'
-                        }`}
-                      >
-                        <span className="opacity-70 text-[10px] uppercase">Local</span>
-                        {room}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Custom Name */}
-                <div className="space-y-4">
-                  <h3 className="text-xs font-black text-[#1C1917] uppercase tracking-widest flex items-center gap-2">
-                    <div className="w-1.5 h-1.5 rounded-full bg-blue-600"></div>
-                    2. Nome da Sala no RelatÃ³rio (EditÃ¡vel)
-                  </h3>
-                  <input 
-                    type="text"
-                    value={customRoomName}
-                    onChange={(e) => setCustomRoomName(e.target.value)}
-                    className="w-full px-6 py-4 bg-[#FAFAF9] border-2 border-[#E7E5E4] rounded-2xl text-sm font-bold focus:border-blue-600 transition-all outline-none"
-                    placeholder="Ex: Sala de Curativos, EmergÃªncia..."
-                  />
-                </div>
-
-                {/* Categories Selection */}
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-xs font-black text-[#1C1917] uppercase tracking-widest flex items-center gap-2">
-                      <div className="w-1.5 h-1.5 rounded-full bg-blue-600"></div>
-                      3. Filtrar Categorias
-                    </h3>
-                    <div className="flex gap-2">
-                      <button 
-                        onClick={() => setSelectedRoomCategories([...categories])}
-                        className="text-[10px] font-bold text-blue-600 hover:underline uppercase tracking-tighter"
-                      >
-                        Marcar Todas
-                      </button>
-                      <span className="text-[#D6D3D1]">|</span>
-                      <button 
-                        onClick={() => setSelectedRoomCategories([])}
-                        className="text-[10px] font-bold text-red-600 hover:underline uppercase tracking-tighter"
-                      >
-                        Desmarcar Todas
-                      </button>
-                    </div>
-                  </div>
-                  
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    {categories.map(category => (
-                      <label 
-                        key={category}
-                        className="flex items-center gap-2.5 p-3 rounded-xl border border-[#E7E5E4] hover:bg-slate-50 transition-colors cursor-pointer"
-                      >
-                        <input 
-                          type="checkbox" 
-                          checked={selectedRoomCategories.includes(category)}
-                          onChange={() => {
-                            if (selectedRoomCategories.includes(category)) {
-                              setSelectedRoomCategories(selectedRoomCategories.filter(c => c !== category));
-                            } else {
-                              setSelectedRoomCategories([...selectedRoomCategories, category]);
-                            }
-                          }}
-                          className="w-4 h-4 rounded border-[#D6D3D1] text-blue-600 focus:ring-blue-500"
-                        />
-                        <span className="text-xs font-bold text-[#44403C] truncate">{category}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Summary */}
-                <div className="bg-blue-50 p-6 rounded-3xl border border-blue-100 italic">
-                  <div className="flex items-start gap-3">
-                    <Info size={18} className="text-blue-600 mt-0.5" />
-                    <div>
-                      <h4 className="text-sm font-bold text-blue-900 mb-1">InformaÃ§Ãµes do Documento</h4>
-                      <p className="text-xs text-blue-800 leading-relaxed">
-                        SerÃ¡ gerado um PDF formatado para impressÃ£o contendo os itens de <strong>{selectedRoom}</strong> 
-                        com o tÃ­tulo personalizado <strong>"{customRoomName}"</strong> 
-                        que pertencem Ã s <strong>{selectedRoomCategories.length}</strong> categorias selecionadas.
-                        O relatÃ³rio inclui lote, validade e situaÃ§Ã£o do estoque em dias.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="pt-6 border-t border-[#E7E5E4] flex gap-4">
-                <button 
-                  onClick={() => setShowRoomInventoryModal(false)}
-                  className="flex-1 py-4 px-6 border-2 border-[#E7E5E4] text-[#78716C] rounded-2xl text-sm font-black uppercase tracking-widest hover:bg-[#F5F5F4] transition-all"
-                >
-                  Cancelar
-                </button>
-                <button 
-                  onClick={() => {
-                    handleExportRoomInventoryPDF(selectedRoom, customRoomName, selectedRoomCategories);
-                    setShowRoomInventoryModal(false);
-                  }}
-                  disabled={selectedRoomCategories.length === 0}
-                  className="flex-[2] py-4 px-6 bg-blue-600 text-white rounded-2xl text-sm font-black uppercase tracking-widest hover:bg-blue-700 transition-all shadow-xl shadow-blue-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3"
-                >
-                  <Printer size={18} />
-                  Gerar Mapa de Sala
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {showRequestDetailModal.show && showRequestDetailModal.request && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[80] flex items-center justify-center p-6">
-          <motion.div 
-            initial={{ scale: 0.9, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            className="bg-white w-full max-w-3xl rounded-[32px] p-8 shadow-2xl max-h-[90vh] overflow-y-auto"
-          >
-            <div className="flex justify-between items-center mb-6">
-              <div>
-                <h3 className="text-2xl font-black text-[#1C1917]">{showRequestDetailModal.request.isReturn ? 'Detalhes da DevoluÃ§Ã£o' : 'Detalhes da SolicitaÃ§Ã£o'}</h3>
-                <p className="text-sm text-[#78716C] font-bold">#{showRequestDetailModal.request.id.slice(-5).toUpperCase()} - {new Date(showRequestDetailModal.request.date).toLocaleDateString('pt-BR')}</p>
-              </div>
-              <button 
-                onClick={() => setShowRequestDetailModal({ show: false })}
-                className="p-2 hover:bg-[#F5F5F4] rounded-full transition-all"
-              >
-                <X size={24} />
-              </button>
-            </div>
-
-            <div className="grid grid-cols-2 gap-6 mb-8">
-              <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100">
-                <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest mb-1">SETOR SOLICITANTE</p>
-                <p className="text-lg font-black text-emerald-900">{showRequestDetailModal.request.sector}</p>
-                <p className="text-xs text-emerald-700/70 font-medium">{showRequestDetailModal.request.requesterEmail}</p>
-              </div>
-              <div className="p-4 bg-[#FAFAF9] rounded-2xl border border-[#E7E5E4]">
-                <p className="text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest mb-1">Status Atual</p>
-                <span className={`text-[10px] font-black px-2 py-1 rounded-full uppercase tracking-widest ${
-                  showRequestDetailModal.request.status === 'PENDENTE' ? 'bg-amber-100 text-amber-600' :
-                  showRequestDetailModal.request.status === 'EM_SEPARACAO' ? 'bg-purple-100 text-purple-600' :
-                  showRequestDetailModal.request.status === 'APROVADO' ? 'bg-blue-100 text-blue-600' :
-                  showRequestDetailModal.request.status === 'ENTREGUE' ? 'bg-emerald-100 text-emerald-600' :
-                  showRequestDetailModal.request.status === 'RECUSADO' ? 'bg-rose-100 text-rose-600' :
-                  showRequestDetailModal.request.status === 'DEVOLUCAO_PENDENTE' ? 'bg-amber-100 text-amber-700 border border-amber-200' :
-                  showRequestDetailModal.request.status === 'DEVOLUCAO_APROVADA' ? 'bg-emerald-100 text-emerald-700' :
-                  showRequestDetailModal.request.status === 'DEVOLUCAO_RECUSADA' ? 'bg-rose-100 text-rose-700' :
-                  'bg-gray-100 text-gray-600'
-                }`}>
-                  {showRequestDetailModal.request.status === 'EM_SEPARACAO' ? 'EM SEPARAÃ‡ÃƒO' : 
-                   showRequestDetailModal.request.status === 'DEVOLUCAO_PENDENTE' ? 'DEVOLUÃ‡ÃƒO PENDENTE' :
-                   showRequestDetailModal.request.status === 'DEVOLUCAO_APROVADA' ? 'DEVOLUÃ‡ÃƒO APROVADA' :
-                   showRequestDetailModal.request.status === 'DEVOLUCAO_RECUSADA' ? 'DEVOLUÃ‡ÃƒO RECUSADA' :
-                   showRequestDetailModal.request.status}
-                </span>
-              </div>
-            </div>
-
-            {showRequestDetailModal.request.isReturn && showRequestDetailModal.request.returnReason && (
-              <div className="mb-4 p-4 bg-amber-50 rounded-2xl border border-amber-100">
-                <p className="text-[10px] font-bold text-amber-600 uppercase tracking-widest mb-1">Motivo da DevoluÃ§Ã£o</p>
-                <p className="text-sm font-black text-amber-900">{showRequestDetailModal.request.returnReason}</p>
-              </div>
-            )}
-
-            {showRequestDetailModal.request.observation && (
-              <div className="mb-4 p-4 bg-amber-50 rounded-2xl border border-amber-100">
-                <p className="text-[10px] font-bold text-amber-600 uppercase tracking-widest mb-1">
-                  {showRequestDetailModal.request.isReturn ? 'ObservaÃ§Ã£o da DevoluÃ§Ã£o' : 'ObservaÃ§Ã£o do Solicitante'}
-                </p>
-                <p className="text-sm text-amber-800 italic">"{showRequestDetailModal.request.observation}"</p>
-              </div>
-            )}
-
-            {showRequestDetailModal.request.adminObservation && (
-              <div className={`mb-8 p-5 rounded-[24px] border-2 ${
-                showRequestDetailModal.request.status === 'RECUSADO' 
-                  ? 'bg-rose-50 border-rose-100 text-rose-900' 
-                  : 'bg-blue-50 border-blue-100 text-blue-900'
-              }`}>
-                <div className="flex items-center gap-2 mb-2">
-                  {showRequestDetailModal.request.status === 'RECUSADO' ? (
-                    <AlertTriangle size={18} className="text-rose-600" />
-                  ) : (
-                    <Info size={18} className="text-blue-600" />
-                  )}
-                  <p className={`text-[10px] font-black uppercase tracking-widest ${
-                    showRequestDetailModal.request.status === 'RECUSADO' ? 'text-rose-600' : 'text-blue-600'
-                  }`}>
-                    {showRequestDetailModal.request.status === 'RECUSADO' ? 'Motivo da Recusa' : 'ObservaÃ§Ã£o do Administrador'}
-                  </p>
-                </div>
-                <p className="text-sm font-medium italic">"{showRequestDetailModal.request.adminObservation}"</p>
-              </div>
-            )}
-
-            {showRequestDetailModal.request.status === 'ENTREGUE' && (
-              <div className="flex flex-col sm:flex-row gap-4 w-full">
-                <button 
-                  onClick={() => {
-                    const itemsForReceipt = allRequestItems
-                      .filter(ri => ri.request_id === showRequestDetailModal.request?.id)
-                      .map(i => ({
-                        product_name: i.product_name,
-                        quantity: i.quantity_approved || 0
-                      }));
-                    
-                    if (itemsForReceipt.length > 0 && showRequestDetailModal.request) {
-                      handleExportDeliveryReceiptPDF({
-                        sector: showRequestDetailModal.request.sector,
-                        items: itemsForReceipt,
-                        requestId: showRequestDetailModal.request.id,
-                        date: showRequestDetailModal.request.deliveredAt || showRequestDetailModal.request.date
-                      });
-                    }
-                  }}
-                  className="flex-1 py-4 px-6 bg-emerald-600 text-white rounded-2xl text-sm font-black uppercase tracking-widest hover:bg-emerald-700 transition-all shadow-xl shadow-emerald-200 flex items-center justify-center gap-3"
-                >
-                  <Printer size={18} />
-                  Reimprimir Comprovante
-                </button>
-                {!showRequestDetailModal.request.isReturn && (isAdmin || userProfile?.sector === showRequestDetailModal.request.sector || showRequestDetailModal.request.requesterEmail === user?.email) && (
-                  <button 
-                    onClick={() => {
-                      const reqItems = allRequestItems.filter(ri => ri.request_id === showRequestDetailModal.request!.id);
-                      const basketItems = reqItems.map(ri => {
-                        const alreadyReturned = ri.quantity_returned || 0;
-                        const remaining = ri.quantity_approved - alreadyReturned;
-                        const productBatches = items.filter(item => !item.deletedAt && item.name === ri.product_name);
-                        return {
-                          product_id: ri.product_id,
-                          product_name: ri.product_name,
-                          quantity: remaining,
-                          maxQty: remaining,
-                          selectedBatchId: ri.batch_id || productBatches[0]?.id || ''
-                        };
-                      }).filter(item => item.quantity > 0);
-
-                      if (basketItems.length === 0) {
-                        showToast("Todos os itens desta entrega jÃ¡ foram totalmente devolvidos.", "info");
-                        return;
-                      }
-
-                      setDevolutionBasket(basketItems);
-                      setDevolutionReason('NÃ£o teve uso');
-                      setDevolutionObservation('');
-                      setShowRequestDetailModal({ show: false });
-                      setShowDevolutionModal({ show: true, request: showRequestDetailModal.request });
-                    }}
-                    className="flex-1 py-4 px-6 bg-amber-600 text-white rounded-2xl text-sm font-black uppercase tracking-widest hover:bg-amber-700 transition-all shadow-xl shadow-amber-200 flex items-center justify-center gap-3 hover:-translate-y-0.5 active:translate-y-0"
-                  >
-                    <RotateCcw size={18} />
-                    Devolver Materiais
-                  </button>
-                )}
-              </div>
-            )}
-
-            {isAdmin && showRequestDetailModal.request.status !== 'ENTREGUE' && (
-              <div className="mb-8">
-                <div className="flex justify-between items-center mb-2">
-                  <label className="text-[10px] font-bold text-[#A8A29E] uppercase tracking-widest block">
-                    {showRequestDetailModal.request.status === 'RECUSADO' ? 'Editar Motivo da Recusa' : 'ObservaÃ§Ã£o do Administrador (Opcional)'}
-                  </label>
-                  {showRequestDetailModal.request.status !== 'PENDENTE' && (
-                    <button 
-                      onClick={() => handleUpdateObservation(showRequestDetailModal.request!.id)}
-                      className="text-[10px] font-bold text-blue-600 uppercase hover:underline"
-                    >
-                      Salvar Apenas ObservaÃ§Ã£o
-                    </button>
-                  )}
-                </div>
-                <textarea
-                  value={adminObservation}
-                  onChange={(e) => setAdminObservation(e.target.value)}
-                  placeholder={showRequestDetailModal.request.status === 'RECUSADO' ? "Explique o motivo da recusa..." : "Explique alteraÃ§Ãµes ou adicione informaÃ§Ãµes..."}
-                  className="w-full p-4 bg-[#FAFAF9] border border-[#E7E5E4] rounded-2xl text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all min-h-[100px]"
-                />
-              </div>
-            )}
-
-            {isAdmin && (showRequestDetailModal.request.status === 'PENDENTE' || showRequestDetailModal.request.status === 'EM_SEPARACAO') && (
-              <div className="mb-8 p-6 bg-blue-50/50 border border-blue-100 rounded-3xl">
-                <label className="block text-[10px] font-bold text-blue-600 uppercase tracking-widest mb-3">Adicionar Material Esquecido</label>
-                <div className="relative">
-                  <div className="relative">
-                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-blue-400" size={18} />
-                    <input 
-                      type="text" 
-                      placeholder="Pesquisar material para adicionar..."
-                      className="w-full pl-12 pr-4 py-3 bg-white border border-blue-100 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold text-sm transition-all shadow-sm"
-                      value={adminAddItemSearch}
-                      onChange={(e) => setAdminAddItemSearch(e.target.value)}
-                    />
-                  </div>
-
-                  {adminAddItemSearch.length >= 2 && (
-                    <motion.div 
-                      initial={{ opacity: 0, y: -10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      className="absolute z-50 w-full mt-2 bg-white border border-[#E7E5E4] rounded-xl shadow-2xl overflow-hidden max-h-[250px] overflow-y-auto"
-                    >
-                      {(() => {
-                        const allActiveGroups: Record<string, {name: string, category: string, id: string}> = {};
-                        items.filter(i => !i.deletedAt && i.quantity > 0).forEach(i => {
-                          if (!allActiveGroups[i.name]) {
-                            allActiveGroups[i.name] = { name: i.name, category: i.category || 'Outros', id: i.id };
-                          }
-                        });
-
-                        const filtered = Object.values(allActiveGroups)
-                          .filter(group => normalizeString(group.name).includes(normalizeString(adminAddItemSearch)))
-                          .sort((a, b) => a.name.localeCompare(b.name))
-                          .slice(0, 5);
-
-                        if (filtered.length === 0) {
-                          return <div className="p-4 text-center text-xs text-gray-500">Nenhum material encontrado.</div>;
-                        }
-
-                        return filtered.map(group => (
-                          <button
-                            key={group.name}
-                            type="button"
-                            onClick={() => handleAddExtraItemToRequest(showRequestDetailModal.request!.id, group.name, group.id)}
-                            disabled={isAdminAddingItem}
-                            className="w-full px-4 py-3 hover:bg-blue-50 flex items-center justify-between text-left transition-colors border-b border-[#F5F5F4] last:border-0"
-                          >
-                            <div>
-                              <p className="text-sm font-bold text-[#1C1917]">{group.name}</p>
-                              <p className="text-[10px] text-[#A8A29E] uppercase font-bold">{group.category}</p>
-                            </div>
-                            <Plus size={16} className="text-blue-600" />
-                          </button>
-                        ));
-                      })()}
-                    </motion.div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            <div className="space-y-4 mb-8">
-              <h4 className="font-bold text-[#1C1917] flex items-center gap-2">
-                <Package size={18} /> {showRequestDetailModal.request.isReturn ? 'Itens a Devolver' : 'Itens Solicitados'}
-              </h4>
-              <div className="bg-white rounded-2xl border border-[#E7E5E4] overflow-hidden">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
-                      <th className="px-4 py-3 font-bold text-xs text-[#78716C]">Item</th>
-                      <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">{showRequestDetailModal.request.isReturn ? 'Qtd. Devolvida' : 'Qtd. Solicitada'}</th>
-                      {!showRequestDetailModal.request.isReturn && isAdmin && <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Saldo em Estoque</th>}
-                      {!showRequestDetailModal.request.isReturn && <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Qtd. Liberada</th>}
-                      {showRequestDetailModal.request.isReturn && <th className="px-4 py-3 font-bold text-xs text-[#78716C] text-center">Lote de Destino</th>}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#E7E5E4]">
-                    {allRequestItems.filter(ri => ri.request_id === showRequestDetailModal.request?.id).map(item => {
-                      // Calcular estoque atual deste item (somando todos os lotes)
-                      const totalStock = items
-                        .filter(i => !i.deletedAt && i.name === item.product_name)
-                        .reduce((sum, i) => sum + i.quantity, 0);
-
-                      const matchedBatch = items.find(i => i.id === item.batch_id);
-                        
-                      return (
-                        <tr key={item.id} className="hover:bg-slate-50 transition-colors">
-                          <td className="px-4 py-3 text-sm font-bold text-[#1C1917]">{item.product_name}</td>
-                          <td className="px-4 py-3 text-sm font-bold text-center text-[#78716C] bg-slate-50/50">
-                            {showRequestDetailModal.request.isReturn ? item.quantity_approved : item.quantity_requested}
-                          </td>
-                          {!showRequestDetailModal.request.isReturn && isAdmin && (
-                            <td className="px-4 py-3 text-center">
-                              <div className="flex flex-col items-center">
-                                <span className={`text-sm font-black ${totalStock <= 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
-                                  {totalStock}
-                                </span>
-                                {totalStock < item.quantity_requested && totalStock > 0 && (
-                                  <span className="text-[9px] text-amber-600 font-bold uppercase leading-none">Estoque Insuficiente</span>
-                                )}
-                              </div>
-                            </td>
-                          )}
-                          {!showRequestDetailModal.request.isReturn && (
-                            <td className="px-4 py-3 text-center">
-                              {isAdmin && (showRequestDetailModal.request?.status === 'PENDENTE' || showRequestDetailModal.request?.status === 'EM_SEPARACAO') ? (
-                                <div className="flex justify-center">
-                                  <input 
-                                    type="number" 
-                                    min="0"
-                                    value={item.quantity_approved}
-                                    onChange={(e) => {
-                                      const val = parseInt(e.target.value) || 0;
-                                      setAllRequestItems(allRequestItems.map(ri => ri.id === item.id ? { ...ri, quantity_approved: val } : ri));
-                                    }}
-                                    className={`w-20 px-3 py-2 border-2 rounded-xl text-center font-black text-sm transition-all outline-none ${
-                                      item.quantity_approved > totalStock 
-                                        ? 'bg-rose-50 border-rose-200 text-rose-700 focus:border-rose-500' 
-                                        : 'bg-white border-blue-100 text-blue-700 focus:border-blue-500'
-                                    }`}
-                                  />
-                                </div>
-                              ) : (
-                                <span className="text-sm font-black text-[#1C1917]">{item.quantity_approved}</span>
-                              )}
-                            </td>
-                          )}
-                          {showRequestDetailModal.request.isReturn && (
-                            <td className="px-4 py-3 text-center text-xs font-bold text-[#57534E]">
-                              {matchedBatch ? `Lote: ${matchedBatch.batch_number}` : 'Qualquer Lote Ativo'}
-                            </td>
-                          )}
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {isAdmin && (
-              <div className="flex flex-col gap-3 w-full">
-                <div className="flex gap-3 w-full">
-                  {/* PENDENTE or EM_SEPARACAO Actions */}
-                  {!showRequestDetailModal.request.isReturn && (showRequestDetailModal.request.status === 'PENDENTE' || showRequestDetailModal.request.status === 'EM_SEPARACAO') && (
-                    <>
-                      <button 
-                        onClick={() => handleRejectRequest(showRequestDetailModal.request!.id)}
-                        className="flex-1 py-3 bg-rose-100 text-rose-600 rounded-xl font-bold hover:bg-rose-200 transition-all"
-                      >
-                        Recusar
-                      </button>
-
-                      {showRequestDetailModal.request.isNewFlow ? (
-                        <button 
-                          onClick={() => handleApproveAndDeliverNewRequest(showRequestDetailModal.request!.id, allRequestItems.filter(ri => ri.request_id === showRequestDetailModal.request?.id))}
-                          className="flex-1 py-3 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 transition-all shadow-md flex items-center justify-center gap-2"
-                        >
-                          <CheckCircle size={18} /> Dar Baixa no Estoque
-                        </button>
-                      ) : (
-                        <button 
-                          onClick={() => handleApproveRequest(showRequestDetailModal.request!.id, allRequestItems.filter(ri => ri.request_id === showRequestDetailModal.request?.id))}
-                          className="flex-1 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all"
-                        >
-                          Aprovar SolicitaÃ§Ã£o
-                        </button>
-                      )}
-                    </>
-                  )}
-
-                  {/* DEVOLUCAO_PENDENTE Actions */}
-                  {showRequestDetailModal.request.isReturn && showRequestDetailModal.request.status === 'DEVOLUCAO_PENDENTE' && (
-                    <>
-                      <button 
-                        onClick={() => handleRejectDevolution(showRequestDetailModal.request!.id)}
-                        disabled={isProcessingDevolution}
-                        className="flex-1 py-4 bg-rose-100 hover:bg-rose-200 text-rose-600 rounded-2xl font-black text-sm uppercase tracking-widest transition-all"
-                      >
-                        Recusar DevoluÃ§Ã£o
-                      </button>
-                      <button 
-                        onClick={() => handleApproveDevolution(showRequestDetailModal.request!.id, allRequestItems.filter(ri => ri.request_id === showRequestDetailModal.request?.id))}
-                        disabled={isProcessingDevolution}
-                        className="flex-1 py-4 bg-amber-600 hover:bg-amber-700 text-white rounded-2xl font-black text-sm uppercase tracking-widest transition-all shadow-lg flex items-center justify-center gap-2"
-                      >
-                        {isProcessingDevolution ? (
-                          <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
-                        ) : (
-                          <>
-                            <CheckCircle size={18} />
-                            Aprovar DevoluÃ§Ã£o
-                          </>
-                        )}
-                      </button>
-                    </>
-                  )}
-
-                  {/* Old flow APROVADO delivery action */}
-                  {!showRequestDetailModal.request.isReturn && !showRequestDetailModal.request.isNewFlow && showRequestDetailModal.request.status === 'APROVADO' && (
-                    <button 
-                      onClick={() => handleDeliverRequest(showRequestDetailModal.request!.id, allRequestItems.filter(ri => ri.request_id === showRequestDetailModal.request?.id))}
-                      className="w-full py-4 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 transition-all flex items-center justify-center gap-2 shadow-lg"
-                    >
-                      <CheckCircle size={20} /> Confirmar Entrega e Baixar Estoque
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {!isAdmin && showRequestDetailModal.request.status === 'PENDENTE' && showRequestDetailModal.request.requesterEmail === user?.email && (
-              <div className="flex gap-3">
-                <button 
-                  onClick={() => {
-                    setShowRequestDetailModal({ show: false });
-                    handleEditRequest(showRequestDetailModal.request!);
-                  }}
-                  className="flex-1 py-3 bg-blue-100 text-blue-600 rounded-xl font-bold hover:bg-blue-200 transition-all flex items-center justify-center gap-2"
-                >
-                  <Edit2 size={18} /> Editar SolicitaÃ§Ã£o
-                </button>
-                <button 
-                  onClick={() => {
-                    setShowRequestDetailModal({ show: false });
-                    handleDeleteRequest(showRequestDetailModal.request!.id);
-                  }}
-                  className="flex-1 py-3 bg-rose-100 text-rose-600 rounded-xl font-bold hover:bg-rose-200 transition-all flex items-center justify-center gap-2"
-                >
-                  <Trash2 size={18} /> Excluir SolicitaÃ§Ã£o
-                </button>
-              </div>
-            )}
-          </motion.div>
-        </div>
-      )}
-
-      {showDevolutionModal.show && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 sm:p-6 overflow-y-auto">
-          <motion.div 
-            initial={{ opacity: 0, scale: 0.96 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="bg-white rounded-3xl border border-slate-200/80 shadow-2xl w-full max-w-3xl p-6 sm:p-8 relative max-h-[92vh] overflow-y-auto space-y-6"
-          >
-            {/* Close Button */}
-            <button 
-              onClick={() => setShowDevolutionModal({ show: false })}
-              className="absolute right-6 top-6 p-2 rounded-full bg-slate-100 hover:bg-slate-200 transition-colors text-slate-500 hover:text-slate-800"
-            >
-              <X size={18} />
-            </button>
-
-            {/* Header */}
-            <div className="flex items-center gap-3.5 pb-2 border-b border-slate-100">
-              <div className="bg-amber-500/10 p-3 rounded-2xl text-amber-700 border border-amber-200/50">
-                <RotateCcw size={22} />
-              </div>
-              <div>
-                <h3 className="text-xl font-black text-slate-900 tracking-tight">Nova DevoluÃ§Ã£o de Materiais</h3>
-                <p className="text-slate-500 text-xs sm:text-sm font-medium">Setor de origem: <span className="font-bold text-amber-700">{selectedSector}</span></p>
-              </div>
-            </div>
-
-            {/* Notice Callout */}
-            <div className="bg-amber-50/70 border border-amber-200/70 p-4 rounded-2xl text-slate-700 text-xs font-medium flex gap-3 items-start">
-              <div className="p-1 text-amber-600 shrink-0 mt-0.5">
-                <RotateCcw size={16} />
-              </div>
-              <div className="space-y-0.5">
-                <p className="font-bold text-amber-900">Como funciona a devoluÃ§Ã£o?</p>
-                <p className="text-slate-600 leading-relaxed">
-                  Os itens adicionados nesta solicitaÃ§Ã£o serÃ£o avaliados pelo almoxarifado. ApÃ³s a aprovaÃ§Ã£o, as quantidades indicadas retornarÃ£o automaticamente ao saldo do estoque.
-                </p>
-              </div>
-            </div>
-
-            {/* Form Fields: Motivo & ObservaÃ§Ãµes */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-[11px] font-black text-slate-500 uppercase tracking-wider mb-2">
-                  Motivo da DevoluÃ§Ã£o <span className="text-rose-500">*</span>
-                </label>
-                <select 
-                  value={devolutionReason}
-                  onChange={(e) => setDevolutionReason(e.target.value)}
-                  className="w-full px-4 py-3 bg-slate-50/80 border border-slate-200 rounded-xl text-xs sm:text-sm focus:bg-white focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 outline-none transition-all font-bold text-slate-800"
-                >
-                  <option value="NÃ£o teve uso">NÃ£o teve uso</option>
-                  <option value="Vencido">Vencido</option>
-                  <option value="Validade prÃ³xima">Validade prÃ³xima</option>
-                  <option value="Material danificado">Material danificado</option>
-                  <option value="Erro na solicitaÃ§Ã£o">Erro na solicitaÃ§Ã£o</option>
-                  <option value="Outros">Outros</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-black text-slate-500 uppercase tracking-wider mb-2">
-                  ObservaÃ§Ãµes / Detalhes
-                </label>
-                <input 
-                  type="text"
-                  value={devolutionObservation}
-                  onChange={(e) => setDevolutionObservation(e.target.value)}
-                  placeholder="Ex: Material sobrou apÃ³s procedimento..."
-                  className="w-full px-4 py-3 bg-slate-50/80 border border-slate-200 rounded-xl text-xs sm:text-sm focus:bg-white focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 outline-none transition-all font-medium text-slate-800"
-                />
-              </div>
-            </div>
-
-            {/* Add Item Selector Section */}
-            {(() => {
-              // 1. Fetch items currently in sector stock
-              const sectorStockItems = items.filter(i => 
-                !i.deletedAt && 
-                (i.location === selectedSector || (selectedSector === 'FarmÃ¡cia' && i.location === 'FarmÃ¡cia')) && 
-                i.quantity > 0
-              );
-
-              // 2. Fetch delivered request items
-              const deliveredReqs = requests.filter(r => r.sector === selectedSector && r.status === 'ENTREGUE' && !r.deletedAt);
-              const reqIds = new Set(deliveredReqs.map(r => r.id));
-              const productMap: Record<string, { product_id: string, product_name: string, quantity_approved: number, quantity_returned: number, batch_id: string }> = {};
-              
-              allRequestItems.forEach(ri => {
-                if (reqIds.has(ri.request_id)) {
-                  const remaining = ri.quantity_approved - (ri.quantity_returned || 0);
-                  if (remaining > 0) {
-                    if (!productMap[ri.product_name]) {
-                      productMap[ri.product_name] = {
-                        product_id: ri.product_id,
-                        product_name: ri.product_name,
-                        quantity_approved: 0,
-                        quantity_returned: 0,
-                        batch_id: ri.batch_id || ''
-                      };
-                    }
-                    productMap[ri.product_name].quantity_approved += ri.quantity_approved;
-                    productMap[ri.product_name].quantity_returned += (ri.quantity_returned || 0);
-                  }
-                }
-              });
-              
-              const sectorDeliveredItems = Object.values(productMap).map(p => ({
-                ...p,
-                available: p.quantity_approved - p.quantity_returned
-              })).filter(p => p.available > 0);
-
-              // 3. Find expired items in sector stock
-              const expiredSectorItems = sectorStockItems.filter(i => isExpired(i));
-
-              // 4. Combine options for dropdown
-              const returnableMap: Record<string, { key: string, product_id: string, product_name: string, available: number, batch_id: string, isFromStock?: boolean }> = {};
-
-              sectorStockItems.forEach(sItem => {
-                returnableMap[`stock-${sItem.id}`] = {
-                  key: `stock-${sItem.id}`,
-                  product_id: sItem.id,
-                  product_name: `${sItem.name} [Lote: ${sItem.batch_number || 'S/N'}]`,
-                  available: sItem.quantity,
-                  batch_id: sItem.id,
-                  isFromStock: true
-                };
-              });
-
-              sectorDeliveredItems.forEach(dItem => {
-                if (!returnableMap[`req-${dItem.product_id}`]) {
-                  returnableMap[`req-${dItem.product_id}`] = {
-                    key: `req-${dItem.product_id}`,
-                    product_id: dItem.product_id,
-                    product_name: dItem.product_name,
-                    available: dItem.available,
-                    batch_id: dItem.batch_id
-                  };
-                }
-              });
-
-              const availableOptions = Object.values(returnableMap);
-
-              return (
-                <div className="space-y-4">
-                  {/* Expired Items Highlight Banner */}
-                  {expiredSectorItems.length > 0 && (
-                    <div className="bg-rose-50 border border-rose-200 p-4 rounded-2xl space-y-3">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2 text-rose-800 font-black text-xs uppercase tracking-wider">
-                          <AlertTriangle size={16} className="text-rose-600" />
-                          Materiais Vencidos no Estoque ({selectedSector})
-                        </div>
-                        <span className="text-xs font-bold text-rose-700 bg-rose-100 px-2.5 py-0.5 rounded-full border border-rose-200">
-                          {expiredSectorItems.length} {expiredSectorItems.length === 1 ? 'item vencido' : 'itens vencidos'}
-                        </span>
-                      </div>
-                      <p className="text-xs text-rose-700 leading-relaxed">
-                        Detectamos materiais com validade expirada no estoque do seu setor. Clique no botÃ£o ao lado de cada item para adicionÃ¡-lo automaticamente para devoluÃ§Ã£o ao almoxarifado:
-                      </p>
-                      <div className="space-y-2">
-                        {expiredSectorItems.map(expItem => {
-                          const isAlreadyInBasket = devolutionBasket.some(b => b.product_name === expItem.name && b.selectedBatchId === expItem.id);
-                          return (
-                            <div key={expItem.id} className="bg-white p-3 sm:p-3.5 rounded-xl border border-rose-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
-                              <div>
-                                <p className="font-bold text-xs text-slate-900">{expItem.name}</p>
-                                <p className="text-[11px] text-slate-500 font-medium pt-0.5">
-                                  Lote: <span className="font-bold text-slate-700">{expItem.batch_number || 'S/N'}</span> â€¢ Vencimento: <span className="font-bold text-rose-600">{new Date(expItem.expiry_date).toLocaleDateString('pt-BR')}</span> â€¢ Qtd Atual: <span className="font-bold text-slate-900">{expItem.quantity}</span>
-                                </p>
-                              </div>
-                              <button
-                                type="button"
-                                disabled={isAlreadyInBasket}
-                                onClick={() => {
-                                  const newItem = {
-                                    product_id: expItem.id,
-                                    product_name: expItem.name,
-                                    quantity: expItem.quantity,
-                                    maxQty: expItem.quantity,
-                                    selectedBatchId: expItem.id
-                                  };
-                                  setDevolutionBasket([...devolutionBasket, newItem]);
-                                  setDevolutionReason('Vencido');
-                                  setDevolutionObservation(`DevoluÃ§Ã£o de material vencido em ${new Date(expItem.expiry_date).toLocaleDateString('pt-BR')} (Lote: ${expItem.batch_number || 'S/N'})`);
-                                }}
-                                className={`px-3 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 shrink-0 ${
-                                  isAlreadyInBasket 
-                                    ? 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200' 
-                                    : 'bg-rose-600 hover:bg-rose-700 text-white shadow-sm'
-                                }`}
-                              >
-                                {isAlreadyInBasket ? 'JÃ¡ Adicionado' : 'Devolver (Vencido)'}
-                              </button>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Standard Add Item Dropdown */}
-                  <div className="bg-slate-50/80 p-4.5 sm:p-5 rounded-2xl border border-slate-200/80 space-y-3">
-                    <h4 className="text-xs font-black uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
-                      <Plus size={15} className="text-amber-600" /> Selecionar Material do Estoque do Setor
-                    </h4>
-                    <div className="flex flex-col sm:flex-row gap-2.5">
-                      <select
-                        value={selectedDevProduct}
-                        onChange={(e) => setSelectedDevProduct(e.target.value)}
-                        className="flex-1 p-3 bg-white border border-slate-200 rounded-xl text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 font-bold text-slate-800"
-                      >
-                        <option value="">-- Selecione o Material para DevoluÃ§Ã£o --</option>
-                        {availableOptions
-                          .filter(p => !devolutionBasket.some(b => b.product_name === p.product_name || b.product_id === p.product_id))
-                          .map(p => (
-                            <option key={p.key} value={p.key}>
-                              {p.product_name} (DisponÃ­vel: {p.available})
-                            </option>
-                          ))}
-                      </select>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (!selectedDevProduct) return;
-                          const matched = availableOptions.find(p => p.key === selectedDevProduct);
-                          if (matched) {
-                            const productBatches = items.filter(i => !i.deletedAt && i.name === matched.product_name);
-                            const newItem = {
-                              product_id: matched.product_id,
-                              product_name: matched.product_name.split(' [Lote:')[0],
-                              quantity: 1,
-                              maxQty: matched.available,
-                              selectedBatchId: matched.batch_id || productBatches[0]?.id || ''
-                            };
-                            setDevolutionBasket([...devolutionBasket, newItem]);
-                            setSelectedDevProduct('');
-                          }
-                        }}
-                        disabled={!selectedDevProduct}
-                        className="bg-slate-900 text-white px-5 py-3 rounded-xl text-xs font-black uppercase tracking-wider hover:bg-slate-800 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 whitespace-nowrap"
-                      >
-                        <Plus size={16} /> Adicionar Item
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              );
-            })()}
-
-            {/* List of items in devolution basket */}
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <h4 className="font-black text-xs uppercase tracking-wider text-slate-700 flex items-center gap-2">
-                  <Package size={16} className="text-amber-600" /> Itens na Lista de DevoluÃ§Ã£o
-                </h4>
-                {devolutionBasket.length > 0 && (
-                  <span className="text-xs font-bold text-amber-700 bg-amber-50 px-2.5 py-0.5 rounded-full border border-amber-200">
-                    {devolutionBasket.length} {devolutionBasket.length === 1 ? 'item' : 'itens'}
-                  </span>
-                )}
-              </div>
-
-              <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-2xs">
-                {devolutionBasket.length > 0 ? (
-                  <div className="divide-y divide-slate-100">
-                    {devolutionBasket.map((item, idx) => {
-                      const productBatches = items.filter(i => !i.deletedAt && i.name === item.product_name);
-                      return (
-                        <div key={item.product_name} className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-slate-50/50 transition-colors">
-                          <div className="space-y-1.5 flex-1">
-                            <div className="flex items-center gap-2">
-                              <span className="font-black text-sm text-slate-900">{item.product_name}</span>
-                              <span className="text-[10px] font-extrabold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
-                                MÃ¡x. {item.maxQty}
-                              </span>
-                            </div>
-
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs font-semibold text-slate-400">Lote:</span>
-                              {productBatches.length > 0 ? (
-                                <select 
-                                  value={item.selectedBatchId}
-                                  onChange={(e) => {
-                                    const updated = [...devolutionBasket];
-                                    updated[idx].selectedBatchId = e.target.value;
-                                    setDevolutionBasket(updated);
-                                  }}
-                                  className="px-2.5 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-amber-500"
-                                >
-                                  {productBatches.map(b => (
-                                    <option key={b.id} value={b.id}>
-                                      {b.batch_number || 'S/N'} {b.expiry_date !== 'Indeterminada' ? `(val: ${new Date(b.expiry_date).toLocaleDateString('pt-BR')})` : ''}
-                                    </option>
-                                  ))}
-                                </select>
-                              ) : (
-                                <span className="text-xs text-rose-500 font-bold">Sem lote cadastrado</span>
-                              )}
-                            </div>
-                          </div>
-
-                          <div className="flex items-center justify-between sm:justify-end gap-4 border-t sm:border-t-0 pt-3 sm:pt-0 border-slate-100">
-                            <div className="flex items-center gap-2 bg-slate-100/80 p-1 rounded-xl border border-slate-200/60">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const updated = [...devolutionBasket];
-                                  updated[idx].quantity = Math.max(1, item.quantity - 1);
-                                  setDevolutionBasket(updated);
-                                }}
-                                disabled={item.quantity <= 1}
-                                className="w-8 h-8 flex items-center justify-center rounded-lg bg-white shadow-2xs hover:bg-slate-200 text-slate-700 disabled:opacity-30 transition-all font-black text-base cursor-pointer"
-                              >
-                                -
-                              </button>
-                              <input 
-                                type="number" 
-                                min="1"
-                                max={item.maxQty}
-                                value={item.quantity}
-                                onChange={(e) => {
-                                  const val = Math.min(item.maxQty, Math.max(1, parseInt(e.target.value) || 1));
-                                  const updated = [...devolutionBasket];
-                                  updated[idx].quantity = val;
-                                  setDevolutionBasket(updated);
-                                }}
-                                className="w-12 h-8 text-center font-black text-sm outline-none bg-transparent text-slate-900"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const updated = [...devolutionBasket];
-                                  updated[idx].quantity = Math.min(item.maxQty, item.quantity + 1);
-                                  setDevolutionBasket(updated);
-                                }}
-                                disabled={item.quantity >= item.maxQty}
-                                className="w-8 h-8 flex items-center justify-center rounded-lg bg-white shadow-2xs hover:bg-slate-200 text-slate-700 disabled:opacity-30 transition-all font-black text-base cursor-pointer"
-                              >
-                                +
-                              </button>
-                            </div>
-
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const updated = devolutionBasket.filter((_, i) => i !== idx);
-                                setDevolutionBasket(updated);
-                              }}
-                              className="p-2 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-xl transition-all"
-                              title="Remover da lista"
-                            >
-                              <Trash2 size={18} />
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div className="p-8 text-center text-slate-400 text-xs font-semibold space-y-1">
-                    <Package className="mx-auto text-slate-300 mb-2" size={32} />
-                    <p className="font-bold text-slate-600">Nenhum item selecionado para devoluÃ§Ã£o.</p>
-                    <p>Selecione um material no seletor acima para adicionar a esta solicitaÃ§Ã£o.</p>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Action Buttons */}
-            <div className="flex flex-col sm:flex-row gap-3 pt-3 border-t border-slate-100">
-              <button 
-                onClick={() => setShowDevolutionModal({ show: false })}
-                className="order-2 sm:order-1 flex-1 py-3.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-2xl font-black text-xs uppercase tracking-wider transition-all"
-              >
-                Cancelar
-              </button>
-              <button 
-                onClick={handleRequestDevolution}
-                disabled={isProcessingDevolution || devolutionBasket.length === 0}
-                className="order-1 sm:order-2 flex-1 py-3.5 bg-amber-600 hover:bg-amber-700 text-white rounded-2xl font-black text-xs uppercase tracking-wider transition-all shadow-md shadow-amber-600/20 flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                {isProcessingDevolution ? (
-                  <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
-                ) : (
-                  <>
-                    <RotateCcw size={16} />
-                    Confirmar DevoluÃ§Ã£o
-                  </>
-                )}
-              </button>
-            </div>
-          </motion.div>
-        </div>
-      )}
-
-      {/* Toast Notification */}
-      <AnimatePresence>
-        {toast.show && (
-          <motion.div 
-            initial={{ opacity: 0, y: 50 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 50 }}
-            className={`fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-3 min-w-[300px] ${
-              toast.type === 'success' ? 'bg-emerald-600 text-white' :
-              toast.type === 'error' ? 'bg-rose-600 text-white' :
-              'bg-[#1C1917] text-white'
-            }`}
-          >
-            {toast.type === 'success' && <CheckCircle size={20} />}
-            {toast.type === 'error' && <AlertTriangle size={20} />}
-            <p className="font-bold text-sm">{toast.message}</p>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* User Delete Confirmation Modal */}
-      <AnimatePresence>
-        {showUserDeleteConfirm.show && (
-          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[60] flex items-center justify-center p-6">
-            <motion.div 
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-white w-full max-w-md rounded-[32px] p-8 shadow-2xl text-center"
-            >
-              <div className="w-16 h-16 bg-rose-100 text-rose-600 rounded-2xl flex items-center justify-center mx-auto mb-6">
-                <Trash2 size={32} />
-              </div>
-              <h3 className="text-xl font-black mb-2">Excluir UsuÃ¡rio?</h3>
-              <p className="text-[#78716C] mb-8">
-                Tem certeza que deseja excluir o acesso de <strong>{showUserDeleteConfirm.user?.name}</strong>? 
-                Esta aÃ§Ã£o removerÃ¡ o perfil do sistema.
-              </p>
-              <div className="flex gap-3">
-                <button 
-                  onClick={() => setShowUserDeleteConfirm({ show: false })}
-                  className="flex-1 py-3 bg-[#F5F5F4] text-[#57534E] rounded-xl font-bold hover:bg-[#E7E5E4] transition-all"
-                >
-                  Cancelar
-                </button>
-                <button 
-                  onClick={async () => {
-                    if (showUserDeleteConfirm.user) {
-                      try {
-                        await deleteDoc(doc(db, 'users', showUserDeleteConfirm.user.id));
-                        showToast("UsuÃ¡rio excluÃ­do com sucesso!", "success");
-                      } catch (error: any) {
-                        showToast(`Erro ao excluir: ${error.message}`, "error");
-                      }
-                      setShowUserDeleteConfirm({ show: false });
-                    }
-                  }}
-                  className="flex-1 py-3 bg-rose-600 text-white rounded-xl font-bold hover:bg-rose-700 transition-all"
-                >
-                  Sim, Excluir
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-      {/* Stock Zero Acknowledge Confirmation Modal */}
-      <AnimatePresence>
-        {showStockConfirm.show && (
-          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100] flex items-center justify-center p-6">
-            <motion.div 
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-white w-full max-w-md rounded-[32px] p-8 shadow-2xl text-center"
-            >
-              <div className="w-16 h-16 bg-rose-100 text-rose-600 rounded-2xl flex items-center justify-center mx-auto mb-6">
-                <AlertTriangle size={32} />
-              </div>
-              <h3 className="text-xl font-black mb-2 uppercase tracking-tight text-[#1C1917]">Confirmar CiÃªncia?</h3>
-              <p className="text-[#78716C] mb-8 font-medium">
-                Deseja confirmar que estÃ¡ ciente de que o material <strong>"{showStockConfirm.itemName}"</strong> estÃ¡ com estoque zero? 
-                Esta notificaÃ§Ã£o serÃ¡ excluÃ­da.
-              </p>
-              <div className="flex gap-3">
-                <button 
-                  onClick={() => setShowStockConfirm({ show: false })}
-                  className="flex-1 py-3 bg-[#F5F5F4] text-[#57534E] rounded-xl font-bold hover:bg-[#E7E5E4] transition-all"
-                >
-                  Voltar
-                </button>
-                <button 
-                  onClick={async () => {
-                    if (showStockConfirm.notificationId) {
-                      try {
-                        const itemName = showStockConfirm.itemName;
-                        if (itemName) {
-                          const safeId = getSafeDocId(itemName);
-                          await setDoc(doc(db, 'dismissed_stock_alerts', safeId), {
-                            itemName: itemName,
-                            dismissedAt: new Date().toISOString()
-                          });
-                        }
-                        await deleteDoc(doc(db, 'notifications', showStockConfirm.notificationId));
-                        showToast("CiÃªncia confirmada! NotificaÃ§Ã£o excluÃ­da.", "success");
-                      } catch (error: any) {
-                        showToast(`Erro ao confirmar: ${error.message}`, "error");
-                      }
-                      setShowStockConfirm({ show: false });
-                    }
-                  }}
-                  className="flex-[1.5] py-3 bg-rose-600 text-white rounded-xl font-bold hover:bg-rose-700 transition-all flex items-center justify-center gap-2 shadow-lg shadow-rose-200"
-                >
-                  <Check size={18} /> Sim, Confirmar
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-    </div>
-  );
-}
+                            <p className="text-xœì}ÉrÜH–à}¾ÂÅÊîV1¸I-lŠ2&Ie«[“”rjL&“À€“D&ˆ\ŠI³6ëCŸæ4sš[NÚ¬ÌêTÖ—>ÿ¤¿dÞsÇâø†`¢”DZŠÀ×ço_ÎR’Ñ³¬÷þw›7ûOv>Ìl\$ôçù”²8¹\_mü7¢½Ö2ßø{æ“Aè¥ékoHŸÎŒÎzÉè¼·ÂûL‡Eß«V—W°oC[„°ù4¤õ73ò÷O"zJ¶½Œv¥_fç³øe<ðBºŸ%AtÔíŒ²Þ·{ÙË[˜Ê£Ç–nµ™Ê·çä—_H§×ëunn€IptœYµ~0Î²8"Æ‡‰£­0üôôÂKÏ£éÎ’§äÂò!Á!éž‘ŸÎâè0H†ÝÎ6MéIhšyãÄK~ ií™wõïWŽŸufgZ'Ä;õ‚ŒŒG>ÀÃv<èúøÿÁéÀR¡Ý´3GpÕvŽ\Ø&É¯¤ÖòÏúÝÙ¹6o{^{ÛáåËÙpx*¥ÙÛØK³îIãÓ5’%c:G†4M½#ºF:ûâJ–Ëì{`-²ó>’Žx¾ãÔ¥	>Ùï¶ e`I‡4ñB¿÷pq‘ÆQÖ;ˆCŸCìYJŽãš¬#Ÿ&aÑcãfØ&d¯ 2óXà‡`r¬¿&º_g5(Þ9ˆýsÕkð“wRõO~p¢úá¢ ùùÃ ÌhÒMðˆ&"†it”“§OŸ’EÄ¤]õ¸ 	©ô–ú|w4‚†µe}ÔØê’Âsfã5ŽÇÃÚ'‘GÂàŒ‰7¯%?Ú©+Xùl~³v÷bá÷d›/y›xQê² ŽRòû…z»õ¥IGÞ€ö ß*Ö¤þìaHÏHÑaš¯#9òF½>œÝW.éú?)ãsÅ¢ô†¤ÁŸèÓ‹þâ%YP6q¼,A>lï·´µôdéÐ­WñI0„QánüMÉÎÙ _ýÕ÷Òõ…ãeÅäÔ[QŸóÁQïôæL’´ß[>ÉAœÀÙÎÿÀ ví¬î¬| læ@ªŠà0„ÏÇïÓH½:µ®ÊwÎzÞ8‹5@ºÎÎ•øÞiïp†|ABz˜ãÄaèRJ†AÔ;í½_]\é(üzvL=-zXÏ’Ú¢¼ÿÝóMøïÉ‡¢·ƒðÏ°±&Ú]ª)m“L
+PËML-K¼ÁOÀ+õNÏµŽ	ßnÿÔÅ„o»w‰cÚäÇÀ4=ÆÇ·´Ð°Îp¾8v€cè¿wNòöÍ¿È,U`û±}&bû¡7ê²'ñ5ªç#JÈOôü)o8¥KqtœK Ëž°óž†FöRÇžÚxÒ‘k!)Æ
+ØôcÙD%m:SHA¼]ä’•ìÀaHÎ;äéìÀ'`¢:9,Qcç’ôò½˜ÿyìEY_’q¤'`ùPnW~âTKPµß>ƒõ%‰(C	=^_F1òæùù»¾¤r{²†L1î…ßŒ°áF‚î”À!ß[•8ä[Ã—m¾ö4)|»Àµ=¡o½NˆJ}.cnúÀ–6Wt½jºŽAÄÏ­Ôá<ˆ€ž{áÓ‹ƒH„l,Î‘³5Ò_l9/
+†€Ë¤§—ØÓŠ‡éY)Úí©VHVå¡6Ö÷¶Žö‚ƒZj1²†Sn‚Iýÿþ“, ûàÙãèyŸ‚8|ëf^66K7Ðë‹ŒF·Üi;HGƒÂÏõEŸ¦Š‹þŒ4çAÃFÀîéÍÆIÄE¡üY TŠA\]<5!h"È* ý.æ|
+,/íöV‘u‡;»;ÛµÚpÜÄ!ÙÔ*	o×¥c§žf¢e*5& _­j×°¡¥’"„G3$ÍÎCF¿à±_¶â0NÖÈ§o.öw¶Þ¾Ùû¸õæå›½ý÷•]ìÃeñÓðµOYs0å¦6#ˆ³û¬ëyñ‰CÄª¾òEaÅ«Êh¡µ¤m$ß˜å%¶0ßr¦gwçõöÎë·;L ‡ãç€ì­.r@åß¯Ïé!¿Ñ_\!½U?;¯>îïìnîmnm¾)ú“QHËÎò¯Boù	ºÛÜÝ{óÃævÙÕA8®:b_„nØ÷IæôúíÞÎwïÊµ+ä ¢Q.Ê»*nMÐÛÞÎÖ»}aJIœVSb_„~Ø÷	:ÙÞùáÍËw°G] ãÑ £ê1ß³MÛr>šÊrVýæ»©_ØGí:J¼ó²!öEØ!ö24sùÉ	Ï™ŽÙÎ+Âo\ýÛÕ¿¾AÕšYÂv~›µIªÌKâºõbÛÕ·-m¯ØvõƒsÛw˜(YŒ†	ÊQ‹	LÖgþ^ 	­d fäæsÎðcà³%Îmþ¹âínQZšý85®ÕÔ¹W]§Òføã8Í‚Ãó|…ýpÊºS®5Mi¶Ÿæ+¾M3/_Å¾Öùª¯áriTãU—nsó#_.·Ã’­à’õKÎâ,$Mà8òþ“þj¥Á‘_K“÷¬.Î:<¦&HqSæô
+
+<é´V?&tç¶›ý<ö"Xv&!å›ÚÍˆmÏˆ¬™ë”gF¹aâ7dº/ne‹]Â+2àÔg˜e0HlÏÛöVðmâ¥ÇýÜp¾ôXc8—^qÚc‹D£G,~Ö#½²W­êÕ*zµjÞ‰¥jínS·Û_tÐí®?BúßrÓ~A9
+5Þð (Q¾¡+úU*‹KÇ=µW
+1·ûétÄšmlÍÔÁ"’žOOâpÌ-G×Ò7š»W·V7@üa)¼¹©jkn:\¥|$Ü3‚Súçøèî‡ÓðxœØÞ(‰O
+•óŽEýSž‰‚tì…p®HÞ(%hâËâ$Š±#Üé$ð‚”x1ZHc@#ês¢sºJõ{}úW¯OXðÄèÑt¯Å—ïß-þ½ÿ^‰¯ÄÿÂ•ø÷ZÛ/[k«Ù¿i+V§­Lý
+¨JÄØÔ¡òsòá@8SJœé°õ	£¶{ÔKãˆ…¨½f‚p:¢ƒà0€Xd	X»W4ƒ<D˜DÇ½žYºîõÌÒ%ê™AÈÞd’ûõÝGeó½R¹~Ý+•ïRùötÊ{1yº58½¥r…F*õ²/(íî ryxÞ“Ûé’…·ïµÈ÷Æ_ BôÞ×WÙÿÝÐòpv®saè*22 :²Ïo1e= ò^a¨íàkQ~n×½—ê½—ê½¾ó«ÑwÞ{©Þ{©~Nåá½ÆPºî5†Ò5mÏT=3ã¢9tP¹*5êÅ?Èå¢ƒfQ­[dŠ¤[,øA·Xr5×Ð-VÚE¹—)›ýuûŠÂšbÓ­´®àÀž¼æŽM¨þÌ*áºRøFö­½šØ}ãÖ-m}Mªd‹&àëòLþ!\ý…xAä{$B½ñ!ý‰TîÊwFRùs¤+“è‘Å×¿EòãvŠä£˜@üõ¹io‰„GkÕ×>c¡+`³¾G$G°ÔW¤)4¨­¡ÑM¾_î£ÆÄª½vÊ¿§No¸Œgà¡î(5Éeà%Àå#‰ÑÒ+ ß&À}ÑÑ»æ!*U/ežÄýÔcÀunTynõ=·q³–É+ô“Þ¯Ðt®Ù¬U÷lÞÇúÁxhP.7¡;ÌvÃs”ùp¶ª@8¯}êí@bÊ—‰×?ú¨‡@´¤óY<*!)t»cs€|z6kTíbßL·‹oÌ³4qv€]!èI82©vks:…uÿ7Û+Ä£ü+×$¯Âp¸*§œšÁ4—u` Ýl%ÈÈ’žÀÛÈ»â(÷–ÚŠÍ’Çf>BŒÂÜZ=xa8Âv…±)¬kÍ4¸Ç½¥ùUõz²ß‡{À%¨Ð—ž*Õ/Á1ËŽ•ä¤~	´(éÓ7fx¿øáÙüÏÙ9yFÔ³ÏÄö>6K~O‹ÂÈ.ÿîS«¬iÇ|}å¢´ºf^ØÈ…ZÙÌV`êª¹0€ªxØÊ\¸ÅZO`N‘ŒÂA(’’•ˆzfã]ÄpqjQê˜ˆþG]8‚uË×¦œyŽäFÀÕ']Ú¯öéøHüH:>ÄB–ôÙ×4òƒ:”H™Ú¹b—@*5ùÊØ¥Byß†aÚ:¦ƒŸ¶‚d {ÔÍ-w†gÂÄ«ôhL?/ÇÄƒê@£„æúX§êïY'Õ’Ý³N_ëTÂ{ÖI|gj¬Sex½gžœ[þ"™§
+Å~ñÌ“õædÚÀˆž~¡(…·u¨ãs×ž;ëáßžªaQìõN{}àf
+ð„ÚÁi3 FóíÍN)d
+¬eDUì[¿Æ¿©p^0Z¹¸Á\+62–aÿ50[µÛjxV³„õ®ô©§ÍÆ®šKï–ÒlGê²¶7ä;‡ò'ßü‰fÝ÷œž~sÒäÄÃ#ÓítÌ¯lç°+9vk_Ò’:»‡Di‚sJ¨®ÃÉ[^4 ! ¬%Ût{­·ˆ¹æåÖó× ×K:¡w@Céì†qAU®$jÖpC„£×Ï³3”g ÎäúëJ3Œ 3c&~¾w3ºGN¼pÈ±æS‹€KÝ;~¢ÉÎ×ýÞd?'Še™Õ¡´óUøEXÈ‚ÅWv®.‡¤Q|–ýÝôacã }…Ì›[ƒÕ	m½ßöxeŸzÉ@r4÷RÌ
+D	F «P2ÈBŸô˜qZÄó‚7jÄnn3Äâå µx€æÐcØš<ÙŽl‚ø)1>ORÎÏÏ›˜o¨†X†`”p€]!%IvÖÁ8]‹Çß¢8¢ù-tîõÅ/%ó¼°$U¨pv`ÈOnŽßù6¾¥ÉÐ$¸ a;ö¢#x­K¿ª½z]:Ôùˆfó¬ƒv›õ'¯æ˜&zã)é›=eN=¨äåÄ«Ã(^Ú#² J\ðR!o÷ÛVÎæÁ§?¡²œÇ@z+‘ýœsžBA´\ˆ×Ù¨$éºÒÄ 6 TÎs|‡Š tìÑLe=esäk¤ø:€Õ=Š“óêNàŸ/7ÈSrqi.ˆN–ÌÇòA ee&²AgçãdÇó‡mÅ{°2ÐƒÚœÞLûòÁ¥ôæUœá+Áïˆ+ÌŸí}3Î€µêð•	æŸX–ÄVAkð8ì$_S ìOÉ›ƒà( íÖæd.5TlÓâŠGq2dÅòö[ƒÙù „c ÝúC$1;ké6“¬ÛõæÈ]õ0²–­x8òÚ=àÝÚZb6€0–Vm‡ÐR,›¤°ƒ
+Ï¹`u·Tù,=]–Ú(?Ë&õ®*/‚WKJZ®j=Žj]˜USü²Ô†º4/~¾‚åú£º»„:Ç xë<˜F¼Y»O#g`xëvBga³ºøa¥g¨ŽŠŽÈÓÂí™Ë”pü"¿{ÀpÝA0?Jb<ÈXÁ<™Âés)† ^tåVùL!æÊÄmry(8¸ƒ`Ž}ß)±ûÈ¹$xoÖi2—„†ÀšO8‹÷0i&X²­?¢j>ôÀŸ#â¬Ö„)‰¡›¤aÔÏ(99£ª l½UÚ†J¢#	X ²9™Kx2;k°øÊ¨frÆ¢)B¶–ßEÎz
+ùð{Î )*Á$á„!Mêp­X)jáe	³AÁK¸Â	O»š²û >7r´ŽÓB€|èä!ÝŒmj©qÛdÔj5Óxßål× ZétîRûºšf;´Jq*ãçBkS½¯P¤-ëµSW©äAôh³ßÂ"ŒFmJc–H…~-ure£x…í-¦ñ:bq]BT.
+wðzaãò€'1kþ6³°UÃƒg’¢1:›õ<xƒèéÌ’ãçnŠ,*óZÞ1hDÜY—<®¯ jî¤”¾ˆ²º–å¾Š—ia}>EOu ÇË<æÝY©PøQä;Û ã,zâ(?ÓÚçb¥jù4—¿Õ"ª¬BÔ‘èd…ë6ÅÈ¾ÖÑAn…d'wÐ—’ÕE½ªõÜHÆÓ,ußŒágÍ:vìÃK¨g1$;œºE´â9*Y%-÷fx„Ñ?±8Ï`8Šf(z¦D‹=æ–ÔÛ¹Ö8F&¹ÜéqL¸¦Ä0<Jq|0,#KÕk^X·€¤üqÑ¤XZÉ+1•ºAÅòŸÌ€"àXmü²Æ
+b@OÅÖrý5b°òÞ`œ¤1JP¾ŸRßî‡Çãº“ÓXüU‡fÿè$€]ˆ&¢µ}c}ß;¡…Ãé"b>•·À¾žx	ÙDäŸB`Î¬¹º°8j—Ö¼Y/˜ªÄÆN0ÕË_ŠÌªÂÆ’j]µ÷è!`Ÿ|ëEÀÛ?2‡+…Ë¶’AeÎ—ƒ:ö×Øç$>ÅÏFvAš9D%žNU½,î”ÄÃ* qÀX/N¡³;«žc'ÕÉQF°ìG:\vš¹áÊ/KKNJ
+ûìÕFŠÅE¯Í?ÁÞ\Ãû\—±¡!^Ë®æU¨²LËç7ô‹OÕzöõÚ !M£ˆ4¬ˆ^–_^Êì§”3¸Ìý‡^0™Ñ/R,¼âSòª¨‚¢áq¿•+¸Ú“ KJñÆë-‘Tvô´ÎÿßQ ÔA ­ââÇÈ¢Ä	Aƒ]i*¡*§æ(Ø–¿³µ`¼pŸyIpˆ~ô>ò	Æ*‡²<·qr˜èO˜ùR¹4-*ÈhU÷NÚt˜îv‰ZmŽX˜z$Ÿ4¼´Ëå½fUj›çÓîòdÚ…“>Nc§7¾ò¬(Õ[Í”(Ìò×|S©óöQŠ;²3Ù¬ä”)L7¼¸IäfnûÚL…œß:|TÊee·ùáU0AuÜóáGF‡°YpÅ§‰7ÂD‡˜ždHXØ7Fâø€$Ç˜E˜4çÖ¤ÛMöI‰êXP«-ØžDDLŠó£f{ÔÜ4’âÊÍ™üóî²´´I‡õÞÜ4ŒKÎÀ¥•uªUJÇ¤LÜHðØ„gÞéˆG„oÄeÐ«0†zÇæ,]E	]?ÞˆÅò'í¨ÌÌeë(¡?²U™´£2MWÕQ£'ƒÚ’º Ô©úº’G²áMƒ’Pëñ,3LüØ,q†IÄ!¨F­(]8?—2pLàÙ´³/KÅj™ÂîT'Ú¤â1Ç.˜•:–ÈŠ:ëƒéuôápoaÔ!a"–ïYâ-¬‹ß&Bä<	š¡S¼¡9ñK´sŠy	iùWwPÛbz´/	Ìv‹
+†S€°j¹ ÄDbp\rlZ3Çª#x	!Ä_mæA¼Ó 2É°}!±÷`F´ÉuÝ ì_XíÑÁ8X0%q}Ó†)]N°:ÊâH˜øÅ}z4DòÉúÆaè¤¯ø€uÄôW"È³-TŠ=&! .‘\{æ)¿TÇ •lUj&g$‡ïòHªœUN;J[˜—œGƒã8Ù'f'™x•¥æ«‰k­&+¹_aQÈ£¥hx¢fŽEjù¨«²*å%ß1]³k¤SSP	‰KÖOõöå§ærª ÷U{i%ìþ‡"ªAÉ­Íç’êÇ4öê.o¿4Î¯ vx¥iTWò¹n]Ùtê¾)€ ap„ô£ÏÃÀz§Ñ‚j¸_x°ô,€!vBztõ×¤èkãM[=6>È`Y‘ê¡õG¡³bfµOÝ‡*‚'Y•\’x¸¯/)µN•£ˆ?¨{¨ÖDÿÒìêoI0`cu{}ÞCÖÞÕªl 	`€áÑ1Ú@¼È÷w‰Ñ" B°¤ÀÆ‰YUóáˆu»˜™dÌM%–”«N¾ÂÍ†‰Ís²L„«9[SR«êZÊéèÝæ…åÏ,>yJ&K‰¯÷—uˆ•Y·æ¡‘JþŸTñ¬«ÈXxÎÂG£fòmJd¸í«u„^:xÚFæ8#Ù·Êömølµo¯˜<Ó,NfssŸ8¤:R5Pcè[—`mÖÒuD#c'¼4ni“B[«Œ«ÛM'ŸukY&û„\}ÒuŽî*œ—ÒaÀ}ßæð_ÿòIÛÂO76-SE§e÷ŠNÅvÚ
+:ñëöëøØú½Ùj>¶Þo¤¦¿:¢ø/Â®ÐbyMÕ}øe­ñÃ¯©W6·­ ª¾ù›k·ªªrÞ¾ÕéÞfÕp‡Ê!¬%2S'SÔ8/4G%>_D§¡Ö#äUœ'ñZs.¡v®KdE•æ4	åSfRÊtc¸™YæûÆY2·øalãªP˜ZLÓ}[GsMZì¾ŒWrgÿ,uÜ\Eà‹‹oSWŽù˜ùq/gK7§iBÇ”Àƒp\¹¹C'
+d!`mÊC·î¨6D8mÔL}ä—ö`i‡€FË²º,ê®Q%¸-JW+V-’äE^.µú¢—–øQƒ}Î¹õ†wÔªle‰{Ñ§@SÇ°LXŽÖ d»g‹lè–úÍœÕQ-47W]Þàr•zEï…Ëš4!Ö˜¼ª ºTÀ¦®i¡ÜëÄœeÂÍl¼ËL)BÐV”aÛÞ €îg”Þs3\a˜Ð£ Ð=ü&9Ìz|SeÃ¨ù»škÊ9zÝt
++ƒmà·¬‚ä!ÃÀö…HoP˜¦’9¨ô#„Ž“
+˜ŽÆ^â³ìãÈpäîØ]–'Åø€tàöãt–C(ÛaXbW ¼µ¤%CW	Æ	†IðÝGà#O	œ´Ç¼žÙIû`7`™~¤@Ë¿üBºµ[ìX<÷’áÕ¯ƒÀëð¼QRÂ¯³³ÆÞå„SšÇô©„0ÇJs¥œÓ	¹*G§LOX»»pÆ¼#:5ŠÂˆª0°ÂƒM«ƒmÔÖë:Ô“ïÇ½F<rX€Å?©£8M±x`ê…ð{5‚9§¼º+ñrC£A?á ‹@N@^f!{×àqtÀ—CþD	Ñ¦û§g£€gÒþ™½kÐéó#ê%ì…söîëòkñú-ØJyÖÑ(pñ)'ƒnºýkªñíŠÌbñ­ò“¤Ó[Xm(òd»»Œê=kÃkâ>:£´t¬4•¨*cŠëH:J“‹­Æ¬tT™¢«k2ƒ
+jnî²IEÆ¶Ü}[,Fá¨,d¯”)o@SXQ.ÉäÓT^ËäSŸÉ­j1¿y~ÎŸMkýjˆøú±ÏK‹ucg4ÊW³MFí}ê¢±dSÙi’½f9:ª¼û,düÎOs+dtv«-XÄê—*Çš;¸à^È«#í&W;yzÊK?õÕ–,frù,yÅ‹_Š5oµâŽ+»3$ÀçÝA3Ck‰Ö:²ï«BZÀ‹çòöšŽèÔp¹@kÊdN9úGAöqH½tœP–/nø–ÔèÀËÇy*gŠ´Á,æ/ãÌyªiˆ=ƒµÕïÆË…2°y8ÿˆ&|&ÍÖïa–¤Î€dÀÃ ò|O£	ÒÎ¼8úÍÙ_|ª¦ÿ@¨:’{§æ	«ÓA;nåƒP´Ùaš«h—oÌt`wTP†¬»ø7ˆéIs1g®ÅkyÂê‚ãsyµÊu&^—W‡ÞÙ÷½X¨v¾Å#ö¢šªÝ‰À%«*¦_€ðœál\"ýµmK	¢Ê>½*ô„¹UßLzd>á0G6aviÝí[ŸœY*wè	ÌV:	ºvpr–¸%™»™\NNà Þn†\ó¬µhÛ£Lë¾®ÞÌ
+‡r³J®¢ÞTÔŸÑÄ§þE—†õFŒ0*Güß²-¦tÚ¤²Ì0)3ÇÜŒíØ-zF­ìAÀ:>ð‚³˜+fÓü/Éõ·´4º|Á¾ß¢gÙÎë·{;ß½ÛéÜ;‚›ž¼}Gð¯ÌçûkðôÎÑÔ×ãñÍ½‹
+¦›Ö\ÍüF´(ÊèšÈÖÚ³1 NÝ­‘O[IÀjo+:³³¹ÓÚŒ»ã¤é^ÄêùçÜ	‰åj®ù¿üB]*Ph}è/9"7X$B ½zß.­;ÂÁ‹§G[Y÷ª«‘àäÕÚ"æ€_Õj®£3˜ó{…D¡t¥Ç”,‚>;†Á7ýêÛt´V­ü™-ûgÚðÒúårLñrS­ª]»åJ_.\¨áöäŽæÍe¡ŠË‰[«áew u¨Hñ95S50•TÁôIè+qªºV5ÕD^I0UÔ%6w=Ä•'žãàÆtO4mø7åØûƒ<¹L]¡Vã¬¯\É©2PŽ9ÝŽ¨
+LÄôù.¶ºJ°6Z·&*Õ`¹n/ŠÁ–¯5Ô‚0j®… É;÷~ñÃ³yþCÇYkòáé®ƒ„XuBK9¼Ð?L8a-ëÌ±•8ŽOßÆ^šugÞÆXM¾ôLÂú^!“¯~Å¼­Þd˜Ž%yÉE_t@œŸ™#3AtÏ´ O‡e²/J.,É„ZÜ)êk§¥SmLQÃ:£ËÙì®xUi•ºØt¨K¤ÚÔÎ^/„ Ô5šs2×—Hà¦±¹*àQ£y
+¡fåT¢	ö‹ü@8è H=‚kVª¡«A8¾ú+*»3ÅvÍÌ2GÔ 4å‰þÛWé…\ß™»‹~Æùm¡ƒê‘M^R`7¡)¬1-žƒw>—œhž1ÌS!SÊâºMßg?ÈÐÚ¢ƒ3`Í‚½ÇT<1Aøë'ñîŒ„	VÙšàyÔ{(²¶ƒP`!EÃYœ2'E¨£]¡ÆBþÂ’ðøRýq•j?ÏoVUR(0ñûæÖ2Â¤Ü¥Œæ5 ß?Y<9þP¯-bTy¿•šŠº*QZÃáAïq¨3í©Œ ËŠ|wBÕÄ~>¥œújÝ¿*}_QôVÖ÷o¡%N%^ýg˜£Pàv˜	à„þIqØÔ¥@tr“:ü¯ ìî!@½ª®O­ ‚¢h¦äm$×AÆIZ§•Šu*ò(öWšºe9¥™&VSF•p¹Ž¹ý	3n±\¯®sGfìR¥EnB"‡­x8„µ}ÐÐO	R>Œ½pJ$XUÒko¼_îãQÑU3ªå°^ÂtîbJëð¨‘Òú¡‚öÕ‡¯Á=Thô{nE¯ÄR ¶­êÕó¤ÕõÑb¦-teªÉ‡œ	Ú²•?†@·`aa€j¤ñÑt›Ô€C~ñ²~8MQ?© ÕëxÈº–sP·:•
+Ve+—jULŸ®K^ì`þ„¨ë|¾X5^•£9–ø¶x³{Õ‹os¤hhÈÅÁjF%½WpSàNóÛ`Ä‚-îw³<S7%=3šÿñšžæ­Ÿ¿`GCïä«ê 0‡µö®µ¦p`O5»ÿ|€_µs|â,›žÏMT­;NÇ$º6OÎkùe×zx!Oôç«}Æ$ØU§®5ß[©WQíS[°ù,	†ÝY»Ò–«8>4í‚¼r‚ým&‰w>eU°at´`EÍñç9¢îêÃ¬½´º	«±kšöí
+ÅÎ;([r~¬~Ðs¾Ìü¶	’Œê–:‹¢¨ï‡y²…tØÚÆŒê	±\¶¹d¨MÛa,¾øë†¹"ÃtZî:kPu—Ÿ´½:2Ò2™Lp1(73²ÀW{ŸõxÄøkf…7.‹iãçöïúÆÔ·)sÍúßýÏLu'µªFâ Æe1µvjµ°Ù”æîÀŸšÚèN³Žo’àˆMŒ¢	/Ýi	ŽùQ IMÖñfêˆ 2:W#"fŽGø@g¸ŠuÍl°b ^›±HíuØæÄ›Ù`•õ²˜ìà×VøqÄL03Û±—çÖ¿®ÇP¦J°
+Ý7v¿¹…â¢P‡¨êcµÖÌ©OØñJCé“õ8ýÁšÙÀÉy¹<¡VnEÙ£	£Ûqy‰Å=ßGØÅuÝ‹O­Å”›®9–*7¥‘KÉÅÐ@ûb…ãÅ‡í%á5 ,"zî:¿é¹ëñ›q–ÄÎ”pl©hl…¯ReÌm5jhÊ°l´=~E-%nDÔ?@ÒÛŒÖ³cêùZj•%=é¡¾,+kPRª–»l
+	uª*D½Shà1kaè¯å7úL?³Qh¯pƒÖ²cý|%·é½¢°Ù<¹.à&zÚ[~XÎv‰O®ÐÄ±Gæ	š8Â[uŸú]ÄÃMÈÎð`Þ<æ‰VœùÇúÒ@äð6dT±ð¨òÏJ#{Ð¿Ïüy’›Dn`øUBUûà‹ÁW‰WC/òi½ºúktCw‰>VÏýlXYœÙ(¢d?ß*<F~Š^ý{LÞE7q‡kaê~K4DbÁ@%Ö³ƒØ?×5*àÚ ôAdîWs$ Ð=›5ÊH´In üGFîõÌ¯-gßJHÌB»U…Œ—ÑˆS]Üœƒ3³›rªËMG—Òº3âœ½í]¥¶ÌaQ²æ¬+ #x`;‰^²k°O<zÄIG„W.›U)p,Ï×Ä³ñ#
+.·[d“¶Õ™#-4ÚF5^(£|?°Êvdä˜†pR‘]NÈ±lï2K­™©ð.xÕùÏaV¦?ªžx©·š}·¯ä©¤pî7ñ¾ÿØáP©†£¬9g·­ª“<VcQ‹rv*AEJÎÖ¤kî®çï;Ã#€¨ÎpÀþ¼{ÿò;!þûw52àpLNu³TÃ£Ø›—¿»æO¼Z{¬WHËü”¯™våÛ&\|\ù%dpÄ¶ÜœrÅ—oÏÓÈOÿ{w;¤ã`ë‘/qJ€sJ:îÓ0›>,=áF·éÊ†Åõto×uV·Ùâ’©ùR•‡	cpé‹Qø•bE(q&†Ð°WUñ 9.xRËj&;Õ–ÂíT¸ÆËü¡Åétñ›-.{r{§¸öØ—ƒ¦·ãÔ;¢ÃvXýl9¦	KúÈQöjõqiq^¼_|áxÜSz£x;¸Çã¶—¿<ŽýÃã‚Ú¸¡Þ­U«P¹¢„úçEæîGô³ s‡‡Œ]­/dZÅ1^ÓUL2ü’“táàÁ/G¹ý6¥c˜#Bï¤²,#W’æG¤	<¶ÎN®bs­ù¶´ËÙª…d2óóó.îÊfvßì½ÝÜ{±I–WVf6Äo7¹õæÕîÞ‹W/¶ßÌlTŸ'nnóÕî›—›3üïÄÍì¿yùîêß®þU~¼~cdwoóMò×ØŽW›Û›¸øwâf¾{óÁ¯±‹/¯þçÞ¶‡ü“kSv×þ”‡š°1:é2ÝÐ¢#Rü’†V0xß)lWÝw¯g‘Áßõ1pÝÝ­·ìû–œy¤»õGöíyâ¥ƒ˜tŸï±¯›ÃQÂ¯pZÙ÷oƒ4òŽàÆ·ûß±;Ñ	cÀÀÝ×?°;ßy!¿v¿{É¾îÅ!|Ù{™÷@Ç¼éW­ÐÝWìË÷ã ûgÞèË€ý”7@Ó¡Â+[âÓ´«ÎÕÚqI²ðŒhÞ–É¥¥5Òaftk"¼vŠ\×¼°ý ÈDÉÎ£ ÁÞDæ…ßMzÐJq!q³\‚•/	A¦œf¿0)—Žm{uÍœ…2ÆAª² ã7gÌ[#&ÂÁ’"|›°Áêäch[ñyÂÆÄ1³!|™°9ñ ³ |›°A	sÍlH_'lRÆ}r(~Ÿ°Q}É¯¾LØ\‰~g6ÊÃGÞ{üÓ„•˜f£ü8aSÝÀ::Åç	+Éz¨å']v$Z°äøgÂ&~žÙàÎZ]?8Âºr 8Ém»xðbœŒ‰Nfñ6¶ëšõz'˜w Kæ ;ðBTîZÂœøÕäLÑÖ)¥ÓUÁeæ²-UêÄÉ¶“Û›»2=¡½Æ´”Ø-Vïk)®«ø™ª¯‡\^.À¶y0È§3K­¼3¾Ï¬²‹EÀ”¦9ôöU…4¼ã«–ŠdvCYÃúduQ4ËT)fD4G×˜Ñëy’‡E:¦YÌ¬‡iÜ•¿NËÕ£Þnãp¶½ÃHa4#/Ié‹(«Ç;^Ç=ä:'añÎŸ+²“N:,^ó(¥Ì´|AÑFíðÛå`ÑU6œIA–Iöâ/Óy±Í/Ü¹3é |B÷9tcýê|æ¤8S‚.±Í©úÐM5+¶¤Òz†ÒÎn`jÅþâÂÙù??H1ØÃ/\_ÓAU+(£y‰;¨Ê%nm½=cU9§µ< ãvŒ°PWez°ÐèÔ`UŒ¥¦Ô	ZæÓ8éâÀÑqÆì
+ÀÓÁOñ™‹¡[›er\EÜ`r”xçŒšÖrH¹4Ž¹>h·àòÔ]ˆÛÉÁºîPÞJãÐTwDÐø3ÍlHeÁ\3£kcmÅ‡,6ÿ	Is3ŸTíµ¤Ù³L3:Ör~±œµ8·hE9_¯˜H&È’`@e²º?-_µèÆ>>cï.0±ítLîÝÖ1¯æ’çG!º[4vÈ…ÕÒÞñò@°+,c½à^ÅîIe­ØUY!f¶­Í:ÈBèx›?áY8c¦°¸lì»ÎÝò5ä/8ú_5¢™òT¯dÉ­t£3d´wÚ¬AGB‡°eBwèPÃ«VƒMµëÁG	!{lVRàæ“·þ6ñÒã~°pË¢^“ìê#óôî€ðŽ..~B.Ü1å¢E/ó0V¾"\MÕÅ…"µUÿÇJÌ%xvv–Ýây÷uþÒRª^G¢È`Æ¾(wRµ20Ã|.¶i*“,*§
+Ôðç1ÝÏŸç3Lç’–I§2u²mR¾,S—ËQ\ª´zfÃX¦hÕ$¨zˆÙŠTÆKËY+ÒºÚ’j/¶¼h@C/Qlˆ6ûƒm¹R–³Uµ\õY¿ïæ­Kh¦^aúOú«ýÆJ|@×ù§Š[í;¤rFhZv[Åõ}ï¤¨aÞg©ÇÉss°â`RÛc®±½äéOœ÷@ÔÖ0a®xOe[zµÊ%ÏRVîÅñðEt‚NÌÉù´“g¿¸øákJŸ=ô¥J™˜"¸Êœ=åäØÍÁª4ØÒép/·¾›0åL³¶fÎ(ÏÉž°_y#ËE6†înœd^ÝSN•`»@j¤Ù„¾}êSL‹|›ñ»9Ç?J‡³1Vç¬ÔšdKŠR³7”œŒC”áª*¤Ù÷BO«?©Ï£–µºoH;{±÷æÍ«}^w	vÌÀÀxLh@Çe*€$/_€ÂúÖr¨ªŠÏËú²#,³7«Õ(È7©Ð)/¢„x}4%±*ùü·N^ãL ÓòÎšRüå·:º*fÚú•5±ÿÆÌ5gÙgùçA¿&¤Låœ:C=/o°ò¸^Ú ªJÂ2(SçëS4ªOM›lšùŠUI4­ú›e"å“Ù&àd5|QÔfO±h8]5ð’òq…W,®Zï^jhEc®£1(:K¼xd«Å•S,©A¶má†NÔ]»Å›¹†Ç„Ê˜&Y=t–ÜõƒÑ­ÙÉ“Zß·fÉòJB\ˆy Ø×Î<íoZŸj­ÎB[£¶!­¬¬,.oÁÑËSÌê“Â°ŸZ"m'r¶åŽ~3Â¥Sø6¯²s6¦TZ³Ýíç˜cÔ0p°CüŒK5GÔ‡@í¶mQ½¥<ŸY$.ðêÔ%âBª„âï(’êm@ë,TözoíV{y÷-®7(«äÍãÍûzQ`F/ðNZ*J!ÆÊ ­”~Õ»ÇÂ™­¦+ê?Cñ£ ec®–Q<¶FèYñŽ¼A8àƒÀmM~Ëüãõðã¤»MSàcý«¿‚h6ëÔ>î5ãÉ4}íâÓdlžxÀþ6_k¶ïÇÞÀS¬Iì{XhŽõPd=VµÝ|£ÒÔ\º›:ùgeÉ'a›•eŸ&†U=eÑu{¬Üª®¦KCÒPAqù°sÕ1ýHxª8Sy?eýÁ ¦›šÉoé(ŽòˆÃ¢Ààša±Êš´—˜Ç‰eÓU7­ÍI_H¢ÝN˜DÕ2ÅµÀ/­>Z]^Ùù'ˆ/Ô/pxÆ^£÷Š5TÙê»lI)ovêpL%¯—·
+#OÎ5áŒ_øÎr• ‹ð7]kíLŠÚ<
+d<ä~#.ù.£^^RÙ˜3Y´}•=E?øn	½ªN0é¢Sîiú²²™×›ËYÒ#5o£uÒz×sô˜þD*‹?hMÆN'¯æ™.?©Ê¬.†â’±(7¯J„n<ªv›ÌSÜê1ÍiÂÍU¢)+
+¨÷ûì¼ûÊËŽ”ÏºÀûeÒO DK&‡%	¹,õÉ1þ#Š˜œŽU®]}%ø-ÌWW;+*ôÚYâXiy˜[ZÏqrÄÐ~Oö–¢'Nº1›ßŸ-ª*G#òÎµÁ±pÐEA ¢Yt„UùÕÓÞrŸ;2CñXÊ'<1Äx­
+á-ùîQm:D|-è]²õº§[: µCù8”¿ù3ù‡‰Î¤–éªU\›é9A1S}0°O^Ñ”¦ ¥=&ûtèE^j*9iÃ/.ØEòÞòÂÁ8*6„ß?i÷–¼€…ãñ*ˆö3ØƒYC%MBºöÜŽ<o
+çíˆ^¶4È9ÁÃ òÿ®Àg2¤Ìôâh$Àvl†>ªSJ
+Ï÷°ÞÉÓüË
+ïp#}_²‰Ž6§9Ih6N"±Á²KÇHÀ€aWøé÷äñ¬*<o2MÙyÇPòr¶«Ë®ƒCQl¼ÁR¬§zÅËÝ–AÂ ’ÕyƒšcÇ„wX[(–!Ü¦ÁEIú Æ>ˆ¹ñ8Q2&ƒ«_ñôÆ¬Æèðê×,°Ê)}2dH¥û&Íq
+fÃOƒöÑSÙZ[–­~O-i»ûEOßÚ}gÁ	,—«¢Z±õˆtØ(Õmeè§Ë.˜0€ùN©Öëv}Œ‡±9ë’ tcA±8éîïl½}³·ÿ~Ñd^4dCªyZ,7ª_¹{ZÔ•”ÅŒ&q¶*,º8Zä”MëhabW¶ø@'$>3àäº`Ü0Â˜1·×ç–|wV
+Mú
+,…¤´lÓtà%]¨Œ"ÖvX,cÑíÝƒ·Ò t×î>Ð/Þ¸!¬´1kØBnûÒÁŒÏÿÎ™¸æ_¼ì®™€‰älc0MäeW¿&c?Kƒ)ì†nÕºZœÂXìÎ+8U}
+°"I¬É¥eä‡ÔÖhoQ{V|Ç6fÚ=©Xœ°ƒÍZq°—K¹‡h‘Õ6Å³PÁ!´Û)³kbIW³¶Qs4`ÆôýdBKŒáÝPÝð+WàE“aùyá4`©çfIýÖð·km»ñ2V:7ççÝ=: #8âébÍ;³ê0Ìg…a^™Ï+,ýÐS>kvÃ;ÉÃŠ¿h¨"krk0jìX6˜´ÖÐ˜> ïÀöñr¢%¨»%ÿ˜~¸Öi´Ê±;dî¼]è.8OÇÄ"ÆÞôý„¦iËô5Ôœ7Òò­Y2l8ø3 ïÖëÝúáv‘Õ÷ÂÿàÿÅÞ„Ydî"ôâŽ\t±…ÛƒÛ;Çxìz#hðm0öÌI÷Íˆ9Ê„¤Gþiwç»…Ý×ß91!NÙgÌäH5½<ª¡Öd¯ì>¦¾´K'ßK«@¦J´À>—²k’:zÜ;b	ƒ7
+AŒ)2~<4ÅÆ²åè)#d'Ï÷¥Š¾)Ô†íÝ Ò–Ër¿zG…ÝM@BJ¼1ÌeÝÒË²€O‡ÔÑ®	Ç\ŠŒµÊŒx„tÆþ°7@òñt&À‰.üÞáagŽß§‘Ã;ÎëRçˆÜ2óà÷ôÙüûÅ.÷Ð
+Žo¸–(ä}& 
+pŸÌ·ò^ßc7\Ë-ò×çã|h¨]åG 	/e˜ìæm[33â¥$Í„9Žè²ÕÀñÏfºíeÞ»½—|ù\Þ·kECzpbqÇÙ%çþ­dSlkÌLÛcŒ0 wVú²ñÏ‹
+ÔÏŸC§,ãƒ@'Vî¦ž9Š01œBF19yÔÃ©å³$È·`Øö`£¨úÞ‡#/wRÆ01W9Uh´®Ø{Ã”#W;UÙá6MOë3¼t !†Ý„žô´i(§ÏþÄ?ÒAe^`=8V,`ÙJ Ü9†±,*¬®þO˜Á	qî$H¯þßyMÛÎÙé¯,,® ?ÙøÅéÖ
+©­7üÝ¶¦AÖËmb·¡m3üÈÜ¤&3ð¸[„Ä„£Z\·ŒÓØS@{LF—è0Ö–•7æåÀ³”üYì Ñt.x k/ÙnMÑlÊõŠŽÌ×#@5YÜ\ð’\ý
+ç‘-Â‰ÄÃ˜H:ÞySeÏu¯}Á^.g·N|*úð‰¾pŸs“¨ÏM¢N±_õJv^2¼úu`Í+îäE^ † Š±²þG‡ ³ÜñŽgVdëÑ*ÐŒ¿ReZä_7Š7ð¥ŽëÒZé/&B‚Z–O_]Bœ|?Gà_ÀzÉGˆ–¯bäÙk†—¦ï¾úäL;âtfãŸX€«M}â¡ÛoD[`hD²æ UìÖAô˜KdWLƒVf²jhH7ðoÌ½ôñ:&Q\„£¡¦Q½“aéúË€ˆÄcâ1:‚Ï:FÔÜ’F¶…Ž`Qcm[ñ.<–Ú ^ÉÓÉóê|à•‰6ª«Ê²!½ÕÒWdò“Árirz7ð‹/ý	–q÷`Ž`M…3£–HŠÑ†ˆ°(’>:$’Ðã|¶d<®ålEÚ_hµú6Uì6Í¼Ä…5à|fƒÅ)?cA+ÌÿfH„|œé˜eàˆ-œ^³EØE®‚žÙÂ§Ÿiâ§É/E~ŠòÁ"Þ…ÅÕØ†ãdƒœ‚ÕÃMÖFÖÂ“_Ô#zú-;$ ï˜¥ŒŸ½oùâ{Àªu~JÄPTýs¤lïð¿[¶d}Ëª•HÃcrÿ‹j£B•dT¤gbéî–löV›ÆIºÌ/7]Ýô‹˜¸Š„ª8{Ož<±mKNæ',!×®®º¥üsu•ã¶TÛÁøOŒäó£ê$œö–Ö#Ã™fÖnHÜ–ÀU•…ÍàeÓ[þ«LõïþáÙj/]L:¿‘í^µ79W›gðì~Æ–=°4žœÉµ¼ê<W®ol–KA­à0Ô	¿Åe5¡üÑ½’‰ËŠ_ÇéFÒ—jáfWx{‘F›}Kv}úF“¥yà¤a´Ç o»¤¼R¼0Ôµ¬cåø¼¸O½dp,¾ë¤q8tÒÃS”Ä£ÞÒBŸpÄZœ³òÌ´2•::‰`H÷s¤pÖ'ë½Y9 €¦?Œ%Ï“`MR_~¢þl”´#F'¨JnGr³0ˆhƒÂ_Û¬„—¬¢ÆÝKm¢ùêšÈ;¦RjÕù?Wÿ1©.ýl=I‹t0F©—•Þâdÿ™žoÇ§Q«Ùò”×?Ñs®½ÛA¢ÛA}íƒÚjã½œ•Å]½èü(¡˜Tw›zã0suøYX <y$ÉŽ¬’¡Ók¹ƒfŸD§Á8A&ômž×;—fÝþî²öx1w'x~–µ:*RhƒÍm2·áÄ£SÚWWý•{ù”ôÙ®×aÖÉÉÇ®Ä¯.ƒ:ÕÌ'ÒëW—–j,’$8:Æ¿H=xš\LùQ²ª(±JÆÌrëÊ\ßÕç¢[¨)7˜+*K¾ŸL/eüý]Vñ*[Ê$¶qêÄÃ@ýè÷é1õá7š¤‡ËO®nsL¡Á‘ÃÒKtŸ¹æu‹g« õGj`î"¬#/è²RiœdÝ®7G’õØdçñòBºQàíäuãœÚ~Ÿvá,-:=ïšÇ²ºlAßò%å½t|§mH¼Z‹ØÅ…¸8§Diô _/µóŒŽe$]é¿Xê¨ØCÚ°“"^ˆáŸ¯~E+üyËÙ±0Ç”Ù!æ;X™;IâÄ•Žð‹Ãµû®Û Êò•úaŽ\|qÖŠ•™#²`™ÃÍµ(]Ôù#'Fx2ˆ_8ž_&K ã]íÛ#ÿ ÂüÅƒÐA¶&i¶lµ¿ÜÎ†‹o=^öÐ(éi³i§^!}CÀäVsŽ¾½i'O¦G±däi’‹^¯ç`Qàâó_>lÚùÞÑÈwŠwÈ[T—UÅñ*Û¢˜ [N¦	Àº4¿ŠàºŠò:Bùõø¦]ráÚtœâ,ê}q«öG¬ÍíVtXè°¶~Ÿø>–Õß`BA@AÜžgä{F:’Çó…~Ì‡ÑfíT3b¢ÒØ8ÒÃ òò”µ;k,Êù.Ö[˜Ïâ—ŒcÀŸsž¥3Êzßîuœj—‹Õrwœoqˆ\ë³þí,Žm„6o¡³kø­Û„©‹¶‚Òdæø©køú¢†Ñ®[t«ÍÛ‘_×u¾‘UJ“æ±çWËlöüšÐ´ˆ\'‘•DvvÙØÀ£:sƒ.|¯+Ë˜'iÁæ:qg®ó°£ ;;	Û¬PàÄvNÌ¯NÆ([ø[«šÚäB‹;íä6Ë/^8Á:Ïš‚WI¯åÔ-0¤¬¤`'H39Î>ˆ¶bñÊ<—‘{Ý_xÝ¹$]6«à,ž‘O=–âmœ	Ù‡OÈô8DÐ‡2ÅeÝswfäâ#A6¸7ë‡Y²9Ýnt\ûª-¸Œ…ë[Ö
+lYž^êóRvõ,ØÝ¦áX#¬ Ýëk­¬žt©¯‹§Œ­œ¸ÞQVðý²Jò}J™þ_µO~z!+^j©]ud¦m[4¯æÅ§Ær*ê	Ê++k6ŠA®åŠt;¿Ñ€ÔdõÙøÅ³Š¢n¹§ÅÍG(«i^×Wo3öWú1T!»xç1ôäÜ‘¦n›Ø‡˜^ž¿õ¨MGºnbOAäG±ÜU~ÏØW¹‹¡yO•2Ru¦&-Û—Ïi+Žƒdh,Ý§^.#  ­Z.C×ºyâÔY ñ†ßéÖî_Îæ„ô“ã À"‰úë²Ø¸›	¢äÊS[Nm$BÛyÁÖ-«êö¶($Š6Zñ^ûJ¢ÛÀ®dôFŠˆ¾¸øák*#:ôeD¯Y)tE U,›:‰¿œ
+¡¿ÂjÕîœÂqWRühtê-µ•µYŒj~¤à ö¡ºµÊ‚T)Žˆ.=[ƒ¹¦ÈÛ“âÁÕ_È(öóÈÖÁx„Ÿz¡‡!SÇ œ_ý-ÉKFMÄé|m&5}¹ü«³sÛ´âÙ¯å Q7é¼«Lô7êU8E.ôJ¦F¨þK/ºúwW†õ)ßÃækEp<¢Ø®÷R„ÂKoØ½tîguÙTo™aÖ{Ü{¬.x. TYa>˜†Í½©¡Éßh$-%r\^—¯†À;uëdG(˜óÂ0GdØi¹d"h“,bû•«;DOi³>‚z§P|›f^ÞWÿV“í÷OVON?ðh-Ç˜ð‰Sq$½2_Áz9ê¢àWÛW!“™\MXÕæn®XÃ5K!T¸{¢ÉŸÑ€¢Jœ¹~L±ö”^¤á¡ª@Ü‹ˆDÆí«êŒãµFôquŸŽÏ;ÚM®þvã”x±P¢\ý°Ö›ðç?^ÓMSÌoï‘ÿú—ÿM¶PVóB$a›hðR…±É±»Ê\#ÂRc€X9K[‰ú%ÚŽèG°)gî–	Ü%ÀEùW‰0KC€ÍyY³@ÂW@©Ù›<¬SïQå¤ cÎÁ`¦·åp"²s6Š“l+T(aâ·Ýíç]±	MØ¡HyÍÉApâQï‡ k;çäf9÷%Z'l•ÊÌ¦•ÄÜÓ‚%;J<?€íïeq/!‡I<t<''Ò¸®dž®n=–i¯ª2œE]ÔaCs§“ƒTšJ–lÎ€Õò]bHe8J‚!ˆH{ŒBãiðB–ô½cDXvÔ7UÃŠ€’¸5f@‰æ­äê¯X!O…‘”ÊýÝ„§£;”»­J·˜ÿl›èæSe/©Ì1éu¬u9’¿Û‡›5òþƒ’ñ®åDì×«Î.	ùQMï»éæË81.©_Oùcl
+i·‰Ù Q•ŽgF8X<_—K"wH¿Ã¤¹à!‹3/,+ov€¢±¥o".þ¦ñY4òŒW-\¹ÙM´ý‰íbŽ*ñ¡Ùy}­OÞÑ0ˆ¾wíK¬ÚìÉ\Y4‰eæ`R:êžc>Õ`>ñÜÃß\À‚3‹f­ëÀÿ‡¦sN•ÈãEÊüÂ˜Súƒ¢U´?÷åæ´ƒbMUnfÖjhBƒAz#/ñ¿=Bà(ÍU™lþ½¿¸¨(²Š/kô’)c0NGÂ£Úç·0#©ÔÝRA„ø×'‹B –¦.ƒ¾•¬…¿–«RËoz·6£âšGùßÏÎYZb«iE±ÂEeÞróÕœ‹´	EÆ=1µžzˆ´?ì¼Þz±ýF÷œ¸ðE›‚.óq¹ì(o*©VfBýcÂg¦×înÓíWñ¬òÍæzŒDÍ²~J–=ýé\Xuüæ²è»{Wÿëó×~gÏeéó†s¢_žÜðÂ;®4E2MâÇêunÂ¹!ÏÐº6‹ù¹|bq1«^~Ò¤©­[˜ÕúŽBl/õ«ª„•ß\ð]W× Ó8m¸Ie¬š/Ë„¹·N{\9cð¨¬µ{ñéã_ñhêÓ	Ã_–VXœ‰[†‚Ÿ.ô§Þbµ2]ŒÔKÜPÇFy)o‰=+!i©áµc•Û€µ AŒ.Ò"”ñmQb]FÏÈú–ÒÈ÷
+–¼¿ÈXò5bKùbÎÖZOí&ŸÿÓÄ5ami~Õ‡ßŒ¬PÀC®:`iV%=°Ðãh _f6.\â-tòOÐ¤Ù~-j€óé•;ð7š´úÂ_è×ìJmvB·¹ZësÕ¦tp[`Æ&$¬Û#cþÛ˜Öž%ÿ¸2‚£õ«ÀõÖb<&t¸F*w½«*8î=0{î‘î…è!8k÷îÇµÍ‰JXb’¹æäHœ*jéç¨ÃL6
+Æ˜	I0V±Ò}……
+‡1Ü„ ×˜’ŸÎ«ˆÊà¨¥28ªÒ—riîYZ[gm¼çqÑõã¤ùR
+ç?ÄpÔú9]L>ê•$ÉMÓÂÕƒù"§ÃqjÉ$îÖÌ<Î±§×V°èÝ½¹„ÉÍ¹/òÜ“FY<_Á÷‹â°¾›/(êR‹ITœ/ŸÃš8:ýT²é²:Ê+Ú:ÊmlúäUeS®™¬aá7§­+{¬;¨C¯+¶«sÒ€bcÍê·	-žùq÷i–nMÙ¶NÓMéÑ×å¦•÷~¹Ï8%Ù¶Y«BäHÐÜòùdñäøÃ²tVæÍ*¦T°o2CüÑ8A§£ÿ tëÇd?H¡¯)Oi?ÍÑý"òÆßÑm•LÅ„’Cš$ì&à)Ï’ËRô£?Pêl£kçd"†.CÑfO‰kk¸ÅÔiüæã¦Ú[±ÒF•·Ñ=Bºw±ð{òÚ;	ŽXÁòÖ;HÉï.íP™×ÄcAÆâÔ/Jò¯@5öOsø‚bËòí‚a£Ñò(VE¿ª\Þ ÉîLö’ VÁlÆ³RãK£ô„O«FŸ#­“m§ÄD\òÇ\€(é—ÖN/@ÓCˆ=Qùm7)žìXÇà=Ì¹Ï83ý±ˆ3T<r«ucJnâ¡WGÆêMè-c`ê`”Åq˜ª£¨ï$)`‰\ÃŸLN“”{ Àú»”&©-ªçQ`ð¡½tüV3cã £ :üòÐô—„Ž`¼.˜h?>H¨ÿÈwÝíÀë®l˜±©@¼P#zÓõ¥TZÕŸÎÿ³-Zmd9{¨Ôê²o:ß6ä!Wôc!5µ ¡yÔ±”®îøÕv+¨O}8¬¬ö¤Ïw'ó›˜t+¤œñDŠ•£XµLïŠf]”ŒoH=Ÿy„ÓÐCÑI>7‚K›vÆ[žïÏKIœ2¦˜Ä‡Œ>H±ºÉ:üGG»1 £õS$´üæRßâ	,Jtõ·dÀ”w÷_í«Ÿúa9ŠößU +.<QQsþ}žì„ `­?ÇL<L]
+ÇÙÿ  ÿÿì}KsÇ–Þ_IBòEc4Ðxð“ › (áš$  ÒŒÁ ÝE ¤ê®¾UÝx†c"¼°7;Â;/£ñbâN„Vwã˜-þÉýþ>'U™Y™YYý !‰=s©FuUV>Nž<Ïï$ ‚ApžÑöG†	þ "ÑÑÙÏÈÁÎËEV‘Õdãõ:Ñ©ž‘P,‚ÑXæ(9"î+¬ü¸Ã_J¾aedyýÄ’¼Ë4ï)Éê^Žƒ¦AW":¤¿²m¦JO•®úéXR¹Â@§®}ã	)d¯ã¦€­[3iÜžŽR7.Qy’L:T[’²:ñE\_ŒbD-ª²³¤w^ú>ÊFˆæÇse€v·ƒÓðîŸƒøÿÊrJ°ìó*—„e>ŸäÓ™û¤Cn™*è•aœ Í“öºë%.üCá?F†ry—ŸÏÝº÷¨D°Q¿¦ÖuÄítœÈ!šÿÚ¯^‘5Ê534&~“ô’³°&£Œ†aÐ?CÖ`Þ`¦¡ToªJ)Ø½V“v‰´ã^r¤ÑZ²þâµ-‰~â ]pôÌ†¸“Ž-°¶–óH1×â7Ù@ƒâQ[®ØêTš½	iDtØ•>¬LKÏ–¾e¥eKÓ7§xJ©1K2Ž™jÉºáfÑo¯ß_½“ü4šEÿêUÖy€¥í±¹Væcåês[íW¯÷ÿ®}¸÷²½³?…²ºÎÝ²Êw‹,AÆ6£Åéí²SÞ+"aÆûd@Gáàjö¤L|ò”Ýk
+Y?ê;Øµ·ýêî¿½ÙÛn“]r´ÿâ°ýjÖt¸ÆéP—SIãvqRR<i5[o‘© —¤˜)i$IþS™*§L“èÂKp 5)RyN¦ÇbêjS#ó’À˜7>&]ò™ö'Ííý7Gwÿóp{o_(13ª9î¦X¤×è‚*¶¯¢~XCÄá46Tå²U®°º„.ÌÄ  »½(ÃªÖ4†‚œ‚<yIuÃ:r–\jIÈ+náý|£ŒÿZ,¤š±õÄ±žÎ-q¸»½÷byÎî›ãÃÝ¯)ûyÝ>Þ=Ük¿r,äùF­ø 
+Q}£"6ˆÕ†ÙJ€†±In2" XhËÂ"™ïv—_¿^¾†ùæ›Í^ÏÍ9^…é*€*‹6ü5(èØÿõÂÞá©Ÿá“ø:53`ˆ(ŽÛÈFÅ»*_ØHµ¬uoúv#–ÔåÆX“4l¯WýnqõÛ½}ªJDª†5K ¶ÅêÚÏø«j8ˆ[çô_]Ç‰E›mÔ§åY(xCµŽºìûÔRëËïš«ÿîK¤eŒº¹~ŽF§°ÜÃQ„h¼Q"Ú~B:š3DÔˆ°œ8^QL…eË…‘ì.eï>ÓJ¢lr¬O•±Ü™Ár2ÃH2šäëlÁfÖ¨XKPC#Ù5¤ÀÉÍfera·VÐ¾ìÒZ£qÄl°ed7é±Jˆâ*xAÛ¯x.¢uF)zKƒ„%$Òœ&ÿÀä›÷zLJ™bÎ*ûÒ…‰	ÍÞ%ÏÜåfBÔ—ek^bÔk¬œ+„«Z\Zç1ç2—]+ÒŠ–Šø‰Ü2»Q~>Ž*èñ^ƒÿNG·l=¬§NÒ÷í–†ž^Rä ‰º'ð§zHŒc	Î;ôÝ N‚®ºÛˆ¤F¹¡j€çRµÆP[Á¯ž³IØYåÑ4,½)_Œ‡zHËnd¤Ï·–‚³B¿¢PZªk-zL¢žÇÛ1czPÚc”G¡Më¹‡ý‹H%`c±xÕ|°—›0†­Q+þÁ›¯É¾&Éˆ}ÿ5Æ…ÿ|Õ$«¯_,x¼Ócîf¦Õ”ÅB>Dq8G‚N' Û‰Ð»ºü7
+³áf	YŠ	šhÀ(ÈA8N˜x×)[(»ãÐ”	nø¬KÌ@—È-n“«eBøµ¨JÏï‰B¡Ú!g¦Nl+fËÏÊÄgeÂK™Ð­äó*«æÚDaÎ—Šâª—N!q¨újEMkþì”ŠñÜ³T(ø¼>R–ê“ªòdüN”Šœ¸•5ù¬Zø©e‰ã³zaúy:ê…"*ÌV¹ngÄ]†U^&GßÁ¿<’4àÇ¨OB„sâ]%ˆ0ðSV<DŒÈgÍcš‡\;bLÕ£&yÜKud÷*:º&?FÈûM55·À{ã€§åEÎÒi!†H¶™©"zÔÛgeä³2â¥ŒÃ-ç5¾¦WcUté²—RRÜ?ŽV2N|èìTwÀ)ã±˜zð‘õ©Œ¼pŸRC)æâw¢žHµ‹K¥?+(•
+JŠ]Eíø(Ÿ•”1•“ÍVMYçjÊ·£ ‹µ®`ÂÃþHÊ®žºFBÕ>«#3PGDŠâ¸ºˆî»ÚÑÃþbKX+ Q¶ÔkÛ.Â³"[+Of©nÌVÇø¬X|V,j)š6A¹W%D&·¬Gˆk^J¿yLâ¨º®ó@dY]ÈS¸Å*|JEALÄïDMà„,-ÄgÁKAø“Ø0]DÌà)ü3R^Òlˆ„´6[¤¡k
+Kä÷§*Ì^?Øh’ƒ` ãqÔ;Mƒ®„kÑ °=Ò^ŸºŽ'/}V¦­$Håšë«	U¤ÐÉKx]‚4q/u†í C÷D€x"4‚Š)?ÜýLI†?@K:Ê¡%Œ+bÃ»ûWš¯A¹`B>Ð‘v)ìÂÌÔ‰X-r?Cµ"Ño\¹ÈÉ÷³–15-C§ÒBÛàì†ëü/Mã(®zéùíãhåž~2íCë
+×B4Û^7(!0yZ–µXè^·ú$¢ÆÂ—â‘²ºŸHk‰ò#HÂß‰“ï
+ee>+1n%¦ íÐï0Ñf¦É¨¹ Ã}¿"ÅÅÑ¶¬Ó8n+©;Ž{šãîBIj„8ú´q
+xý%ÏH^ÈÿÎž7OVÞÚAìñƒ…¦ðÞ^u´£ØÞ`?ºÚ¸µ<ÂÏD:÷ÆËe8Ó2Ð$C†e%ç\˜º%žõ°6Œ¤>¥­&SïþQLl6è<0vuÕÊÏ<”;,¨3§ Ê“Ù	Xê…@˜5«Aöõ³—4–07J‘Õ˜ÛIšF? ^„û!Ê†¬šqFFýè(=¨ê|Èëx„é0I: ,,ÝOzˆä}@L¬¡Ì®@ñÑˆÖ…îŽ xÐGú W±š(&ÕÉÆèa;C§\{Ãé^YïâuÌåˆ—<É\ƒ½êWÌqµ¤¬5ÉŒ™ƒñ©fÉ–ŠûZÁUU§ ­<JpQ1˜ý=À¬åYßa2„3t»s©ÖÑ}MI-•jÍ„6°U—jwoˆ‹›Ì‚@ä¤)ÓˆG7%2‘z[ŸR ›¨âé„ªßÉÒ¯V¶aœ%é5}à5:¿#xpÞVØÜôÔ›ðRü]ý ¬XÒ£y?CK¥SaLyíèZÒD§LÖ¼å)RuÑ×úD}œ©-Ô_>Á¨ÔP›ª§-!Rà÷ZR¡°äøxÌB¡‡á=7¸’a’Â¾§=cU³ fAS_5Uø²‡^èÜõ‹õ ¯ÂâÊ°M}5||‚ÈÝÿIj"³a$ýÄ¬á>á(¢Ü¤W€œÛj5W›+€Å÷`¢Ž±tn.vt„=Â‹ú3u6‚œÛºaµÝy=º)MÍ`è‚ñ®°^xàïçv
+À?·"n’"6;Ù	³°‘ÄM6wáÑU—+-fé=AöæYŸaöèÉ¿;ëQÜ]Äú’i)ÆÎ{j—JS•‚iÖJ{üÛª•'¨³VÚì y–:;ù¢µÝzÒzôvnË¤—˜ŠœÕ,(¦)’u+Š|ñrþoý­«¢ØÇ«æ_•Ä]‘Ä§	,ìºV™V|*k`|<áá¦Qz÷3ÉNGJj !ŠE)]Á,$¼¨¤$‚œ£-æ/iÔ1„¬Ú«Õ¦Í0f‹3ÒrpÒn?n¯>Ù}ë¨ê€g ò½‚‚ðñìÜO#´·7ŽBy~î~é&V“æÓ,ŒÃŽÑælÐxAÏ5¢9§‚~Ò×”‚Î(ÛÄ"À°;¤?ò¼ÜZ)I8=“È~ •<»É’QÚÉ7¦I‘)¬Ó¡ØÏÊ3ÜM›4ljã–h¡=Ö98qÎ".§<4ì¥i8LšÍæÓev»©¥›Q½$9oiö‚A#Ã®š\âÍ?†×ÏnÞ³ñ/}y“Ý¾¿Í'åvþçzé‚a˜ úÐu÷§p+‡(Ï•:ˆB3­„ˆYÛh§ir¹“\öiˆ’ •o—”Ú­–Ö7æ”jó~2Ç=ßÕ äÚ—Æ¤´mFg¿Íöb½}¬<3«ý1¶3ëø=ØÎ À¬“¼@¨ÉÄï°ÆM$B«°Âz9ò]´ñhcm}÷mÉîD‰M’¾vínìâcNËLÛA¿‚Hi˜a›]Çgn˜ûRÓlt£,8Ãî³›(Ã»awaíöêÉG/©{/i7¡‰¨zƒÉNÚäÚ›ßDÅg1FŒŽâZÊ¬<æ«Ÿ±kÉeØ¥1PªëÄÏyßª—R§mÑMO=Ü+Ù‹bYÙ óähr&0ËÐÉœÈ¢uy„5dÆÞ¹íó°óãv”vâPí-(ö@ÏbúÈ˜uºbâVæ½d8Ç4 ”, ÔãóYûÿMjÿº·iZ æ%ü½kÿRŠ5Òx6 ÙmZÛÀC(…3Š¾)d¢IŽ…5 Ï°(}B£Fx 	%c€¨‹ÙK.hUL“®H†¿J{’´l) *ÅžP^Jp¤Ø«:VñÌ¬”Š<BÇO­ÝajE¾Õ4 ×õŸ”4úçûÏg³ÁoÈl 6÷oÞ`Poo+ÏÌjoãÒ/BKÕÐ|“Îz—sûÁ}Ûå³²&¸Å±ß¡%NH}+‚ 8IÃ–/i7¶k×9¬2$ÔÇ4$L:Ìš†I†ýlKøÍÚávŸ
+÷Ø¨à•Â`NE¯Êk­¨É`VÙ,˜†–ü[¬Œ-´Æ`5qMœ&Ë	}]w7¦‹Ïm‰Œ‡€täÁFõ5¿AøNi&Gh/rÉßÚÅzvSøìL>z†ZûI%™ÜþS&ùéi.Mxj.²4-h‘,“=J-Aq)çóÊ¦.›#¥J—t==Ò®ÒtLæš9äåÛ±‰	»L´!ªÊcŽ·†¼ËmY¢ÊÙK‘¯~	°ðFfùf¨ag£f_HYíaÚ_Ñ&À‰?šb¶¬!ÿ®(|C;æ˜æß9_SUDAÝÝ"Ek5ÑE ±¢åï^ü²ð<ŸŽçÂ^qBÌ›çXö(í[3³U]Z_êárØ4UK+0~ú;iÜã¹µÁŸ¸æd9Ó8n§¢ÿ~"¾ù&¹Šuú=1JiWûY¬<aÚö Yâá‚MÕðÍÝÁëgÂm`SÁ7iOá_[ôßº¶ŸÒØÞ½{³û·ïÞÍm}”Æ¤¶”¨„ç_½Íd]e–ñÂ;cKz‘4!Iù)žEÿ.m`V¸¤ëýÕ"ãš±£%ÝÀ{K££  ž[›81Z öÄœ5€ž†ç°ÃôÙÜîÕ&ÙïÂ ’øî/gQ'Y$¯ØïÁ{Ã"›$WÎ`3§šö¦!ù­r[â§‚{Ð7+ã?Mƒñ;ž˜YèÖ£aò4üjÔM¦	ö)§†™2R¦l‚­£)Ùl±L®´Æ®Ö3ÇŠd°û`–¥$¬ÌT•}ö»A7À¬¾mIüz`Ô	Ê¿T‚£¬bÅ°XeW]fÙ¦V†f|¦eh>¤šÔz;¥I¨i²-˜s‹m©¯³4Ý²,Ô£ ¾ødv[©’Õè×b´]þ²év€teä0Ä:rÇ#¡’x˜9· Ûd_þ4{d|‹ï†Åâ»áeñ]'Yos2Ãïê-¿áU4¬Ñz¥¡¸à<kð“•éxec±QA#l	–+aE¡ÝºŒTÁVò›0À6u€ÕúX§†±žN`6žÞ%Û4•wÎÒ Á“KÃdé4%Ò¤·ôN¡'(¸ÀÅ7ÒÂòódz³õú eÈ‰ŸÀ‚]d>çÒó0:;Zònójh’y;Ê€ÜýÛÙˆH1-ã·+U6u£í_Q»‡dál2ä8Md;ØyiìñGµ•—9am[y±#ümå2ÈižêÿñèÈ,ö©n›‘W¨kUÌ"‡R6Ð@Ñim’ïƒ8ê2 <?-1uÃÂ˜¬•‹e2‚1éu—œú$^c(1J¯Mh$›¨AêI¥ìh•¡Ðï¤´ ~M(¥×Ëx!&tWÇÑ*7²Øuj²óêöè±jÔâ£>h~ˆj¹KÑÅ—¶Œ0ÝçÀ‚¹Â€4¹²aDšt³£§ÛÔ†áŒ~³òt;W÷v½ÚqÆAø–gEE–f¦“ÄIš9 8Å!A`ä{Ôjq¶ƒm—À) è#¯
+!&÷@Ó¿BG‘èå5ôð#ºµÃîž‹A¾"ý0Hwé¦—¸%q2™Ýú>œ†Ïù
+DÜÒ÷¬ãz• DÂŽ_„ýà.\Ï4ÖÇ`ŒxFéÝ_®"üåá
+hæAF«ˆ­f4Ž´½`î
+~¢`åôPŽ@ƒÑøñ4ÊLÙãlÐf ½x†ãE°€òŽR±Á•Í€äO'­ Þ€´¨^¤IÿE­©…ÈJ‡àê¦Ày!/‚è*¹ï'!¨ï ¿§2AŸ†BjWŽCqQ=ÙÕßØÈõiNÄã4ì#›ÁøñßìÁÈ&x¢“QÙ¸÷ëxd£ËÏGögù€d×+NHØòG¸ãÕ“&¿‚³p{?…,Ú*ÑSíO£ ?dÊGpJ9o@zw¿ôáD\D;ÏiDëpÜýùCÔ‰†Û³ìîgÔUiVT
+Ì1c…>îÑ!Xð_Ã)¸¶‰q±YB%Í„|M-Þó“N˜éŸ’WN«\a¨ga¬[ñ;Ý^š„/£8<†·þfAÖ´Æ)(KÛö~ƒ–PåòIX’qþyAª›!Â5¶ã0fÛÐCWDÖ=9w’Îˆ‚$Š„aZ†H7ÄÁ?YÈ Á6I«‰k;L“í±…¥.$«MMeY&‡£Áp”÷èü“øÆý9 —J–Ö—I2ôpÈÀÒ?$4ÑŒð°ìsQr`™Ëþ—cÿ¾ZÚÀÝÌ9zÑ?Í(¾*6)û3Ï…§M>4ý¢ÊKó2ìœ—âœvpùBM§ëÁ(…·S:ˆƒ~3œŒÞUq›¸kÿjÎà—™}¬Oü²jÖ¸Uw(Öö¹Êñf…‡ô¡Ãç*G 	ÿ«ÍçêÙºÉç*ûX+
+Y!¡).ÚGpáærõâü­VÇLŸ/©e¿«§ÇvÍCÜ56§*e'wxçýEäaYÔÿ)yiªZÜv\®W~‘Å›×€†kWGr5znµ ›d#×:Ú)`tƒnI‡. ’ú~Þ‰$>/±â–<·…Ì%ü!`§7¤rLŠv^8ÇqF47©ý§QÄ5Ù›/Ø"­57ty¹5ëKlb¹qÑ« Þ,¯Éu”]ÈÚix!ü845XD›V§XNQPPÈkL½ð©ÄQŒÙb’]"¼
+†JÒXH°‘[ÈL2Eð¢¡ÙhR0XaÇ )ýÏðgïî_2Ö<â_§&îÃxôí^È”qýÌu¼"‹2]U¼ª£µvuk±A]Dá,	NcU7EÊ£ab02~”­}4AxÀâ!üÂ=µ˜•ÖfË[7ÅUL#Ô¼R»WÐ˜Úe_+9{Þ”k~WGÅçÐŠæC÷\24¼Ë•µ5£MMyÕAß(”ú;c°‹Æ%{[&Mî,Ã”¥û^<ÃoÚœñ.ãÄ\–•³“‡Yÿ(¼Ôxyœ$ñià!Ñ18±¼‰]®+ëu7‹?WI|&ýùW¡S¨Ú*ãà(è#ýá¹ÅÊj˜½¦sÅ×xhµã~xŸ†)š«Z?ç‹'l8y³ù ÓáN¥âa—”m¼¡Í]ÏÛ¨Ú0EÚÆZÎóØ6©J8»’ÑmUI=ò9PÐb?” k–ã\5òL5¸9™ÿ#HžQšÌ/’ù—!l{ñÇë ½ûgú­}šF1»ÑõÏù—˜}iŸ% Ðà·£¨ü”5±?Žø×7ÀQÄåð'öý-Í%kôIÔ½ZðL(ƒ[ó2ü¾uÓ›1z´#ÿCh`#÷fC¶û	Ý³Û‚8þñv >ùy–>7í4®›¨G7nsÝn’ur»ÀöÆ;ØŽòq,úš<Uã’ìÀM˜Ù—0atÆÈW$r&G+›ë:ßZ×°±®‹5›¼dÜYGÁ‡pxM€ÝœEýû»·°»î(DÁ¢÷Ï39êØt0¯kÝ&?«m2ôýëßóVÓ’†³!¨AAÚ}÷ørnë è"šê&ùê1Lh/èË1v®ÓEk´G©ø]Äº¯Z+ÿF%—úí¬b;«´ƒh‡˜ùÝôÛîFÚ8:SÊ†Æ-ŒÁ'äUÒaâö½ÝÃØC
+kÁ½c³Ø¿bêî]ñÜç}[š{•¤Ûq/¹
+Òè´‚XQÅ_Ì½]cw¼ÒÞÝÏ(˜ÛÊ¿’ÆkÉ‚Wgï#ì¢ÚŸ?¼Ùin·<­“+»÷v¿ÙS1§°Ñü°5Ê­Núþïs‡QB>NºÈz²b3'@Èþé°nM"³Ævûx÷ëýÃÿðn{ÿÕþáÑB:7l,ÔDAhÉÁBÆ8Í@nîœÃæ=ÂÜ{»¹öúhËLL@“Ë¡0øÚò'.óçóKŸsuwuC¦úV·3·…&•”|+…ºrß_Zãäé$™ÚE+!ÌwçPãðË:m. ­…ý‰[ër+¬Üâ\cõ
+aŒ´‡£Z§7‚n±Fq+€hNïþŒ0¤Ñ^ú{G'+˜‚áRÉÐüí(:û÷{älÂ?ãäì,.§IÚ‚Tˆ‹•å‡es³WD3\¦ÁÀ#*´f@€¥ilªœ>™§\ö’ú¦Ïé¿ŠkZ*ï4·e÷òêÎn•hµƒi[az÷KÒe¶²M‡gÙÝ´)ó;g[…Ë½•*>³#üHLÅì¾h.Ÿ£Q´ÄkÎmaLQÒ}…\è¬7cP$3Èýmþ˜Ý¢¶KþúÿDþ“Ï3ÔŒ1½Ø4e–É4Ÿ¶„?yº„´—WrÙáÉÓ ¦Ü÷]˜òLå	H	Wš&‘üm4<ßaÕ-Ü´ûA|ýSØ½eµm~EtQ„+M—2¾OâQ/$¬d|~¤Oƒ:¤€ðOÁlp@ßõ£avœ¼áßÔ¦QžjÌ†K/çn1‚Å™_-HqÓ%&?1ZRÔ4HAŽ±¨GâI?b@×Â^7™ûæe’ö‚¡XëErC²á5ÆxÎ3øÓÎ5\_áê‹ÃWóèÏøÀžs’w»/£~ÐÇPšmFÍn2ò¡-?Ê2V
+ÓžÌ}Ì‹L£ä±"ë·
+¦Öi¼.?Aû&,³Fã¶¤µø+šoPÑ”„¨™˜5‰ÅbJÑü˜®'Ò±UÁ(tEú\mÅA¼ô˜R¦&¶˜=¦¢¨mÕBOLFÃ8ê‡¬TŸêx¹´þØxdJõ0 X{
++Õu–˜/`,*ê æÚire!	ú3b
+¢ØïÇ×²Q›:´
+2á¯òÛ\>¿^Ê5áä ÒÉšj#°êþžKÌyøV{¢#‰üC¨]*†ÉÎ†ÿ–¬,ØY™ÑŒSCK=FGÒNÃÀ@ÎŒ<Rþz	ñ@‹¿¯Øß¨[2Õ¥¬“&1V•c˜lL>’A<.wÅˆM¨÷íœÒjL¿+U‚®zž6ñØS6h=’Ô’’ÊY+‘ÍQ¨LÚèáÑhÊP†kfÀ2W”³šfÈÂ®Ñhµ†Ím½	ûç£í6«CIÃ”™ý©r:}`KôK|ÕU0Î2þ¼Øe/?û@!ZÏ2É²ôOJg#Ü28§,’º“œ²Hê‹‡CCÉBiHuuy²Pk3„åÓ!Ýxe'&<êJŽƒAfáÌÃó0è*YuÃ¨óã5•VÈOK­%akùÉ†–^$Væ¤Õ²[ Ú-Ð©=ÒFÕÃÔíÃQÎrÄ@F“/š-K5†ç5›É¥&Q¶Q3,NÞ OP G4B`*M–Ð©õr{×êZ¦9åGáYsí½‘8U ÆhtM9$d*´¹—'yÆñÒ•nS™Ûúöx‡´ÉöþëƒÃöá$#K$ä÷qÚ$¨HSœŠ)4¨é'¦¹­#Šeo~1îs|x–™›&ÝkùÝÀOÇ,]þ¥È<)£5íL¾ ‘søÕ9'bçF°¼øH¿¿ë…A6J±¶Þ{~Ö¯ß¾G€fK½‘¼ÎLÆWÑ2Ë^S«	Ù"+¶ç-—+
+™P®ËÃcñu¬‰,@©ý+Ëë
+0q’ëùC€PvŽª}êZØ½ã!ƒ`jBN÷¹-iÄŽl}kãÖt'ð„Ô µÖTÜ¤h&QŸj—Ì=|‰Ð£ZÁàÂwSÙ,µ¼`Ê-žúg´‘m\ÊM¢ùàOè,	Tò·´‚Î×­?>7!¢¨£HZž],TÜÞÚÚ­;dŽÊIG”sy<t84úg¾j(.´‡âž
+:&×5¨ðR÷0L‡âÑqcm•Òyèî¶¶7ï%q³2^¡ˆõI(`óŠß"Ð«*‚ÏW­I¹ý[¬eQþ‹™¬Z¯¹F1&¾æ¤K¢Òª×„;ŒºÎQ±¹¸¤:„Gããò¥þˆb/, ÑZ¸]!Œ.+Íüî$åZ¸#¡>²
+§?/Y]œ¨ÿÂyk5©'ãâÍÇ„‚cQkñð³o€±ö¢>xøëýß6ô˜¼Ë|Å^î@jÇêž×mÃðáêR=}FÖÁ|ïãüÞÎlLöC‡ä‚ZJõ=ÖÁ45üÄz’“¼,2Z³Nè†ãveHÔ¾×ÿ4{øÍ–M3Îˆ<d‹ÑT<ïÁP˜Ù„0s†ö‘'‡Ðþ°îTŸ6^Cäé(Ó;´Í#Ü¨áWlˆíçyê5Bæˆ<ÿ4BXåiŽÑhlôXFjšÒ(¿å­u®ñT£é@.Ö¥Ù
+Z#ÎuÃñÎÁ5Õ·kŽ´ ¶¾^"k!<S£¢ÇZ½ÿrßL;ÚIy–ÊfPÉÖŸK
+âºkÎÓQa¦n¬LEf˜x' •‰¤QÇTÄAi­b¯SKÓd"1ë
+JÄÓóœL7ò@íAÕâÀóKKK“áŒÝbÃ§ß{èÏió Ú©Oµå®|¬a¦Í)œ^SÎaø©ô÷»‡íýwG»¯ßíïûÝ®¥L¨ÖuÈç4Årâó÷¬¹@–œ5«3MçÎîË½í½ãwÛ‡{Ç{Ûûm.§ˆÝ->yHÀHCZy>ŒYÎçëýJ¨mBiœw>Ÿô¯òtÒË~³Iñ/É`™ˆPïO1›Ûû/wßï·_}´‰tŠ2æ@¿m#
+mW†È/G¶qüju3±ÂÍp´!ôJ™¼ýÔ‡_ò÷kQ4–À†ê	«àµ
+?ä°ÍV7dmRdH-ÜÌd1ë²OAúcfF–nn‘â²òncæ(-íg¤s÷3Âð%eA¤w÷g`—<g?Æè•,¸ûSÓJ0”äî_ã!­ž³Úbµqh É M~¬«!ÁX˜Av("aÓLÁŸZojÐ_ç· ¶Õ2ÊïÚŠÊ¯ä·2bÎ´kî/9@ÕòÇM›I)ÖÃˆ`¯éßéu	øi›Aâ¤aÂ­Ä(X0>?l@
+6PŠ¹ëº¥«N°ž³e…¶buUJ­]‰ÕT‹Õý0ðåÒÉ“‹Ë·­Æc©à3[•Š³ž¬­â±˜×£Uê³âíˆ¼RBVéÔ‹UêìVYc5UR«Äèª¡ÆèÉ­íÖ“Ö#Ø*±ÒöÆd)TPdØ	d¾Ç– DDÀP¬Ó£ Hã ‘Í)`Þ5JEýƒ“/=~Ôz¸ý–áåË…J#P£B˜ˆš¤Àì±4³¸“ç¦3žŽù¤CáYY4’0ßì¸¼ãýa¥ºñ¢Þ¼£æh]ŒE&²“™V¾(ú˜XÂ…X*¥2>XbµEmk“>n{¿)'Ã¼‹y3Å&²§Ý×Ä~.‡Ó4£Öx9­k;È[®ÎVÓº£¡U®:YÅÍáþþë#C•âYÁœ›…}hD¶bô=j‰î8J-aI‡vÏ"ëçÐ°¸ÞŽSQõˆ#Fv¢Zk	®&ÙHBÿUýº4èˆ|é}1tª`ÒÕqêWÏÉ¼¬;óœRŽß-éÚŠ4°^wÞÝæfÞæÉ»v7vi)UŽæ·.VŠ7ž|±¾¾¾²¶ývÞ¾ïmëàPuí™08E_Î·üÜu^Té©Nòµ#úâÇlè®ªbd”ŒˆYôÝg.Y|V›äMsÒe’ô‹»±ÛÅðÚ‹0®%¦ø¥Ô`5
+ÏñO~ÒxUÝÔ¸C…"LP“mø¿'oKuÌŠÝ«n)10%g#[“3æÌS£$î^m²CÜ`q‘d‹d·¦gwÿ‚iŸ˜~hh§F:”…ÙtÅŒJe_SêTŒøq[‘µ&I¤d”yÜöÊ¦™­I•bÛ¥“´ ‘Æ	]'ÿó­Ã8éçšovâ¤¦¸KLËH+‚˜óñc?ž^ÐRJ(Z×X‡”5ê‹‡;k;­·s[ÿÑ}FNq&Ÿô4ìÎ|ÎwÂ¬7é´Ûóùl?Œ#çg=	†~Í¹“n
+Ò8m,´Ú%ÿ³”e·ø/òZYÃp©šP©6TI•…N=ËÁ#§?QÓ!"°WÖ4¼ÈÎŒ{¢õ;ñx|¾ N§‰$VTªS„DHÃûµ•ô3ic[^òâW6:ØÓy :Mñ6—^	cØËã÷™½¹W‹y'ÞVuÂñ«3¥Â¦®¥¥çÜW;J¤$uQ†Éž$âÈÚðE1É•5ØF£>NÌÜV±£+Î!~¦¦ñÌ//±NR~±ˆž½Ö\îæÇzR TU×&úa°pŒ=.;ÆòçYH¶µ´—¯%ÆÌpÕ6‘¿	sÐ$ö+í¬Æ(¢óåEIõaí)á¹3ß·
+*Y=½û™œ± “­¤DXä^ †Þ¨7À2Y˜7›WHMÒhO³ašôÏ¶®ŠôÊ.Û2º 2¼ûe8Šá]!œ} ŸðÍ¢Ñ9]Ã›óh³b¡¹!:zäî3s%îÈë¸mKÖîŒ?Ì5]ñ³OÒB¦="q2QSÅbál`Œ"Ý¡î#{Û–Š±õåš	ÐzX`U÷”’@®;ñ{>–™Ÿ›É©>N5s»®¹Bìj¹«Bè‚¯Â8Ž„í (5.Ucu	¶þ³j>¸åÂdÊ„c9wy—,u.ó²àUkj,vaZèn”aŒˆ]z“‘N|(ådõ­L+g’Å¥ˆâžœ2r«¯¹¦ZQ¬37æŠ‘n
+³ê†tÔýdˆ­$— ÇT:©ÙéèçÒÒ
+äÙ\”˜ š*nÊºÞ/õ’)r tkÎ ž.—Bø/,2 ¶šwÂaÅ”ØšxÃ,?§ìRÍRÃÓð©'ìçÙ¯8`
+þ®›üþv‡¿æ«´ž’»ß^×Õ·›BšQvÈðžcq-YÏQvÈNx‘Ä#z¶Ó¬<ù·£$ÆxSvòÏßšmr^>û\ œÛú¢²§ÝfïKÍaò²ªm`U…[²Äi£ŠfºpÏBž~‚Oè)(Å,jÔ+°^îSã†îßMBcáT½þ†ErzüÕÓToô?DR/ãiY"%­²¿TD5çNHÐlù“ºªàôv÷ÉÑþ+wn¿9Þ5‡ˆ”_ŸYQ8Eáf $$©‰:J”„ô‰ä•jÅU¯äÿÓÝüæ¿1Ì+Z8”ìš‹´“,çÉíÇíÕ'».¯_LsÍñ“L[Ê‚¶P‹€ë–º!í0:ì«H@
+?Ø}³³ä7O]õ–Ä–S=Ù‹v_¿;Ú=h¶·ÛûâeƒQ:ˆ¥°{þ÷4^×>8Üÿž&°Wâû§2ª7Ç‡»_—OŸ5ú}/;ÜÝþîH“!¡f¯ÙÙý~ÿÕw°Lï¼ˆã‘%ëduª]áëÙ®œèGS}-Ÿò¶cÊ­/ÄûÏÒàº¸Ÿþ…KTºÛOPÉÌ]l÷5aîþËÝÞGñË¤ŠNNì2}	)~0ÍÈ–^~YñÃô^¦,¸ü²â‡ñ_f¬dð7\R®yå•^“¡{†A–ôM™BúYçÞ:á2ÛîN+g“œÇùYTy¿N0žCÓ?|%Õ”!½ÙK¼’'ÒSÒ)¢ÿý–59ÍÂô‚Áéüê—j¦'ëšûl.¸ñ¸¬oª¿'¹Î	*³!‹·‰hi—ÂK3WcñÐh?úº½¨¿_‹HnÞ£NTRÄÞœ¬®ãÂæÆbƒ 9–èbXpéh-P-'í<iÏo^ñ¼Aà{R>yç®oZÌ™9–¡Î±-u–’tí8L‡ÇiôÏr˜f“Ë./1c6NÚ¡,|}¶†ŽÔ¾SS±_\¶àËåŠ€ÉÞnƒŒwyç‹sé0ìŒ²ÀÈ¢Ú¸}£Œ‚P§F¨ZÙ$öNËo©d]:_™ÿ2ëW'Ðžõ6é÷4¹äÉ˜åv"_œ«:å/“Ö6Œ¼Ä1'-idñdŠ ”4Â7¤‘˜ˆwQ—N‚{ºž7£®¶‚†QÑVö8•AštGá;Ä/Ý$QSþ{ÑáLf0<ø„øþ.ÀÃaÁ0W,ÞÚkŒ1>H›WáÑBÔJÁÖ2${úvÂ8ºÓkþôõÙç‹Ð6+9½Í>tT›:ÑØïçíîu+ßuí­ Ùº².›Ž°ÛâJzXÂ­kmÉƒ÷õn:ÝØJ½¤éz'åºFUJ¹’Ñ§ð9†Šõ¢”ùJ.Pº­á3¿yPClD= 0Fp¤	°¯ð9§w†%î¬¦,ÕnL›ÆW>o†ø÷‚ÑÂì™ìÅ8:t€2î2+ŸŒg?@žíÆï>²Ã¡x»èË‰‹Üq•¬ NÃ {ÍVXò3ìeÎ©Sq9µ=ÆPLÌ7&úkäì~I[U‹üŒy;èdåù¤Òª 0Ä¹2ŒÃ!åE°Þ9Ò6Ë?SO+G°$G/wEkŠ–"à°RÃ.nªž©ïé)ŸŸùìºnïWßzß,"Aèôî±áœâw¤NXpuöOVÞ¢A¬	q¶¹EL-uÙ˜><¦a],ãñ.Qº¬âŠöÅíuœÙ°1——p‘w >`¶ixî~Æ¸½ ôuÄúêQT¼.Ú."x¬9·Hæ"Ð}æ*IÇ:|ÛÐ²pÈŒxr¼ c”‡j}¡ò³#5æß n0/B`€É¼ß³’¤Þ˜w>ãéV®h¡x³úø0…‹B|©’=ì"Ceò™I@(ìPS
+ÇG•p»B<EþŽ%Ú.Í`àKAkûm*—Ma×–ÈC þa¸Ý¹¬&³ AÈkQÉ¨Ú„‰’-ÀG!2Eµšë†jë†Æ˜1ãl,…>KÕó&ô-» ?Ç6A`F*†¨Õ¶DÆþ€ÆûÆ£„5ÖÞ³³T´¯¬"ÛK“ð˜ž÷Ý Õ™%zHh¶ŠšÉwÅ
+k)aæ¼	[TúQ_ÀÊñŠ~òZ™gÉ‘üe™Í|„C	@¶3´ÂsKf!³¥”kÜÖžóÉ6–sxÇÝs óÇF˜'¤—oƒ”nZstSº%@ÉFä"$#t#†ˆÉY
+øX…ú*R£ÍIÑ¾)ÑæB "GI‚Ö&˜lŒCl­ ­–)ÏµU‹oWÅË™cNªu@«‡Û¨þ™¸>M´)üpvÉS eã˜ŽŠgõsê± ƒlmn«ÍÈ*ÈO],ÓÐ‰°–…±Ö« \çf’–žPË¯Ó€­åU¢È*x¡úzêä8ÜÉŒ•E„µÌþƒ&.Ê`*{b*i¾N ¦Ø’ØÃ~—Z«)´N(þ®¥Öo‰„h4­w%ß|ëÈÖ=‹€™õlC™r»ÛE]ÃUÙÁš•§ý  \uCMrA¹—¹q÷YuH v09ñ‘"Ã‹hðEÿbÅJkn¤^D…ÓÇ™6ÉOèŠ¡âC†wh¢œ2Ç/”äýyÄøyÔí‚,ÊÃÉW7(¿qÄ“›@qÓ¨ÊÐ–¤¸MÕ¯¡‹ƒlEFè<&¡!‚Ü0ã‡øSäfWÐ¢Â¾ßn‘gäÆjK šˆ4jZ@@ïÝ ´Â(Æl´±œDÔ˜ô¶*³Øò†¿	µøH£ÔÚ`û£ašdól6"4¸8¦Á•Ù{k7§ˆcóG~û§?„¾k³†6Ü¹X,é6À¹í£¼3çîô:ê…"W[¿©¼ÃœoÍ’tØh‹ä”Òf@_ÐŒi”=š·Amœ²·ºÛ¡1þ°ã7\Ó…4!&ËÛø”[MÊrµ%€šÆþmHµóã)ìc)*YMÆ+è`ö¡ð>å£AKq¾v.àg®N9éŸÂ(îÆ¡f'6kÕ]?Ð¨ªµìb-$™ã„‹†êÚ"):(¾;”8ö)Òç¸,oºÅw»4¢q!AMrÛpÙ~„‰¡@e+ƒEèå‹¤èÃP #9K5Ú3ñãJáÎïqÊIV"aH¢kª®³y.R[Í%RÒ™„
+PñBŸ2ñ(Ž~X;&¦x“úqì¦õ†…|m™y›ž
+¾‡’g¦²¤á¨)ÿ6©õô 4¦à,T‰ZA‚{Ô3ä¦MjìbE<`Žæ²å²7`Às(•mž&Ë™Æ:Í¢ímk˜j(!´&CûóÈ¥É_§a|sF¨­~^	^$îÍm!£­S)Ú»iµHJjùvØmrR‰ºÌ0J/å¤`®¢½ËµÜé’eJC=
+bQèa!n=]µeµú:¥ÒÉ|"¸F0½ÞMc&“:É…ðw÷îãOèÝ´õG÷fR½ŠÜL5H‚¶±6îXvkäªGÚ¤@¥ÏJ:+Ùè2à§`W+LŠk©/L‹¡3Qî;µ)T]ÓX@…×òNë8Ôèê•]ÉAÍ(h†Wƒ(½~‡¾f‚•«ÒÔ~û@¹kAè!-‡ŽN¯¦OM/9Úæ·äYÜjçšgáð8ê… n,÷œZî±‹e¶_œ´D#xÕkFGÖQ8 µèÈ®#Ã6ÂlÔ[$3ýZúU™î]!lpçAöz£A›E£½<nÓº~¬­½ŸE¯H[®ßeóAm'8Xº™E\‹#€Ãò'û.FI‰*¾ôEQWÑ<Pþœ5ôânù‰P­ZUêrö˜h
+ò]Yk‰Õº¹)1Ë
+´5ñ¹1ƒGñ)$¯|iÖZh^†ä~TO#ä¯ÿëÿßÿýïäÆHõ·õ*C{Ã éßýrã*´ùðšî
+G¥ªë®rUŸReãW!ÇH;ey£²R¤¿¸®›‰›Ú"”´;~½¯ñåQ7å»ç×³ÐúŒk¶Â¤¾¼‘´§ÏÈŠ#ËFN‚÷-Ä^´>­úäJ£ä©BpÅ¤ûxšA5÷²AZ²‚îZZd±g
+ƒ–€'¤æ[\}#{ý,/èë;Î
+–àgÿªØÎwÔ)Ÿýö¨©ð|ÜP…ç®X…êBÛ±hÞ›·ÊŸ®~˜­¾OKê:A‚‹Lã³9§µ¹øpo´™IWïkü”üÓUˆ»âÃ„IèJ¢Aš…{ý¡îÆ®W?èWÜ†®ðáù©*¦Â÷çä†4›Í4Z$¥©Ø¤ý¼%ª]<,>N|_i$6~¹´ºBD÷Õ"·W¯QÎðR¡çR8‚Ýà¬#,gö–Ìv=›r%¯ê0j%	þˆ9¥Øüa‰Æ²ß”f\z“ï°G×Ë{éùãt:°“÷«oo;ÙH	²È²ë§$Õ~¬Óib9®úpú'RÝ‡s8%¿£Ì¬ùSÏº×ó6Š+Ãƒç9ï[Ga+Yˆ œ¡Ü[^òÚ^Ê5³¼µó	³ô9¯q°4cÇ“É‡ªœÖÓ0èÝÀ10EñRÖOµw¼øŒ}
+«ç°züú¼Ó<zÅ„sâzŸ¹ú©[˜#–Ž]4b4ie\¬£«Ü&¡¼Þ‡-1Ùæ¼Ÿ%
+ò—=[XG4Œõìæ—ùùYãÔ5ž» õ¥#žýùx²“×÷ì­Š§(>c›ÂÄçi2 .lÏÏÑ ¿­¿þò?H¾õî~F„4öa°=t}ö;+>ºL^î¾Ü_xºÌZðí±7GÐí\¸ÿNÇááÕàh˜sP}0Mê…e'A-2føý³ÙŸ|Eæ[«›++ðÿó‹d¾Û]~ýzù>ó®@3ý³ÉûØœ÷çn•–èòGÐµOŸRã4?è¾«Í>èVÜ$ð$cŽL¤A‹GËoæoÉ_ÿáŸ(eÁ=l±nIƒº™éCBÂ»%£~™ªK™'—þ1Aàš»À^/­ÚGš†>NGÞÖkm”Gkë»~rÆâXyNÞ³uÿR¹n£†v›¶U­¿v­a/ZwnKi³Ý.¼Ç¿¨ƒü è¦˜ÁÆ8 1YM›m/Ei–
+ÉGµ–$‘šÔTŸ’néò|;
+bQJ9icîUÅòL0­¶ú˜%ÉØRˆFF˜ —h¸Ö¸èÍ²ZÑXs ÙJ:ža•Œ„nI’”Èê"iÓÂ•™±ÄQ]kï½Hã3e;«YPE.†kï±ìWj°Èk§éGfÐ_5ñHlëÜI]ØÃ*Ê°°}Ç±lárE>my°«å†jF÷&¼|'—N+AåêØ"Ë™	ªÝïrÀ'xYøòé‡79O;Tà™i Ó¨çY4eÕnüw:’·±Ðàv”vb-˜w'HÉ‹ º¢õ“¹ãËÁ×ÝÕn	kBÚùU’‹«‚™V,ÕyÆ[÷6Å¤JÕzã/¯-àÑo9êÊXÖU‡ÜôÀ–«0µ?îyUà¶LvdÉ©4iÒ	³,êŸ­×<ìÖ•ÃÎp’?S›¬çÈ¿žÒ(WŽ–ßÇZCÎ—j-âGfM³ Œ"’ÂÊcÆú™€.Ä	‰ÅW&:!í„d™œ
+w‰.ëóüå¥l Š…w¾´âÿFî·,ü¿t¦*J«W.¬¼‰ÿl;üO‰££zwÑw8Z³ÒgU‘ìzÇÊ~Œ2È¯ÂaF8˜æ5…p‚õœ‚
+U}¯¢ëEEÍ”©bïpaûžŠN†DÎkµtÔ´¤l?ÎQ°šzÙü†¶ºB¥ëí¤ÿ!J{°v9,^È¤íÔ)kO@ÈDæAmô¯g% ¨‰€D½0¶rÊ“ÂGO
+ÁÇ¡Œ»‘¯íÁ¿¼h…RQ*¨ä£W”ícªÆ<&œˆUUÁä¨gndvUe§³À;4¤†yi
+«<MkÓtWù8²s}™¯°Àô¸ëlfVòï¦¤kå©‚¹QuQƒÄÌË­Ö(¦Ê‚æŸ¬¬,?4Tu¢äåT×q°tÀy¸>UVe,¢âêCG™UFG”\õ)³*qiilJ€¾–¯ÈP9JaV|LÇý˜¸«¼ëª¡+¹íí…YQÈÛŽÀÉÆtyÎÂ+ÌÅ<m˜©¶Jž&¤¡4:;Ç:äˆÇõ¤pN:9)jt>‡¼	¦ñdñŒtññŠý[ÚHg—ð-&bœÖoÂ W¹4¡^ÕXÖ0zFRjNUj1Õ32äòçÑ*Ë­‚“_eÍ;svK	uuÕX)ÕRÓÐ ¡†¯IÇì£Pp‡H/s[o@±’õ*É!_ýkñæd"œŠ°áUF0<Aßá%	lØÛ,GøkH=bE·8¢õ‘(^JãúüÊ}o@no€ÛuB²õÂGÃJ²“ƒ ÙWÿÑ
+e·eøF:Q¤‰’k°H.:FÙ é¦C·-=±$;O£þpvô†˜çCŠˆnâOŠ&,Ë‹•«KKªm'½„|õ)<	>7#ÊçÞ¹èôâˆ,äøp–}û-\€"„x?DäðL€MÓH‚à"ˆ#zÓ ŒáÏ¸—€ö}@È&ÒÜýÑEj« Ï›ñ ÿ.ð4x[^tájŠÛ °f1†Ž¥NÀ€Éƒ„…­"önÈ4³¦Az™„è_&i¼ŒÂ¸›m
+à?H`²sZµ´ªÌ-ÒënêEš×}K‘»A5[Zî¦Æs,æ;H³±2 %ØX$Ìmý-ØŽÍÉ8–IcàqZ]äÝ6·ïÌè«’3ë|­ôÓË±VœËâx]µ†‰º0luxL³8‚£Ê ÆR*˜úpÊºbÓ´fhÈeà_ê<
+\ù¤w¹‰Ñ/Õh.‡Ží‚øýùôÊp±F“»iš¾Æç¶Œ—k4Ë°ç¶ØíÚâóÌ¢÷ƒÃ¨¼t™ rŸ‡ålo;ï°æïIX¸>ŒePnsùˆšÈÜs»W›q–œ¦ˆœMÉº8º,DÙÄû›bV\¾«bW>â—íHow»­ääˆî²QJ6¹l€¯ËË¤Õ$/Cæ£â'éŒÒ–(¾É…<#æåéú(àf7Ð¼=Q°¨ŒãZ³ŽkRº¡QÜO:jåW” šñ¢]¢†á—AÚ»û¹ó.ViCúuaÁøV_Vû¹ƒs·*æ.¯›&ªa^Øœå÷†âžð‰ÂÕA=JU-u¬Ð÷Ô^*ñAZLnÉX·êâ«1
+´³†Ò%–OÃ:îs<àu0(£+•ÄUµ^’¸jÈ‡ea£ÒO¢bUñS‘ÊÃÚ!taíÏ’o‰ÛÊj!\›«æy5ïÓ‚'Ö»lVÃZ“Ëh¼e]­nÙaj)Öq±8'Za*Þ±ã!œ\«uŒêYcÖÎ2ËŠÇÝý8î.HJ+™e­Œeq6{“k ¯Ìdc~¡WÓ9…AÓ5I¯< ýJÙyá8,v¯†ŠS]Œ†!À,5LA„”WÔõ(Æ“M20n»Ayä¥ÁäeÍè»Í¼QsE38Öà EŸÐü´âÓ¡ù ü	ÆÙÅŒè§ªršFÙ.{¦A³ËYob5ÈSN“®Ñà”ôt“KíY0,œ£™¡ÿ^—9y5w—–ÃÆºa@/Ó¤GGû|$º$A%Ï9ºÖßòÜp&žíY±•Ñ¼§«±ôå}s¦ÞÛ¶á~Qf…ßéºÍÔ{Ñ,EÙ"'"‚]4gä¼5¾_škö° tÓÍÒ*8º*­+æVæúÆ7@Ô›¶}¾j]ûªÑ“L[:8a!èCÒAh>Ö|Ÿ¶žoŒ lÏ™O™ôgÜO0’PŸ±ŸˆÒ‚³Gòæû‹5ïJÄéü?†£ÍÄó¬$ïÅ>g>:‡W¥ÜŠ5%Ò
+GmMjáŒ’0¾úMtv£„¼ú}ƒ»‰?XfÉZÝiK|TÙk B“”Jto7¢Ú!¦¡Ë;ò¹üœk«’ûÿqŽ^UØK@¿¶JÜ ˆí8L‡ÇiôÏŠ°@ØzŽòàÌýW„ã2)¡ äÍdÏÕ¬ˆ…¬NA}…R$E‘ê_B,4“ˆs
+í„zë"bÔ[˜ÛO±u/ØlQÀ6æáWÊ èò¹À5œ3hpàäã|Ê|ü8ì³jngô`µ{9 È…0¦Òyº4½„;VÐÇ’…#´y%)ÈJ¬Üü~š©o&!qÐ¥^QtÜÐ=¡’ºûy).»pè’Û‘ÝE›Öé²V,°q<³ù‘}L+r4\¶µÅ‡ñð(k³ªÎ{¼~-0ñ®VÒ¶™%½åýŸ*§¥0þ:V°™&ôk¥‰•»œ ®žYòt²hR|Ñê­1¾}­48dMÚ…¥X“œM«˜ð ýž&—øÝYÚƒ¹uó87,¬ƒº“Ë»z•iîÿ¹­y1|Jr·)7˜kVrÙÔ9°ùË&æVÅäžsif‘˜s¤¯€™™«ßP`ÝäéâM
+4ô0yEá}yÆûâp~Ayù·Ã.iGAì;:u…rD_ü"Ÿ+>9î>¥€ðã_á?J•£Tçæ{ÅWª^2Vç	H"ìïp•Y/?ËDwy£ù=_ƒ×IÀïyQ~¼§Kåâ‹á{<ï¬bV¼¢\ý¤ÙlêÇÉ¢X¶·^XÆZé\ô³W<·¶ »¼Þk¡Qyµ..a…/'`¤!”|7O[xï1X*ª@€48Êª+¡—°¨¼âz×*NòB¯*Ë^äÌ «Š˜G‰Í®ÃŸQš%éR?bß“KÐ-nDOˆªÍ€RÉGË%Y)w$/ßY]TEåw\žB˜?ÞýLÚyàúó¢ï¾{Ì5¾åOua+vWÅ±ã n;Š£UëOöœ­£aÐïi·ð¤îp+©Å8`Pòe¯4hôHë([n8êB©aÌZ¿VV«ÖfUÃ-`ú‘M©„¶QVÎóàCÔÎ™Z«eÜ-”pøJ#A-‹W®¸ežr»8Ní®ÑT`-ò(
+q(ÂÎ8`§»}C˜)ŽJÏû•ÐÅ!Ã^z¸^ÔƒW9bŸÈÿP,öqSÔØ ¹­¥¥œˆ°F{NET·–å¥¥j±ÝéàEŠÇçA=Uw ^‚óûT²øj· ãØÕÂååf®2Ü 	ÿÉQàØ_•8Nj¯A(ÙÉëS€îr#y½Æ2Ú07{f[•^â§ÔP%¨×¡ÌD	"—D¦Ô°íC§?VÉ†;a‘”ØéU®w`÷øª*ûÔ±²ÔYÎi›¿Ê¯p–üZLÖ¾ô×Ukaªþeên3ÄÑ°1Ï}kó'+o«Z-´²VÕ­B¯®pÂŸ’î%ZƒJÈ½˜ÑìŒJ`Ÿ
+ÕlêJ™ùØ›wkbŽB×>†]êu°Ê©u²„ºÑ‹5S7ÒR¬—Ó Eç7yj¨%Å5ƒzâ­^Ñ0I²Ÿ\¦Á`ŒÃX«zPR*[9¸EÁ"”[~0^Ö¨ˆÇU.¡0ÿ*¾“|(‚/
+j&§LªÊo°ËâÓð¼äz¹Òü$y³[@/¢kð±©b<+Ûè„¬è¤ƒÃ,¸ß”D¨jª¯kMÊÃ+VßZž°e+eiéú­}PŠK­p¥i›a·$!Ù#ÝkV!.Ô­
+±Û3á\B34Þ9½Š¨=!ÓöJ‡iéÎEu¯œÂÛ4Äÿ"¡Õ%swT¹˜žšÈ·.“9šÖõó‡A¶×¬MhaˆxÆ0…tœ"„žœJiÇì<Q+Òè^”qËZªwIõáï4ÐuÞ•5ÇÚT°çò_‹Ïë»Ÿ¯š„õŸ	”Õ6¸ê™9ˆvÏ¬ÖKaÞYØ‹ôÙ[Ç%£"¹gmI[MQ¿º"Ž´<ý#WÙÐ¤tpñ1f0þ5 µG“<þÖ7r,ómÙï>V)“ÆÀ_ãåmñ*Ÿ¡ÂW‹ªrêO¥,>³a\KÒ“ÓÖ2ÚÃª}>nokå¿ S‚þ·ÃýßTÖ]@ÈïÆº·%Ø©¿ó‹µ{ ³ÓñÖ¨àFHíùþORK‰fRÌ¥E"W”Á‰â[§hòB¯U'Amýeq)ìw¹Â÷åß—V02„…ÜPh›*tŽº=cqŠòIÌ|1-{pOáyX]âw6±c‡7LáˆPˆ<éíÜÏQ i´ÕR}d‰´ê{ÕkŸ§„R¢tð)¨`u|ás—KÉ9ü¯ÒÆ"-¹¶UhNF`õ¼)Y}ÖÊøXšt{Š6 n$- :±Oxi*~]W–²ú©Ya”VmUo ÏguDes-R¯ø£úrœ\òŒí¦¨ß:»¨ì1WqÒ–_m²™óèÑ½ØøÊÖm­Ò½[Q²T-¦v¶D7Ì9< +¯¯¬¹ù{;#tªV™ñW÷ý´Øâ¶_ò»>7¾šÊ¹áeðÚEuöPí¤ïŸ’I’›ï€èi›Õ“Ð<YM²“|%¹+VÅUM‘°üòð45`mC#ñ,ÿÀ>°©bxíaØÃ&d)Fçû±Jžj ú¬ ±jB¬Êïqý\³v”±%›nYxS7-–Ñl^ËÍµ¶X2á’^Ô»b˜Ò°²'E¹áS¿fB,ä-ºrrh¶¹­7aÿ|Ôc¹4™ˆë&¥¬™¦5 ýé`«ˆ‚¦ò°Ü~B[Ä<k`“½@ÉÕ	à")Ã»Ù^c[4‹sÆp©ä–dµE8fh5Äš;¼m©Ò¹š]tiÃ/ž*©ÂtDMyè4ûÚ"¦ps£T=ÿ\œÎR'ë*¯îvÐï„q©´•,¸rJEÑl¯vQUõ —ÓqÅc=ZÅz¬–×cÕ4ü×B*7Å¿åï§‡~0ù5£(ª	 ^ŽÙÞ°žÎèëÉ>EE waSõ4íÒ ê¡gË<NÁ¥aë4@«§m6ßi˜…°q‹o†øœj›Ô¸†Aòƒ¶Æ'ô[Ã«hèÕ¦œœÁÀO˜Òœþqøa¸ÔZ^%Lo¥lñŠ^ø	}“+oÑßøÕ¬PÒÈ\l`²¨Tç<z8K)lQÌføRÙ¨ƒ›cž'X˜«cÌ=ÃUo&LÓ$äY®ðÆ“/ZÛ­'­Goå;•ûÔ|	•o¬c
+±Î¸u·Á‚-˜ÒØMm¸å¤ÞÜIúšž¥iÞBù†|º\ÚÒvú.q»cÈC¾ÿé¦¢g¼ßÖÂM…í°fx+æ­V…kOOŽåu#¦ýÉC kTû‡š cÝßÊ/`ë¥YV¬¤.pë¥þ?   ÿÿì]ÍnÚ@¾÷)s•ÜJ´%DE	•8õ¶‡"”lm¹-¶„©‘x®•ú¼Xffü·»6’&*‘eÌŽçç›õÎ7ûÌÜ›
+Ð-à)pØC€”&=zûóœeçRƒFöÒíX¼êœ@`‚õ=ô.¤t3dþ 	Cù®üB§Í$ô„Óµ,çœ‡S6~øœþÚ¬gòFW	ÌuåÌ­Þi¯sr1ÆqN5'þ	2Œ;¼c•¯€M|‡\BÈK Ù [¥
+A$JJâÉ{ƒ•ð†3r=
+?ô¬
+˜¥öéO¤7kÈê6¢JšrêpÊÊÌÐ:^èÃ4±YBåä	¶V#£Ö‡.ü½—ºQ×4µ½Aw€_«™¬Ða!ê·Í"4ù¡XºŒ}Ç6Û„KøÍŠb^Õ?Ÿ--óWlÁ"â–„ñ.¿àû›çã é±ç˜EjY³~‘YÛ•FÆ­`ótÙ6 ¦¢)¹žãŠøê\9>õoSíƒ³]Ú*2é7Ä=Ìi‚TA‹c¨ yòiEºacÍnNú·K¿­Žee¦;¨ÿU4õd×œÆ& öÐ!“Ê¡6¨Â?àõ˜ÈÏü5„û|îÿˆ“dt“¿-4äáð
+áðÿ€å9¤ß7nÑM˜PwEÎƒ-2dÂ~m~Ç~ÄvC8Å–,•«¾äèÆWÒò„éˆ¿àÜ—d¯ö¸UCÃßOeå*Ä#Gƒx!‰˜îÀÐM@(ÙÖc­¢Îã# üÅ>Eðó%ù9DèSÐ•87Ï3´T5Úñ ®zçðÎ Z4#<=y”½ºRÚ²ÛVÔN@+`p×0ÈF°=Ðãpæ±Z¥Ó(MÃàš8G¯º"o$é¥Wó SŠî«-{¢’w>ï;j9'®à^}K7mÕ¿&8DŸmUóš !«MUšVé7•sØ‘š\äî%s,a•Ÿ=ˆµ:§=ã×Qçuw¼»uÇ\¹¥˜¹A>Xì$IÀXEÝ «ÃáÞ­^Ü  ÿÿ ·5½u

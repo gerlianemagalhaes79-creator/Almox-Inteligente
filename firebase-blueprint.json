@@ -103,6 +103,25 @@
       "properties": {
         "appLogo": { "type": "string" }
       }
+    },
+    "Balance": {
+      "title": "Balance",
+      "description": "Stock audit and inventory balance records (performed every 4 months)",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string", "format": "date-time" },
+        "responsibleName": { "type": "string" },
+        "responsibleEmail": { "type": "string" },
+        "location": { "type": "string" },
+        "status": { "type": "string", "enum": ["CONCLUÍDO", "EM_ANDAMENTO"] },
+        "totalItemsAudited": { "type": "number" },
+        "divergentItemsCount": { "type": "number" },
+        "totalStockBefore": { "type": "number" },
+        "totalStockAfter": { "type": "number" },
+        "financialImpact": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["date", "responsibleEmail", "status", "createdAt"]
     }
   },
   "firestore": {
@@ -137,6 +156,10 @@
     "/settings": {
       "schema": "Setting",
       "description": "Collection of system global settings"
+    },
+    "/balances": {
+      "schema": "Balance",
+      "description": "Collection of periodic 4-month inventory balance and stock audit records"
     }
   }
 }
