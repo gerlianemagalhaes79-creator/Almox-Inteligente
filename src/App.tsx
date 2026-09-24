@@ -44,9 +44,11 @@ import {
   ShoppingCart,
   Calculator,
   Sparkles,
-  Scale
+  ClipboardList,
+  Boxes,
+  ArrowLeft,
+  Eye
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
 import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -86,10 +88,22 @@ import {
 import { initializeApp } from 'firebase/app';
 import { db, auth } from './firebase';
 import firebaseConfig from '../firebase-applet-config.json';
-import { Item, Transaction, UserProfile, MaterialRequest, RequestItem, Notification, BalanceRecord } from './types';
+import { Item, Transaction, UserProfile, MaterialRequest, RequestItem, Notification } from './types';
 import { ApuraSUSProducaoReport } from './components/ApuraSUSProducaoReport';
 import { ApuraSUSCustosReport } from './components/ApuraSUSCustosReport';
-import { StockBalance } from './components/StockBalance';
+import { BalancoReport } from './components/BalancoReport';
+import { UserManagementTab } from './components/UserManagementTab';
+import { BulkEntryModal } from './components/BulkEntryModal';
+import { RequestsTab } from './components/RequestsTab';
+import { AdminDevolutionsTab } from './components/AdminDevolutionsTab';
+import { TrashTab } from './components/TrashTab';
+import { NewRequestTab } from './components/NewRequestTab';
+import { MyRequestsTab } from './components/MyRequestsTab';
+import { DevolutionTab } from './components/DevolutionTab';
+import { LeaderStatsTab } from './components/LeaderStatsTab';
+import { RequestDetailModal } from './components/RequestDetailModal';
+import { DevolutionModal } from './components/DevolutionModal';
+import { ItemExitsModal } from './components/ItemExitsModal';
 import { 
   BarChart, 
   Bar, 
@@ -439,6 +453,8 @@ export default function App() {
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authName, setAuthName] = useState('');
+  const [authRole, setAuthRole] = useState<'ADMIN' | 'LÃDER' | 'SETOR'>('SETOR');
+  const [editingUser, setEditingUser] = useState<UserProfile | null>(null);
   const [authSectors, setAuthSectors] = useState<string[]>([]);
   const [selectedSector, setSelectedSector] = useState(SECTORS[0]);
   const [donationUnitName, setDonationUnitName] = useState('');
@@ -446,7 +462,7 @@ export default function App() {
   const [donationUnitCNPJ, setDonationUnitCNPJ] = useState('');
   const [donationRevisionDate, setDonationRevisionDate] = useState('');
   const [letterheadImage, setLetterheadImage] = useState<string | null>(null);
-  const [reportsTab, setReportsTab] = useState<'overview' | 'apurasus_producao' | 'apurasus_custos' | 'quantitativo' | 'letterhead'>('overview');
+  const [reportsTab, setReportsTab] = useState<'overview' | 'balanco' | 'apurasus_producao' | 'apurasus_custos' | 'quantitativo' | 'letterhead'>('overview');
   const [quantitativoSource, setQuantitativoSource] = useState<'sample' | 'system'>('system');
   const [quantitativoPeriodPreset, setQuantitativoPeriodPreset] = useState<'1_semestre_2026' | '2_semestre_2026' | 'ano_2026' | 'custom'>('1_semestre_2026');
   const [quantitativoCustomStart, setQuantitativoCustomStart] = useState('2026-01-01');
@@ -457,8 +473,7 @@ export default function App() {
   const [isEditingQuantitativoAnalysis, setIsEditingQuantitativoAnalysis] = useState(false);
   const quantitativoReportRef = useRef<HTMLDivElement>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [balances, setBalances] = useState<BalanceRecord[]>([]);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'inventory' | 'balance' | 'history' | 'requests' | 'admin-devolutions' | 'reports' | 'my-requests' | 'new-request' | 'devolution' | 'users' | 'trash' | 'leader-stats'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'inventory' | 'history' | 'requests' | 'admin-devolutions' | 'reports' | 'my-requests' | 'new-request' | 'devolution' | 'users' | 'trash' | 'leader-stats'>('dashboard');
   const leaderStatistics = useMemo(() => {
     if (userProfile?.role !== 'LÃDER' && userProfile?.role !== 'SETOR') return { topRequested: [], topDelivered: [] };
 
@@ -905,6 +920,11 @@ export default function App() {
   const [planningOnlyWithDeficit, setPlanningOnlyWithDeficit] = useState<boolean>(true);
   const [planningSearch, setPlanningSearch] = useState<string>('');
   const [planningSort, setPlanningSort] = useState<'deficit_desc' | 'cost_desc' | 'cost_asc' | 'name_asc' | 'duration_asc'>('deficit_desc');
+  const [showItemExitsModal, setShowItemExitsModal] = useState<{
+    show: boolean;
+    materialName: string;
+    batchNumber?: string | null;
+  }>({ show: false, materialName: '', batchNumber: null });
 
   const uniqueSuppliers = useMemo(() => {
     const fromItems = items.map(i => i.supplier).filter(Boolean) as string[];
@@ -955,94 +975,6 @@ export default function App() {
       setRequestSearchTerm('');
     }
   }, [activeTab]);
-
-  const handleSaveItemAdjustmentFromBalance = async (
-    updatedItem: Partial<Item> & { id: string },
-    auditData: {
-      previousQty: number;
-      newQty: number;
-      difference: number;
-      reason: string;
-      notes?: string;
-    }
-  ) => {
-    if (!isAdmin) {
-      showToast('Apenas administradores podem realizar alteraÃ§Ãµes no BalanÃ§o.', 'error');
-      return;
-    }
-
-    try {
-      const itemRef = doc(db, 'items', updatedItem.id);
-      const itemSnap = await getDoc(itemRef);
-      if (!itemSnap.exists()) {
-        showToast('Item nÃ£o encontrado.', 'error');
-        return;
-      }
-      const currentItem = itemSnap.data() as Item;
-      const { id, ...dataToUpdate } = updatedItem;
-
-      await updateDoc(itemRef, {
-        ...dataToUpdate,
-        updatedAt: serverTimestamp()
-      });
-
-      if (auditData.difference !== 0) {
-        const isPositive = auditData.difference > 0;
-        await addDoc(collection(db, 'transactions'), {
-          item_id: id,
-          item_name: dataToUpdate.name || currentItem.name,
-          type: isPositive ? 'entry' : 'exit',
-          origin: currentItem.origin || 'contract',
-          quantity: Math.abs(auditData.difference),
-          sector: 'BalanÃ§o Geral / Auditoria',
-          location: dataToUpdate.location || currentItem.location || 'Almoxarifado',
-          room: dataToUpdate.room || currentItem.room || '',
-          date: new Date().toISOString(),
-          responsible: userProfile?.name || user?.displayName || user?.email || 'Administrador',
-          responsibleEmail: user?.email || '',
-          supplier: currentItem.supplier || 'N/A',
-          batch_number: dataToUpdate.batch_number || currentItem.batch_number || 'S/N',
-          expiry_date: dataToUpdate.expiry_date || currentItem.expiry_date || 'Indeterminada',
-          observation: `[BalanÃ§o Quadrimestral] ${auditData.reason}${auditData.notes ? ` - ${auditData.notes}` : ''} (Saldo anterior: ${auditData.previousQty}, Novo saldo: ${auditData.newQty})`
-        });
-      }
-
-      if (dataToUpdate.name && dataToUpdate.name !== currentItem.name) {
-        const otherBatches = items.filter(i => i.name === currentItem.name && i.id !== id && !i.deletedAt);
-        if (otherBatches.length > 0) {
-          const batch = writeBatch(db);
-          otherBatches.forEach(b => {
-            batch.update(doc(db, 'items', b.id), { name: dataToUpdate.name });
-          });
-          await batch.commit();
-        }
-      }
-
-      if (dataToUpdate.name) {
-        await checkStockAndNotify(dataToUpdate.name);
-      }
-    } catch (error: any) {
-      console.error('Error saving item adjustment from balance:', error);
-      throw error;
-    }
-  };
-
-  const handleFinalizeBalanceFromComponent = async (balanceData: Omit<BalanceRecord, 'id'>) => {
-    if (!isAdmin) {
-      showToast('Apenas administradores podem registrar o BalanÃ§o Oficial.', 'error');
-      return;
-    }
-
-    try {
-      await addDoc(collection(db, 'balances'), {
-        ...balanceData,
-        createdAt: new Date().toISOString()
-      });
-    } catch (error: any) {
-      console.error('Error finalizing balance:', error);
-      throw error;
-    }
-  };
 
   const handleUpdatePrice = async () => {
     if (!editingPrice) return;
@@ -1473,20 +1405,11 @@ export default function App() {
       handleFirestoreError(error, OperationType.LIST, 'request_items');
     });
 
-    const qBalances = query(collection(db, 'balances'), orderBy('date', 'desc'));
-    const unsubscribeBalances = onSnapshot(qBalances, (snapshot) => {
-      const balancesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as BalanceRecord));
-      setBalances(balancesData);
-    }, (error) => {
-      console.warn("Balances listener error:", error);
-    });
-
     return () => {
       unsubscribeItems();
       unsubscribeTrans();
       unsubscribeRequests();
       unsubscribeReqItems();
-      unsubscribeBalances();
     };
   }, [user]);
 
@@ -2078,65 +2001,161 @@ export default function App() {
     const startDateStr = new Date(printRange.start + 'T12:00:00').toLocaleDateString('pt-BR');
     const endDateStr = new Date(printRange.end + 'T12:00:00').toLocaleDateString('pt-BR');
     const periodStr = printRange.start === printRange.end ? startDateStr : `${startDateStr} a ${endDateStr}`;
+    const logoToUse = appRectangularLogo || appLogo;
 
     const content = `
-      <html>
+      <!DOCTYPE html>
+      <html lang="pt-BR">
         <head>
+          <meta charset="UTF-8">
           <title>ImpressÃ£o de SolicitaÃ§Ãµes - ${periodStr}</title>
           <style>
-            body { font-family: sans-serif; padding: 5px; color: #1C1917; font-size: 9px; line-height: 1.2; }
+            @page {
+              size: A4 portrait;
+              margin: 8mm 10mm;
+            }
+            * { box-sizing: border-box; }
+            body {
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+              padding: 10px;
+              color: #0F172A;
+              font-size: 9.5px;
+              line-height: 1.3;
+              background-color: #FFFFFF;
+            }
+            .batch-header {
+              display: flex;
+              align-items: center;
+              justify-content: space-between;
+              border-bottom: 2px solid #0284C7;
+              padding-bottom: 8px;
+              margin-bottom: 12px;
+            }
+            .batch-header-left {
+              display: flex;
+              align-items: center;
+              gap: 10px;
+            }
+            .logo-circle {
+              width: 42px;
+              height: 42px;
+              border-radius: 50%;
+              background: linear-gradient(135deg, #0369A1, #1E40AF);
+              color: #FFFFFF;
+              font-weight: 900;
+              font-size: 15px;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              border: 2px solid #E0F2FE;
+            }
+            .logo-img {
+              max-height: 38px;
+              max-width: 100px;
+              object-fit: contain;
+            }
             .request-card { 
-              border: 1px dashed #78716C; 
-              border-radius: 6px; 
-              padding: 8px; 
-              margin-bottom: 12px; 
+              border: 1px solid #CBD5E1; 
+              border-radius: 8px; 
+              padding: 10px; 
+              margin-bottom: 14px; 
               page-break-inside: avoid;
+              background-color: #FFFFFF;
+            }
+            .card-header-bar {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              border-bottom: 1.5px solid #0F172A;
+              padding-bottom: 4px;
+              margin-bottom: 6px;
+            }
+            .protocol-tag {
+              font-weight: 900;
+              font-size: 11px;
+              color: #0369A1;
             }
             .header-table { width: 100%; border-collapse: collapse; margin-bottom: 6px; }
-            .header-table td { padding: 3px 5px; border: 1px solid #E7E5E4; font-size: 8.5px; }
-            h1 { text-align: left; margin: 0 0 5px 0; font-size: 11px; text-transform: uppercase; border-bottom: 1.5px solid #1C1917; padding-bottom: 2px; }
+            .header-table td { padding: 4px 6px; border: 1px solid #E2E8F0; font-size: 8.5px; }
+            .header-table td strong { color: #334155; }
             .items-table { width: 100%; border-collapse: collapse; margin-top: 6px; }
-            .items-table th, .items-table td { border: 1px solid #1C1917; padding: 4px; text-align: left; font-size: 8.5px; vertical-align: middle; }
-            .items-table th { background-color: #FAFAF9; }
-            .blank-col { width: 70px; text-align: center; }
-            .footer { margin-top: 8px; text-align: center; font-size: 7px; color: #78716C; border-top: 1px dashed #E7E5E4; padding-top: 3px; }
-            .badge-multiple { display: inline-block; background-color: #F59E0B; color: #FFFFFF; font-size: 7px; font-weight: 800; padding: 1px 4px; border-radius: 3px; margin-top: 2px; letter-spacing: 0.5px; }
+            .items-table th, .items-table td { border: 1px solid #CBD5E1; padding: 4px 6px; text-align: left; font-size: 8.5px; vertical-align: middle; }
+            .items-table th { background-color: #0F172A; color: #FFFFFF; font-weight: 800; text-transform: uppercase; font-size: 8px; }
+            .blank-col { width: 75px; text-align: center; }
+            .check-line { border-bottom: 1px dotted #64748B; height: 14px; }
+            .footer { margin-top: 6px; text-align: center; font-size: 7.5px; color: #64748B; border-top: 1px dashed #E2E8F0; padding-top: 4px; }
+            .badge-multiple { display: inline-block; background-color: #FEF3C7; color: #92400E; border: 1px solid #FCD34D; font-size: 7px; font-weight: 800; padding: 1px 4px; border-radius: 3px; margin-top: 2px; }
             .lot-warning-box { background-color: #FEF3C7; border: 1px solid #F59E0B; border-radius: 3px; padding: 2px 4px; margin-bottom: 2px; font-weight: bold; color: #92400E; font-size: 7.5px; }
             .lot-item-line { font-size: 7.5px; color: #1C1917; line-height: 1.25; }
+            .card-signatures {
+              display: grid;
+              grid-template-columns: 1fr 1fr;
+              gap: 16px;
+              margin-top: 10px;
+              padding-top: 6px;
+              border-top: 1px solid #E2E8F0;
+              font-size: 8px;
+              text-align: center;
+            }
+            .sig-line { border-top: 1px solid #0F172A; margin-top: 14px; padding-top: 2px; font-weight: 700; }
             @media print {
-              .no-print { display: none; }
+              .no-print { display: none !important; }
+              body { padding: 0; }
             }
           </style>
         </head>
         <body>
+          <!-- BATCH HEADER -->
+          <div class="batch-header">
+            <div class="batch-header-left">
+              ${logoToUse ? `
+                <img src="${logoToUse}" alt="Logo" class="logo-img" />
+              ` : `
+                <div class="logo-circle">MM</div>
+              `}
+              <div>
+                <div style="font-weight: 900; font-size: 12px; color: #0F172A; text-transform: uppercase;">PoliclÃ­nica Bernardo FÃ©lix da Silva</div>
+                <div style="font-size: 9px; font-weight: 700; color: #0284C7;">ConsÃ³rcio CPSMS â€¢ Almoxarifado Central</div>
+              </div>
+            </div>
+            <div style="text-align: right;">
+              <div style="font-size: 11px; font-weight: 900; color: #0F172A;">LOTE DE FOLHAS DE SOLICITAÃ‡ÃƒO</div>
+              <div style="font-size: 9px; color: #64748B;">PerÃ­odo: <strong>${periodStr}</strong> â€¢ ${filteredRequests.length} solicitaÃ§Ãµes</div>
+            </div>
+          </div>
+
           ${filteredRequests.map((req, idx) => {
             const reqItemsList = allRequestItems.filter(ri => ri.request_id === req.id);
             return `
               <div class="request-card">
-                <h1>SolicitaÃ§Ã£o de Material</h1>
+                <div class="card-header-bar">
+                  <span class="protocol-tag">FOLHA DE SOLICITAÃ‡ÃƒO #${req.id.slice(-6).toUpperCase()}</span>
+                  <span style="font-size: 8px; font-weight: 800; color: #0284C7; background-color: #F0F9FF; border: 1px solid #BAE6FD; padding: 1px 6px; border-radius: 4px;">
+                    STATUS: EM SEPARAÃ‡ÃƒO
+                  </span>
+                </div>
+
                 <table class="header-table">
                   <tr>
-                    <td><strong>NÃºmero:</strong> #${req.id.slice(-5).toUpperCase()}</td>
-                    <td><strong>Data de CriaÃ§Ã£o:</strong> ${new Date(req.date).toLocaleDateString('pt-BR')}</td>
+                    <td style="width: 50%;"><strong>Data:</strong> ${new Date(req.date).toLocaleDateString('pt-BR')} Ã s ${new Date(req.date).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</td>
+                    <td style="width: 50%;"><strong>Setor Solicitante:</strong> <span style="font-weight: 900; color: #0369A1;">${req.sector}</span></td>
                   </tr>
                   <tr>
-                    <td><strong>Setor Solicitante:</strong> ${req.sector}</td>
-                    <td><strong>Status:</strong> EM SEPARAÃ‡ÃƒO</td>
-                  </tr>
-                  <tr>
-                    <td colspan="2"><strong>Solicitante:</strong> ${req.requesterEmail}</td>
+                    <td colspan="2"><strong>Solicitante:</strong> ${req.requesterEmail || 'NÃ£o informado'}</td>
                   </tr>
                   ${req.observation ? `<tr><td colspan="2"><strong>ObservaÃ§Ãµes:</strong> ${req.observation}</td></tr>` : ''}
                 </table>
 
-                <h3 style="margin: 6px 0 3px 0; font-size: 9px; border-bottom: 1.5px solid #1C1917; padding-bottom: 2px; text-transform: uppercase;">ITENS DA SOLICITAÃ‡ÃƒO (Para separaÃ§Ã£o fÃ­sica)</h3>
+                <h3 style="margin: 6px 0 3px 0; font-size: 8.5px; border-bottom: 1px solid #0F172A; padding-bottom: 2px; text-transform: uppercase; font-weight: 800; color: #334155;">
+                  ITENS DA SOLICITAÃ‡ÃƒO (Para separaÃ§Ã£o fÃ­sica)
+                </h3>
                 <table class="items-table">
                   <thead>
                     <tr>
                       <th style="width: 32%;">Produto / DescriÃ§Ã£o</th>
-                      <th style="width: 10%; text-align: center;">Qtd Solicitada</th>
+                      <th style="width: 10%; text-align: center;">Qtd Solic.</th>
                       <th class="blank-col" style="width: 14%; text-align: center;">Qtd Separada</th>
-                      <th style="width: 44%;">Lotes DisponÃ­veis em Estoque / SeparaÃ§Ã£o</th>
+                      <th style="width: 44%;">Lotes em Estoque (SugestÃ£o FEFO)</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2154,12 +2173,12 @@ export default function App() {
                       let batchDisplay = '';
                       if (hasMultipleBatches) {
                         batchDisplay = `
-                          <div class="lot-warning-box">âš ï¸ ATENÃ‡ÃƒO: POSSUI ${productBatches.length} LOTES EM ESTOQUE</div>
+                          <div class="lot-warning-box">âš ï¸ ${productBatches.length} LOTES EM ESTOQUE</div>
                           <div class="lot-item-line">
                             ${productBatches.map((b, bIdx) => {
                               const expDate = b.expiry_date && b.expiry_date !== 'Indeterminada' ? new Date(b.expiry_date + 'T12:00:00').toLocaleDateString('pt-BR') : 'Indet.';
-                              const isFirst = bIdx === 0 ? ' <span style="color: #059669; font-weight: bold;">[PrioritÃ¡rio/FEFO]</span>' : '';
-                              return `<div>â€¢ <strong>Lote ${b.batch_number || 'S/N'}:</strong> ${b.quantity} un (Val: ${expDate})${isFirst}</div>`;
+                              const isFirst = bIdx === 0 ? ' <span style="color: #059669; font-weight: bold;">[FEFO]</span>' : '';
+                              return `<div>â€¢ Lote ${b.batch_number || 'S/N'}: ${b.quantity} un (Val: ${expDate})${isFirst}</div>`;
                             }).join('')}
                           </div>
                         `;
@@ -2174,7 +2193,7 @@ export default function App() {
                       } else {
                         batchDisplay = `
                           <div style="font-size: 7.5px; color: #DC2626; font-weight: bold;">
-                            âš ï¸ Sem saldo ativo em estoque
+                            Sem saldo ativo em estoque
                           </div>
                         `;
                       }
@@ -2185,8 +2204,8 @@ export default function App() {
                             <div>${item.product_name}</div>
                             ${hasMultipleBatches ? `<div class="badge-multiple">âš ï¸ MÃšLTIPLOS LOTES (${productBatches.length})</div>` : ''}
                           </td>
-                          <td style="text-align: center; font-size: 8.5px; font-weight: bold;">${item.quantity_requested}</td>
-                          <td class="blank-col" style="border-bottom: 1px solid #1C1917;"></td>
+                          <td style="text-align: center; font-size: 9px; font-weight: 900; color: #0369A1;">${item.quantity_requested}</td>
+                          <td class="blank-col"><div class="check-line"></div></td>
                           <td style="vertical-align: top; padding: 3px 5px;">${batchDisplay}</td>
                         </tr>
                       `;
@@ -2194,7 +2213,16 @@ export default function App() {
                   </tbody>
                 </table>
 
-                <div class="footer">Gerado em ${new Date().toLocaleString('pt-BR')}</div>
+                <div class="card-signatures">
+                  <div>
+                    <div class="sig-line">Almoxarifado (SeparaÃ§Ã£o)</div>
+                  </div>
+                  <div>
+                    <div class="sig-line">Setor Solicitante (Recebimento)</div>
+                  </div>
+                </div>
+
+                <div class="footer">Gerado em ${new Date().toLocaleString('pt-BR')} â€¢ PoliclÃ­nica Bernardo FÃ©lix da Silva</div>
               </div>
             `;
           }).join('')}
@@ -2213,8 +2241,18 @@ export default function App() {
 
   const handleDeleteRequest = async (requestId: string) => {
     const reqToDel = requests.find(r => r.id === requestId);
-    if (reqToDel?.status === 'ENTREGUE') {
-      showToast("NÃ£o Ã© possÃ­vel excluir uma solicitaÃ§Ã£o que jÃ¡ foi entregue.", "error");
+    if (!reqToDel) return;
+
+    // Se a solicitaÃ§Ã£o foi aprovada, entregue ou estÃ¡ em processo de atendimento, nÃ£o Ã© mais permitido apagar
+    const isApprovedOrDelivered = 
+      reqToDel.status === 'APROVADO' || 
+      reqToDel.status === 'ENTREGUE' || 
+      reqToDel.status === 'EM_SEPARACAO' || 
+      reqToDel.status === 'SEPARADO' ||
+      reqToDel.status === 'DEVOLUCAO_APROVADA';
+
+    if (isApprovedOrDelivered) {
+      showToast("OperaÃ§Ã£o nÃ£o permitida: solicitaÃ§Ãµes aprovadas ou jÃ¡ entregues nÃ£o podem ser apagadas.", "error");
       return;
     }
     
@@ -2292,83 +2330,460 @@ export default function App() {
       return;
     }
 
-    const items = allRequestItems.filter(ri => ri.request_id === request.id);
+    const reqItemsList = allRequestItems.filter(ri => ri.request_id === request.id);
     const dateStr = new Date(request.date).toLocaleDateString('pt-BR');
+    const timeStr = new Date(request.date).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    const nowStr = new Date().toLocaleString('pt-BR');
+    const logoToUse = appRectangularLogo || appLogo;
+    const protocolCode = `#${request.id.slice(-6).toUpperCase()}`;
+
+    const totalQtyRequested = reqItemsList.reduce((acc, i) => acc + (i.quantity_requested || 0), 0);
 
     const content = `
-      <html>
+      <!DOCTYPE html>
+      <html lang="pt-BR">
         <head>
-          <title>SolicitaÃ§Ã£o de Material - #${request.id.slice(-5).toUpperCase()}</title>
+          <meta charset="UTF-8">
+          <title>Folha de SolicitaÃ§Ã£o de Material - ${protocolCode}</title>
           <style>
-            body { font-family: sans-serif; padding: 20px; color: #1C1917; }
-            .header-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
-            .header-table td { padding: 8px; border: 1px solid #E7E5E4; }
-            h1 { text-align: center; margin-bottom: 20px; font-size: 22px; text-transform: uppercase; border-bottom: 3px double #1C1917; padding-bottom: 10px; }
-            .items-table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-            .items-table th, .items-table td { border: 1px solid #1C1917; padding: 10px; text-align: left; font-size: 13px; }
-            .items-table th { background-color: #FAFAF9; }
-            .blank-col { width: 120px; text-align: center; }
-            .signature-section { margin-top: 60px; display: flex; justify-content: space-between; }
-            .signature-box { width: 45%; text-align: center; border-top: 1px solid #1C1917; padding-top: 5px; font-size: 12px; }
-            .footer { margin-top: 50px; text-align: center; font-size: 10px; color: #78716C; border-top: 1px solid #E7E5E4; padding-top: 10px; }
+            @page {
+              size: A4 portrait;
+              margin: 10mm 12mm 10mm 12mm;
+            }
+            * { box-sizing: border-box; }
+            body {
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+              color: #0F172A;
+              background-color: #FFFFFF;
+              margin: 0;
+              padding: 12px;
+              font-size: 10.5px;
+              line-height: 1.35;
+            }
+            .sheet-container {
+              max-width: 100%;
+              margin: 0 auto;
+            }
+            /* Institutional Header */
+            .header-banner {
+              display: flex;
+              align-items: center;
+              justify-content: space-between;
+              border-bottom: 2px solid #0284C7;
+              padding-bottom: 10px;
+              margin-bottom: 12px;
+            }
+            .header-left {
+              display: flex;
+              align-items: center;
+              gap: 12px;
+            }
+            .logo-circle {
+              width: 50px;
+              height: 50px;
+              border-radius: 50%;
+              background: linear-gradient(135deg, #0369A1, #1E40AF);
+              color: #FFFFFF;
+              font-weight: 900;
+              font-size: 17px;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              border: 2px solid #E0F2FE;
+              box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+              flex-shrink: 0;
+            }
+            .logo-img {
+              max-height: 48px;
+              max-width: 120px;
+              object-fit: contain;
+            }
+            .header-institution {
+              display: flex;
+              flex-direction: column;
+            }
+            .inst-name {
+              font-size: 13px;
+              font-weight: 900;
+              color: #0F172A;
+              text-transform: uppercase;
+              letter-spacing: -0.2px;
+            }
+            .inst-sub {
+              font-size: 9.5px;
+              font-weight: 700;
+              color: #0284C7;
+              text-transform: uppercase;
+              margin-top: 1px;
+            }
+            .inst-sector {
+              font-size: 8.5px;
+              font-weight: 600;
+              color: #64748B;
+              margin-top: 1px;
+            }
+            .header-right {
+              text-align: right;
+              display: flex;
+              flex-direction: column;
+              align-items: flex-end;
+            }
+            .doc-title {
+              font-size: 13px;
+              font-weight: 900;
+              color: #0F172A;
+              text-transform: uppercase;
+              background-color: #F0F9FF;
+              border: 1px solid #BAE6FD;
+              padding: 3px 8px;
+              border-radius: 6px;
+            }
+            .protocol-badge {
+              font-size: 12px;
+              font-weight: 900;
+              color: #0369A1;
+              margin-top: 3px;
+            }
+            .status-badge {
+              display: inline-block;
+              font-size: 8.5px;
+              font-weight: 800;
+              padding: 2px 7px;
+              border-radius: 4px;
+              text-transform: uppercase;
+              margin-top: 3px;
+              background-color: #FEF3C7;
+              color: #92400E;
+              border: 1px solid #FCD34D;
+            }
+            .status-delivered {
+              background-color: #DCFCE7;
+              color: #166534;
+              border: 1px solid #86EFAC;
+            }
+
+            /* Meta Info Grid */
+            .meta-card {
+              background-color: #F8FAFC;
+              border: 1px solid #E2E8F0;
+              border-radius: 8px;
+              padding: 10px 12px;
+              margin-bottom: 12px;
+              display: grid;
+              grid-template-columns: 1fr 1fr 1fr;
+              gap: 8px;
+            }
+            .meta-item {
+              display: flex;
+              flex-direction: column;
+            }
+            .meta-label {
+              font-size: 8px;
+              font-weight: 800;
+              text-transform: uppercase;
+              color: #64748B;
+              letter-spacing: 0.5px;
+            }
+            .meta-val {
+              font-size: 10.5px;
+              font-weight: 700;
+              color: #0F172A;
+              margin-top: 1px;
+            }
+            .meta-full {
+              grid-column: 1 / -1;
+              border-top: 1px dashed #CBD5E1;
+              padding-top: 6px;
+              margin-top: 2px;
+            }
+
+            /* Items Table */
+            .section-header {
+              font-size: 10px;
+              font-weight: 800;
+              color: #334155;
+              text-transform: uppercase;
+              letter-spacing: 0.5px;
+              margin: 0 0 6px 0;
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+            }
+            .items-table {
+              width: 100%;
+              border-collapse: collapse;
+              margin-bottom: 12px;
+              font-size: 9.5px;
+            }
+            .items-table th {
+              background-color: #0F172A;
+              color: #FFFFFF;
+              font-weight: 800;
+              font-size: 8.5px;
+              text-transform: uppercase;
+              letter-spacing: 0.4px;
+              padding: 6px 7px;
+              border: 1px solid #0F172A;
+              text-align: left;
+            }
+            .items-table th.center, .items-table td.center {
+              text-align: center;
+            }
+            .items-table td {
+              border: 1px solid #CBD5E1;
+              padding: 5px 7px;
+              vertical-align: middle;
+            }
+            .items-table tr:nth-child(even) {
+              background-color: #F8FAFC;
+            }
+            .check-box-col {
+              width: 90px;
+              height: 24px;
+              text-align: center;
+              background-color: #FFFFFF;
+            }
+            .check-box-inner {
+              border-bottom: 1.5px dotted #64748B;
+              height: 18px;
+              margin: 0 4px;
+            }
+            .lot-suggestion {
+              font-size: 8px;
+              line-height: 1.25;
+              color: #1E293B;
+            }
+            .fefo-badge {
+              font-size: 7px;
+              font-weight: 800;
+              background-color: #DCFCE7;
+              color: #15803D;
+              padding: 1px 4px;
+              border-radius: 3px;
+              display: inline-block;
+            }
+            .multiple-batches-warning {
+              font-size: 7px;
+              font-weight: 800;
+              color: #B45309;
+              background-color: #FEF3C7;
+              border: 1px solid #FCD34D;
+              padding: 1px 4px;
+              border-radius: 3px;
+              display: inline-block;
+              margin-bottom: 2px;
+            }
+
+            /* Guidelines Notice */
+            .guidelines-box {
+              background-color: #FEF9C3;
+              border: 1px solid #FDE047;
+              border-radius: 6px;
+              padding: 6px 10px;
+              margin-bottom: 18px;
+              font-size: 8px;
+              color: #713F12;
+              line-height: 1.3;
+            }
+
+            /* Signatures */
+            .signature-section {
+              display: grid;
+              grid-template-columns: 1fr 1fr;
+              gap: 24px;
+              margin-top: 24px;
+              page-break-inside: avoid;
+            }
+            .signature-box {
+              text-align: center;
+              border-top: 1.5px solid #0F172A;
+              padding-top: 6px;
+              font-size: 9.5px;
+            }
+            .signature-title {
+              font-weight: 800;
+              color: #0F172A;
+              text-transform: uppercase;
+            }
+            .signature-sub {
+              font-size: 8px;
+              color: #64748B;
+              margin-top: 2px;
+            }
+
+            /* Footer */
+            .doc-footer {
+              margin-top: 18px;
+              text-align: center;
+              font-size: 7.5px;
+              color: #64748B;
+              border-top: 1px solid #E2E8F0;
+              padding-top: 6px;
+            }
+
             @media print {
-              .no-print { display: none; }
+              .no-print { display: none !important; }
+              body { padding: 0; }
             }
           </style>
         </head>
         <body>
-          <h1>SolicitaÃ§Ã£o de Material</h1>
-          <table class="header-table">
-            <tr>
-              <td><strong>NÃºmero:</strong> #${request.id.slice(-5).toUpperCase()}</td>
-              <td><strong>Data:</strong> ${dateStr}</td>
-            </tr>
-            <tr>
-              <td><strong>Setor Solicitante:</strong> ${request.sector}</td>
-              <td><strong>Status:</strong> ${request.status === 'PENDENTE' ? 'PENDENTE' : 'EM SEPARAÃ‡ÃƒO'}</td>
-            </tr>
-            <tr>
-              <td colspan="2"><strong>Solicitante:</strong> ${request.requesterEmail}</td>
-            </tr>
-            ${request.observation ? `<tr><td colspan="2"><strong>ObservaÃ§Ãµes do Solicitante:</strong> ${request.observation}</td></tr>` : ''}
-          </table>
-
-          <h3 style="margin-top: 30px; font-size: 16px; border-bottom: 1px solid #1C1917; padding-bottom: 5px;">ITENS DA SOLICITAÃ‡ÃƒO (Para separaÃ§Ã£o fÃ­sica)</h3>
-          <table class="items-table">
-            <thead>
-              <tr>
-                <th>Produto / DescriÃ§Ã£o</th>
-                <th style="width: 100px; text-align: center;">Qtd Solicitada</th>
-                <th class="blank-col">Qtd Separada (Anotar)</th>
-                <th>Obs. / Lote do Material</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${items.map(item => `
-                <tr>
-                  <td style="font-weight: bold;">${item.product_name}</td>
-                  <td style="text-align: center; font-size: 14px; font-weight: bold;">${item.quantity_requested}</td>
-                  <td class="blank-col" style="border-bottom: 1px solid #1C1917;"></td>
-                  <td style="border-bottom: 1px solid #1C1917;"></td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-
-          <div class="signature-section">
-            <div class="signature-box" style="margin-top: 40px;">
-              <br/><br/>
-              ________________________________________<br/>
-              Setor Solicitante (Assinatura de Recebimento)
+          <div class="sheet-container">
+            <!-- HEADER -->
+            <div class="header-banner">
+              <div class="header-left">
+                ${logoToUse ? `
+                  <img src="${logoToUse}" alt="Logo" class="logo-img" />
+                ` : `
+                  <div class="logo-circle">MM</div>
+                `}
+                <div class="header-institution">
+                  <span class="inst-name">PoliclÃ­nica Bernardo FÃ©lix da Silva</span>
+                  <span class="inst-sub">ConsÃ³rcio PÃºblico de SaÃºde da MicrorregiÃ£o de Sobral â€” CPSMS</span>
+                  <span class="inst-sector">Setor de Almoxarifado Central & LogÃ­stica Hospitalar</span>
+                </div>
+              </div>
+              <div class="header-right">
+                <div class="doc-title">Folha de SolicitaÃ§Ã£o de Material</div>
+                <div class="protocol-badge">${protocolCode}</div>
+                <div class="status-badge ${request.status === 'ENTREGUE' ? 'status-delivered' : ''}">
+                  Status: ${request.status === 'PENDENTE' ? 'Pendente de Triagem' : request.status === 'EM_SEPARACAO' ? 'Em SeparaÃ§Ã£o FÃ­sica' : request.status}
+                </div>
+              </div>
             </div>
-            <div class="signature-box" style="margin-top: 40px;">
-              <br/><br/>
-              ________________________________________<br/>
-              ResponsÃ¡vel pela SeparaÃ§Ã£o (Almoxarifado)
+
+            <!-- METADATA CARD -->
+            <div class="meta-card">
+              <div class="meta-item">
+                <span class="meta-label">Setor Solicitante</span>
+                <span class="meta-val">${request.sector}</span>
+              </div>
+              <div class="meta-item">
+                <span class="meta-label">Data / Hora da SolicitaÃ§Ã£o</span>
+                <span class="meta-val">${dateStr} Ã s ${timeStr}</span>
+              </div>
+              <div class="meta-item">
+                <span class="meta-label">UsuÃ¡rio Solicitante</span>
+                <span class="meta-val">${request.requesterEmail || 'NÃ£o informado'}</span>
+              </div>
+              ${request.observation ? `
+                <div class="meta-item meta-full">
+                  <span class="meta-label">Justificativa / ObservaÃ§Ãµes do Solicitante</span>
+                  <span class="meta-val" style="font-weight: 500; font-style: italic;">"${request.observation}"</span>
+                </div>
+              ` : ''}
+              ${request.adminObservation ? `
+                <div class="meta-item meta-full" style="border-top: 1px dashed #BAE6FD; background-color: #F0F9FF; padding: 4px 6px; border-radius: 4px;">
+                  <span class="meta-label" style="color: #0369A1;">Despacho do Almoxarifado</span>
+                  <span class="meta-val" style="color: #0C4A6E; font-weight: 600;">${request.adminObservation}</span>
+                </div>
+              ` : ''}
+            </div>
+
+            <!-- SECTION HEADER -->
+            <div class="section-header">
+              <span>Itens Requisitados (${reqItemsList.length} itens â€¢ ${totalQtyRequested} unidades no total)</span>
+              <span style="font-size: 8px; color: #64748B;">Guia para SeparaÃ§Ã£o FÃ­sica e ConferÃªncia</span>
+            </div>
+
+            <!-- ITEMS TABLE -->
+            <table class="items-table">
+              <thead>
+                <tr>
+                  <th style="width: 25px;" class="center">#</th>
+                  <th style="width: 38%;">Produto / DescriÃ§Ã£o do Material</th>
+                  <th style="width: 10%;" class="center">Qtd Solic.</th>
+                  <th style="width: 14%;" class="center">Qtd Separada</th>
+                  <th style="width: 38%;">Lotes em Estoque (SugestÃ£o FEFO) / ConferÃªncia</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${reqItemsList.map((item, idx) => {
+                  const normalizedReqName = normalizeString(item.product_name);
+                  const productBatches = items.filter(i => !i.deletedAt && normalizeString(i.name) === normalizedReqName && (i.quantity || 0) > 0);
+                  productBatches.sort((a, b) => {
+                    if (a.expiry_date === 'Indeterminada' || !a.expiry_date) return 1;
+                    if (b.expiry_date === 'Indeterminada' || !b.expiry_date) return -1;
+                    return new Date(a.expiry_date).getTime() - new Date(b.expiry_date).getTime();
+                  });
+
+                  const hasMultiple = productBatches.length > 1;
+                  const hasSingle = productBatches.length === 1;
+
+                  let stockInfo = '';
+                  if (hasMultiple) {
+                    stockInfo = `
+                      <div>
+                        <span class="multiple-batches-warning">âš ï¸ ${productBatches.length} LOTES EM ESTOQUE</span>
+                        <div class="lot-suggestion">
+                          ${productBatches.map((b, bIdx) => {
+                            const exp = b.expiry_date && b.expiry_date !== 'Indeterminada' ? new Date(b.expiry_date + 'T12:00:00').toLocaleDateString('pt-BR') : 'Indet.';
+                            const fefo = bIdx === 0 ? '<span class="fefo-badge">PRIORITÃRIO</span> ' : '';
+                            return `<div>â€¢ ${fefo}Lote: <strong>${b.batch_number || 'S/N'}</strong> (${b.quantity} un - Val: ${exp})</div>`;
+                          }).join('')}
+                        </div>
+                      </div>
+                    `;
+                  } else if (hasSingle) {
+                    const b = productBatches[0];
+                    const exp = b.expiry_date && b.expiry_date !== 'Indeterminada' ? new Date(b.expiry_date + 'T12:00:00').toLocaleDateString('pt-BR') : 'Indet.';
+                    stockInfo = `
+                      <div class="lot-suggestion">
+                        <strong>Lote:</strong> ${b.batch_number || 'S/N'} â€¢ <strong>Saldo:</strong> ${b.quantity} un â€¢ <strong>Val:</strong> ${exp}
+                      </div>
+                    `;
+                  } else {
+                    stockInfo = `<span style="color: #DC2626; font-weight: bold; font-size: 8px;">Sem saldo ativo no almoxarifado</span>`;
+                  }
+
+                  return `
+                    <tr>
+                      <td class="center" style="font-weight: 800; color: #64748B;">${idx + 1}</td>
+                      <td>
+                        <strong style="color: #0F172A; font-size: 10px;">${item.product_name}</strong>
+                      </td>
+                      <td class="center" style="font-size: 11px; font-weight: 900; color: #0369A1;">
+                        ${item.quantity_requested}
+                      </td>
+                      <td class="check-box-col">
+                        <div class="check-box-inner"></div>
+                      </td>
+                      <td>
+                        ${stockInfo}
+                      </td>
+                    </tr>
+                  `;
+                }).join('')}
+              </tbody>
+            </table>
+
+            <!-- GUIDELINES -->
+            <div class="guidelines-box">
+              <strong>âš ï¸ PROTOCOLO DE CONFERÃŠNCIA:</strong>
+              1. A separaÃ§Ã£o fÃ­sica deve obrigatoriamente priorizar os lotes com vencimento mais prÃ³ximo (FEFO).
+              2. O setor solicitante deve conferir a integridade, embalagens e quantidades no ato do recebimento antes de apor assinatura.
+            </div>
+
+            <!-- SIGNATURES -->
+            <div class="signature-section">
+              <div class="signature-box">
+                <br/><br/>
+                <div class="signature-title">ResponsÃ¡vel pela SeparaÃ§Ã£o</div>
+                <div class="signature-sub">Almoxarifado Central â€¢ Data: ____/____/________</div>
+              </div>
+              <div class="signature-box">
+                <br/><br/>
+                <div class="signature-title">ResponsÃ¡vel pelo Recebimento</div>
+                <div class="signature-sub">Setor ${request.sector} â€¢ Data: ____/____/________</div>
+              </div>
+            </div>
+
+            <!-- FOOTER -->
+            <div class="doc-footer">
+              Documento emitido eletronicamente via Sistema de Almoxarifado â€¢ PoliclÃ­nica Bernardo FÃ©lix da Silva - Sobral/CE â€¢ EmissÃ£o em ${nowStr}
             </div>
           </div>
 
-          <div class="footer">Gerado via Sistema de Almoxarifado em ${new Date().toLocaleString('pt-BR')}</div>
           <script>
             window.onload = () => {
               window.print();
@@ -2679,6 +3094,62 @@ export default function App() {
         setShowRequestDetailModal({ show: false });
       }
 
+    } catch (error: any) {
+      console.error("Erro ao solicitar devoluÃ§Ã£o:", error);
+      showToast(`Erro ao solicitar devoluÃ§Ã£o: ${error.message}`, "error");
+    } finally {
+      setIsProcessingDevolution(false);
+    }
+  };
+
+  const handleModalRequestDevolution = async (params: {
+    requestId: string;
+    itemsToReturn: Array<{ product_id: string, product_name: string, quantity: number }>;
+    reason: string;
+    observation: string;
+  }) => {
+    try {
+      setIsProcessingDevolution(true);
+      showToast("Enviando solicitaÃ§Ã£o de devoluÃ§Ã£o...", "info");
+
+      const targetReq = requests.find(r => r.id === params.requestId);
+      const sectorName = targetReq?.sector || selectedSector;
+
+      const newReqRef = doc(collection(db, 'requests'));
+      const batch = writeBatch(db);
+
+      batch.set(newReqRef, {
+        sector: sectorName,
+        date: new Date().toISOString(),
+        status: 'DEVOLUCAO_PENDENTE',
+        isReturn: true,
+        originalRequestId: params.requestId,
+        returnReason: params.reason,
+        observation: params.observation || '',
+        requesterEmail: user?.email || '',
+        requesterName: userProfile?.name || user?.displayName || user?.email || 'UsuÃ¡rio',
+        isNewFlow: true,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+
+      params.itemsToReturn.forEach(item => {
+        const itemRef = doc(collection(db, 'request_items'));
+        batch.set(itemRef, {
+          request_id: newReqRef.id,
+          product_id: item.product_id,
+          product_name: item.product_name,
+          quantity_requested: item.quantity,
+          quantity_approved: item.quantity,
+          quantity_returned: item.quantity,
+          createdAt: serverTimestamp()
+        });
+      });
+
+      await batch.commit();
+
+      showToast("SolicitaÃ§Ã£o de devoluÃ§Ã£o enviada com sucesso!", "success");
+      setShowDevolutionModal({ show: false });
     } catch (error: any) {
       console.error("Erro ao solicitar devoluÃ§Ã£o:", error);
       showToast(`Erro ao solicitar devoluÃ§Ã£o: ${error.message}`, "error");
@@ -7271,11 +7742,7 @@ export default function App() {
     const loginLogo = appRectangularLogo || appLogo;
     return (
       <div className="min-h-screen bg-slate-100 flex items-center justify-center p-6">
-        <motion.div 
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="bg-white p-10 rounded-[40px] shadow-2xl max-w-md w-full border border-slate-200"
-        >
+        <div className="bg-white p-10 rounded-[40px] shadow-2xl max-w-md w-full border border-slate-200">
           <div className="text-center mb-8">
             {loginLogo ? (
               <div className="w-full max-w-[260px] h-24 rounded-2xl overflow-hidden bg-white border border-blue-200/80 p-2.5 shadow-md mx-auto mb-6 flex items-center justify-center ring-4 ring-blue-500/10">
@@ -7323,7 +7790,7 @@ export default function App() {
           <div className="mt-8 text-center pt-4 border-t border-slate-100">
             <p className="text-[10px] text-slate-400 uppercase tracking-widest font-extrabold">Acesso restrito a funcionÃ¡rios autorizados</p>
           </div>
-        </motion.div>
+        </div>
       </div>
     );
   }
@@ -7477,17 +7944,13 @@ export default function App() {
       </header>
 
       {/* Sidebar Overlay */}
-      <AnimatePresence>
+      
         {isMobileMenuOpen && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            onClick={() => setIsMobileMenuOpen(false)}
+          <div onClick={() => setIsMobileMenuOpen(false)}
             className="fixed inset-0 bg-slate-950/40 backdrop-blur-sm z-30 lg:hidden"
           />
         )}
-      </AnimatePresence>
+      
 
       {/* Sidebar */}
       <aside className={`fixed lg:left-0 top-0 h-full w-64 bg-white border-r border-blue-100/80 p-5 flex flex-col gap-6 z-40 shadow-sm transition-transform duration-300 transform ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
@@ -7547,20 +8010,6 @@ export default function App() {
                     <div className="flex items-center gap-3">
                       <Package size={18} className={activeTab === 'inventory' ? 'text-white' : 'text-slate-400 group-hover:text-blue-600 transition-colors'} />
                       <span>Estoque</span>
-                    </div>
-                  </button>
-
-                  <button 
-                    onClick={() => { setActiveTab('balance'); setIsMobileMenuOpen(false); }}
-                    className={`group flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all duration-200 text-xs ${
-                      activeTab === 'balance' 
-                        ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white font-extrabold shadow-md shadow-blue-600/20' 
-                        : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50/80 font-bold'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <Scale size={18} className={activeTab === 'balance' ? 'text-white' : 'text-slate-400 group-hover:text-blue-600 transition-colors'} />
-                      <span>BalanÃ§o</span>
                     </div>
                   </button>
 
@@ -7766,7 +8215,6 @@ export default function App() {
             <h2 className="text-xl lg:text-3xl font-bold tracking-tight mb-1">
               {activeTab === 'dashboard' && 'VisÃ£o Geral'}
               {activeTab === 'inventory' && 'Gerenciamento de Estoque'}
-              {activeTab === 'balance' && 'BalanÃ§o e Auditoria de Estoque'}
               {activeTab === 'history' && 'HistÃ³rico de MovimentaÃ§Ãµes'}
               {activeTab === 'requests' && 'SolicitaÃ§Ãµes de Materiais'}
               {activeTab === 'admin-devolutions' && 'DevoluÃ§Ãµes de Materiais'}
@@ -7881,19 +8329,14 @@ export default function App() {
                 )}
               </button>
 
-              <AnimatePresence>
+              
                 {showNotifications && (
                   <>
                     <div 
                       className="fixed inset-0 z-40" 
                       onClick={() => setShowNotifications(false)} 
                     />
-                    <motion.div 
-                      initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                      className="absolute right-0 mt-2 w-80 bg-white rounded-3xl shadow-2xl border border-[#E7E5E4] z-50 overflow-hidden"
-                    >
+                    <div className="absolute right-0 mt-2 w-80 bg-white rounded-3xl shadow-2xl border border-[#E7E5E4] z-50 overflow-hidden">
                       <div className="p-4 border-b border-[#E7E5E4] flex justify-between items-center bg-[#FAFAF9]">
                         <h3 className="font-black text-sm">NotificaÃ§Ãµes</h3>
                         <button 
@@ -7961,10 +8404,10 @@ export default function App() {
                           </div>
                         )}
                       </div>
-                    </motion.div>
+                    </div>
                   </>
                 )}
-              </AnimatePresence>
+              
             </div>
 
             <div className="relative">
@@ -8019,17 +8462,27 @@ export default function App() {
                   </select>
                 </div>
                 {isAdmin && (
-                  <div className="flex gap-2">
+                  <div className="flex items-center gap-2">
+                    <button 
+                      onClick={() => {
+                        setActiveTab('reports');
+                        setReportsTab('balanco');
+                      }}
+                      className="px-3.5 py-2 bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white rounded-2xl text-xs font-black flex items-center gap-1.5 hover:from-blue-800 hover:to-indigo-950 transition-all shadow-sm shadow-blue-600/20 cursor-pointer"
+                      title="Realizar BalanÃ§o e InventÃ¡rio FÃ­sico"
+                    >
+                      <ClipboardList size={16} /> BalanÃ§o de Estoque
+                    </button>
                     <button 
                       onClick={handleExportInventory}
-                      className="p-2 bg-white border border-slate-200 rounded-2xl text-slate-600 hover:text-blue-700 hover:border-blue-300 hover:bg-blue-50/50 transition-all shadow-sm"
+                      className="p-2 bg-white border border-slate-200 rounded-2xl text-slate-600 hover:text-blue-700 hover:border-blue-300 hover:bg-blue-50/50 transition-all shadow-sm cursor-pointer"
                       title="Baixar Planilha Excel"
                     >
                       <Download size={18} />
                     </button>
                     <button 
                       onClick={handleExportInventoryPDF}
-                      className="p-2 bg-white border border-slate-200 rounded-2xl text-rose-600 hover:text-rose-700 hover:border-rose-300 hover:bg-rose-50 transition-all shadow-sm"
+                      className="p-2 bg-white border border-slate-200 rounded-2xl text-rose-600 hover:text-rose-700 hover:border-rose-300 hover:bg-rose-50 transition-all shadow-sm cursor-pointer"
                       title="Baixar RelatÃ³rio PDF de Todo Estoque"
                     >
                       <Printer size={18} />
@@ -8057,15 +8510,9 @@ export default function App() {
           </div>
         </header>
 
-        <AnimatePresence mode="wait">
+        
           {activeTab === 'dashboard' && isAdmin && (
-            <motion.div 
-              key="dashboard"
-              initial={{ opacity: 0, y: 12 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -12 }}
-              className="space-y-8"
-            >
+            <div key="dashboard" className="space-y-8">
               {/* 4 Primary KPI Stats Cards */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                 {/* Card 1: Volume Total */}
@@ -8486,17 +8933,11 @@ export default function App() {
                   </div>
                 </div>
               </div>
-            </motion.div>
+            </div>
           )}
 
           {activeTab === 'inventory' && isAdmin && (
-            <motion.div 
-              key="inventory"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-              className="space-y-4"
-            >
+            <div key="inventory" className="space-y-4">
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-white p-4 rounded-3xl border border-blue-100/80 shadow-sm">
                 {isAdmin ? (
                   <div className="flex items-center gap-2 bg-slate-100/80 p-1.5 rounded-2xl border border-slate-200/80">
@@ -8536,14 +8977,6 @@ export default function App() {
                 )}
 
                 <div className="flex items-center gap-3">
-                  <button
-                    onClick={() => setActiveTab('balance')}
-                    className="px-4 py-2 bg-gradient-to-r from-blue-700 via-indigo-800 to-slate-900 hover:from-blue-800 hover:to-indigo-900 text-white font-extrabold text-xs rounded-2xl shadow-md hover:shadow-lg transition-all flex items-center gap-2"
-                    title="Realizar BalanÃ§o e AlteraÃ§Ã£o de EspecificaÃ§Ãµes de Estoque"
-                  >
-                    <Scale size={16} className="text-blue-300" />
-                    <span>BalanÃ§o de Estoque</span>
-                  </button>
                   {inventoryLocation === 'FarmÃ¡cia' && (
                     <button 
                       onClick={() => setActiveTab('new-request')}
@@ -8626,31 +9059,197 @@ export default function App() {
                             <div className={`p-1.5 rounded-lg bg-slate-100 text-slate-500 group-hover/row:bg-blue-100 group-hover/row:text-blue-700 transition-all ${expandedItems.has(group.name) ? 'rotate-90 bg-blue-100 text-blue-700' : ''}`}>
                               <ChevronRight size={16} />
                             </div>
-                            <div className="flex flex-col">
-                              <div className="flex items-center gap-2 group/name flex-wrap">
-                                <p className="font-extrabold text-sm text-slate-900 group-hover/row:text-blue-700 transition-colors">{group.name}</p>
-                                {group.unit_measure && (
-                                  <span className="text-[9px] font-black px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200/80 uppercase tracking-wider">
-                                    {group.unit_measure}
-                                  </span>
+                            {isAdmin && editingMaterialName?.oldName === group.name ? (
+                              <div className="flex flex-col gap-2 p-3 bg-slate-50 border border-slate-200 rounded-2xl shadow-sm" onClick={(e) => e.stopPropagation()}>
+                                <div className="flex items-center gap-2">
+                                  <input 
+                                    type="text" 
+                                    value={editingMaterialName.newName}
+                                    onChange={(e) => setEditingMaterialName({ ...editingMaterialName, newName: e.target.value })}
+                                    className="px-3 py-1 bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 font-bold text-sm text-slate-900"
+                                    autoFocus
+                                  />
+                                  <button 
+                                    onClick={handleUpdateMaterialName}
+                                    className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-xl"
+                                    title="Salvar"
+                                  >
+                                    <Check size={18} />
+                                  </button>
+                                  <button 
+                                    onClick={() => setEditingMaterialName(null)}
+                                    className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-xl"
+                                    title="Cancelar"
+                                  >
+                                    <X size={18} />
+                                  </button>
+                                </div>
+                                {group.category === 'Medicamentos' && (
+                                  <div className="flex flex-col gap-1 bg-white p-2 rounded-xl border border-slate-200">
+                                    <div className="flex flex-wrap gap-1 items-center">
+                                      <span className="text-[8px] font-black text-slate-500 uppercase tracking-wider mr-1">Unidades:</span>
+                                      {['mg', 'mcg', 'UI', 'g', 'ml', '%'].map(unit => (
+                                        <button
+                                          key={unit}
+                                          type="button"
+                                          onClick={() => {
+                                            let currentName = editingMaterialName.newName.trim();
+                                            if (currentName) {
+                                              if (!currentName.endsWith(' ')) {
+                                                currentName += ' ';
+                                              }
+                                              currentName += unit;
+                                              setEditingMaterialName({ ...editingMaterialName, newName: currentName });
+                                            }
+                                          }}
+                                          className="px-1.5 py-0.5 bg-slate-100 hover:bg-blue-700 hover:text-white text-slate-700 rounded text-[9px] font-bold transition-all uppercase"
+                                        >
+                                          +{unit}
+                                        </button>
+                                      ))}
+                                    </div>
+                                    <div className="flex flex-wrap gap-1 items-center">
+                                      <span className="text-[8px] font-black text-slate-500 uppercase tracking-wider mr-1">Dosagem:</span>
+                                      {['500 mg', '1000 mg', '1000 UI', '5000 UI', '10.000 UI', '50.000 UI'].map(dose => (
+                                        <button
+                                          key={dose}
+                                          type="button"
+                                          onClick={() => {
+                                            let currentName = editingMaterialName.newName.trim();
+                                            if (currentName) {
+                                              if (!currentName.endsWith(' ')) {
+                                                currentName += ' ';
+                                              }
+                                              currentName += dose;
+                                              setEditingMaterialName({ ...editingMaterialName, newName: currentName });
+                                            }
+                                          }}
+                                          className="px-1.5 py-0.5 bg-emerald-50 hover:bg-emerald-600 hover:text-white text-emerald-700 rounded text-[9px] font-bold transition-all uppercase"
+                                        >
+                                          +{dose}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </div>
                                 )}
-                                {Array.from(new Set(group.batches.map(b => b.medication_type).filter(Boolean))).map(type => (
-                                  <span key={type} className="text-[9px] font-black px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-100/80 uppercase tracking-wider">
-                                    {type}
-                                  </span>
-                                ))}
                               </div>
-                              {group.batches[0]?.description && (
-                                <p className="text-[10px] text-slate-400 italic mt-0.5 line-clamp-1">{group.batches[0].description}</p>
-                              )}
-                            </div>
+                            ) : (
+                              <div className="flex flex-col">
+                                <div className="flex items-center gap-2 group/name flex-wrap">
+                                  <p className="font-extrabold text-sm text-slate-900 group-hover/row:text-blue-700 transition-colors">{group.name}</p>
+                                  
+                                  {/* Eye button to view all exits of this material */}
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setShowItemExitsModal({ show: true, materialName: group.name, batchNumber: null });
+                                    }}
+                                    className="p-1 text-blue-600 hover:text-blue-800 hover:bg-blue-100 bg-blue-50/80 rounded-lg transition-all border border-blue-200/80 shadow-2xs flex items-center gap-1 cursor-pointer"
+                                    title={`Ver todas as saÃ­das de ${group.name} (setor, quantidades, lotes e datas)`}
+                                  >
+                                    <Eye size={15} />
+                                    <span className="text-[10px] font-extrabold">SaÃ­das</span>
+                                  </button>
+
+                                  {group.unit_measure && (
+                                    <span className="text-[9px] font-black px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200/80 uppercase tracking-wider">
+                                      {group.unit_measure}
+                                    </span>
+                                  )}
+                                  {Array.from(new Set(group.batches.map(b => b.medication_type).filter(Boolean))).map(type => (
+                                    <span key={type} className="text-[9px] font-black px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-100/80 uppercase tracking-wider">
+                                      {type}
+                                    </span>
+                                  ))}
+                                  {isAdmin && (
+                                    <button 
+                                      onClick={(e) => { e.stopPropagation(); setEditingMaterialName({ oldName: group.name, newName: group.name }); }}
+                                      className="opacity-0 group-hover/name:opacity-100 p-1 text-slate-400 hover:text-blue-700 transition-all"
+                                      title="Editar Nome do Material"
+                                    >
+                                      <Edit2 size={14} />
+                                    </button>
+                                  )}
+                                </div>
+                                {group.batches[0]?.description && (
+                                  <p className="text-[10px] text-slate-400 italic mt-0.5 line-clamp-1">{group.batches[0].description}</p>
+                                )}
+                              </div>
+                            )}
                           </div>
                         </td>
-                        <td className="px-6 py-4.5">
-                          <div className="flex flex-col">
-                            <p className="text-xs font-bold text-slate-800">{group.category || '---'}</p>
-                            {isAdmin && <p className="text-[10px] font-medium text-slate-400 mt-0.5">{group.supplier || '---'}</p>}
-                          </div>
+                        <td className="px-6 py-4.5" onClick={(e) => e.stopPropagation()}>
+                          {isAdmin && editingCategory?.name === group.name && !editingCategory?.itemId ? (
+                            <div className="flex flex-col gap-1.5 bg-indigo-50/90 p-2.5 border border-indigo-200 rounded-2xl shadow-md min-w-[210px]">
+                              <label className="text-[10px] font-black text-indigo-900 uppercase tracking-wider">Nova Categoria:</label>
+                              <select 
+                                value={editingCategory.currentCategory === '__NEW__' ? '__NEW__' : editingCategory.currentCategory}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  if (val === '__NEW__') {
+                                    setEditingCategory({ ...editingCategory, currentCategory: '__NEW__' });
+                                  } else {
+                                    setEditingCategory({ ...editingCategory, currentCategory: val });
+                                  }
+                                }}
+                                className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-xl text-xs font-extrabold text-slate-800 focus:ring-2 focus:ring-indigo-500"
+                              >
+                                {categories.map(cat => (
+                                  <option key={`cat-select-${cat}`} value={cat}>{cat}</option>
+                                ))}
+                                <option value="__NEW__">+ Cadastrar Nova Categoria...</option>
+                              </select>
+
+                              {editingCategory.currentCategory === '__NEW__' && (
+                                <input 
+                                  type="text"
+                                  placeholder="Digite a nova categoria"
+                                  value={customNewCategory}
+                                  onChange={(e) => setCustomNewCategory(e.target.value)}
+                                  className="w-full px-2.5 py-1 bg-white border border-indigo-300 rounded-xl text-xs font-extrabold text-indigo-900 focus:ring-2 focus:ring-indigo-500"
+                                  autoFocus
+                                />
+                              )}
+
+                              <div className="flex items-center gap-1.5 mt-1">
+                                <button 
+                                  onClick={() => handleUpdateCategory()}
+                                  className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-1 shadow-xs"
+                                  title="Salvar Categoria"
+                                >
+                                  <Check size={14} /> Salvar
+                                </button>
+                                <button 
+                                  onClick={() => { setEditingCategory(null); setCustomNewCategory(''); }}
+                                  className="py-1.5 px-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl font-bold text-xs transition-all"
+                                  title="Cancelar"
+                                >
+                                  <X size={14} />
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-1.5 group/cat">
+                              <div>
+                                <p className="text-xs font-bold text-slate-800">{group.category || '---'}</p>
+                                {isAdmin && <p className="text-[10px] font-medium text-slate-400 mt-0.5">{group.supplier || '---'}</p>}
+                              </div>
+                              {isAdmin && (
+                                <button 
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setEditingCategory({ name: group.name, currentCategory: group.category || categories[0] || 'Expediente' });
+                                    setCustomNewCategory('');
+                                  }}
+                                  className="opacity-0 group-hover/cat:opacity-100 p-1 text-slate-400 hover:text-indigo-700 hover:bg-indigo-50 rounded-lg transition-all"
+                                  title="Alterar Categoria deste Material"
+                                >
+                                  <Edit2 size={13} />
+                                </button>
+                              )}
+                            </div>
+                          )}
                         </td>
                         <td className="px-6 py-4.5">
                           {isAdmin ? (
@@ -8731,13 +9330,27 @@ export default function App() {
                           )}
                         </td>
                         <td className="px-6 py-4.5 text-right">
-                          <div className="flex flex-col items-end gap-0.5">
-                            <button className="text-xs font-extrabold text-blue-700 group-hover/row:text-blue-900 uppercase tracking-wider flex items-center gap-1">
-                              {expandedItems.has(group.name) ? 'Recolher' : 'Ver Lotes'}
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setShowItemExitsModal({ show: true, materialName: group.name, batchNumber: null });
+                              }}
+                              className="px-2.5 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200/80 rounded-xl text-xs font-bold transition-all flex items-center gap-1 cursor-pointer shadow-2xs"
+                              title={`Consultar histÃ³rico de saÃ­das de ${group.name}`}
+                            >
+                              <Eye size={14} />
+                              <span className="hidden sm:inline">SaÃ­das</span>
                             </button>
-                            <span className="text-[10px] text-slate-400 font-medium">
-                              {group.batches.length} remessas
-                            </span>
+                            <div className="flex flex-col items-end gap-0.5">
+                              <button className="text-xs font-extrabold text-blue-700 group-hover/row:text-blue-900 uppercase tracking-wider flex items-center gap-1">
+                                {expandedItems.has(group.name) ? 'Recolher' : 'Ver Lotes'}
+                              </button>
+                              <span className="text-[10px] text-slate-400 font-medium">
+                                {group.batches.length} remessas
+                              </span>
+                            </div>
                           </div>
                         </td>
                       </tr>
@@ -8778,15 +9391,95 @@ export default function App() {
                           </td>
                           <td className="px-6 py-3.5 text-xs text-slate-700 font-medium">
                             {isAdmin ? (
-                              <span className="font-bold text-slate-900">{new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.unit_price)}</span>
+                              editingPrice?.id === item.id ? (
+                                <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                                  <input 
+                                    type="number" 
+                                    step="0.01"
+                                    value={editingPrice.price}
+                                    onChange={(e) => setEditingPrice({ ...editingPrice, price: parseFloat(e.target.value) || 0 })}
+                                    className="w-24 px-2 py-1 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 font-bold text-xs"
+                                    autoFocus
+                                  />
+                                  <button 
+                                    onClick={handleUpdatePrice}
+                                    className="p-1 text-emerald-600 hover:bg-emerald-50 rounded-md"
+                                    title="Salvar"
+                                  >
+                                    <Check size={14} />
+                                  </button>
+                                  <button 
+                                    onClick={() => setEditingPrice(null)}
+                                    className="p-1 text-rose-600 hover:bg-rose-50 rounded-md"
+                                    title="Cancelar"
+                                  >
+                                    <X size={14} />
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-2 group/price">
+                                  <span className="font-bold text-slate-900">{new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.unit_price)}</span>
+                                  <button 
+                                    onClick={(e) => { e.stopPropagation(); setEditingPrice({ id: item.id, price: item.unit_price }); }}
+                                    className="opacity-0 group-hover/price:opacity-100 p-1 text-slate-400 hover:text-blue-700 transition-all"
+                                    title="Editar PreÃ§o"
+                                  >
+                                    <Edit2 size={12} />
+                                  </button>
+                                </div>
+                              )
                             ) : (
                               '---'
                             )}
                           </td>
                           <td className="px-6 py-3.5 text-center">
-                            <span className={`text-sm font-black ${item.quantity <= (item.min_quantity || 0) ? 'text-amber-600' : 'text-slate-900'}`}>
-                              {item.quantity} un
-                            </span>
+                            {isAdmin ? (
+                              editingQuantity?.id === item.id ? (
+                                <div className="flex items-center justify-center gap-2" onClick={(e) => e.stopPropagation()}>
+                                  <input 
+                                    type="number" 
+                                    min="0"
+                                    value={editingQuantity.quantity}
+                                    onChange={(e) => setEditingQuantity({ ...editingQuantity, quantity: parseInt(e.target.value) || 0 })}
+                                    className="w-20 px-2 py-1 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 font-bold text-xs"
+                                    autoFocus
+                                  />
+                                  <button 
+                                    onClick={handleUpdateQuantity}
+                                    className="p-1 text-emerald-600 hover:bg-emerald-50 rounded-md"
+                                    title="Salvar"
+                                  >
+                                    <Check size={14} />
+                                  </button>
+                                  <button 
+                                    onClick={() => setEditingQuantity(null)}
+                                    className="p-1 text-rose-600 hover:bg-rose-50 rounded-md"
+                                    title="Cancelar"
+                                  >
+                                    <X size={14} />
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="flex flex-col items-center group/qty">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className={`text-sm font-black ${item.quantity <= (item.min_quantity || 0) ? 'text-amber-600' : 'text-slate-900'}`}>
+                                      {item.quantity} un
+                                    </span>
+                                    <button 
+                                      onClick={(e) => { e.stopPropagation(); setEditingQuantity({ id: item.id, quantity: item.quantity }); }}
+                                      className="opacity-0 group-hover/qty:opacity-100 p-1 text-slate-400 hover:text-blue-700 transition-all"
+                                      title="Editar Quantidade"
+                                    >
+                                      <Edit2 size={12} />
+                                    </button>
+                                  </div>
+                                </div>
+                              )
+                            ) : (
+                              <span className={`text-sm font-black ${item.quantity <= (item.min_quantity || 0) ? 'text-amber-600' : 'text-slate-900'}`}>
+                                {item.quantity} un
+                              </span>
+                            )}
                           </td>
                           <td className="px-6 py-3.5 text-xs text-slate-300">---</td>
                           <td className="px-6 py-3.5 text-center">
@@ -8801,9 +9494,40 @@ export default function App() {
                           <td className="px-6 py-3.5 text-xs text-slate-300">---</td>
                           <td className="px-6 py-3.5 text-right space-x-1.5">
                             <button 
-                              onClick={(e) => { e.stopPropagation(); setShowTransactionModal({ show: true, type: 'entry', item }); }}
-                              className="p-1.5 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition-all border border-emerald-200/60"
-                              title="Adicionar Entrada"
+                              onClick={(e) => { 
+                                e.stopPropagation(); 
+                                setShowItemExitsModal({ show: true, materialName: group.name, batchNumber: item.batch_number }); 
+                              }}
+                              className="p-1.5 text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg transition-all border border-blue-200/60 cursor-pointer"
+                              title={`Ver saÃ­das do lote ${item.batch_number || 'Sem lote'}`}
+                            >
+                              <Eye size={15} />
+                            </button>
+                            <button 
+                              onClick={(e) => { 
+                                e.stopPropagation(); 
+                                setBulkEntry({
+                                  supplier: item.supplier || '',
+                                  category: item.category || 'Expediente',
+                                  origin: item.origin || 'extra',
+                                  room: item.room || (inventoryLocation === 'FarmÃ¡cia' ? 'FarmÃ¡cia' : 'Almoxarifado Principal'),
+                                  items: [{
+                                    id: Math.random().toString(36).substr(2, 9),
+                                    name: item.name,
+                                    initial_quantity: 1,
+                                    min_quantity: item.min_quantity ?? NaN,
+                                    batch_number: item.batch_number || '',
+                                    expiry_date: item.expiry_date === 'Indeterminada' ? '' : (item.expiry_date || ''),
+                                    is_indeterminate_expiry: item.expiry_date === 'Indeterminada',
+                                    unit_price: item.unit_price || 0,
+                                    unit_measure: item.unit_measure || 'Unidade (UN)',
+                                    medication_type: item.medication_type || ''
+                                  }]
+                                });
+                                setShowAddModal(true);
+                              }}
+                              className="p-1.5 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition-all border border-emerald-200/60 cursor-pointer"
+                              title="Adicionar Entrada deste Item"
                             >
                               <Plus size={15} />
                             </button>
@@ -8854,40 +9578,11 @@ export default function App() {
                 </div>
               )}
               </div>
-            </motion.div>
-          )}
-
-          {activeTab === 'balance' && isAdmin && (
-            <motion.div 
-              key="balance"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-            >
-              <StockBalance
-                items={items}
-                transactions={transactions}
-                balances={balances}
-                isAdmin={isAdmin}
-                currentUserEmail={user?.email || ''}
-                currentUserName={userProfile?.name || user?.displayName || user?.email || ''}
-                categories={categories}
-                onSaveItemAdjustment={handleSaveItemAdjustmentFromBalance}
-                onFinalizeBalance={handleFinalizeBalanceFromComponent}
-                showToast={showToast}
-                appLogo={appLogo}
-              />
-            </motion.div>
+            </div>
           )}
 
           {activeTab === 'history' && isAdmin && (
-            <motion.div 
-              key="history"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-              className="space-y-4"
-            >
+            <div key="history" className="space-y-4">
               <div className="flex justify-between items-center bg-white p-4 rounded-3xl border border-[#E7E5E4] shadow-sm">
                 <div className="flex items-center gap-4">
                   <h3 className="text-lg font-bold text-[#1C1917]">HistÃ³rico de MovimentaÃ§Ãµes</h3>
@@ -9120,16 +9815,10 @@ export default function App() {
                   </div>
                 )}
               </div>
-            </motion.div>
+            </div>
           )}
           {activeTab === 'reports' && isAdmin && (
-            <motion.div 
-              key="reports"
-              initial={{ opacity: 0, scale: 0.98 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.98 }}
-              className="space-y-8"
-            >
+            <div key="reports" className="space-y-8">
               {/* Executive Reports Banner - Minimalist & Clean Light Theme */}
               <div className="bg-white p-6 sm:p-7 rounded-2xl border border-slate-200/80 shadow-xs text-slate-900">
                 <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
@@ -9182,8 +9871,8 @@ export default function App() {
               {reportsTab === 'overview' && (
                 <div className="space-y-8">
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 items-stretch">
-                {/* Purchase Planning Card - Left Column Spanning 2 Rows */}
-                <div className="lg:row-span-2 bg-white p-6 rounded-3xl border border-indigo-100/90 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group flex flex-col justify-between bg-gradient-to-b from-white via-white to-indigo-50/20">
+                {/* Purchase Planning Card - Standard Single Grid Card */}
+                <div className="bg-white p-6 rounded-3xl border border-indigo-100/90 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group flex flex-col justify-between h-full bg-gradient-to-b from-white via-white to-indigo-50/20">
                   <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 via-indigo-600 to-indigo-800 absolute top-0 left-0" />
                   <div className="flex items-start gap-4 pt-2">
                     <div className="bg-gradient-to-br from-blue-600 via-indigo-600 to-indigo-800 text-white p-3 rounded-2xl shadow-md shadow-indigo-600/20 group-hover:scale-105 transition-transform shrink-0">
@@ -9192,27 +9881,27 @@ export default function App() {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1.5 mb-1">
                         <span className="px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider bg-indigo-100 text-indigo-800">
-                          Novo Recurso
+                          Planejamento
                         </span>
                         <span className="text-[10px] font-bold text-slate-400">
-                          Estimativa Precisa
+                          Estimativa
                         </span>
                       </div>
                       <h3 className="text-base font-black text-slate-900 leading-tight">Planejamento de Compras</h3>
                       <p className="text-slate-500 text-xs font-medium mt-1 leading-snug">
-                        Calcula a quantidade necessÃ¡ria de cada item para durar atÃ© o mÃªs de interesse (ex: Abril).
+                        Calcula a quantidade necessÃ¡ria de cada item para durar atÃ© o mÃªs de interesse.
                       </p>
                     </div>
                   </div>
 
-                  <div className="flex flex-col gap-3 mt-4 pt-3.5 border-t border-slate-100">
+                  <div className="flex flex-col gap-2.5 mt-4 pt-3.5 border-t border-slate-100">
                     <div className="grid grid-cols-2 gap-2">
                       <div>
                         <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 ml-1">MÃªs Alvo</label>
                         <select 
                           value={planningTargetMonth}
                           onChange={(e) => setPlanningTargetMonth(Number(e.target.value))}
-                          className="w-full px-2 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 font-bold text-xs text-slate-800 cursor-pointer"
+                          className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 font-bold text-xs text-slate-800 cursor-pointer"
                         >
                           {['Janeiro', 'Fevereiro', 'MarÃ§o', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'].map((m, idx) => (
                             <option key={idx} value={idx}>{m}</option>
@@ -9224,7 +9913,7 @@ export default function App() {
                         <select 
                           value={planningTargetYear}
                           onChange={(e) => setPlanningTargetYear(Number(e.target.value))}
-                          className="w-full px-2 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 font-bold text-xs text-slate-800 cursor-pointer"
+                          className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 font-bold text-xs text-slate-800 cursor-pointer"
                         >
                           {Array.from({ length: 4 }).map((_, i) => {
                             const y = new Date().getFullYear() + i;
@@ -9234,40 +9923,42 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="bg-indigo-50/70 p-2.5 rounded-xl border border-indigo-100 flex items-center justify-between text-xs">
+                    <div className="bg-indigo-50/70 p-2 rounded-xl border border-indigo-100 flex items-center justify-between text-xs">
                       <div>
-                        <span className="text-[10px] font-extrabold uppercase tracking-wider text-indigo-600 block">Demanda Estimada</span>
-                        <span className="font-black text-slate-800 text-sm">
-                          {purchasePlanningSummary.totalItemsWithDeficit} itens <span className="text-slate-400 text-xs font-semibold">({purchasePlanningSummary.totalUnitsToBuy.toLocaleString('pt-BR')} un)</span>
+                        <span className="text-[9px] font-extrabold uppercase tracking-wider text-indigo-600 block">Demanda Estimada</span>
+                        <span className="font-black text-slate-800 text-xs">
+                          {purchasePlanningSummary.totalItemsWithDeficit} itens <span className="text-slate-400 font-semibold">({purchasePlanningSummary.totalUnitsToBuy.toLocaleString('pt-BR')} un)</span>
                         </span>
                       </div>
-                      <span className="text-[10px] font-bold bg-white px-2 py-1 rounded-lg border border-indigo-200 text-indigo-700 shadow-2xs">
+                      <span className="text-[10px] font-bold bg-white px-2 py-0.5 rounded-lg border border-indigo-200 text-indigo-700 shadow-2xs">
                         ~{purchasePlanningSummary.totalTargetWeeks} sem
                       </span>
                     </div>
 
-                    <button 
-                      onClick={() => setShowPurchasePlanningModal(true)}
-                      className="w-full bg-gradient-to-r from-blue-700 via-indigo-700 to-indigo-900 text-white px-4 py-2.5 rounded-xl font-extrabold text-xs flex items-center justify-center gap-2 hover:from-blue-800 hover:to-indigo-950 transition-all shadow-md shadow-indigo-600/20 whitespace-nowrap cursor-pointer"
-                    >
-                      <ShoppingCart size={15} /> Abrir Painel de Compras
-                    </button>
+                    <div className="flex flex-col gap-1.5">
+                      <button 
+                        onClick={() => setShowPurchasePlanningModal(true)}
+                        className="w-full bg-gradient-to-r from-blue-700 via-indigo-700 to-indigo-900 text-white px-3.5 py-2 rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 hover:from-blue-800 hover:to-indigo-950 transition-all shadow-md shadow-indigo-600/20 whitespace-nowrap cursor-pointer"
+                      >
+                        <ShoppingCart size={14} /> Abrir Painel de Compras
+                      </button>
 
-                    <div className="grid grid-cols-2 gap-2">
-                      <button 
-                        onClick={handleExportPurchasePlanningPDF}
-                        className="w-full bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 px-2 py-1.5 rounded-xl font-bold text-[11px] flex items-center justify-center gap-1.5 transition-all cursor-pointer"
-                        title="Baixar RelatÃ³rio PDF de Compras"
-                      >
-                        <Printer size={12} className="text-rose-600" /> Exportar PDF
-                      </button>
-                      <button 
-                        onClick={handleExportPurchasePlanningExcel}
-                        className="w-full bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 px-2 py-1.5 rounded-xl font-bold text-[11px] flex items-center justify-center gap-1.5 transition-all cursor-pointer"
-                        title="Baixar Planilha Excel de Compras"
-                      >
-                        <Download size={12} className="text-emerald-600" /> Planilha Excel
-                      </button>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <button 
+                          onClick={handleExportPurchasePlanningPDF}
+                          className="w-full bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 px-2 py-1.5 rounded-xl font-bold text-[10px] flex items-center justify-center gap-1 transition-all cursor-pointer"
+                          title="Baixar RelatÃ³rio PDF de Compras"
+                        >
+                          <Printer size={11} className="text-rose-600" /> Exportar PDF
+                        </button>
+                        <button 
+                          onClick={handleExportPurchasePlanningExcel}
+                          className="w-full bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 px-2 py-1.5 rounded-xl font-bold text-[10px] flex items-center justify-center gap-1 transition-all cursor-pointer"
+                          title="Baixar Planilha Excel de Compras"
+                        >
+                          <Download size={11} className="text-emerald-600" /> Excel
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -9478,6 +10169,39 @@ export default function App() {
                         <span className="truncate">Custos por Setor</span>
                       </button>
                     </div>
+                  </div>
+                </div>
+
+                {/* BalanÃ§o de Estoque Card */}
+                <div className="bg-white p-6 rounded-3xl border border-blue-100/90 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group flex flex-col justify-between h-full">
+                  <div className="h-1.5 w-full bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 absolute top-0 left-0" />
+                  <div className="flex items-start gap-4 pt-2">
+                    <div className="bg-gradient-to-br from-blue-700 to-indigo-800 text-white p-3 rounded-2xl shadow-md shadow-blue-700/20 group-hover:scale-105 transition-transform shrink-0">
+                      <ClipboardList size={20} />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-blue-50 text-blue-700 border border-blue-200">
+                          BalanÃ§o & Auditoria
+                        </span>
+                        <span className="text-[10px] font-bold text-slate-400">
+                          Lotes & Validades
+                        </span>
+                      </div>
+                      <h3 className="text-base font-black text-slate-900 leading-tight">BalanÃ§o de Estoque & Lotes</h3>
+                      <p className="text-slate-500 text-xs font-medium mt-1 leading-snug">
+                        ConferÃªncia fÃ­sica por tipo de material, auditoria de lotes, datas de validade e apuraÃ§Ã£o de sobras e faltas
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 pt-4 border-t border-slate-100">
+                    <button 
+                      onClick={() => setReportsTab('balanco')}
+                      className="w-full bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white px-4 py-2.5 rounded-xl font-extrabold text-xs flex items-center justify-center gap-2 hover:from-blue-800 hover:to-indigo-950 transition-all shadow-md shadow-blue-600/20 whitespace-nowrap cursor-pointer"
+                    >
+                      <ClipboardList size={15} /> Acessar BalanÃ§o de Estoque
+                    </button>
                   </div>
                 </div>
               </div>
@@ -10101,6 +10825,19 @@ export default function App() {
               </div>
               )}
 
+              {reportsTab === 'balanco' && (
+                <BalancoReport
+                  items={items}
+                  categories={categories}
+                  CATEGORY_COLORS={CATEGORY_COLORS}
+                  getCategoryColor={getCategoryColor}
+                  letterheadImage={letterheadImage}
+                  inventoryLocation={inventoryLocation}
+                  showToast={showToast}
+                  onBack={() => setReportsTab('overview')}
+                />
+              )}
+
               {reportsTab === 'apurasus_producao' && (
                 <ApuraSUSProducaoReport
                   transactions={transactions}
@@ -10114,6 +10851,7 @@ export default function App() {
                   showToast={showToast}
                   isAdmin={isAdmin}
                   selectedSector={selectedSector}
+                  onBack={() => setReportsTab('overview')}
                 />
               )}
 
@@ -10130,6 +10868,7 @@ export default function App() {
                   showToast={showToast}
                   isAdmin={isAdmin}
                   selectedSector={selectedSector}
+                  onBack={() => setReportsTab('overview')}
                 />
               )}
 
@@ -10157,6 +10896,12 @@ export default function App() {
 
                       {/* Export Buttons */}
                       <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                        <button
+                          onClick={() => setReportsTab('overview')}
+                          className="px-3.5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold text-xs flex items-center gap-1.5 transition-all cursor-pointer border border-slate-200/80"
+                        >
+                          <ArrowLeft size={15} /> Voltar aos RelatÃ³rios
+                        </button>
                         <button
                           onClick={() => handleExportQuantitativoExcel()}
                           className="px-4 py-2.5 rounded-xl bg-slate-100 text-slate-800 font-extrabold text-xs flex items-center gap-2 hover:bg-slate-200 transition-all border border-slate-200/80"
@@ -10478,14 +11223,22 @@ export default function App() {
                         </p>
                       </div>
 
-                      {letterheadImage && (
+                      <div className="flex flex-wrap items-center gap-2.5 shrink-0">
                         <button
-                          onClick={() => handleExportInventoryPDF()}
-                          className="px-4 py-2.5 rounded-xl bg-slate-900 text-white font-extrabold text-xs flex items-center gap-2 hover:bg-slate-800 transition-all shadow-sm shrink-0"
+                          onClick={() => setReportsTab('overview')}
+                          className="px-3.5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold text-xs flex items-center gap-1.5 transition-all cursor-pointer border border-slate-200/80"
                         >
-                          <Download size={15} /> Testar ExportaÃ§Ã£o PDF
+                          <ArrowLeft size={15} /> Voltar aos RelatÃ³rios
                         </button>
-                      )}
+                        {letterheadImage && (
+                          <button
+                            onClick={() => handleExportInventoryPDF()}
+                            className="px-4 py-2.5 rounded-xl bg-slate-900 text-white font-extrabold text-xs flex items-center gap-2 hover:bg-slate-800 transition-all shadow-sm shrink-0"
+                          >
+                            <Download size={15} /> Testar ExportaÃ§Ã£o PDF
+                          </button>
+                        )}
+                      </div>
                     </div>
 
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
@@ -10625,394 +11378,1141 @@ export default function App() {
                   </div>
                 </div>
               )}
-            </motion.div>
+            </div>
           )}
 
           {activeTab === 'users' && isAdmin && (
-            <motion.div 
-              key="users"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-              className="space-y-8"
-            >
-              <div className="flex justify-between items-center">
-                <h3 className="text-2xl font-black">Gerenciamento de UsuÃ¡rios</h3>
-                <button 
-                  onClick={() => setIsRegistering(true)}
-                  className="bg-[#1C1917] text-white px-6 py-3 rounded-2xl font-bold flex items-center gap-2 hover:bg-[#292524] transition-all shadow-lg"
-                >
-                  <Plus size={20} /> Novo UsuÃ¡rio
-                </button>
+            <div key="users" className="space-y-8">
+              <UserManagementTab
+                isRegistering={isRegistering}
+                setIsRegistering={setIsRegistering}
+                authName={authName}
+                setAuthName={setAuthName}
+                authEmail={authEmail}
+                setAuthEmail={setAuthEmail}
+                authRole={authRole}
+                setAuthRole={setAuthRole}
+                authSectors={authSectors}
+                setAuthSectors={setAuthSectors}
+                handleRegister={handleRegister}
+                loginLoading={loginLoading}
+                usersList={usersList}
+                setShowUserDeleteConfirm={setShowUserDeleteConfirm}
+                sectors={SECTORS}
+                editingUser={editingUser}
+                setEditingUser={setEditingUser}
+              />
+            </div>
+          )}
+
+          {/* Requests Tab (Admin) */}
+          {activeTab === 'requests' && isAdmin && (
+            <div key="requests" className="space-y-8">
+              <RequestsTab
+                requests={requests}
+                allRequestItems={allRequestItems}
+                items={items}
+                onOpenDetail={(req) => setShowRequestDetailModal({ show: true, request: req })}
+                onPrintRequest={handlePrintSingleRequest}
+                onDeleteRequest={handleDeleteRequest}
+                onDeliverRequest={handleDeliverRequest}
+                onApproveRequest={handleApproveRequest}
+                onRejectRequest={handleRejectRequest}
+                sectors={SECTORS}
+                showToast={showToast}
+                onExportPDF={handleExportRequestsPDF}
+                appLogo={appLogo}
+                appRectangularLogo={appRectangularLogo}
+              />
+            </div>
+          )}
+
+          {/* Admin Devolutions Tab (Admin) */}
+          {activeTab === 'admin-devolutions' && isAdmin && (
+            <div key="admin-devolutions" className="space-y-8">
+              <AdminDevolutionsTab
+                requests={requests}
+                allRequestItems={allRequestItems}
+                items={items}
+                onApproveDevolution={handleApproveDevolution}
+                onRejectDevolution={handleRejectDevolution}
+                onPrintRequest={handlePrintSingleRequest}
+                sectors={SECTORS}
+              />
+            </div>
+          )}
+
+          {/* Trash Tab (Admin) */}
+          {activeTab === 'trash' && isAdmin && (
+            <div key="trash" className="space-y-8">
+              <TrashTab
+                items={items}
+                transactions={transactions}
+                requests={requests}
+                allRequestItems={allRequestItems}
+                showToast={showToast}
+              />
+            </div>
+          )}
+
+          {/* New Request Tab (Sector / Leader / Admin) */}
+          {activeTab === 'new-request' && (
+            <div key="new-request" className="space-y-8">
+              <NewRequestTab
+                items={items}
+                categories={categories}
+                selectedSector={selectedSector}
+                setSelectedSector={setSelectedSector}
+                allowedSectors={userProfile?.allowedSectors && userProfile.allowedSectors.length > 0 ? userProfile.allowedSectors : [selectedSector]}
+                userProfile={userProfile}
+                isAdmin={isAdmin}
+                requestBasket={requestBasket}
+                setRequestBasket={setRequestBasket}
+                requestObservation={requestObservation}
+                setRequestObservation={setRequestObservation}
+                editingRequest={editingRequest}
+                setEditingRequest={setEditingRequest}
+                onSubmitRequest={handleSubmitRequest}
+                onApproveAndDeliverImmediate={handleSubmitRequest}
+                isSubmitting={isSubmittingRequest}
+              />
+            </div>
+          )}
+
+          {/* My Requests Tab (Sector / Leader / Admin) */}
+          {activeTab === 'my-requests' && (
+            <div key="my-requests" className="space-y-8">
+              <MyRequestsTab
+                requests={requests}
+                allRequestItems={allRequestItems}
+                selectedSector={selectedSector}
+                userProfile={userProfile}
+                onEditRequest={handleEditRequest}
+                onDeleteRequest={handleDeleteRequest}
+                onPrintRequest={handlePrintSingleRequest}
+                onOpenDevolutionModal={(req) => setShowDevolutionModal({ show: true, request: req })}
+                onNavigateToNewRequest={() => {
+                  setEditingRequest(null);
+                  setRequestBasket([]);
+                  setRequestObservation('');
+                  setActiveTab('new-request');
+                }}
+              />
+            </div>
+          )}
+
+          {/* Devolution Tab (Sector / Leader / Admin) */}
+          {activeTab === 'devolution' && (
+            <div key="devolution" className="space-y-8">
+              <DevolutionTab
+                requests={requests}
+                allRequestItems={allRequestItems}
+                items={items}
+                selectedSector={selectedSector}
+                userProfile={userProfile}
+                devolutionSubTab={devolutionSubTab}
+                setDevolutionSubTab={setDevolutionSubTab}
+                devolutionBasket={devolutionBasket}
+                setDevolutionBasket={setDevolutionBasket}
+                selectedDevProduct={selectedDevProduct}
+                setSelectedDevProduct={setSelectedDevProduct}
+                devolutionReason={devolutionReason}
+                setDevolutionReason={setDevolutionReason}
+                devolutionObservation={devolutionObservation}
+                setDevolutionObservation={setDevolutionObservation}
+                onRequestDevolution={handleRequestDevolution}
+                isProcessingDevolution={isProcessingDevolution}
+                onPrintRequest={handlePrintSingleRequest}
+                onOpenDevolutionModal={(req) => setShowDevolutionModal({ show: true, request: req })}
+              />
+            </div>
+          )}
+
+          {/* Leader Stats Tab (Leader / Admin) */}
+          {activeTab === 'leader-stats' && (
+            <div key="leader-stats" className="space-y-8">
+              <LeaderStatsTab
+                requests={requests}
+                allRequestItems={allRequestItems}
+                selectedSector={selectedSector}
+                userProfile={userProfile}
+              />
+            </div>
+          )}
+        
+      </main>
+
+      {/* MODALS */}
+
+      {/* Request Detail Modal */}
+      <RequestDetailModal
+        modalState={showRequestDetailModal}
+        onClose={() => setShowRequestDetailModal({ show: false })}
+        allRequestItems={allRequestItems}
+        items={items}
+        onDeliverRequest={handleDeliverRequest}
+        onApproveRequest={handleApproveRequest}
+        onRejectRequest={handleRejectRequest}
+        onPrintRequest={handlePrintSingleRequest}
+        onAddExtraItem={handleAddExtraItemToRequest}
+        showToast={showToast}
+      />
+
+      {/* Devolution Modal */}
+      <DevolutionModal
+        modalState={showDevolutionModal}
+        onClose={() => setShowDevolutionModal({ show: false })}
+        allRequestItems={allRequestItems}
+        onRequestDevolution={handleModalRequestDevolution}
+        isProcessing={isProcessingDevolution}
+      />
+
+      {/* Add / Bulk Entry Item Modal */}
+      <BulkEntryModal
+        showAddModal={showAddModal}
+        setShowAddModal={setShowAddModal}
+        bulkEntry={bulkEntry}
+        setBulkEntry={setBulkEntry}
+        categories={categories}
+        handleAddItem={handleAddItem}
+        addBulkItemRow={addBulkItemRow}
+        duplicateBulkItem={duplicateBulkItem}
+        removeBulkItemRow={removeBulkItemRow}
+        updateBulkItem={updateBulkItem}
+        items={items}
+        transactions={transactions}
+      />
+
+      {/* Transaction Modal (Exit) */}
+      {showTransactionModal.show && (
+        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-2xl w-full p-6 lg:p-8 shadow-2xl border border-slate-200 space-y-6">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+              <div className="flex items-center gap-3">
+                <div className="bg-rose-50 text-rose-600 p-2.5 rounded-2xl">
+                  <ArrowUpRight size={22} />
+                </div>
+                <div>
+                  <h3 className="text-lg font-black text-slate-900">Nova SaÃ­da de Materiais</h3>
+                  <p className="text-xs text-slate-500">Registre a baixa direta de itens do estoque</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setShowTransactionModal({ show: false, type: 'entry' })}
+                className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-all"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleTransaction} className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 mb-1.5">Setor Destino *</label>
+                  <select 
+                    required
+                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold focus:ring-2 focus:ring-blue-500/20"
+                    value={modalSector}
+                    onChange={e => setModalSector(e.target.value)}
+                  >
+                    <option value="">Selecione um setor...</option>
+                    {SECTORS.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 mb-1.5">Motivo da SaÃ­da *</label>
+                  <select 
+                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold focus:ring-2 focus:ring-blue-500/20"
+                    value={exitReason}
+                    onChange={e => setExitReason(e.target.value as any)}
+                  >
+                    <option value="consumo">Consumo / Atendimento</option>
+                    <option value="doacao">DoaÃ§Ã£o Externa</option>
+                    <option value="vencido">Item Vencido</option>
+                    <option value="perda">Avaria / Perda</option>
+                  </select>
+                </div>
               </div>
 
-              {isRegistering && (
-                <div className="bg-white p-8 rounded-[32px] border border-[#E7E5E4] shadow-sm max-w-2xl">
-                  <div className="flex justify-between items-center mb-6">
-                    <h4 className="text-lg font-bold">Cadastrar Novo UsuÃ¡rio</h4>
-                    <button onClick={() => setIsRegistering(false)} className="text-[#A8A29E] hover:text-[#1C1917]">
-                      <X size={20} />
-                    </button>
-                  </div>
-                  <form onSubmit={handleRegister} className="space-y-4">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1.5 ml-1">Nome Completo</label>
-                        <input 
-                          type="text" 
-                          required
-                          className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
-                          placeholder="Nome do funcionÃ¡rio"
-                          value={authName}
-                          onChange={e => setAuthName(e.target.value)}
-                        />
-                      </div>
-                      <div className="md:col-span-2">
-                        <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-2 ml-1">Setores Autorizados</label>
-                        <div className="flex flex-wrap gap-2 p-2 bg-[#F5F5F4] rounded-2xl border border-[#E7E5E4]/50">
-                          {SECTORS.map(sector => {
-                            const isSelected = authSectors.includes(sector);
-                            return (
-                              <button
-                                key={sector}
-                                type="button"
-                                onClick={() => {
-                                  if (isSelected) {
-                                    setAuthSectors(authSectors.filter(s => s !== sector));
-                                  } else {
-                                    setAuthSectors([...authSectors, sector]);
-                                  }
-                                }}
-                                className={`px-3 py-2 rounded-xl text-xs font-bold transition-all ${
-                                  isSelected 
-                                    ? 'bg-[#1C1917] text-white shadow-md' 
-                                    : 'bg-white text-[#78716C] border border-[#E7E5E4] hover:bg-[#E7E5E4]'
-                                }`}
-                              >
-                                {sector}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div className="md:col-span-2">
-                        <label className="block text-[10px] font-black text-[#A8A29E] uppercase tracking-widest mb-1.5 ml-1">E-mail</label>
-                        <input 
-                          type="email" 
-                          required
-                          className="w-full px-4 py-3 bg-[#F5F5F4] border-none rounded-xl focus:ring-2 focus:ring-[#1C1917]/10 font-bold text-sm"
-                          placeholder="email@empresa.com"
-                          value={authEmail}
-                          onChange={e => setAuthEmail(e.target.value)}
-                        />
-                      </div>
-                    </div>
-                    <button 
-                      type="submit"
-                      disabled={loginLoading}
-                      className="w-full bg-[#1C1917] text-white py-4 rounded-2xl font-bold flex items-center justify-center gap-3 hover:bg-[#292524] transition-all shadow-xl active:scale-[0.98] disabled:opacity-50 mt-4"
-                    >
-                      {loginLoading ? (
-                        <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
-                      ) : (
-                        <><Save size={20} /> Salvar UsuÃ¡rio</>
-                      )}
-                    </button>
-                  </form>
+              {(exitReason === 'vencido' || exitReason === 'perda') && (
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 mb-1.5">ObservaÃ§Ã£o / Justificativa *</label>
+                  <input 
+                    type="text"
+                    required
+                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold"
+                    placeholder="Descreva o motivo do descarte/perda..."
+                    value={expiryReason}
+                    onChange={e => setExpiryReason(e.target.value)}
+                  />
                 </div>
               )}
 
-              <div className="bg-white rounded-3xl border border-[#E7E5E4] shadow-sm overflow-hidden">
-                <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse min-w-[700px]">
-                  <thead>
-                    <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
-                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Nome</th>
-                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">E-mail</th>
-                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Setor</th>
-                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Papel</th>
-                      <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">AÃ§Ãµes</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#E7E5E4]">
-                    {usersList.map(u => (
-                      <tr key={u.id} className="hover:bg-[#FAFAF9] transition-all">
-                        <td className="px-6 py-4 font-bold text-sm">{u.name}</td>
-                        <td className="px-6 py-4 text-sm text-[#78716C]">{u.email}</td>
-                        <td className="px-6 py-4">
-                          <div className="flex flex-wrap gap-1 max-w-[200px]">
-                            {u.allowedSectors && u.allowedSectors.length > 0 ? (
-                              u.allowedSectors.map(s => (
-                                <span 
-                                  key={s}
-                                  className="text-[9px] font-bold px-1.5 py-0.5 rounded-md" 
-                                  style={{ 
-                                    backgroundColor: `${SECTOR_COLORS[s || ''] || '#000000'}15`, 
-                                    color: SECTOR_COLORS[s || ''] || '#000000' 
-                                  }}
-                                >
-                                  {s}
-                                </span>
-                              ))
-                            ) : (
-                              <span className="text-xs font-bold px-2 py-1 rounded-lg" style={{ backgroundColor: `${SECTOR_COLORS[u.sector || ''] || '#000000'}20`, color: SECTOR_COLORS[u.sector || ''] || '#000000' }}>
-                                {u.sector}
-                              </span>
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-6 py-4">
-                          <span className={`text-[10px] font-black px-2 py-1 rounded-full uppercase tracking-widest ${u.role === 'ADMIN' ? 'bg-purple-100 text-purple-600' : 'bg-gray-100 text-gray-600'}`}>
-                            {u.role}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 text-right">
-                          {u.email !== 'gerlianemagalhaes79@gmail.com' && (
-                            <button 
-                              onClick={() => setShowUserDeleteConfirm({ show: true, user: u })}
-                              className="text-rose-600 hover:bg-rose-50 p-2 rounded-lg transition-all"
-                            >
-                              <Trash2 size={18} />
-                            </button>
-                          )}
-                        </td>
-                      </tr>
+              {/* Item selection */}
+              <div className="space-y-3 pt-2">
+                <label className="block text-[11px] font-bold text-slate-600">Selecionar Item</label>
+                <div className="flex gap-2">
+                  <select 
+                    className="flex-1 px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold"
+                    value={selectedItemId}
+                    onChange={e => setSelectedItemId(e.target.value)}
+                  >
+                    <option value="">Selecione um material...</option>
+                    {items.filter(i => (i.quantity || 0) > 0).map(i => (
+                      <option key={i.id} value={i.id}>
+                        {i.name} (DisponÃ­vel: {i.quantity} {i.unit_measure || 'UN'}) - Lote: {i.batch_number || 'S/L'}
+                      </option>
                     ))}
-                  </tbody>
-                </table>
+                  </select>
+                  <input 
+                    type="number"
+                    min="1"
+                    className="w-24 px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold"
+                    placeholder="Qtd"
+                    value={transactionQty}
+                    onChange={e => setTransactionQty(parseInt(e.target.value) || 1)}
+                  />
+                  <button 
+                    type="button"
+                    onClick={() => {
+                      if (!selectedItemId) return;
+                      const it = items.find(i => i.id === selectedItemId);
+                      if (!it) return;
+                      if (transactionQty > (it.quantity || 0)) {
+                        showToast(`Quantidade excede o estoque disponÃ­vel (${it.quantity})`, "error");
+                        return;
+                      }
+                      setBasket(prev => {
+                        const existing = prev.find(p => p.item_id === selectedItemId);
+                        if (existing) {
+                          return prev.map(p => p.item_id === selectedItemId ? { ...p, quantity: p.quantity + transactionQty } : p);
+                        }
+                        return [...prev, { item_id: selectedItemId, quantity: transactionQty }];
+                      });
+                      setSelectedItemId('');
+                      setTransactionQty(1);
+                    }}
+                    className="px-4 py-2.5 bg-slate-900 text-white rounded-xl font-bold text-xs hover:bg-slate-800 transition-all"
+                  >
+                    Adicionar
+                  </button>
                 </div>
               </div>
-            </motion.div>
-          )}
 
-          {activeTab === 'trash' && isAdmin && (
-            <motion.div 
-              key="trash"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-              className="space-y-8"
-            >
-              {/* Deleted Items */}
-              <div className="space-y-4">
-                <div className="flex items-center gap-2 px-2">
-                  <Package className="text-[#78716C]" size={20} />
-                  <h3 className="font-bold text-[#1C1917]">Itens ExcluÃ­dos</h3>
-                </div>
-                <div className="bg-white rounded-3xl border border-[#E7E5E4] shadow-sm overflow-hidden">
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse min-w-[600px]">
-                    <thead>
-                      <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
-                        <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">Item</th>
-                        <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">ExcluÃ­do em</th>
-                        <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">ExcluÃ­do por</th>
-                        <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">AÃ§Ãµes</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-[#E7E5E4]">
-                      {items.filter(i => i.deletedAt).map(item => (
-                        <tr key={item.id} className="hover:bg-[#FAFAF9] transition-all">
-                          <td className="px-6 py-4">
-                            <p className="font-bold text-sm">{item.name}</p>
-                            <p className="text-xs text-[#A8A29E]">Lote: {item.batch_number}</p>
-                          </td>
-                          <td className="px-6 py-4 text-sm text-[#57534E]">
-                            {item.deletedAt && new Date(item.deletedAt).toLocaleString('pt-BR')}
-                          </td>
-                          <td className="px-6 py-4 text-sm text-[#78716C]">
-                            {item.deletedBy || '---'}
-                          </td>
-                          <td className="px-6 py-4 text-right">
+              {/* Basket */}
+              {basket.length > 0 && (
+                <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200/80 space-y-2">
+                  <span className="text-xs font-black text-slate-500 uppercase tracking-wider">Itens na Cesta de SaÃ­da:</span>
+                  <div className="divide-y divide-slate-200/60">
+                    {basket.map(b => {
+                      const it = items.find(i => i.id === b.item_id);
+                      return (
+                        <div key={b.item_id} className="py-2 flex items-center justify-between text-sm">
+                          <span className="font-bold text-slate-800">{it?.name || 'Item'}</span>
+                          <div className="flex items-center gap-3">
+                            <span className="text-xs font-semibold bg-rose-100 text-rose-800 px-2 py-0.5 rounded-md">
+                              {b.quantity} {it?.unit_measure || 'UN'}
+                            </span>
                             <button 
-                              onClick={async () => {
-                                if (window.confirm('Deseja restaurar este item?')) {
-                                  await updateDoc(doc(db, 'items', item.id), { 
-                                    deletedAt: deleteField(),
-                                    deletedBy: deleteField()
-                                  });
-                                  setToast({ show: true, message: 'Item restaurado!', type: 'success' });
-                                }
-                              }}
-                              className="text-emerald-600 font-bold text-xs hover:underline"
+                              type="button"
+                              onClick={() => setBasket(prev => prev.filter(p => p.item_id !== b.item_id))}
+                              className="text-slate-400 hover:text-rose-600"
                             >
-                              Restaurar
+                              <X size={16} />
                             </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
-                  {items.filter(i => i.deletedAt).length === 0 && (
-                    <div className="p-12 text-center">
-                      <p className="text-[#A8A29E] text-sm">Nenhum item na lixeira.</p>
-                    </div>
-                  )}
+                </div>
+              )}
+
+              <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-3">
+                <button 
+                  type="button"
+                  onClick={() => setShowTransactionModal({ show: false, type: 'entry' })}
+                  className="px-5 py-2.5 rounded-2xl text-slate-600 font-bold hover:bg-slate-100 text-sm transition-all"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  type="submit"
+                  disabled={basket.length === 0}
+                  className="px-6 py-2.5 bg-gradient-to-r from-rose-600 to-rose-700 text-white rounded-2xl font-bold text-sm hover:from-rose-700 hover:to-rose-800 shadow-lg shadow-rose-700/20 transition-all disabled:opacity-50"
+                >
+                  Confirmar SaÃ­da
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Detail / Alert Modal */}
+      {showDetailModal.show && (
+        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-4xl w-full p-6 lg:p-8 shadow-2xl border border-slate-200 space-y-6 max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100 shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="bg-amber-50 text-amber-600 p-2.5 rounded-2xl">
+                  <AlertTriangle size={22} />
+                </div>
+                <div>
+                  <h3 className="text-lg font-black text-slate-900">Itens em NÃ­vel CrÃ­tico / Alerta</h3>
+                  <p className="text-xs text-slate-500">Materiais com estoque zerado, baixo ou prÃ³ximos ao vencimento</p>
                 </div>
               </div>
+              <button 
+                onClick={() => setShowDetailModal({ show: false, type: 'low_stock', items: [] })}
+                className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-all"
+              >
+                <X size={20} />
+              </button>
+            </div>
 
-              {/* Deleted Requests */}
-              <div className="space-y-4">
-                <div className="flex items-center gap-2 px-2">
-                  <FileText className="text-[#78716C]" size={20} />
-                  <h3 className="font-bold text-[#1C1917]">SolicitaÃ§Ãµes ExcluÃ­das</h3>
+            <div className="flex-1 overflow-y-auto pr-1 space-y-3">
+              {showDetailModal.items.map((item: any) => (
+                <div key={item.id || item.name} className="p-4 bg-slate-50 rounded-2xl border border-slate-200/80 flex items-center justify-between">
+                  <div>
+                    <h5 className="font-black text-slate-900 text-sm">{item.name}</h5>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Categoria: {item.category} â€¢ Local: {item.room || item.location || 'Almoxarifado'}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <span className={`text-xs font-black px-2.5 py-1 rounded-lg ${
+                      (item.quantity || 0) <= 0 ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'
+                    }`}>
+                      Estoque: {item.quantity || 0} {item.unit_measure || 'UN'}
+                    </span>
+                    {item.min_quantity && (
+                      <p className="text-[10px] text-slate-400 mt-1">MÃ­nimo: {item.min_quantity}</p>
+                    )}
+                  </div>
                 </div>
-                <div className="bg-white rounded-3xl border border-[#E7E5E4] shadow-sm overflow-hidden">
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse min-w-[600px]">
-                    <thead>
-                      <tr className="bg-[#FAFAF9] border-bottom border-[#E7E5E4]">
-                        <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">SolicitaÃ§Ã£o</th>
-                        <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">ExcluÃ­do em</th>
-                        <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider">ExcluÃ­do por</th>
-                        <th className="px-6 py-4 font-bold text-sm text-[#78716C] uppercase tracking-wider text-right">AÃ§Ãµes</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-[#E7E5E4]">
-                      {requests.filter(r => r.deletedAt).map(req => (
-                        <tr key={req.id} className="hover:bg-[#FAFAF9] transition-all">
-                          <td className="px-6 py-4">
-                            <p className="font-bold text-sm">#{req.id.slice(-5).toUpperCase()}</p>
-                            <p className="text-xœì}ÉrÜH–à}¾ÂÅÊîV1¸I-lŠ2&Ie«[“”rjL&“À€“D&ˆ\ŠI³6ëCŸæ4sš[NÚ¬ÌêTÖ—>ÿ¤¿dŞsÇâø†`¢”DZŠÀ×ço_ÎR’Ñ³¬÷şw›7ûOv>Ìl\$ôçù”²8¹\_mü7¢½Ö2ßø{æ“Aè¥ékoHŸÎŒÎzÉè¼·ÂûL‡Eß«V—W°oC[„°ù4¤õ73ò÷O"zJ¶½Œv¥_fç³øe<ğBºŸ%AtÔíŒ²Ş·{ÙË[˜Ê£Ç–nµ™Ê·çä—_H§×ëunn€IptœYµ~0Î²8"Æ‡‰£­0üôôÂKÏ£éÎ’§äÂò!Á!é‘ŸÎâè0H†İÎ6MéIhšyãÄK~ ií™wõïWŸufgZ'Ä;õ‚ŒŒG>ÀÃv<èúøÿÁéÀR¡İ´3GpÕv\Ø&É¯¤ÖòÏúİÙ¹6o{^{ÛáåËÙpx*¥ÙÛØK³îIãÓ5’%c:G†4M½#ºF:ûâJ–Ëì{`-²ó>’x¾ãÔ¥	>Ùï¶ e`I‡4ñB¿÷pq‘ÆQÖ;ˆCŸCìYJãš¬#Ÿ&aÑcãfØ&d¯ 2óXà‡`r¬¿&º_g5(Ş9ˆısÕkğ“wRõO~p¢úá¢ ùùÃ ÌhÒMğˆ&"†it”“§OŸ’EÄ¤]õ¸ 	©ô–ú|w4‚†µe}ÔØê’Âsfã5ÇÃÚ'‘GÂàŒ‰7¯%?Ú©+Xùl~³v÷bá÷d›/y›xQê² Ròû…z»õ¥IGŞ€ö ß*Ö¤şìaHÏHÑaš¯#9òF½>œİW.éú?)ãsÅ¢ô†¤ÁŸèÓ‹şâ%YP6q¼,A>lï·´µôdéĞ­WñI0„QánüMÉÎÙ _ıÕ÷Òõ…ãeÅäÔ[QŸóÁQïôæL’´ß[>ÉAœÀÙÎÿÀ ví¬î¬| læ@ªŠà0„ÏÇïÓH½:µ®ÊwÎzŞ8‹5@ºÎÎ•øŞiïp†|ABz˜ãÄaèRJ†AÔ;í½_]\é(üzvL=-zXÏ’Ú¢¼ÿİóMøïÉ‡¢·ƒğÏ°±&Ú]ª)m“L
-PËML-K¼ÁOÀ+õNÏµ	ßnÿÔÅ„o»w‰cÚäÇÀ4=ÆÇ·´Ğ°Îp¾8v€cè¿wNòöÍ¿È,U`û±}&bû¡7ê²'ñ5ªç#JÈOôü)o8¥KqtœK Ë°ó†FöRÇÚxÒ‘k!)Æ
-ØôcÙD%m:SHA¼]ä’•ìÀaHÎ;äéìÀ'`¢:9,Qcç’ôò½˜ÿyìEY_’q¤'`ùPnW~âTKPµß>ƒõ%‰(C	=^_F1òæùù»¾¤r{²†L1î…ßŒ°áF‚î”À!ß[•8ä[Ã—m¾ö4)|»Àµ=¡o½NˆJ}.cnúÀ–6Wt½jºAÄÏ­Ôá<ˆ€{áÓ‹ƒH„l,Î‘³5Ò_l9/
-†€Ë¤§—ØÓŠ‡éY)Úí©VHVå¡6Ö÷¶ö‚ƒZj1²†Sn‚Iıÿş“, ûàÙãèyŸ‚8|ëf^66K7Ğë‹ŒF·Üi;HGƒÂÏõEŸ¦Š‹şŒ4çAÃFÀîéÍÆIÄE¡üY TŠA\]<5!h"È* ı.æ|
-,/íöV‘u‡;»;ÛµÚpÜÄ!ÙÔ*	o×¥c§f¢e*5& _­j×°¡¥’"„G3$ÍÎCF¿à±_¶â0NÖÈ§o.öw¶Ş¾Ùû¸õæå›½ı÷•]ìÃeñÓğµOYs0å¦6#ˆ³û¬ëyñ‰CÄª¾òEaÅ«Êh¡µ¤m$ß˜å%¶0ßr¦gwçõöÎë·;L ‡ãç€ì­.r@åß¯Ïé!¿Ñ_\!½U?;¯>îïìnîmnm¾)ú“QHËÎò¯Boù	ºÛÜİ{óÃævÙÕA8®:b_„nØ÷IæôúíŞÎwïÊµ+ä ¢Q.Ê»*nMĞÛŞÎÖ»}aJIœVSb_„~Ø÷	:ÙŞùáÍËw°G] ãÑ £ê1ß³MÛr>šÊrVıæ»©_ØGí:J¼ó²!öEØ!ö24sùÉ	Ï™ÙÎ+Âo\ıÛÕ¿¾AÕšYÂv~›µIªÌKâºõbÛÕ·-m¯ØvõƒsÛw˜(YŒ†	ÊQ‹	LÖgş^ 	­d fäæsÎğcà³%Îmş¹âínQZšı85®ÕÔ¹W]§Òføã8Í‚Ãó|…ıpÊºS®5Mi¶Ÿæ+¾M3/_Å¾Öùª¯áriTãU—nsó#_.·Ã’­à’õKÎâ,$Mà8òş“şj¥Á‘_K“÷¬.Î:<¦&HqSæô
+              ))}
+            </div>
 
-<é´V?&tç¶›ı<ö"Xv&!å›ÚÍˆmÏˆ¬™ë”gF¹aâ7dº/ne‹]Â+2àÔg˜e0HlÏÛöVğmâ¥ÇıÜp¾ôXc8—^qÚc‹D£G,~Ö#½²W­êÕ*zµjŞ‰¥jínS·Û_tĞí®?BúßrÓ~A9
-5Şğ (Q¾¡+úU*‹KÇ=µW
-1·ûétÄšmlÍÔÁ"’OOâpÌ-G×Ò7š»W·V7@üa)¼¹©jkn:\¥|$Ü3‚Súçøèî‡ÓğxœØŞ(‰O
-•óEıS‰‚tì…p®HŞ(%hâËâ$Š±#Üé$ğ‚”x1ZHc@#ês¢sºJõ{}úW¯OXğÄèÑt¯Å—ïß-ş½ÿ^‰¯ÄÿÂ•ø÷ZÛ/[k«Ù¿i+V§­Lı
-¨JÄØÔ¡òsòá@8SJœé°õ	£¶{ÔKãˆ…¨½f‚p:¢ƒà0€Xd	X»W4ƒ<D˜DÇ½YºîõÌÒ%ê™AÈŞd’ûõİGeó½R¹~İ+•ïRùötÊ{1yº58½¥r…F*õ²/(íî ryxŞ“Ûé’…·ïµÈ÷Æ_ BôŞ×WÙÿİĞòpv®saè*22 :²Ïo1e= ò^a¨íàkQ~n×½—ê½—ê½¾ó«ÑwŞ{©Ş{©~Nåá½ÆPºî5†Ò5mÏT=3ã¢9tP¹*5êÅ?Èå¢ƒfQ­[dŠ¤[,øA·Xr5×Ğ-VÚE¹—)›ıuûŠÂšbÓ­´®àÀ¼æM¨şÌ*áºRøFö­½šØ}ãÖ-m}Mªd‹&àëòLş!\ı…xAä{$B½ñ!ı‰TîÊwFRùs¤+“è‘Å×¿EòãvŠä£˜@üõ¹io‰„GkÕ×>c¡+`³¾G$G°ÔW¤)4¨­¡ÑM¾_î£ÆÄª½vÊ¿§No¸Œgà¡î(5Éeà%Àå#‰ÑÒ+ ß&À}ÑÑ»æ!*U/eÄıÔcÀunTynõ=·q³–É+ô“Ş¯Ğt®Ù¬U÷lŞÇúÁxhP.7¡;ÌvÃs”ùp¶ª@8¯}êí@bÊ—‰×?ú¨‡@´¤óY<*!)t»cs€|z6kTíbßL·‹oÌ³4qv€]!èI82©vks:…uÿ7Û+Ä£ü+×$¯Âp¸*§œšÁ4—u` İl%ÈÈ’ÀÛÈ»â(÷–ÚŠÍ’Çf>BŒÂÜZ=xa8Âv…±)¬kÍ4¸Ç½¥ùUõz²ß‡{À%¨Ğ—*Õ/Á1Ë•ä¤~	´(éÓ7fx¿øáÙüÏÙ9yFÔ³ÏÄö>6K~O‹ÂÈ.ÿîS«¬iÇ|}å¢´ºf^ØÈ…ZÙÌV`êª¹0€ªxØÊ\¸ÅZO`N‘ŒÂA(’’•ˆzfã]ÄpqjQê˜ˆşG]8‚uË×¦œyäFÀÕ']Ú¯öéøHüH:>ÄB–ôÙ×4òƒ:”H™Ú¹b—@*5ùÊØ¥Byß†aÚ:¦ƒŸ¶‚d {ÔÍ-w†gÂÄ«ôhL?/ÇÄƒê@£„æúX§êïY'Õ’İ³N_ëTÂ{ÖI|gj¬Sex½gœ[ş"™§
-Å~ñÌ“õædÚÀˆ~¡(…·u¨ãs×;ëáßªaQìõN{}àf
-ğ„ÚÁi3 FóíÍN)d
-¬eDUì[¿Æ¿©p^0Z¹¸Á\+62–aÿ50[µÛjxV³„õ®ô©§ÍÆ®šKï–ÒlGê²¶7ä;‡ò'ßü‰fİ÷œ~sÒäÄÃ#ÓítÌ¯lç°+9vk_Ò’:»‡Di‚sJ¨®ÃÉ[^4 ! ¬%Ût{­·ˆ¹æåÖó× ×K:¡w@Céì†qAU®$jÖpC„£×Ï³3”g ÎäúëJ3Œ 3c&~¾w3ºGN¼pÈ±æS‹€Kİ;~¢ÉÎ×ıŞd?'Še™Õ¡´óUøEXÈ‚ÅWv®.‡¤Q|–ıİôacã }…Ì›[ƒÕ	m½ßöxeŸzÉ@r4÷RÌ
-D	F «P2ÈBŸô˜qZÄó‚7jÄnn3Äâå µx€æĞcØš<Ùl‚ø)1>ORÎÏÏ›˜o¨†X†`”p€]!%IvÖÁ8]‹Çß¢8¢ù-tîõÅ/%ó¼°$U¨pv`ÈOnßù6¾¥ÉĞ$¸ a;ö¢#x­K¿ª½z]:Ôùˆfó¬ƒv›õ'¯æ˜&zã)é›=eN=¨äåÄ«Ã(^Ú#² J\ğR!o÷ÛVÎæÁ§?¡²œÇ@z+‘ıœsBA´\ˆ×Ù¨$éºÒÄ 6 TÎs|‡Š tìÑLe=esäk¤ø:€Õ=Š“óêNàŸ/7ÈSrqi.ˆN–ÌÇòA ee&²AgçãdÇó‡mÅ{°2ĞƒÚœŞLûòÁ¥ôæUœá+Áïˆ+ÌŸí}3Î€µêğ•	æŸX–ÄVAkğ8ì$_S ìOÉ›ƒà( íÖæd.5TlÓâŠGq2dÅòö[ƒÙù „c İúC$1;ké6“¬ÛõæÈ]õ0²–­x8òÚ=àİÚZb6€0–Vm‡ĞR,›¤°ƒ
-Ï¹`u·Tù,=]–Ú(?Ë&õ®*/‚WKJZ®j=j]˜USü²Ô†º4/~¾‚åú£º»„:Ç xë<˜F¼Y»O#g`xëvBga³ºøa¥g¨ŠÈÓÂí™Ë”pü"¿{ÀpİA0?Jb<ÈXÁ<™Âés)† ^tåVùL!æÊÄmry(8¸ƒ`}ß)±ûÈ¹$xoÖi2—„†ÀšO8‹÷0i&X²­?¢j>ôÀŸ#â¬Ö„)‰¡›¤aÔÏ(99£ª l½UÚ†J¢#	X ²9™Kx2;k°øÊ¨frÆ¢)B¶–ßEÎz
-ùğ{Î )*Á$á„!Mêp­X)jáe	³AÁK¸Â	O»š²û >7r´ÓB€|èä!İŒmj©qÛdÔj5Óxßål× ZétîRûºšf;´Jq*ãçBkS½¯P¤-ëµSW©äAôh³ßÂ"ŒFmJc–H…~-ure£x…í-¦ñ:bq]BT.
-wğzaãò€'1kş6³°UÃƒg’¢1:›õ<xƒèéÌ’ãçnŠ,*óZŞ1hDÜY—<®¯ jî¤”¾ˆ²º–å¾Š—ia}>EOu ÇË<æİY©PøQä;Û ã,zâ(?ÓÚçb¥jù4—¿Õ"ª¬BÔ‘èd…ë6ÅÈ¾ÖÑAn…d'wĞ—’ÕE½ªõÜHÆÓ,ußŒágÍ:vìÃK¨g1$;œºE´â9*Y%-÷fx„Ñ?±8Ï`8Šf(z¦D‹=æ–ÔÛ¹Ö8F&¹ÜéqL¸¦Ä0<Jq|0,#KÕk^X·€¤üqÑ¤XZÉ+1•ºAÅòŸÌ€"àXmü²Æ
-b@OÅÖrı5b°òŞ`œ¤1JP¾ŸRßî‡Çãº“ÓXüU‡fÿè$€]ˆ&¢µ}c}ß;¡…Ãé"b>•·À¾x	ÙDäŸB`Î¬¹º°8j—Ö¼Y/˜ªÄÆN0ÕË_ŠÌªÂÆ’j]µ÷è!`Ÿ|ëEÀÛ?2‡+…Ë¶’AeÎ—ƒ:ö×Øç$>ÅÏFvAš9D%NU½,î”ÄÃ* qÀX/N¡³;«c'ÕÉQF°ìG:\vš¹áÊ/KKNJ
-ûìÕFŠÅE¯Í?ÁŞ\Ãû\—±¡!^Ë®æU¨²LËç7ô‹OÕzöõÚ !M£ˆ4¬ˆ^–_^Êì§”3¸Ìı‡^0™Ñ/R,¼âSòª¨‚¢áq¿•+¸Ú“ KJñÆë-‘Tvô´ÎÿßQ ÔA ­ââÇÈ¢Ä	Aƒ]i*¡*§æ(Ø–¿³µ`¼pŸyIpˆ~ô>ò	Æ*‡²<·qr˜èO˜ùR¹4-*ÈhU÷NÚt˜îv‰ZmX˜z$Ÿ4¼´Ëå½fUj›çÓîòdÚ…“>Nc§7¾ò¬(Õ[Í”(Ìò×|S©óöQŠ;²3Ù¬ä”)L7¼¸IäfnûÚL…œß:|TÊee·ùáU0AuÜóáGF‡°YpÅ§‰7ÂD‡˜dHXØ7Fâø€$Ç˜E˜4çÖ¤ÛMöI‰êXP«-ØDDLŠó£f{ÔÜ4’âÊÍ™üóî²´´I‡õŞÜ4ŒKÎÀ¥•uªUJÇ¤LÜHğØ„gŞéˆG„oÄeĞ«0†zÇæ,]E	]?ŞˆÅò'í¨ÌÌeë(¡?²U™´£2MWÕQ£'ƒÚ’º Ô©úº’G²áMƒ’Pëñ,3LüØ,q†IÄ!¨F­(]8?—2pLàÙ´³/KÅj™ÂîT'Ú¤â1Ç.˜•:–ÈŠ:ëƒéuôápoaÔ!a"–ïYâ-¬‹ß&Bä<	š¡S¼¡9ñK´sŠy	iùWwPÛbz´/	Ìv‹
-†S€°j¹ ÄDbp\rlZ3Çª#x	!Ä_mæA¼Ó 2É°}!±÷`F´Éuİ ì_XíÑÁ8X0%q}Ó†)]N°:ÊâH˜øÅ}z4DòÉúÆaè¤¯ø€uÄôW"È³-TŠ=&! .‘\{æ)¿TÇ •lUj&g$‡ïòHªœUN;J[˜—œGƒã8Ù'f'™x•¥æ«‰k­&+¹_aQÈ£¥hx¢fEjù¨«²*å%ß1]³k¤SSP	‰KÖOõöå§ærª ÷U{i%ìş‡"ªAÉ­Íç’êÇ4öê.o¿4Î¯ vx¥iTWò¹n]Ùtê¾)€ ap„ô£ÏÃÀz§Ñ‚j¸_x°ô,€!vBztõ×¤èkãM[=6>È`Y‘ê¡õG¡³bfµOİ‡*‚'Y•\’x¸¯/)µN•£ˆ?¨{¨ÖDÿÒìêoI0`cu{}ŞCÖŞÕªl 	`€áÑ1Ú@¼È÷w‰Ñ" B°¤ÀÆ‰YUóáˆu»˜™dÌM%–”«N¾ÂÍ†‰Ís²L„«9[SR«êZÊéèİæ…åÏ,>yJ&K‰¯÷—uˆ•Y·æ¡‘JşŸTñ¬«ÈXxÎÂG£fòmJd¸í«u„^:xÚFæ8#Ù·Êömølµo¯˜<Ó,NfssŸ8¤:R5Pcè[—`mÖÒuD#c'¼4ni“B[«Œ«ÛM'ŸukY&û„\}Òuî*œ—ÒaÀ}ßæğ_ÿòIÛÂO76-SE§e÷ŠNÅvÚ
-:ñëöëøØú½Ùj>¶Şo¤¦¿:¢ø/Â®ĞbyMÕ}øe­ñÃ¯©W6·­ ª¾ù›k·ªªrŞ¾ÕéŞfÕp‡Ê!¬%2S'SÔ8/4G%>_D§¡Ö#äUœ'ñZs.¡v®KdE•æ4	åSfRÊtc¸™YæûÆY2·øalãªP˜ZLÓ}[GsMZì¾ŒWrgÿ,uÜ\Eà‹‹oSWù˜ùq/gK7§iBÇ”Àƒp\¹¹C'
-d!`mÊC·î¨6D8mÔL}ä—ö`i‡€FË²º,ê®Q%¸-JW+V-’äE^.µú¢—–øQƒ}Î¹õ†wÔªle‰{Ñ§@SÇ°LXÖ d»g‹lè–úÍœÕQ-47W]Şàr•zEï…Ëš4!Ö˜¼ª ºTÀ¦®i¡ÜëÄœeÂÍl¼ËL)BĞV”aÛŞ €îg”Şs3\a˜Ğ£ Ğ=ü&9Ìz|SeÃ¨ù»škÊ9zİt
-+ƒmà·¬‚ä!ÃÀö…HoP˜¦’9¨ô#„“
-˜Æ^â³ìãÈpäîØ]–'Åø€tàöãt–C(ÛaXbW ¼µ¤%CW	Æ	†IğİGà#O	œ´Ç¼ÙIû`7`™~¤@Ë¿üBºµ[ìX<÷’áÕ¯ƒÀëğ¼QRÂ¯³³ÆŞå„SšÇô©„0ÇJs¥œÓ	¹*G§LOX»»pÆ¼#:5ŠÂˆª0°ÂƒM«ƒmÔÖë:Ô“ïÇ½F<rX€Å?©£8M±x`ê…ğ{5‚9§¼º+ñrC£A?á ‹@N@^f!{×àqtÀ—CşD	Ñ¦û§g£€gÒş™½kĞéó#ê%ì…söîëòkñú-ØJyÖÑ(pñ)'ƒnºıkªñíŠÌbñ­ò“¤Ó[Xm(òd»»Œê=kÃkâ>:£´t¬4•¨*cŠëH:J“‹­Æ¬tT™¢«k2ƒ
-jnî²IEÆ¶Ü}[,Fá¨,d¯”)o@SXQ.ÉäÓT^ËäSŸÉ­j1¿y~ÎŸMkıjˆøú±ÏK‹ucg4ÊW³MFí}ê¢±dSÙi’½f9:ª¼û,düÎOs+dtv«-XÄê—*Çš;¸à^È«#í&W;yzÊK?õÕ–,frù,yÅ‹_Š5oµâ+»3$ÀçİA3Ck‰Ö:²ï«BZÀ‹çòöšèÔp¹@kÊdN9úGAöqH½tœP–/nø–ÔèÀËÇy*gŠ´Á,æ/ãÌyªiˆ=ƒµÕïÆË…2°y8ÿˆ&|&ÍÖïa–¤Î€dÀÃ ò|O£	ÒÎ¼8úÍÙ_|ª¦ÿ@¨:’{§æ	«ÓA;nåƒP´Ùaš«h—oÌt`wTP†¬»ø7ˆéIs1g®ÅkyÂê‚ãsyµÊu&^—W‡ŞÙ÷½X¨v¾Å#ö¢šªİ‰À%«*¦_€ğœál\"ıµmK	¢Ê>½*ô„¹UßLzd>á0G6aviİí[ŸœY*wè	ÌV:	ºvpr–¸%™»™\NNà Şn†\ó¬µhÛ£Lë¾®ŞÌ
-‡r³J®¢ŞTÔŸÑÄ§şE—†õFŒ0*Güß²-¦tÚ¤²Ì0)3ÇÜŒíØ-zF­ìAÀ:>ğ‚³˜+fÓü/Éõ·´4º|Á¾ß¢gÙÎë·{;ß½ÛéÜ;‚›¼}Gğ¯ÌçûkğôÎÑÔ×ãñÍ½‹
-¦›Ö\ÍüF´(ÊèšÈÖÚ³1 Nİ­‘O[IÀjo+:³³¹ÓÚŒ»ã¤é^ÄêùçÜ	‰åj®ù¿üB]*Ph}è/9"7X$B ½zß.­;ÂÁ‹§G[Y÷ª«‘àäÕÚ"æ€_Õj®£3˜ó{…D¡t¥Ç”,‚>;†Á7ıêÛt´V­ü™-ûgÚğÒúårLñrS­ª]»åJ_.\¨áöäæÍe¡ŠË‰[«áew u¨Hñ95S50•TÁôIè+qªºV5ÕD^I0UÔ%6w=Ä•'ãàÆtO4mø7åØûƒ<¹L]¡Vã¬¯\É©2P9İ¨
-LÄôù.¶ºJ°6Z·&*Õ`¹n/ŠÁ–¯5Ô‚0j®… É;÷~ñÃ³yşCÇYkòáé®ƒ„XuBK9¼Ğ?L8a-ëÌ±•8OßÆ^šugŞÆXM¾ôLÂú^!“¯~Å¼­Şd˜%yÉE_t@œŸ™#3AtÏ´ O‡e²/J.,É„ZÜ)êk§¥SmLQÃ:£ËÙì®xUi•ºØt¨K¤ÚÔÎ^/„ Ô5šs2×—Hà¦±¹*àQ£y
-¡fåT¢	ö‹ü@8è H=‚kVª¡«A8¾ú+*»3ÅvÍÌ2GÔ 4å‰şÛWé…\ß™»‹~Æùm¡ƒê‘M^R`7¡)¬1-ƒw>—œh1ÌS!SÊâºMßg?ÈĞÚ¢ƒ3`Í‚½ÇT<1Aøë'ñîŒ„	VÙšàyÔ{(²¶ƒP`!EÃYœ2'E¨£]¡ÆBşÂ’ğøRıq•j?ÏoVUR(0ñûæÖ2Â¤Ü¥Œæ5 ß?Y<9şP¯-bTy¿•šŠº*QZÃáAïq¨3í©Œ ËŠ|wBÕÄ~>¥œújİ¿*}_QôVÖ÷o¡%N%^ıg˜£Pàv˜	à„şIqØÔ¥@tr“:ü¯ ìî!@½ª®O­ ‚¢h¦äm$×AÆIZ§•Šu*ò(öWšºe9¥™&VSF•p¹¹ı	3n±\¯®sGfìR¥EnB"‡­x8„µ}ĞĞO	R>Œ½pJ$XUÒko¼_îãQÑU3ªå°^ÂtîbJëğ¨‘Òú¡‚öÕ‡¯Á=Thô{nE¯ÄR ¶­êÕó¤ÕõÑb¦-teªÉ‡œ	Ú²•?†@·`aa€j¤ñÑt›Ô€C~ñ²~8MQ?© ÕëxÈº–sP·:•
-Ve+—jULŸ®K^ì`ş„¨ë|¾X5^•£9–ø¶x³{Õ‹os¤hhÈÅÁjF%½WpSàNóÛ`Ä‚-îw³<S7%=3šÿñšæ­Ÿ¿`GCïä«ê 0‡µö®µ¦p`O5»ÿ|€_µs|â,›ÏMT­;NÇ$º6OÎkùe×zx!Oôç«}Æ$ØU§®5ß[©WQíS[°ù,	†İY»Ò–«8>4í‚¼r‚ım&‰w>eU°at´`EÍñç9¢îêÃ¬½´º	«±kšöí
-ÅÎ;([r~¬~Ğs¾Ìü¶	’Œê–:‹¢¨ï‡y²…tØÚÆŒê	±\¶¹d¨MÛa,¾øë†¹"ÃtZî:kPu—Ÿ´½:2Ò2™Lp1(73²ÀW{ŸõxÄøkf…7.‹iãçöïúÆÔ·)sÍúßıÏLu'µªFâ Æe1µvjµ°Ù”æîÀŸšÚèN³o’àˆMŒ¢	/İi	ùQ IMÖñfêˆ 2:W#"fGø@g¸ŠuÍl°b ^›±HíuØæÄ›Ù`•õ²˜ìà×VøqÄL03Û±—çÖ¿®ÇP¦J°
-İ7v¿¹…â¢P‡¨êcµÖÌ©OØñJCé“õ8ıÁšÙÀÉy¹<¡VnEÙ£	£Ûqy‰Å=ßGØÅuİ‹O­Å”›®9–*7¥‘KÉÅĞ@ûb…ãÅ‡í%á5 ,"zî:¿é¹ëñ›q–ÄÎ”pl©hl…¯ReÌm5jhÊ°l´=~E-%nDÔ?@ÒÛŒÖ³cêùZj•%=é¡¾,+kPRª–»l
-	uª*D½Shà1kaè¯å7úL?³Qh¯pƒÖ²cı|%·é½¢°Ù<¹.à&zÚ[~XÎv‰O®ĞÄ±Gæ	š8Â[uŸú]ÄÃMÈÎğ`Ş<æ‰VœùÇúÒ@äğ6dT±ğ¨òÏJ#{Ğ¿Ïüy’›Dn`øUBUûà‹ÁW‰WC/òi½ºúktCw‰>VÏılXYœÙ(¢d?ß*<F~Š^ı{LŞE7q‡kaê~K4DbÁ@%Ö³ƒØ?×5*àÚ ôAdîWs$ Ğ=›5ÊH´In üGFîõÌ¯-gßJHÌB»U…Œ—ÑˆS]Üœƒ3³›rªËMG—Òº3âœ½í]¥¶ÌaQ²æ¬+ #x`;‰^²k°O<zÄIG„W.›U)p,Ï×Ä³ñ#
-.·[d“¶Õ™#-4ÚF5^(£|?°Êvdä˜†pR‘]NÈ±lï2K­™©ğ.xÕùÏaV¦?ªx©·š}·¯ä©¤pî7ñ¾ÿØáP©†£¬9g·­ª“<VcQ‹rv*AEJÎÖ¤kî®çï;Ã#€¨ÎpÀş¼{ÿò;!şûw52àpLNu³TÃ£Ø›—¿»æO¼Z{¬WHËü”¯™våÛ&\|\ù%dpÄ¶ÜœrÅ—oÏÓÈOÿ{w;¤ã`ë‘/qJ€sJ:îÓ0›>,=áF·éÊ†Åõto×uV·Ùâ’©ùR•‡	cpé‹Qø•bE(q&†Ğ°WUñ 9.xRËj&;Õ–ÂíT¸ÆËü¡Åétñ›-.{r{§¸öØ—ƒ¦·ãÔ;¢ÃvXıl9¦	KúÈQöjõqiq^¼_|áxÜSz£x;¸Çã¶—¿<ıÃã‚Ú¸¡Ş­U«P¹¢„úçEæîGô³ s‡‡Œ]­/dZÅ1^ÓUL2ü’“táàÁ/G¹ı6¥c˜#Bï¤²,#W’æG¤	<¶ÎN®bs­ù¶´ËÙª…d2óóó.îÊfvßì½İÜ{±I–WVf6Äo7¹õæÕîŞ‹W/¶ßÌlTŸ'nnóÕî›—›3üïÄÍì¿yùîêß®şU~¼~cdwoóMò×ØW›Û›¸øwâf¾{óÁ¯±‹/¯şçŞ¶‡ü“kSv×ş”‡š°1:é2İĞ¢#Rü’†V0xß)lWİw¯g‘Áßõ1pİİ­·ìû–œy¤»õGöíyâ¥ƒ˜tŸï±¯›ÃQÂ¯pZÙ÷oƒ4òàÆ·ûß±;Ñ	cÀÀİ×?°;ßy!¿v¿{É¾îÅ!|Ù{™÷@Ç¼éW­ĞİWìË÷ã ûgŞèË€ı”7@Ó¡Â+[âÓ´«ÎÕÚqI²ğŒhŞ–É¥¥5Òaftk"¼vŠ\×¼°ı ÈDÉÎ£ ÁŞDæ…ßMzĞJq!q³\‚•/	A¦œf¿0)—m{uÍœ…2ÆAª² ã7gÌ[#&ÂÁ’"|›°Áêäch[ñyÂÆÄ1³!|™°9ñ ³ |›°A	sÍlH_'lRÆ}r(~Ÿ°Q}É¯¾LØ\‰~g6ÊÃGŞ{üÓ„•˜f£ü8aSİÀ::Åç	+Éz¨å']v$Z°äøgÂ&~ÙàÎZ]?8Âºr 8Ém»xğbœŒ‰Nfñ6¶ëšõz'˜w Kæ ;ğBTîZÂœøÕäLÑÖ)¥ÓUÁeæ²-UêÄÉ¶“Û›»2=¡½Æ´”Ø-Vïk)®«ø™ª¯‡\^.À¶y0È§3K­¼3¾Ï¬²‹EÀ”¦9ôöU…4¼ã«–ŠdvCYÃúduQ4ËT)fD4G×˜Ñëy’‡E:¦YÌ¬‡iÜ•¿NËÕ£Şnãp¶½ÃHa4#/Ié‹(«Ç;^Ç=ä:'añÎŸ+²“N:,^ó(¥Ì´|AÑFíğÛå`ÑU6œIA–Iöâ/Óy±Í/Ü¹3é |B÷9tcıê|æ¤8S‚.±Í©úĞM5+¶¤Òz†ÒÎn`jÅşâÂÙù??H1ØÃ/\_ÓAU+(£y‰;¨Ê%nm½=cU9§µ< ãvŒ°PWez°ĞèÔ`UŒ¥¦Ô	ZæÓ8éâÀÑqÆì
-ÀÓÁOñ™‹¡[›er\EÜ`r”xçŒšÖrH¹4¹>h·àòÔ]ˆÛÉÁºîPŞJãĞTwDĞø3ÍlHeÁ\3£kcmÅ‡,6ÿ	Is3ŸTíµ¤Ù³L3:Ör~±œµ8·hE9_¯˜H&È’`@e²º?-_µèÆ>>cï.0±ítLîİÖ1¯æ’çG!º[4vÈ…ÕÒŞñò@°+,c½à^ÅîIe­ØUY!f¶­Í:ÈBèx›?áY8c¦°¸lì»Îİò5ä/8ú_5¢™òT¯dÉ­t£3d´wÚ¬AGB‡°eBwèPÃ«VƒMµëÁG	!{lVRàæ“·ş6ñÒã~°pË¢^“ìê#óôî€ğ..~B.Ü1å¢E/ó0V¾"\MÕÅ…"µUÿÇJÌ%xvv–İây÷uşÒRª^G¢È`Æ¾(wRµ20Ã|.¶i*“,*§
-Ôğç1İÏŸç3Lç’–I§2u²mR¾,S—ËQ\ª´zfÃX¦hÕ$¨zˆÙŠTÆKËY+ÒºÚ’j/¶¼h@C/Qlˆ6ûƒm¹R–³Uµ\õY¿ïæ­Kh¦^aúOú«ıÆJ|@×ù§Š[í;¤rFhZv[Åõ}ï¤¨aŞg©ÇÉss°â`RÛc®±½äéOœ÷@ÔÖ0a®xOe[zµÊ%ÏRVîÅñğEt‚NÌÉù´“g¿¸øákJŸ=ô¥J™˜"¸Êœ=åäØÍÁª4ØÒép/·¾›0åL³¶fÎ(ÏÉ°_y#ËE6†înœd^İSN•`»@j¤Ù„¾}êSL‹|›ñ»9Ç?J‡³1Vç¬ÔšdKŠR³7”œŒC”áª*¤Ù÷BO«?©Ï£–µºoH;{±÷æÍ«}^w	vÌÀÀxLh@Çe*€$/_€ÂúÖr¨ªŠÏËú²#,³7«Õ(È7©Ğ)/¢„x}4%±*ùü·N^ãL ÓòÎšRüå·:º*fÚú•5±ÿÆÌ5gÙgùçA¿&¤Låœ:C=/o°ò¸^Ú ªJÂ2(SçëS4ªOM›lšùŠUI4­ú›e"å“Ù&àd5|QÔfO±h8]5ğ’òq…W,®Zï^jhEc®£1(:K¼xd«Å•S,©A¶má†NÔ]»Å›¹†Ç„Ê˜&Y=t–ÜõƒÑ­ÙÉ“Zß·fÉòJB\ˆy Ø×Î<íoZŸj­ÎB[£¶!­¬¬,.oÁÑËSÌê“Â°ŸZ"m'r¶å~3Â¥Sø6¯²s6¦TZ³İíç˜cÔ0p°CüŒK5GÔ‡@í¶mQ½¥<ŸY$.ğêÔ%âBª„âï(’êm@ë,TözoíV{y÷-®7(«äÍãÍûzQ`F/ğNZ*J!ÆÊ ­”~Õ»ÇÂ™­¦+ê?Cñ£ ec®–Q<¶FèYñ¼A8àƒÀmM~Ëüãõğã¤»MSàcı«¿‚h6ëÔ>î5ãÉ4}íâÓdlxÀş6_k¶ïÇŞÀS¬Iì{XhõPd=Vµİ|£ÒÔ\º›:ùgeÉ'a›•eŸ&†U=eÑu{¬Üª®¦KCÒPAqù°sÕ1ıHxª8Sy?eıÁ ¦›šÉoé(òˆÃ¢Ààša±Êš´—˜Ç‰eÓU7­ÍI_H¢İN˜DÕ2ÅµÀ/­>Z]^Ùù'ˆ/Ô/pxÆ^£÷Š5TÙê»lI)ovêpL%¯—·
-#OÎ5áŒ_øÎr• ‹ğ7]kíLŠÚ<
-d<ä~#.ù.£^^RÙ˜3Y´}•=E?øn	½ªN0é¢Sîiú²²™×›ËYÒ#5o£uÒz×sô˜şD*‹?hMÆN'¯æ™.?©Ê¬.†â’±(7¯J„n<ªv›ÌSÜê1ÍiÂÍU¢)+
-¨÷ûì¼ûÊË”ÏºÀûeÒO DK&‡%	¹,õÉ1ş#Š˜œU®]}%ø-ÌWW;+*ôÚYâXiy˜[ZÏqrÄĞ~Oö–¢'Nº1›ßŸ-ª*G#òÎµÁ±pĞEA ¢Yt„UùÕÓŞrŸ;2CñXÊ'<1Äx­
-á-ùîQm:D|-è]²õº§[: µCù8”¿ù3ù‡‰Î¤–éªU\›é9A1S}0°O^Ñ”¦ ¥=&ûtèE^j*9iÃ/.ØEòŞòÂÁ8*6„ß?i÷–¼€…ãñ*ˆö3ØƒYC%MBºöÜ<o
-çíˆ^¶4È9ÁÃ òÿ®Àg2¤Ìôâh$Àvl†>ªSJ
-Ï÷°ŞÉÓüË
-ïp#}_²‰6§9Ih6N"±Á²KÇHÀ€aWøé÷äñ¬*<o2MÙyÇPòr¶«Ë®ƒCQl¼ÁR¬§zÅËİ–AÂ ’ÕyƒšcÇ„wX[(–!Ü¦ÁEIú Æ>ˆ¹ñ8Q2&ƒ«_ñôÆ¬Æèğê×,°Ê)}2dH¥û&Íq
-fÃOƒöÑSÙZ[–­~O-i»ûEOßÚ}gÁ	,—«¢Z±õˆtØ(Õmeè§Ë.˜0€ùN©Öëv}Œ‡±9ë’ tcA±8éîïl½}³·ÿ~Ñd^4dCªyZ,7ª_¹{ZÔ•”ÅŒ&q¶*,º8Zä”MëhabW¶ø@'$>3àäº`Ü0Â˜1·×ç–|wV
-Mú
-,…¤´lÓtà%]¨Œ"ÖvX,cÑíİƒ·Ò t×î>Ğ/Ş¸!¬´1kØBnûÒÁŒÏÿÎ™¸æ_¼ì®™€‰älc0MäeW¿&c?Kƒ)ì†nÕºZœÂXìÎ+8U}
-°"I¬É¥eä‡ÔÖhoQ{V|Ç6fÚ=©Xœ°ƒÍZq°—K¹‡h‘Õ6Å³PÁ!´Û)³kbIW³¶Qs4`ÆôıdBKŒáİPİğ+WàE“aùyá4`©çfIıÖğ·km»ñ2V:7ççİ=: #8âébÍ;³ê0Ìg…a^™Ï+,ıĞS>kvÃ;ÉÃŠ¿h¨"krk0jìX6˜´ÖĞ˜> ïÀöñr¢%¨»%ÿ˜~¸Öi´Ê±;dî¼]è.8OÇÄ"ÆŞôı„¦iËô5Ôœ7Òò­Y2l8ø3 ïÖëİúáv‘Õ÷ÂÿàÿÅŞ„Ydî"ôâ\t±…ÛƒÛ;Çxìz#hğm0öÌI÷Íˆ9Ê„¤Gşiwç»…İ×ß91!NÙgÌäH5½<ª¡Öd¯ì>¦¾´K'ßK«@¦J´À>—²k’:zÜ;b	ƒ7
-AŒ)2~<4ÅÆ²åè)#d'Ï÷¥Š¾)Ô†íİ Ò–Ër¿zG…İM@BJ¼1ÌeİÒË²€O‡ÔÑ®	Ç\ŠŒµÊŒx„tÆş°7@òñt&À‰.üŞáagß§‘Ã;ÎëRçˆÜ2óà÷ôÙüûÅ.÷Ğ
-o¸–(ä}& 
-pŸÌ·ò^ßc7\Ë-ò×çã|h¨]åG 	/e˜ìæm[33â¥$Í„9è²ÕÀñÏfºíeŞ»½—|ù\Ş·kECzpbqÇÙ%çş­dSlkÌLÛcŒ0 wVú²ñÏ‹
-ÔÏŸC§,ãƒ@'Vî¦9Š01œBF19yÔÃ©å³$È·`Øö`£¨úŞ‡#/wRÆ01W9Uh´®Ø{Ã”#W;UÙá6MOë3¼t !†İ„ô´i(§ÏşÄ?ÒAe^`=8V,`ÙJ Ü9†±,*¬®şO˜Á	qî$H¯şßyMÛÎÙé¯,,® ?ÙøÅéÖ
-©­7üİ¶¦AÖËmb·¡m3üÈÜ¤&3ğ¸[„Ä„£Z\·ŒÓØS@{LF—è0Ö–•7æåÀ³”üYì Ñt.x k/ÙnMÑlÊõŠÌ×#@5YÜ\ğ’\ı
-ç‘-Â‰ÄÃ˜H:ŞySeÏu¯}Á^.g·N|*úğ‰¾pŸs“¨ÏM¢N±_õJv^2¼úu`Í+îäE^ † Š±²şG‡ ³ÜñgVdëÑ*ĞŒ¿ReZä_7Š7ğ¥ëÒZé/&B‚Z–O_]Bœ|?Gà_ÀzÉGˆ–¯bäÙk†—¦ï¾úäL;âtfãŸX€«M}â¡ÛoD[`hD²æ UìÖAô˜KdWLƒVf²jhH7ğoÌ½ôñ:&Q\„£¡¦Q½“aéúË€ˆÄcâ1:‚Ï:FÔÜ’F¶…`Qcm[ñ.<–Ú ^ÉÓÉóê|à•‰6ª«Ê²!½ÕÒWdò“Árirz7ğ‹/ı	–q÷``M…3£–HŠÑ†ˆ°(’>:$’Ğã|¶d<®ålEÚ_hµú6Uì6Í¼Ä…5à|fƒÅ)?cA+ÌÿfH„|œé˜eàˆ-œ^³EØE®‚ÙÂ§Ÿiâ§É/E~ŠòÁ"Ş…ÅÕØ†ãdƒœ‚ÕÃMÖFÖÂ“_Ô#zú-;$ ï˜¥ŒŸ½oùâ{Àªu~JÄPTıs¤lïğ¿[¶d}Ëª•HÃcrÿ‹j£B•dT¤gbéî–löV›ÆIºÌ/7]İô‹˜¸Š„ª8{O<±mKNæ',!×®®º¥üsu•ã¶TÛÁøOŒäó£ê$œö–Ö#Ã™fÖnHÜ–ÀU•…ÍàeÓ[ş«LõïşáÙj/]L:¿‘í^µ79W›gğì~Æ–=°4œÉµ¼ê<W®ol–KA­à0Ô	¿Åe5¡üÑ½’‰ËŠ_ÇéFÒ—jáfWx{‘F›}Kv}úF“¥yà¤a´Ç o»¤¼R¼0Ôµ¬cåø¼¸O½dp,¾ë¤q8tÒÃS”Ä£ŞÒBŸpÄZœ³òÌ´2•::‰`H÷s¤pÖ'ë½Y9 €¦?Œ%Ï“`MR_~¢şl”´#F'¨JnGr³0ˆhƒÂ_Û¬„—¬¢ÆİKm¢ùêšÈ;¦RjÕù?Wÿ1©.ıl=I‹t0F©—•Şâdÿ™oÇ§Q«Ùò”×?Ñs®½ÛA¢ÛA}íƒÚjã½œ•Å]½èü(¡˜Tw›zã0suøYX <y$É¬’¡Ók¹ƒfŸD§Á8A&ôm×;—fİşî²öx1w'x~–µ:*RhƒÍm2·áÄ£SÚWWı•{ù”ôÙ®×aÖÉÉÇ®Ä¯.ƒ:ÕÌ'ÒëW—–j,’$8:Æ¿H=xš\LùQ²ª(±JÆÌrëÊ\ßÕç¢[¨)7˜+*K¾ŸL/eüı]Vñ*[Ê$¶qêÄÃ@ıè÷é1õá7š¤‡ËO®nsL¡Á‘ÃÒKtŸ¹æu‹g« õGj`î"¬#/è²Riœdİ®7G’õØdçñòBºQàíäuãœÚ~Ÿvá,-:=ïšÇ²ºlAßò%å½t|§mH¼Z‹ØÅ…¸8§Diô _/µóŒe$]é¿Xê¨ØCÚ°“"^ˆáŸ¯~E+üyËÙ±0Ç”Ù!æ;X™;IâÄ•ğ‹Ãµû®Û Êò•úa\|qÖŠ•™#²`™ÃÍµ(]Ôù#'Fx2ˆ_8_&K ã]íÛ#ÿ ÂüÅƒĞA¶&i¶lµ¿ÜÎ†‹o=^öĞ(éi³i§^!}CÀäVs¾½i'O¦G±däi’‹^¯ç`Qàâó_>lÚùŞÑÈwŠwÈ[T—UÅñ*Û¢˜ [N¦	Àº4¿ŠàºŠò:Bùõø¦]ráÚtœâ,ê}q«öG¬ÍíVtXè°¶~Ÿø>–Õß`BA@AÜgä{F:’Çó…~Ì‡ÑfíT3b¢ÒØ8ÒÃ òò”µ;k,Êù.Ö[˜Ïâ—ŒcÀŸs¥3Êzßîuœj—‹Õrwœoqˆ\ë³şí,m„6o¡³kø­Û„©‹¶‚Òdæø©køú¢†Ñ®[t«ÍÛ‘_×u¾‘UJ“æ±çWËlöüšĞ´ˆ\'‘•DvvÙØÀ£:sƒ.|¯+Ë˜'iÁæ:qg®ó°£ ;;	Û¬PàÄvNÌ¯NÆ([ø[«šÚäB‹;íä6Ë/^8Á:Ïš‚WI¯åÔ-0¤¬¤`'H39Î>ˆ¶bñÊ<—‘{İ_xİ¹$]6«à,‘O=–âmœ	Ù‡OÈô8DĞ‡2Åeİswfäâ#A6¸7ë‡Y²9İnt\ûª-¸Œ…ë[Ö
-lY^êóRvõ,Øİ¦áX#¬ İëk­¬t©¯‹§Œ­œ¸ŞQVğı²Jò}J™ş_µO~z!+^j©]ud¦m[4¯æÅ§Ær*ê	Ê++k6ŠA®åŠt;¿Ñ€ÔdõÙøÅ³Š¢n¹§ÅÍG(«i^×Wo3öWú1T!»xç1ôäÜ‘¦n›Ø‡˜^¿õ¨MGºnbOAäG±ÜU~ÏØW¹‹¡yO•2Ru¦&-Û—Ïi+ƒdh,İ§^.#  ­Z.C×ºyâÔY ñ†ßéÖî_Îæ„ô“ã À"‰úë²Ø¸›	¢äÊS[Nm$BÛyÁÖ-«êö¶($Š6Zñ^ûJ¢ÛÀ®dôFŠˆ¾¸øák*#:ôeD¯Y)tE U,›:‰¿œ
-¡¿ÂjÕîœÂqWRühtê-µ•µYŒj~¤à ö¡ºµÊ‚T)ˆ.=[ƒ¹¦ÈÛ“âÁÕ_È(öóÈÖÁx„Ÿz¡‡!SÇ œ_ı-ÉKFMÄé|m&5}¹ü«³sÛ´âÙ¯å Q7é¼«Lô7êU8E.ôJ¦F¨şK/ºúwW†õ)ßÃækEp<¢Ø®÷R„ÂKoØ½tîguÙTo™aÖ{Ü{¬.x. TYa>˜†Í½©¡Éßh$-%r\^—¯†À;uëdG(˜óÂ0GdØi¹d"h“,bû•«;DOi³>‚z§P|›f^ŞWÿV“í÷OVON?ğh-Ç˜ğ‰Sq$½2_Áz9ê¢àWÛW!“™\MXÕæn®XÃ5K!T¸{¢ÉŸÑ€¢Jœ¹~L±ö”^¤á¡ª@Ü‹ˆDÆí«êŒãµFôquŸÏ;ÚM®şvã”x±P¢\ı°Ö›ğç?^ÓMSÌoï‘ÿú—ÿM¶PVóB$a›hğR…±É±»Ê\#ÂRc€X9K[‰ú%ÚèG°)gî–	Ü%ÀEùW‰0KC€ÍyY³@ÂW@©Ù›<¬SïQå¤ cÎÁ`¦·åp"²s6Š“l+T(aâ·İíç]±	MØ¡HyÍÉApâQï‡ k;çäf9÷%Z'l•ÊÌ¦•ÄÜÓ‚%;J<?€íïeq/!‡I<t<''Ò¸®d®n=–i¯ª2œE]ÔaCs§“ƒTšJ–lÎ€Õò]bHe8J‚!ˆH{ŒBãiğB–ô½cDXvÔ7UÃŠ€’¸5f@‰æ­äê¯X!O…‘”Êıİ„§£;”»­J·˜ÿl›èæSe/©Ì1éu¬u9’¿Û‡›5òşƒ’ñ®åDì×«Î.	ùQMï»éæË81.©_Oùcl
-i·‰Ù Q•gF8X<_—K"wH¿Ã¤¹à!‹3/,+ov€¢±¥o".ş¦ñY4òŒW-\¹ÙM´ı‰íb*ñ¡Ùy}­OŞÑ0ˆ¾wíK¬ÚìÉ\Y4‰eæ`R:êc>Õ`>ñÜÃß\À‚3‹f­ëÀÿ‡¦sN•ÈãEÊüÂ˜Súƒ¢U´?÷åæ´ƒbMUnfÖjhBƒAz#/ñ¿=Bà(ÍU™lş½¿¸¨(²Š/kô’)c0NGÂ£Úç·0#©ÔİRA„ø×'‹B –¦.ƒ¾•¬…¿–«RËoz·6£âšGùßÏÎYZb«iE±ÂEeŞróÕœ‹´	EÆ=1µzˆ´?ì¼Şz±ıF÷œ¸ğE›‚.óq¹ì(o*©VfBıcÂg¦×înÓíWñ¬òÍæzŒDÍ²~J–=ıé\Xuüæ²è»{Wÿëó×~gÏeéó†s¢_ÜğÂ;®4E2MâÇêunÂ¹!ÏĞº6‹ù¹|bq1«^~Ò¤©­[˜ÕúBl/õ«ª„•ß\ğ]W× Ó8m¸Ie¬š/Ë„¹·N{\9cğ¨¬µ{ñéã_ñhêÓ	Ã_–VXœ‰[†‚Ÿ.ô§Şbµ2]ŒÔKÜPÇFy)o‰=+!i©áµc•Û€µ AŒ.Ò"”ñmQb]FÏÈú–ÒÈ÷
-–¼¿ÈXò5bKùbÎÖZOí&ŸÿÓÄ5ami~Õ‡ßŒ¬PÀC®:`iV%=°Ğãh _f6.\â-tòOĞ¤Ù~-j€óé•;ğ7š´úÂ_è×ìJmvB·¹ZësÕ¦tp[`Æ&$¬Û#cşÛ˜Ö%ÿ¸2‚£õ«ÀõÖb<&t¸F*w½«*8î=0{î‘î…è!8k÷îÇµÍ‰JXb’¹æäHœ*jéç¨ÃL6
-Æ˜	I0V±Ò}……
-‡1Ü„ ×˜’ŸÎ«ˆÊà¨¥28ªÒ—riîYZ[gm¼çqÑõã¤ùR
-ç?ÄpÔú9]L>ê•$ÉMÓÂÕƒù"§ÃqjÉ$îÖÌ<Î±§×V°èİ½¹„ÉÍ¹/òÜ“FY<_Á÷‹â°¾›/(êR‹ITœ/ŸÃš8:ıT²é²:Ê+Ú:ÊmlúäUeS®™¬aá7§­+{¬;¨C¯+¶«sÒ€bcÍê·	-ùq÷i–nMÙ¶NÓMéÑ×å¦•÷~¹Ï8%Ù¶Y«BäHĞÜòùdñäøÃ²tVæÍ*¦T°o2CüÑ8A§£ÿ tëÇd?H¡¯)Oi?ÍÑı"òÆßÑm•LÅ„’Cš$ì&à)Ï’ËRô£?Pêl£kçd"†.CÑfO‰kk¸ÅÔiüæã¦Ú[±ÒF•·Ñ=Bºw±ğ{òÚ;	XÁòÖ;HÉï.íP™×ÄcAÆâÔ/Jò¯@5öOsø‚bËòí‚a£Ñò(VE¿ª\Ş ÉîLö’ VÁlÆ³RãK£ô„O«FŸ#­“m§ÄD\òÇ\€(é—ÖN/@ÓCˆ=Qùm7)ìXÇà=Ì¹Ï83ı±ˆ3T<r«ucJnâ¡WGÆêMè-c`ê`”Åq˜ª£¨ï$)`‰\ÃŸLN“”{ Àú»”&©-ªçQ`ğ¡½tüV3cã £ :üòĞô—„`¼.˜h?>H¨ÿÈwİíÀë®l˜±©@¼P#zÓõ¥TZÕŸÎÿ³-Zmd9{¨Ôê²o:ß6ä!Wôc!5µ ¡yÔ±”®îøÕv+¨O}8¬¬ö¤Ïw'ó›˜t+¤œñDŠ•£XµLïŠf]”ŒoH=Ÿy„ÓĞCÑI>7‚K›vÆ[ïÏKIœ2¦˜Ä‡Œ>H±ºÉ:üGG»1 £õS$´üæRßâ	,Jtõ·dÀ”w÷_í«Ÿúa9ŠößU +.<QQsş}ì„ `­?ÇL<L]
-ÇÙÿ  ÿÿì}KsÇ–Ş_IBòEc4Ğxğ“ › (áš$  ÒŒÁ İE ¤ê®¾Uİx†c"¼°7;Â;/£ñbâN„Vwã˜-şÉış>'U™Y™YYı !‰=s©FuUV>N<Ïï$ ‚ApÑöG†	ş "ÑÑÙÏÈÁÎËEV‘Õdãõ:Ñ©‘P,‚ÑXæ(9"î+¬ü¸Ã_J¾aedyıÄ’¼Ë4ï)Éê^ƒ¦AW":¤¿²m¦JO•®úéXR¹Â@§®}ã	)d¯ã¦€­[3iÜR7.Qy’L:T[’²:ñE\_ŒbD-ª²³¤w^ú>ÊFˆæÇse€v·ƒÓğîŸƒøÿÊrJ°ìó*—„e>ŸäÓ™û¤Cn™*è•aœ Í“öºë%.üCá?F†ry—ŸÏİº÷¨D°Q¿¦ÖuÄítœÈ!šÿÚ¯^‘5Ê534&~“ô’³°&£Œ†aĞ?CÖ`Ş`¦¡ToªJ)Ø½V“v‰´ã^r¤ÑZ²şâµ-‰~â ]pôÌ†¸“-°¶–óH1×â7Ù@ƒâQ[®ØêTš½	iDtØ•>¬LKÏ–¾e¥eKÓ7§xJ©1K2™jÉºáfÑo¯ß_½“ü4šEÿêUÖy€¥í±¹Væcåês[íW¯÷ÿ®}¸÷²½³?…²ºÎİ²Êw‹,AÆ6£Åéí²SŞ+"aÆûd@Gáàjö¤L|ò”İk
-Y?ê;Øµ·ıêî¿½ÙÛn“]r´ÿâ°ıjÖt¸ÆéP—SIãvqRR<i5[o‘© —¤˜)i$IşS™*§L“èÂKp 5)RyN¦ÇbêjS#ó’À˜7>&]ò™ö'Ííı7Gwÿóp{o_(13ª9î¦X¤×è‚*¶¯¢~XCÄá46Tå²U®°º„.ÌÄ  »½(ÃªÖ4†‚œ‚<yIuÃ:r–\jIÈ+náı|£ŒÿZ,¤š±õÄ±Î-q¸»½÷byÎî›ãÃİ¯)ûyİ>Ş=Ük¿r,äùF­ø 
-Q}£"6ˆÕ†ÙJ€†±In2" XhËÂ"™ïv—_¿^¾†ùæ›Í^ÏÍ9^…é*€*‹6ü5(èØÿõÂŞá©Ÿá“ø:53`ˆ(ÛÈFÅ»*_ØHµ¬uoúv#–ÔåÆX“4l¯WınqõÛ½}ªJDª†5K ¶ÅêÚÏø«j8ˆ[çô_]Ç‰E›mÔ§åY(xCµºìûÔRëËïš«ÿîK¤eŒº¹~F§°ÜÃQ„h¼Q"Ú~B:š3DÔˆ°œ8^QL…eË…‘ì.eï>ÓJ¢lr¬O•±Ü™Ár2ÃH2šäëlÁfÖ¨XKPC#Ù5¤ÀÉÍfera·VĞ¾ìÒZ£qÄl°ed7é±Jˆâ*xAÛ¯x.¢uF)zKƒ„%$Òœ&ÿÀä›÷zLJ™bÎ*ûÒ…‰	ÍŞ%ÏÜåfBÔ—ek^bÔk¬œ+„«Z\Zç1ç2—]+ÒŠ–Šø‰Ü2»Q~>*èñ^ƒÿNG·l=¬§NÒ÷í–†^Rä ‰º'ğ§zHŒc	Î;ôİ N‚®ºÛˆ¤F¹¡j€çRµÆP[Á¯³IØYåÑ4,½)_Œ‡zHËnd¤Ï·–‚³B¿¢PZªk-zL¢ÇÛ1czPÚc”G¡Më¹‡ı‹H%`c±xÕ|°—›0†­Q+şÁ›¯É¾&Éˆ}ÿ5Æ…ÿ|Õ$«¯_,x¼Ócîf¦Õ”ÅB>Dq8G‚N' Û‰Ğ»ºü7
-³áf	YŠ	šhÀ(ÈA8N˜x×)[(»ãĞ”	nø¬KÌ@—È-n“«eBøµ¨JÏï‰B¡Ú!g¦Nl+fËÏÊÄgeÂK™Ğ­äó*«æÚDaÎ—Šâª—N!q¨újEMkşì”ŠñÜ³T(ø¼>R–ê“ªòdüN”Šœ¸•5ù¬Zø©e‰ã³zaúy:ê…"*ÌV¹ngÄ]†U^&GßÁ¿<’4àÇ¨OB„sâ]%ˆ0ğSV<DŒÈgÍcš‡\;bLÕ£&yÜKud÷*:º&?FÈûM55·À{ã€§åEÎÒi!†H¶™©"zÔÛgeä³2â¥ŒÃ-ç5¾¦WcUté²—RRÜ?V2N|èìTwÀ)ã±˜zğ‘õ©Œ¼pŸRC)æâw¢Hµ‹K¥?+(•
-JŠ]Eíø(Ÿ•”1•“ÍVMYçjÊ·£ ‹µ®`ÂÃşHÊ®ºFBÕ>«#3PGDŠâ¸ºˆî»ÚÑÃşbKX+ Q¶ÔkÛ.Â³"[+Of©nÌVÇø¬X|V,j)š6A¹W%D&·¬Gˆk^J¿yLâ¨º®ó@dY]ÈS¸Å*|JEALÄïDMà„,-ÄgÁKAø“Ø0]DÌà)ü3R^Òlˆ„´6[¤¡k
-Kä÷§*Ì^?Øh’ƒ` ãqÔ;Mƒ®„kÑ °=Ò^Ÿº'/}V¦­$Håšë«	U¤ĞÉKx]‚4q/u†í C÷D€x"4‚Š)?ÜıLI†?@K:Ê¡%Œ+bÃ»ûWš¯A¹`B>Ğ‘v)ìÂÌÔ‰X-r?Cµ"Ño\¹ÈÉ÷³–15-C§ÒBÛàì†ëü/Mã(®zéùíãhå~2íCë
-×B4Û^7(!0yZ–µXè^·ú$¢ÆÂ—â‘²ºŸHk‰ò#HÂß‰“ï
-ee>+1n%¦ íĞï0Ñf¦É¨¹ Ã}¿"ÅÅÑ¶¬Ó8n+©;{šãîBIj„8ú´q
-xı%ÏH^ÈÿÎ7OVŞÚAìñƒ…¦ğŞ^u´£ØŞ`?ºÚ¸µ<ÂÏD:÷ÆËe8Ó2Ğ$C†e%ç\˜º%õ°6Œ¤>¥­&SïşQLl6è<0vuÕÊÏ<”;,¨3§ Ê“Ù	Xê…@˜5«Aöõ³—4–07J‘Õ˜ÛIšF? ^„û!Ê†¬šqFFıè(=¨ê|Èëx„é0I: ,,İOzˆä}@L¬¡Ì®@ñÑˆÖ…î xĞGú W±š(&ÕÉÆèa;C§\{Ãé^YïâuÌåˆ—<É\ƒ½êWÌqµ¤¬5ÉŒ™ƒñ©fÉ–ŠûZÁUU§ ­<JpQ1˜ı=À¬åYßa2„3t»s©ÖÑ}MI-•jÍ„6°U—jwoˆ‹›Ì‚@ä¤)ÓˆG7%2‘z[ŸR ›¨âé„ªßÉÒ¯V¶aœ%é5}à5:¿#xpŞVØÜôÔ›ğRü]ı ¬XÒ£y?CK¥SaLyíèZÒD§LÖ¼å)RuÑ×úD}œ©-Ô_>Á¨ÔP›ª§-!Rà÷ZR¡°äøxÌB¡‡á=7¸’a’Â¾§=cU³ fAS_5Uø²‡^èÜõ‹õ ¯ÂâÊ°M}5||‚ÈİÿIj"³a$ıÄ¬á>á(¢Ü¤W€œÛj5W›+€Å÷`¢±tn.vt„=Â‹ú3u6‚œÛºaµİy=º)MÍ`è‚ñ®°^xàïçv
-À?·"n’"6;Ù	³°‘ÄM6wáÑU—+-fé=AöæYŸaöèÉ¿;ëQÜ]Äú’i)ÆÎ{j—JS•‚iÖJ{üÛª•'¨³VÚì y–:;ù¢µİzÒzôvnË¤—˜ŠœÕ,(¦)’u+Š|ñrşoı­«¢ØÇ«æ_•Ä]‘Ä§	,ìºV™V|*k`|<áá¦Qz÷3ÉNGJj !ŠE)]Á,$¼¨¤$‚œ£-æ/iÔ1„¬Ú«Õ¦Í0f‹3ÒrpÒn?n¯>Ù}ë¨ê€g ò½‚‚ğñìÜO#´·7By~î~é&V“æÓ,ŒÃÑælĞxAÏ5¢9§‚~Ò×”‚Î(ÛÄ"À°;¤?ò¼ÜZ)I8=“È~ •<»É’QÚÉ7¦I‘)¬Ó¡ØÏÊ3ÜM›4ljã–h¡=Ö98qÎ".§<4ì¥i8LšÍæÓev»©¥›Q½$9oiö‚A#Ã®š\âÍ?†×ÏnŞ³ñ/}y“İ¾¿Í'åvşçzé‚a˜ úĞu÷§p+‡(Ï•:ˆB3­„ˆYÛh§ir¹“\öiˆ’ •o—”Ú­–Ö7æ”jó~2Ç=ßÕ äÚ—Æ¤´mFg¿Íöb½}¬<3«ı1¶3ëø=ØÎ À¬“¼@¨ÉÄï°ÆM$B«°Âz9ò]´ñhcm}÷mÉîD‰M’¾vínìâcNËLÛA¿‚Hi˜a›]Çgn˜ûRÓlt£,8Ãî³›(Ã»awaíöêÉG/©{/i7¡‰¨zƒÉNÚäÚ›ßDÅg1FŒâZÊ¬<æ«Ÿ±kÉeØ¥1PªëÄÏyßª—R§mÑMO=Ü+Ù‹bYÙ óähr&0ËĞÉœÈ¢uy„5dÆŞ¹íó°óãv”vâPí-(ö@ÏbúÈ˜uºbâVæ½d8Ç4 ”, ÔãóYûÿMjÿº·iZ æ%ü½kÿRŠ5Òx6 ÙmZÛÀC(…3Š¾)d¢I…5 Ï°(}B£Fx 	%c€¨‹ÙK.hUL“®H†¿J{’´l) *ÅP^Jp¤Ø«:VñÌ¬”Š<BÇO­İajE¾Õ4 ×õŸ”4úçûÏg³ÁoÈl 6÷oŞ`Poo+ÏÌjoãÒ/BKÕĞ|“Îz—sûÁ}Ûå³²&¸Å±ß¡%NH}+‚ 8IÃ–/i7¶k×9¬2$ÔÇ4$L:Ìš†I†ılKøÍÚávŸ
-÷Ø¨à•Â`NE¯Êk­¨É`VÙ,˜†–ü[¬Œ-´Æ`5qMœ&Ë	}]w7¦‹Ïm‰Œ‡€täÁFõ5¿AøNi&Gh/rÉßÚÅzvSøìL>z†ZûI%™ÜşS&ùéi.Mxj.²4-h‘,“=J-Aq)çóÊ¦.›#¥J—t==Ò®ÒtLæš9äåÛ±‰	»L´!ªÊc·†¼ËmY¢ÊÙK‘¯~	°ğFfùf¨ag£f_HYíaÚ_Ñ&À‰?šb¶¬!ÿ®(|C;æ˜æß9_SUDAİİ"Ek5ÑE ±¢åï^ü²ğ<ŸçÂ^qBÌ›çXö(í[3³U]Z_êárØ4UK+0~ú;iÜã¹µÁŸ¸æd9Ó8n§¢ÿ~"¾ù&¹Šuú=1JiWûY¬<aÚö Yâá‚MÕğÍİÁëgÂm`SÁ7iOá_[ôßº¶ŸÒØŞ½{³û·ïŞÍm}”Æ¤¶”¨„ç_½Íd]e–ñÂ;cKz‘4!Iù)Eÿ.m`V¸¤ëıÕ"ãš±£%İÀ{K££  [›81Z öÄœ5€†ç°ÃôÙÜîÕ&ÙïÂ ’øî/gQ'Y$¯ØïÁ{Ã"›$WÎ`3§šö¦!ù­r[â§‚{Ğ7+ã?Mƒñ;˜YèÖ£aò4üjÔM¦	ö)§†™2R¦l‚­£)Ùl±L®´Æ®Ö3ÇŠd°û`–¥$¬ÌT•}ö»A7À¬¾mIüz`Ô	Ê¿T‚£¬bÅ°XeW]fÙ¦V†f|¦eh>¤šÔz;¥I¨i²-˜s‹m©¯³4İ²,Ô£ ¾ødv[©’Õè×b´]ş²év€teä0Ä:rÇ#¡’x˜9· Ûd_ş4{d|‹ï†Åâ»áeñ]'Yos2Ãïê-¿áU4¬Ñz¥¡¸à<kğ“•éxec±QA#l	–+aE¡İºŒTÁVò›0À6u€ÕúX§†±N`6Ş%Û4•wÎÒ Á“KÃdé4%Ò¤·ôN¡'(¸ÀÅ7ÒÂòódz³õú eÈ‰ŸÀ‚]d>çÒó0:;Zònójh’y;Ê€ÜıÛÙˆH1-ã·+U6u£í_Q»‡dál2ä8Md;ØyiìñGµ•—9am[y±#ümå2ÈiêÿñèÈ,ö©n›‘W¨kUÌ"‡R6Ğ@Ñim’ïƒ8ê2 <?-1uÃÂ˜¬•‹e2‚1éu—œú$^c(1J¯Mh$›¨AêI¥ìh•¡Ğï¤´ ~M(¥×Ëx!&tWÇÑ*7²Øuj²óêöè±jÔâ£>h~ˆj¹KÑÅ—¶Œ0İçÀ‚¹Â€4¹²aDšt³£§ÛÔ†áŒ~³òt;W÷v½ÚqÆAø–gEE–f¦“ÄIš9 8Å!A`ä{Ôjq¶ƒm—À) è#¯
-!&÷@Ó¿BG‘èå5ôğ#ºµÃî‹A¾"ı0Hwé¦—¸%q2™İú>œ†Ïù
-DÜÒ÷¬ãz• DÂ_„ıà.\Ï4ÖÇ`ŒxFéİ_®"üåá
-hæAF«ˆ­f4´½`î
-~¢`åôP@ƒÑøñ4ÊLÙãlĞf ½x†ãE°€òR±Á•Í€äO'­ Ş€´¨^¤IÿE­©…ÈJ‡àê¦Ày!/‚è*¹ï'!¨ï ¿§2AŸ†BjWCqQ=ÙÕßØÈõiNÄã4ì#›ÁøñßìÁÈ&x¢“QÙ¸÷ëxd£ËÏGögù€d×+NHØòG¸ãÕ“&¿‚³p{?…,Ú*ÑSíO£ ?dÊGpJ9o@zw¿ôáD\D;ÏiDëpÜıùCÔ‰†Û³ìîgÔUiVT
-Ì1c…>îÑ!Xğ_Ã)¸¶‰q±YB%Í„|M-Şó“N˜éŸ’WN«\a¨ga¬[ñ;İ^š„/£8<†·şfAÖ´Æ)(KÛö~ƒ–PåòIX’qşyAª›!Â5¶ã0fÛĞCWDÖ=9w’Îˆ‚$Š„aZ†H7ÄÁ?YÈ Á6I«‰k;L“í±…¥.$«MMeY&‡£Áp”÷èü“øÆı9 —J–Ö—I2ôpÈÀÒ?$4ÑŒğ°ìsQr`™Ëş—cÿ¾ZÚÀİÌ9zÑ?Í(¾*6)û3Ï…§M>4ı¢ÊKó2ìœ—âœvpùBM§ëÁ(…·S:ˆƒ~3œŒŞUq›¸kÿjÎà—™}¬Oü²jÖ¸Uw(Öö¹Êñf…‡ô¡Ãç*G 	ÿ«ÍçêÙºÉç*ûX+
-Y!¡).ÚGpáærõâü­VÇLŸ/©e¿«§ÇvÍCÜ56§*e'wxçıEäaYÔÿ)yiªZÜv\®W~‘Å›×€†kWGr5znµ ›d#×:Ú)`tƒnI‡. ’ú~Ş‰$>/±â–<·…Ì%ü!`§7¤rLŠv^8ÇqF47©ı§QÄ5Ù›/Ø"­57ty¹5ëKlb¹qÑ« Ş,¯Éu”]ÈÚix!ü845XD›V§XNQPPÈkL½ğ©ÄQŒÙb’]"¼
-†JÒXH°‘[ÈL2Eğ¢¡ÙhR0XaÇ )ıÏğgïî_2Ö<â_§&îÃxôí^È”qıÌu¼"‹2]U¼ª£µvuk±A]Dá,	NcU7EÊ£ab02~”­}4AxÀâ!üÂ=µ˜•ÖfË[7ÅUL#Ô¼R»WĞ˜Úe_+9{Ş”k~WGÅçĞŠæC÷\24¼Ë•µ5£MMyÕAß(”ú;c°‹Æ%{[&Mî,Ã”¥û^<ÃoÚœñ.ãÄ\–•³“‡Yÿ(¼Ôxyœ$ñià!Ñ18±¼‰]®+ëu7‹?WI|&ıùW¡S¨Ú*ãà(è#ıá¹ÅÊj˜½¦sÅ×xhµã~xŸ†)š«Z?ç‹'l8y³ù ÓáN¥âa—”m¼¡Í]ÏÛ¨Ú0EÚÆZÎóØ6©J8»’ÑmUI=ò9PĞb?” k–ã\5òL5¸9™ÿ#HQšÌ/’ù—!l{ñÇë ½ûgú­}šF1»ÑõÏù—˜}iŸ% Ğà·£¨ü”5±?ø×7ÀQÄåğ'öı-Í%kôIÔ½ZğL(ƒ[ó2ü¾uÓ›1z´#ÿCh`#÷fC¶û	İ³Û‚8şñv >ùy–>7í4®›¨G7nsİn’ur»ÀöÆ;Øòq,úš<Uã’ìÀM˜Ù—0atÆÈW$r&G+›ë:ßZ×°±®‹5›¼dÜYGÁ‡pxM€İœEıû»·°»î(DÁ¢÷Ï39êØt0¯kİ&?«m2ôıëßóVÓ’†³!¨AAÚ}÷ørnë è"šê&ùê1Lh/èË1v®ÓEk´G©ø]Äº¯Z+ÿF%—úí¬b;«´ƒh‡˜ùİôÛîFÚ8:SÊ†Æ-ŒÁ'äUÒaâö½İÃØC
-kÁ½c³Ø¿bêî]ñÜç}[š{•¤Ûq/¹
-Òè´‚XQÅ_Ì½]cw¼ÒŞİÏ(˜ÛÊ¿’ÆkÉ‚Wgï#ì¢ÚŸ?¼Ùin·<­“+»÷v¿ÙS1§°Ñü°5Ê­Núşïs‡QB>NºÈz²b3'@Èşé°nM"³Ævûx÷ëıÃÿğn{ÿÕşáÑB:7l,ÔDAhÉÁBÆ8Í@nîœÃæ=ÂÜ{»¹öúhËLL@“Ë¡0øÚò'.óçóKŸsuwuC¦úV·3·…&•”|+…ºrß_Zãäé$™ÚE+!ÌwçPãğË:m. ­…ı‰[ër+¬Üâ\cõ
-aŒ´‡£Z§7‚n±Fq+€hNïşŒ0¤Ñ^ú{G'+˜‚áRÉĞüí(:û÷{älÂ?ãäì,.§IÚ‚Tˆ‹•å‡es³WD3\¦ÁÀ#*´f@€¥ilªœ>™§\ö’ú¦Ïé¿ŠkZ*ï4·e÷òêÎn•hµƒi[az÷KÒe¶²M‡gÙİ´)ó;g[…Ë½•*>³#üHLÅì¾h.Ÿ£Q´ÄkÎmaLQÒ}…\è¬7cP$3Èımş˜İ¢¶KşúÿDş“Ï3ÔŒ1½Ø4e–É4Ÿ¶„?yº„´—WrÙáÉÓ ¦Ü÷]˜òLå	H	Wš&‘üm4<ßaÕ-Ü´ûA|ıSØ½eµm~EtQ„+M—2¾OâQ/$¬d|~¤Oƒ:¤€ğOÁlp@ßõ£avœ¼áßÔ¦QjÌ†K/çn1‚Å™_-HqÓ%&?1ZRÔ4HA±¨GâI?b@×Â^7™ûæe’ö‚¡XëErC²á5ÆxÎ3øÓÎ5\_áê‹ÃWóèÏøÀs’w»/£~ĞÇPšmFÍn2ò¡-?Ê2V
-ÓÌ}Ì‹L£ä±"ë·
-¦Öi¼.?Aû&,³Fã¶¤µø+šoPÑ”„¨™˜5‰ÅbJÑü˜®'Ò±UÁ(tEú\mÅA¼ô˜R¦&¶˜=¦¢¨mÕBOLFÃ8ê‡¬TŸêx¹´şØxdJõ0 X{
-+Õu–˜/`,*ê æÚire!	ú3b
-¢ØïÇ×²Q›:´
-2á¯òÛ\>¿^Ê5áä ÒÉšj#°êşKÌyøV{¢#‰üC¨]*†ÉÎ†ÿ–¬,ØY™ÑŒSCK=FGÒNÃÀ@ÎŒ<Rşz	ñ@‹¿¯Øß¨[2Õ¥¬“&1V•c˜lL>’A<.wÅˆM¨÷íœÒjL¿+U‚®z6ñØS6h=’Ô’’ÊY+‘ÍQ¨LÚèáÑhÊP†kfÀ2W”³šfÈÂ®Ñhµ†Ím½	ûç£í6«CIÃ”™ı©r:}`KôK|ÕU0Î2ş¼Øe/?û@!ZÏ2É²ôOJg#Ü28§,’º“œ²Hê‹‡CCÉBiHuuy²Pk3„åÓ!İxe'&<êJƒAfáÌÃó0è*YuÃ¨óã5•VÈOK­%akùÉ†–^$Væ¤Õ²[ Ú-Ğ©=ÒFÕÃÔíÃQÎrÄ@F“/š-K5†ç5›É¥&Q¶Q3,NŞ OP G4B`*M–Ğ©õr{×êZ¦9åGáYsí½‘8U ÆhtM9$d*´¹—'yÆñÒ•nS™Ûúöx‡´ÉöşëƒÃöá$#K$ä÷qÚ$¨HSœŠ)4¨é'¦¹­#Šeo~1îs|x–™›&İkùİÀOÇ,]ş¥È<)£5íL¾ ‘søÕ9'bçF°¼øH¿¿ë…A6J±¶Ş{~Ö¯ß¾G€fK½‘¼ÎLÆWÑ2Ë^S«	Ù"+¶ç-—+
-™P®ËÃcñu¬‰,@©ı+Ëë
-0q’ëùC€Pvª}êZØ½ã!ƒ`jBN÷¹-iÄl}kãÖt'ğ„Ô µÖTÜ¤h&QŸj—Ì=|‰Ğ£ZÁàÂwSÙ,µ¼`Ê-úg´‘m\ÊM¢ùàOè,	Tò·´‚Î×­?>7!¢¨£HZ],TÜŞÚÚ­;dÊIG”sy<t84úg¾j(.´‡â
-:&×5¨ğR÷0L‡âÑqcm•Òyèî¶¶7ï%q³2^¡ˆõI(`óŠß"Ğ«*‚ÏW­I¹ı[¬eQş‹™¬Z¯¹F1&¾æ¤K¢Òª×„;ŒºÎQ±¹¸¤:„Gããò¥şˆb/, ÑZ¸]!Œ.+Íüî$åZ¸#¡>²
-§?/Y]œ¨ÿÂyk5©'ãâÍÇ„‚cQkñğ³o€±ö¢>xøëıß6ô˜¼Ë|Å^î@jÇê×mÃğáêR=}FÖÁ|ïãüŞÎlLöC‡ä‚ZJõ=ÖÁ45üÄz’“¼,2Z³Nè†ãveHÔ¾×ÿ4{øÍ–M3Îˆ<d‹ÑT<ïÁP˜Ù„0s†ö‘'‡Ğş°îTŸ6^Cäé(Ó;´Í#Ü¨áWlˆíçyê5Bæˆ<ÿ4BXåiÑhlôXFjšÒ(¿å­u®ñT£é@.Ö¥Ù
-Z#ÎuÃñÎÁ5Õ·k´ ¶¾^"k!<S£¢ÇZ½ÿrßL;ÚIy–ÊfPÉÖŸK
-âºkÎÓQa¦n¬LEf˜x' •‰¤QÇTÄAi­b¯SKÓd"1ë
-JÄÓóœL7ò@íAÕâÀóKKK“áŒİbÃ§ß{èÏió Ú©Oµå®|¬a¦Í)œ^SÎaø©ô÷»‡íıwG»¯ßíïûİ®¥L¨ÖuÈç4Årâó÷¬¹@–œ5«3MçÎîË½í½ãwÛ‡{Ç{Ûûm.§ˆİ->yHÀHCZy>ŒYÎçëıJ¨mBiœw>Ÿô¯òtÒË~³Iñ/É`™ˆPïO1›Ûû/wßï·_}´‰tŠ2æ@¿m#
-mW†È/G¶qüju3±ÂÍp´!ôJ™¼ıÔ‡_ò÷kQ4–À†ê	«àµ
-?ä°ÍV7dmRdH-ÜÌd1ë²OAúcfF–nn‘â²òncæ(-íg¤s÷3Âğ%eA¤w÷g`—<g?Æè•,¸ûSÓJ0”äî_ã!­³Úbµqh É M~¬«!ÁX˜Av("aÓLÁŸZojĞ_ç· ¶Õ2ÊïÚŠÊ¯ä·2bÎ´kî/9@ÕòÇM›I)ÖÃˆ`¯éßéu	øi›Aâ¤aÂ­Ä(X0>?l@
-6PŠ¹ëº¥«N°³e…¶buUJ­]‰ÕT‹Õı0ğåÒÉ“‹Ë·­Æc©à3[•Š³¬­â±˜×£Uê³âíˆ¼RBVéÔ‹UêìVYc5UR«Äèª¡ÆèÉ­íÖ“Ö#Ø*±ÒöÆd)TPdØ	d¾Ç– DDÀP¬Ó£ Hã ‘Í)`Ş5JEıƒ“/=~Ôz¸ı–áåË…J#P£B˜ˆš¤Àì±4³¸“ç¦3ù¤CáYY4’0ßì¸¼ãıa¥ºñ¢Ş¼£æh]ŒE&²“™V¾(ú˜XÂ…X*¥2>XbµEmk“>n{¿)'Ã¼‹y3Å&²§İ×Ä~.‡Ó4£Öx9­k;È[®ÎVÓº£¡U®:YÅÍáşşë#C•âYÁœ›…}hD¶bô=j‰î8J-aI‡vÏ"ëçĞ°¸ŞSQõˆ#Fv¢Zk	®&ÙHBÿUıº4èˆ|é}1tª`ÒÕqêWÏÉ¼¬;óœRß-éÚŠ4°^wŞİæfŞæÉ»v7vi)Uæ·.VŠ7|±¾¾¾²¶ıvŞ¾ïmëàPuí™08E_Î·üÜu^Té©Nòµ#úâÇlè®ªbd”ŒˆYôİg.Y|V›äMsÒe’ô‹»±ÛÅğÚ‹0®%¦ø¥Ô`5
-ÏñO~ÒxUİÔ¸C…"LP“mø¿'oKuÌŠİ«n)10%g#[“3æÌS£$î^m²CÜ`q‘d‹d·¦gwÿ‚iŸ˜~hh§F:”…ÙtÅŒJe_SêTŒøq[‘µ&I¤d”yÜöÊ¦™­I•bÛ¥“´ ‘Æ	]'ÿó­Ã8éçšovâ¤¦¸KLËH+‚˜óñc?^ĞRJ(Z×X‡”5ê‹‡;k;­·s[ÿÑ}FNq&Ÿô4ìÎ|ÎwÂ¬7é´Ûóùl?Œ#çg=	†~Í¹“n
-Ò8m,´Ú%ÿ³”e·ø/òZYÃp©šP©6TI•…N=ËÁ#§?QÓ!"°WÖ4¼ÈÎŒ{¢õ;ñx|¾ N§‰$VTªS„DHÃûµ•ô3ic[^òâW6:ØÓy :Mñ6—^	cØËã÷™½¹W‹y'ŞVuÂñ«3¥Â¦®¥¥çÜW;J¤$uQ†É$âÈÚğE1É•5ØF£>NÌÜV±£+Î!~¦¦ñÌ//±NR~±ˆ½Ö\îæÇzR TU×&úa°pŒ=.;ÆòçYH¶µ´—¯%ÆÌpÕ6‘¿	sĞ$ö+í¬Æ(¢óåEIõaí)á¹3ß·
-*Y=½û™œ± “­¤DXä^ †Ş¨7À2Y˜7›WHMÒhO³ašôÏ¶®ŠôÊ.Û2º 2¼ûe8Šá]!œ} ŸğÍ¢Ñ9]Ã›óh³b¡¹!:zäî3s%îÈë¸mKÖîŒ?Ì5]ñ³OÒB¦="q2QSÅbál`Œ"İ¡î#{Û–Š±õåš	ĞzX`U÷”’@®;ñ{>–™Ÿ›É©>N5s»®¹Bìj¹«Bè‚¯Â8„í (5.Ucu	¶ş³j>¸åÂdÊ„c9wy—,u.ó²àUkj,vaZèn”aŒˆ]z“‘N|(ådõ­L+g’Å¥ˆâœ2r«¯¹¦ZQ¬37æŠ‘n
-³ê†tÔıdˆ­$— ÇT:©ÙéèçÒÒ
-äÙ\”˜ š*nÊºŞ/õ’)r tkÎ .—Bø/,2 ¶šwÂaÅ”ØšxÃ,?§ìRÍRÃÓğ©'ìçÙ¯8`
-ş®›üşv‡¿æ«´’»ß^×Õ·›BšQvÈğcq-YÏQvÈNx‘Ä#z¶Ó¬<ù·£$ÆxSvòÏßšmr^>û\ œÛú¢²§İfïKÍaò²ªm`U…[²Äi£ŠfºpÏB~‚Oè)(Å,jÔ+°^îSã†îßMBcáT½ş†ErzüÕÓToô?DR/ãiY"%­²¿TD5çNHĞlù“ºªàôv÷ÉÑş+wn¿9Ş5‡ˆ”_ŸYQ8Eáf $$©‰:J”„ô‰ä•jÅU¯äÿÓİüæ¿1Ì+Z8”ìš‹´“,çÉíÇíÕ'».¯_LsÍñ“L[Ê‚¶P‹€ë–º!í0:ì«H@
-?Ø}³³ä7O]õ–Ä–S=Ù‹v_¿;Ú=h¶·ÛûâeƒQ:ˆ¥°{ş÷4^×>8Üÿ&°Wâû§2ª7Ç‡»_—OŸ5ú}/;ÜİşîH“!¡f¯ÙÙı~ÿÕw°Lï¼ˆã‘%ëduª]áëÙ®œèGS}-Ÿò¶cÊ­/ÄûÏÒàº¸Ÿş…KTºÛOPÉÌ]l÷5aîşËİŞGñË¤ŠNNì2}	)~0ÍÈ–^~YñÃô^¦,¸ü²â‡ñ_f¬dğ7\R®yå•^“¡{†A–ôM™BúYçŞ:á2ÛîN+g“œÇùYTy¿N0CÓ?|%Õ”!½ÙK¼’'ÒSÒ)¢ÿı–59ÍÂô‚Áéüê—j¦'ëšûl.¸ñ¸¬oª¿'¹Î	*³!‹·‰hi—ÂK3WcñĞh?úº½¨¿_‹HnŞ£NTRÄŞœ¬®ãÂæÆbƒ 9–èbXpéh-P-'í<iÏo^ñ¼Aà{R>yç®oZÌ™9–¡Î±-u–’tí8L‡ÇiôÏr˜f“Ë./1c6NÚ¡,|}¶†Ô¾SS±_\¶àËåŠ€ÉŞnƒŒwyç‹sé0ìŒ²ÀÈ¢Ú¸}£Œ‚P§F¨ZÙ$öNËo©d]:_™ÿ2ëW'Ğõ6é÷4¹äÉ˜åv"_œ«:å/“Ö6Œ¼Ä1'-idñdŠ ”4Â7¤‘˜ˆwQ—N‚{º7£®¶‚†QÑVö8•AštGá;Ä/İ$QSş{ÑáLf0<ø„øş.ÀÃaÁ0W,ŞÚkŒ1>H›WáÑBÔJÁÖ2${úvÂ8ºÓkşôõÙç‹Ğ6+9½Í>tT›:ÑØïçíîu+ßuí­ Ùº².›°ÛâJzXÂ­kmÉƒ÷õn:İØJ½¤éz'åºFUJ¹’Ñ§ğ9†Šõ¢”ùJ.Pº­á3¿yPClD= 0Fp¤	°¯ğ9§w†%î¬¦,ÕnL›ÆW>o†ø÷‚ÑÂì™ìÅ8:t€2î2+ŸŒg?@íÆï>²Ã¡x»èË‰‹Üq•¬ NÃ {ÍVXò3ìeÎ©Sq9µ=ÆPLÌ7&úkäì~I[U‹üŒy;èdåù¤Òª 0Ä¹2ŒÃ!åE°Ş9Ò6Ë?SO+G°$G/wEkŠ–"à°RÃ.nª©ïé)ŸŸùìºnïWßzß,"Aèôî±áœâw¤NXpuöOVŞ¢A¬	q¶¹EL-uÙ˜><¦a],ãñ.Qº¬âŠöÅíuœÙ°1——p‘w >`¶ixî~Æ¸½ ôuÄúêQT¼.Ú."x¬9·Hæ"Ğ}æ*IÇ:|ÛĞ²pÈŒxr¼ c”‡j}¡ò³#5æß n0/B`€É¼ß³’¤Ş˜w>ãéV®h¡x³úø0…‹B|©’=ì"Ceò™I@(ìPS
-ÇG•p»B<Eş%Ú.Í`àKAkûm*—Ma×–ÈC şa¸İ¹¬&³ AÈkQÉ¨Ú„‰’-ÀG!2Eµšë†jë†Æ˜1ãl,…>KÕó&ô-» ?Ç6A`F*†¨Õ¶DÆş€ÆûÆ£„5ÖŞ³³T´¯¬"ÛK“ğ˜÷İ Õ™%zHh¶ŠšÉwÅ
-k)aæ¼	[TúQ_ÀÊñŠ~òZ™gÉ‘üe™Í|„C	@¶3´ÂsKf!³¥”kÜÖóÉ6–sxÇİs óÇF˜'¤—oƒ”nZstSº%@ÉFä"$#t#†ˆÉY
-øX…ú*R£ÍIÑ¾)ÑæB "GI‚Ö&˜lŒCl­ ­–)ÏµU‹oWÅË™cNªu@«‡Û¨ş™¸>M´)üpvÉS eã˜Šgõsê± ƒlmn«ÍÈ*ÈO],ÓĞ‰°–…±Ö« \çf’–PË¯Ó€­åU¢È*x¡úzêä8ÜÉŒ•E„µÌşƒ&.Ê`*{b*i¾N ¦Ø’ØÃ~—Z«)´N(ş®¥Öo‰„h4­w%ß|ëÈÖ=‹€™õlC™r»ÛE]ÃUÙÁš•§ı  \uCMrA¹—¹q÷YuH v09ñ‘"Ã‹hğEÿbÅJkn¤^D…ÓÇ™6ÉOèŠ¡âC†wh¢œ2Ç/”äıyÄøyÔí‚,ÊÃÉW7(¿qÄ“›@qÓ¨ÊĞ–¤¸MÕ¯¡‹ƒlEFè<&¡!‚Ü0ã‡øSäfWĞ¢Â¾ßn‘gäÆjK šˆ4jZ@@ïİ ´Â(Æl´±œDÔ˜ô¶*³Øò†¿	µøH£ÔÚ`û£ašdól6"4¸8¦Á•Ù{k7§ˆcóG~û§?„¾k³†6Ü¹X,é6À¹í£¼3çîô:ê…"W[¿©¼ÃœoÍ’tØh‹ä”Òf@_ĞŒi”=š·Amœ²·ºÛ¡1ş°ã7\Ó…4!&ËÛø”[MÊrµ%€šÆşmHµóã)ìc)*YMÆ+è`ö¡ğ>å£AKq¾v.àg®N9éŸÂ(îÆ¡f'6kÕ]?Ğ¨ªµìb-$™ã„‹†êÚ"):(¾;”8ö)Òç¸,oºÅw»4¢q!AMrÛpÙ~„‰¡@e+ƒEèå‹¤èÃP #9K5Ú3ñãJáÎïqÊIV"aH¢kª®³y.R[Í%RÒ™„
-PñBŸ2ñ(~X;&¦x“úqì¦õ†…|m™y›
-¾‡’g¦²¤á¨)ÿ6©õô 4¦à,T‰ZA‚{Ô3ä¦MjìbE<`æ²å²7`Às(•m&Ë™Æ:Í¢ímk˜j(!´&CûóÈ¥É_§a|sF¨­~^	^$îÍm!£­S)Ú»iµHJjùvØmrR‰ºÌ0J/å¤`®¢½ËµÜé’eJC=
-bQèa!n=]µeµú:¥ÒÉ|"¸F0½ŞMc&“:É…ğw÷îãOèİ´õG÷fR½ŠÜL5H‚¶±6îXvkäªGÚ¤@¥ÏJ:+Ùè2à§`W+LŠk©/L‹¡3Qî;µ)T]ÓX@…×òNë8Ôèê•]ÉAÍ(h†Wƒ(½~‡¾f‚•«ÒÔ~û@¹kAè!-‡N¯¦OM/9Úæ·äYÜjçšgáğ8ê… n,÷œZî±‹e¶_œ´D#xÕkFGÖQ8 µèÈ®#Ã6ÂlÔ[$3ıZúU™î]!lpçAöz£A›E£½<nÓº~¬­½ŸE¯H[®ßeóAm'8Xº™E\‹#€Ãò'û.FI‰*¾ôEQWÑ<Pşœ5ôânù‰P­ZUêrö˜h
-ò]Yk‰Õº¹)1Ë
-´5ñ¹1ƒGñ)$¯|iÖZh^†ä~TO#ä¯ÿëÿßÿıïäÆHõ·õ*C{Ã éßırã*´ùğšî
-G¥ªë®rUŸReãW!ÇH;ey£²R¤¿¸®›‰›Ú"”´;~½¯ñåQ7å»ç×³ĞúŒk¶Â¤¾¼‘´§ÏÈŠ#ËFN‚÷-Ä^´>­úäJ£ä©BpÅ¤ûxšA5÷²AZ²‚îZZd±g
-ƒ–€'¤æ[\}#{ı,/èë;Î
-–àgÿªØÎwÔ)Ÿıö¨©ğ|ÜP…ç®X…êBÛ±hŞ›·ÊŸ®~˜­¾OKê:A‚‹Lã³9§µ¹øpo´™IWïkü”üÓUˆ»âÃ„IèJ¢Aš…{ı¡îÆ®W?èWÜ†®ğáù©*¦Â÷çä†4›Í4Z$¥©Ø¤ı¼%ª]<,>N|_i$6~¹´ºBD÷Õ"·W¯QÎğR¡çR8‚İà¬#,gö–Ìv=›r%¯ê0j%	şˆ9¥Øüa‰Æ²ß”f\z“ï°G×Ë{éùãt:°“÷«oo;ÙH	²È²ë§$Õ~¬Óib9®úpú'Rİ‡s8%¿£Ì¬ùSÏº×ó6Š+Ãƒç9ï[Ga+Yˆ œ¡Ü[^òÚ^Ê5³¼µó	³ô9¯q°4cÇ“É‡ªœÖÓ0èİÀ10EñRÖOµw¼øŒ}
-«ç°züú¼Ó<zÅ„sâzŸ¹ú©[˜#–]4b4ie\¬£«Ü&¡¼Ş‡-1Ùæ¼Ÿ%
-ò—=[XG4Œõìæ—ùùYãÔ5» õ¥#ıùx²“×÷ì­Š§(>c›ÂÄçi2 .lÏÏÑ ¿­¿şò?H¾õî~F„4öa°=t}ö;+>ºL^î¾Ü_xºÌZğí±7GĞí\¸ÿNÇááÕàh˜sP}0Mê…e'A-2føı³ÙŸ|Eæ[«›++ğÿó‹d¾Û]~ızù>ó®@3ı³ÉûØœ÷çn•–èòGĞµOŸRã4?è¾«Í>èVÜ$ğ$cL¤A‹GËoæoÉ_ÿáŸ(eÁ=l±nIƒº™éCBÂ»%£~™ªK™'—ş1Aàš»À^/­ÚGš†>NGŞÖkm”Gkë»~rÆâXyNŞ³uÿR¹n£†v›¶U­¿v­a/ZwnKi³İ.¼Ç¿¨ƒü è¦˜ÁÆ8 1YM›m/Ei–
-ÉGµ–$‘šÔTŸ’néò|;
-bQJ9icîUÅòL0­¶ú˜%ÉØRˆFF˜ —h¸Ö¸èÍ²ZÑXs ÙJ:a•Œ„nI’”Èê"iÓÂ•™±ÄQ]kï½Hã3e;«YPE.†kï±ìWj°Èk§éGfĞ_5ñHlëÜI]ØÃ*Ê°°}Ç±lárE>my°«å†jF÷&¼|'—N+AåêØ"Ë™	ªİïrÀ'xYøòé‡79O;Tà™i Ó¨çY4eÕnüw:’·±Ğàv”vb-˜w'HÉ‹ º¢õ“¹ãËÁ×İÕn	kBÚùU’‹«‚™V,ÕyÆ[÷6Å¤JÕzã/¯-àÑo9êÊXÖU‡ÜôÀ–«0µ?îyUà¶LvdÉ©4iÒ	³,êŸ­×<ìÖ•ÃÎp’?S›¬çÈ¿Ò(W–ßÇZCÎ—j-âGfM³ Œ"’ÂÊcÆú™€.Ä	‰ÅW&:!í„d™œ
-w‰.ëóüå¥l Š…w¾´âÿFî·,ü¿t¦*J«W.¬¼‰ÿl;üO‰££zwÑw8Z³ÒgU‘ìzÇÊ~Œ2È¯ÂaF8˜æ5…p‚õœ‚
-U}¯¢ëEEÍ”©bïpaûŠN†DÎkµtÔ´¤l?ÎQ°šzÙü†¶ºB¥ëí¤ÿ!J{°v9,^È¤íÔ)kO@ÈDæAmô¯g% ¨‰€D½0¶rÊ“ÂGO
-ÁÇ¡Œ»‘¯íÁ¿¼h…RQ*¨ä£W”ícªÆ<&œˆUUÁä¨gndvUe§³À;4¤†yi
-«<MkÓtWù8²s}™¯°Àô¸ëlfVòï¦¤kå©‚¹QuQƒÄÌË­Ö(¦Ê‚æŸ¬¬,?4Tu¢äåT×q°tÀy¸>UVe,¢âêCG™UFG”\õ)³*qiilJ€¾–¯ÈP9JaV|LÇı˜¸«¼ëª¡+¹íí…YQÈÛÀÉÆtyÎÂ+ÌÅ<m˜©¶J&¤¡4:;Ç:äˆÇõ¤pN:9)jt>‡¼	¦ñdñŒtññŠı[ÚHg—ğ-&bœÖoÂ W¹4¡^ÕXÖ0zFRjNUj1Õ32äòçÑ*Ë­‚“_eÍ;svK	uuÕX)ÕRÓĞ ¡†¯IÇì£Pp‡H/s[o@±’õ*É!_ıkñæd"œŠ°áUF0<Aßá%	lØÛ,GøkH=bE·8¢õ‘(^JãúüÊ}o@no€ÛuB²õÂGÃJ²“ƒ ÙWÿÑ
-e·eøF:Q¤‰’k°H.:FÙ é¦C·-=±$;O£şpvô†˜çCŠˆnâOŠ&,Ë‹•«KKªm'½„|õ)<	>7#ÊçŞ¹èôâˆ,äøp–}û-\€"„x?DäğL€MÓH‚à"ˆ#zÓ ŒáÏ¸—€ö}@È&ÒÜıÑEj« Ï›ñ ÿ.ğ4x[^tájŠÛ °f1†¥NÀ€Éƒ„…­"önÈ4³¦Az™„è_&i¼ŒÂ¸›m
-à?H`²sZµ´ªÌ-ÒënêEš×}K‘»A5[Zî¦Æs,æ;H³±2 %ØX$Ìmı-ØÍÉ8–IcàqZ]äİ6·ïÌè«’3ë|­ôÓË±VœËâx]µ†‰º0luxL³8‚£Ê ÆR*˜úpÊºbÓ´fhÈeà_ê<
-\ù¤w¹‰Ñ/Õh.‡í‚øıùôÊp±F“»iš¾Æç¶Œ—k4Ë°ç¶ØíÚâóÌ¢÷ƒÃ¨¼t™ rŸ‡ålo;ï°æïIX¸>ŒePnsùˆšÈÜs»W›q–œ¦ˆœMÉº8º,DÙÄû›bV\¾«bW>â—íHow»­ääˆî²QJ6¹l€¯ËË¤Õ$/Cæ£â'éŒÒ–(¾É…<#æåéú(àf7Ğ¼=Q°¨ŒãZ³kRº¡QÜO:jåW” šñ¢]¢†á—AÚ»û¹ó.ViCúuaÁøV_Vû¹ƒs·*æ.¯›&ªa^Øœå÷†âğ‰ÂÕA=JU-u¬Ğ÷Ô^*ñAZLnÉX·êâ«1
-´³†Ò%–OÃ:îs<àu0(£+•ÄUµ^’¸jÈ‡ea£ÒO¢bUñS‘ÊÃÚ!taíÏ’o‰ÛÊj!\›«æy5ïÓ‚'Ö»lVÃZ“Ëh¼e]­nÙaj)Öq±8'Za*Ş±ã!œ\«uŒêYcÖÎ2ËŠÇİı8î.HJ+™e­Œeq6{“k ¯Ìdc~¡WÓ9…AÓ5I¯< ıJÙyá8,v¯†ŠS]Œ†!À,5LA„”WÔõ(Æ“M20n»Ayä¥ÁäeÍè»Í¼QsE38Öà EŸĞü´âÓ¡ù ü	ÆÙÅŒè§ªršFÙ.{¦A³ËYob5ÈSN“®Ñà”ôt“KíY0,œ£™¡ÿ^—9y5w—–ÃÆºa@/Ó¤GGû|$º$A%Ï9ºÖßòÜp&íY±•Ñ¼§«±ôå}s¦ŞÛ¶á~Qf…ßéºÍÔ{Ñ,EÙ"'"‚]4gä¼5¾_škö° tÓÍÒ*8º*­+æVæúÆ7@Ô›¶}¾j]ûªÑ“L[:8a!èCÒAh>Ö|Ÿ¶oŒ lÏ™O™ôgÜO0’PŸ±ŸˆÒ‚³Gòæû‹5ïJÄéü?†£ÍÄó¬$ïÅ>g>:‡W¥ÜŠ5%Ò
-GmMjáŒ’0¾úMtv£„¼ú}ƒ»‰?XfÉZİiK|TÙk B“”Jto7¢Ú!¦¡Ë;ò¹üœk«’ûÿq^UØK@¿¶JÜ ˆí8L‡ÇiôÏŠ°@ØzòàÌıW„ã2)¡ äÍdÏÕ¬ˆ…¬NA}…R$E‘ê_B,4“ˆs
-í„zë"bÔ[˜ÛO±u/ØlQÀ6æáWÊ èò¹À5œ3hpàäã|Ê|ü8ì³jngô`µ{9 È…0¦Òyº4½„;VĞÇ’…#´y%)ÈJ¬Üü~š©o&!qĞ¥^QtÜĞ=¡’ºûy).»pè’Û‘İE›Öé²V,°q<³ù‘}L+r4\¶µÅ‡ñğ(k³ªÎ{¼~-0ñ®VÒ¶™%½åıŸ*§¥0ş:V°™&ôk¥‰•»œ ®Yòt²hR|Ñê­1¾}­48dMÚ…¥X“œM«˜ğ ı&—øİYÚƒ¹uó87,¬ƒº“Ë»z•iîÿ¹­y1|Jr·)7˜kVrÙÔ9°ùË&æVÅäsif‘˜s¤¯€™™«ßP`İäéâM
-4ô0yEá}yÆûâp~Ayù·Ã.iGAì;:u…rD_ü"Ÿ+>9î>¥€ğã_á?J•£Tçæ{ÅWª^2Vç	H"ìïp•Y/?ËDwy£ù=_ƒ×IÀïyQ~¼§Kåâ‹á{<ï¬bV¼¢\ı¤ÙlêÇÉ¢X¶·^XÆZé\ô³W<·¶ »¼Şk¡Qyµ..a…/'`¤!”|7O[xï1X*ª@€48Êª+¡—°¨¼âz×*NòB¯*Ë^äÌ «Š˜G‰Í®ÃŸQš%éR?bß“KĞ-nDOˆªÍ€RÉGË%Y)w$/ßY]TEåw\B˜?ŞıLÚyàúó¢ï¾{Ì5¾åOua+vWÅ±ã n;Š£UëOöœ­£aĞïi·ğ¤îp+©Å8`Pòe¯4hôHë([n8êB©aÌZ¿VV«ÖfUÃ-`ú‘M©„¶QVÎóàCÔÎ™Z«eÜ-”pøJ#A-‹W®¸er»8Ní®ÑT`-ò(
-q(ÂÎ8`§»}C˜)JÏû•ĞÅ!Ã^z¸^ÔƒW9bŸÈÿP,öqSÔØ ¹­¥¥œˆ°F{NET·–å¥¥j±İéàEŠÇçA=Uw ^‚óûT²øj· ãØÕÂååf®2Ü 	ÿÉQàØ_•8Nj¯A(ÙÉëS€îr#y½Æ2Ú07{f[•^â§ÔP%¨×¡ÌD	"—D¦Ô°íC§?VÉ†;a‘”ØéU®w`÷øª*ûÔ±²ÔYÎi›¿Ê¯p–üZLÖ¾ô×Ukaªşeên3ÄÑ°1Ï}kó'+o«Z-´²VÕ­B¯®pÂŸ’î%ZƒJÈ½˜ÑìŒJ`Ÿ
-ÕlêJ™ùØ›wkbB×>†]êu°Ê©u²„ºÑ‹5S7ÒR¬—Ó Eç7yj¨%Å5ƒzâ­^Ñ0I²Ÿ\¦Á`ŒÃX«zPR*[9¸EÁ"”[~0^Ö¨ˆÇU.¡0ÿ*¾“|(‚/
-j&§LªÊo°ËâÓğ¼äz¹Òü$y³[@/¢kğ±©b<+Ûè„¬è¤ƒÃ,¸ß”D¨jª¯kMÊÃ+VßZ°e+eiéú­}PŠK­p¥i›a·$!Ù#İkV!.Ô­
-±Û3á\B34Ş9½Š¨=!ÓöJ‡iéÎEu¯œÂÛ4Äÿ"¡Õ%swT¹˜šÈ·.“9šÖõó‡A¶×¬MhaˆxÆ0…tœ"„œJiÇì<Q+Òè^”qËZªwIõáï4ĞuŞ•5ÇÚT°çò_‹Ïë»Ÿ¯š„õŸ	”Õ6¸ê™9ˆvÏ¬ÖKaŞYØ‹ôÙ[Ç%£"¹gmI[MQ¿º"´<ı#WÙĞ¤tpñ1f0ş5 µG“<şÖ7r,ómÙï>V)“ÆÀ_ãåmñ*Ÿ¡ÂW‹ªrêO¥,>³a\KÒ“ÓÖ2ÚÃª}>nokå¿ S‚ş·ÃıßTÖ]@ÈïÆº·%Ø©¿ó‹µ{ ³ÓñÖ¨àFHíùşORK‰fRÌ¥E"W”Á‰â[§hòB¯U'Amıeq)ìw¹Â÷åß—V02„…ÜPh›*tº=cqŠòIÌ|1-{pOáyX]âw6±c‡7LáˆPˆ<éíÜÏQ i´ÕR}d‰´ê{ÕkŸ§„R¢tğ)¨`u|ás—KÉ9ü¯ÒÆ"-¹¶UhNF`õ¼)Y}ÖÊøXšt{Š6 n$- :±Oxi*~]W–²ú©Ya”VmUo ÏguDes-R¯ø£úrœ\òŒí¦¨ß:»¨ì1WqÒ–_m²™óèÑ½ØøÊÖm­Ò½[Q²T-¦v¶D7Ì9< +¯¯¬¹ù{;#tªV™ñW÷ı´Øâ¶_ò»>7¾šÊ¹áeğÚEuöPí¤ïŸ’I’›ï€èi›Õ“Ğ<YM²“|%¹+VÅUM‘°üòğ45`mC#ñ,ÿÀ>°©bxíaØÃ&d)Fçû±Jj ú¬ ±jB¬Êïqı\³v”±%›nYxS7-–Ñl^ËÍµ¶X2á’^Ô»b˜Ò°²'E¹áS¿fB,ä-ºrrh¶¹­7aÿ|Ôc¹4™ˆë&¥¬™¦5 ıé`«ˆ‚¦ò°Ü~B[Ä<k`“½@ÉÕ	à")Ã»Ù^c[4‹sÆp©ä–dµE8fh5Äš;¼m©Ò¹š]tiÃ/*©ÂtDMyè4ûÚ"¦ps£T=ÿ\œÎR'ë*¯îvĞï„q©´•,¸rJEÑl¯vQUõ —ÓqÅc=ZÅz¬–×cÕ4ü×B*7Å¿åï§‡~0ù5£(ª	 ^ÙŞ°ÎèëÉ>EE waSõ4íÒ ê¡gË<NÁ¥aë4@«§m6ßi˜…°q‹o†øœj›Ô¸†Aòƒ¶Æ'ô[Ã«hèÕ¦œœÁÀO˜Òœşqøa¸ÔZ^%Lo¥lñŠ^ø	}“+oÑßøÕ¬PÒÈ\l`²¨Tç<z8K)lQÌføRÙ¨ƒ›c'X˜«cÌ=ÃUo&LÓ$äY®ğÆ“/ZÛ­'­Goå;•ûÔ|	•o¬c
-±Î¸u·Á‚-˜ÒØMm¸å¤ŞÜIúš¥iŞBù†|º\ÚÒvú.q»cÈC¾ÿé¦¢g¼ßÖÂM…í°fx+æ­V…kOOåu#¦ıÉC kTû‡š cİßÊ/`ë¥YV¬¤.pë¥ş?   ÿÿì]ÍnÚ@¾÷)s•ÜJ´%DE	•8õ¶‡"”lm¹-¶„©‘x®•ú¼Xffü·»6’&*‘eÌçç›õÎ7ûÌÜ›
-Ğ-à)pØC€”&=zûóœeçRƒFöÒíX¼êœ@`‚õ=ô.¤t3dş 	Cù®üB§Í$ô„Óµ,çœ‡S6~øœşÚ¬gòFW	ÌuåÌ­Şi¯sr1ÆqN5'ş	2Œ;¼c•¯€M|‡\BÈK Ù [¥
-A$JJâÉ{ƒ•ğ†3r=
-?ô¬
-˜¥öéO¤7kÈê6¢JšrêpÊÊÌĞ:^èÃ4±YBåä	¶V#£Ö‡.ü½—ºQ×4µ½Aw€_«™¬Ğa!ê·Í"4ù¡XºŒ}Ç6Û„KøÍŠb^Õ?Ÿ--óWlÁ"â–„ñ.¿àû›çã é±ç˜EjY³~‘YÛ•FÆ­`ótÙ6 ¦¢)¹ãŠøê\9>õoSíƒ³]Ú*2é7Ä=Ìi‚TA‹c¨ yòiEºacÍnNú·K¿­ee¦;¨ÿU4õd×œÆ& öĞ!“Ê¡6¨Â?àõ˜ÈÏü5„û|îÿˆ“dt“¿-4äáğ
-áğÿ€å9¤ß7nÑM˜PwEÎƒ-2dÂ~m~Ç~ÄvC8Å–,•«¾äèÆWÒò„éˆ¿àÜ—d¯ö¸UCÃßOeå*Ä#Gƒx!‰˜îÀĞM@(ÙÖc­¢Îã# üÅ>Eğó%ù9DèSĞ•87Ï3´T5Úñ ®zçğÎ Z4#<=y”½ºRÚ²ÛVÔN@+`p×0ÈF°=Ğãpæ±Z¥Ó(MÃàš8G¯º"o$é¥Wó SŠî«-{¢’w>ï;j9'®à^}K7mÕ¿&8DŸmUóš !«MUšVé7•sØ‘š\äî%s,a•Ÿ=ˆµ:§=ã×Qçuw¼»uÇ\¹¥˜¹A>Xì$IÀXEİ «ÃáŞ­^Ü  ÿÿ ·5½u
+            <div className="pt-4 border-t border-slate-100 flex justify-end shrink-0">
+              <button 
+                onClick={() => setShowDetailModal({ show: false, type: 'low_stock', items: [] })}
+                className="px-6 py-2.5 bg-slate-900 text-white rounded-2xl font-bold text-sm hover:bg-slate-800 transition-all"
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {showDeleteModal.show && (
+        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center gap-3 text-rose-600">
+              <div className="bg-rose-50 p-2.5 rounded-2xl">
+                <Trash2 size={22} />
+              </div>
+              <h3 className="text-lg font-black text-slate-900">Confirmar ExclusÃ£o</h3>
+            </div>
+            <p className="text-xs text-slate-600">
+              Tem certeza que deseja excluir esta movimentaÃ§Ã£o? Informe o motivo abaixo para fins de auditoria:
+            </p>
+            <textarea 
+              rows={3}
+              required
+              className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold focus:ring-2 focus:ring-rose-500/20"
+              placeholder="Motivo da exclusÃ£o..."
+              value={deletionReason}
+              onChange={e => setDeletionReason(e.target.value)}
+            />
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button 
+                onClick={() => setShowDeleteModal({ show: false })}
+                className="px-4 py-2 rounded-xl text-slate-600 font-bold hover:bg-slate-100 text-xs"
+              >
+                Cancelar
+              </button>
+              <button 
+                onClick={() => {
+                  if (showDeleteModal.transactionId) {
+                    handleDeleteTransaction(showDeleteModal.transactionId, deletionReason);
+                    setShowDeleteModal({ show: false });
+                  }
+                }}
+                className="px-5 py-2 bg-rose-600 text-white rounded-xl font-bold text-xs hover:bg-rose-700 shadow-md shadow-rose-600/20"
+              >
+                Excluir
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* User Delete Modal */}
+      {showUserDeleteConfirm.show && (
+        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center gap-3 text-rose-600">
+              <div className="bg-rose-50 p-2.5 rounded-2xl">
+                <Trash2 size={22} />
+              </div>
+              <h3 className="text-lg font-black text-slate-900">Excluir UsuÃ¡rio</h3>
+            </div>
+            <p className="text-xs text-slate-600">
+              Deseja remover o acesso de <strong>{showUserDeleteConfirm.user?.name}</strong> ({showUserDeleteConfirm.user?.email})?
+            </p>
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button 
+                onClick={() => setShowUserDeleteConfirm({ show: false })}
+                className="px-4 py-2 rounded-xl text-slate-600 font-bold hover:bg-slate-100 text-xs"
+              >
+                Cancelar
+              </button>
+              <button 
+                onClick={async () => {
+                  if (!showUserDeleteConfirm.user?.id) return;
+                  try {
+                    await deleteDoc(doc(db, 'users', showUserDeleteConfirm.user.id));
+                    setShowUserDeleteConfirm({ show: false });
+                    showToast("UsuÃ¡rio excluÃ­do com sucesso.", "success");
+                  } catch (error: any) {
+                    showToast(`Erro ao excluir: ${error.message}`, "error");
+                  }
+                }}
+                className="px-5 py-2 bg-rose-600 text-white rounded-xl font-bold text-xs hover:bg-rose-700 shadow-md shadow-rose-600/20"
+              >
+                Confirmar ExclusÃ£o
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Stock Confirm Notification Modal */}
+      {showStockConfirm.show && (
+        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center gap-3 text-amber-600">
+              <div className="bg-amber-50 p-2.5 rounded-2xl">
+                <Bell size={22} />
+              </div>
+              <h3 className="text-lg font-black text-slate-900">Alerta de Estoque Zerado</h3>
+            </div>
+            <p className="text-xs text-slate-600">
+              O item <strong>{showStockConfirm.itemName}</strong> atingiu estoque zero. Deseja marcar este alerta como lido?
+            </p>
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button 
+                onClick={() => setShowStockConfirm({ show: false })}
+                className="px-4 py-2 rounded-xl text-slate-600 font-bold hover:bg-slate-100 text-xs"
+              >
+                Dispensar
+              </button>
+              <button 
+                onClick={async () => {
+                  if (showStockConfirm.notificationId) {
+                    await updateDoc(doc(db, 'notifications', showStockConfirm.notificationId), { read: true });
+                  }
+                  setShowStockConfirm({ show: false });
+                }}
+                className="px-5 py-2 bg-blue-700 text-white rounded-xl font-bold text-xs hover:bg-blue-800 shadow-md shadow-blue-700/20"
+              >
+                Confirmar Leitura
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Settings Modal */}
+      {showSettingsModal && (
+        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-2xl w-full p-6 lg:p-8 shadow-2xl border border-slate-200 space-y-6">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+              <div className="flex items-center gap-3">
+                <div className="bg-blue-50 text-blue-700 p-2.5 rounded-2xl">
+                  <Settings size={22} />
+                </div>
+                <div>
+                  <h3 className="text-lg font-black text-slate-900">ConfiguraÃ§Ãµes do Sistema</h3>
+                  <p className="text-xs text-slate-500">Personalize logos, ferramentas e termos oficiais</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setShowSettingsModal(false)}
+                className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-all"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Tabs */}
+            <div className="flex border-b border-slate-200 gap-4">
+              <button 
+                onClick={() => setSettingsTab('logo')}
+                className={`pb-2.5 text-xs font-bold transition-all border-b-2 ${
+                  settingsTab === 'logo' ? 'border-blue-700 text-blue-700' : 'border-transparent text-slate-400 hover:text-slate-700'
+                }`}
+              >
+                Logos & Identidade
+              </button>
+              <button 
+                onClick={() => setSettingsTab('tools')}
+                className={`pb-2.5 text-xs font-bold transition-all border-b-2 ${
+                  settingsTab === 'tools' ? 'border-blue-700 text-blue-700' : 'border-transparent text-slate-400 hover:text-slate-700'
+                }`}
+              >
+                Ferramentas de Estoque
+              </button>
+              <button 
+                onClick={() => setSettingsTab('info')}
+                className={`pb-2.5 text-xs font-bold transition-all border-b-2 ${
+                  settingsTab === 'info' ? 'border-blue-700 text-blue-700' : 'border-transparent text-slate-400 hover:text-slate-700'
+                }`}
+              >
+                Dados da Unidade
+              </button>
+            </div>
+
+            {settingsTab === 'logo' && (
+              <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-1">
+                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 flex items-center justify-between">
+                  <div>
+                    <h5 className="font-bold text-sm text-slate-800">Logo Principal (Ãcone)</h5>
+                    <p className="text-xs text-slate-500">Exibida na barra lateral e cabeÃ§alho</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label className="px-3 py-1.5 bg-blue-700 text-white rounded-xl text-xs font-bold cursor-pointer hover:bg-blue-800 transition-all">
+                      Upload
+                      <input type="file" accept="image/*" className="hidden" onChange={handleLogoUpload} />
+                    </label>
+                    {appLogo && (
+                      <button onClick={handleRemoveLogo} className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-xl">
+                        <Trash2 size={16} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 flex items-center justify-between">
+                  <div>
+                    <h5 className="font-bold text-sm text-slate-800">Logo Retangular (Tela de Login)</h5>
+                    <p className="text-xs text-slate-500">Exibida no centro da pÃ¡gina de autenticaÃ§Ã£o</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label className="px-3 py-1.5 bg-blue-700 text-white rounded-xl text-xs font-bold cursor-pointer hover:bg-blue-800 transition-all">
+                      Upload
+                      <input type="file" accept="image/*" className="hidden" onChange={handleRectangularLogoUpload} />
+                    </label>
+                    {appRectangularLogo && (
+                      <button onClick={handleRemoveRectangularLogo} className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-xl">
+                        <Trash2 size={16} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 flex items-center justify-between">
+                  <div>
+                    <h5 className="font-bold text-sm text-slate-800">Papel Timbrado (RelatÃ³rios PDF)</h5>
+                    <p className="text-xs text-slate-500">CabeÃ§alho oficial impresso nos documentos</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label className="px-3 py-1.5 bg-blue-700 text-white rounded-xl text-xs font-bold cursor-pointer hover:bg-blue-800 transition-all">
+                      Upload
+                      <input 
+                        type="file" 
+                        accept="image/*" 
+                        className="hidden" 
+                        onChange={e => {
+                          const file = e.target.files?.[0];
+                          if (file) handleLetterheadUpload(file);
+                        }} 
+                      />
+                    </label>
+                    {letterheadImage && (
+                      <button onClick={handleRemoveLetterhead} className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-xl">
+                        <Trash2 size={16} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {settingsTab === 'tools' && (
+              <div className="space-y-4">
+                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 flex items-center justify-between">
+                  <div>
+                    <h5 className="font-bold text-sm text-slate-800">Mesclar Fornecedores</h5>
+                    <p className="text-xs text-slate-500">Unifique nomes de fornecedores duplicados em lote</p>
+                  </div>
+                  <button 
+                    onClick={() => { setShowSettingsModal(false); setShowMergeSuppliers(true); }}
+                    className="px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-all"
+                  >
+                    Abrir Mesclagem
+                  </button>
+                </div>
+
+                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 flex items-center justify-between">
+                  <div>
+                    <h5 className="font-bold text-sm text-slate-800">Mesclar Materiais</h5>
+                    <p className="text-xs text-slate-500">Unifique materiais cadastrados com nomes diferentes</p>
+                  </div>
+                  <button 
+                    onClick={() => { setShowSettingsModal(false); setShowMergeItems(true); }}
+                    className="px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-all"
+                  >
+                    Abrir Mesclagem
+                  </button>
+                </div>
+
+                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 flex items-center justify-between">
+                  <div>
+                    <h5 className="font-bold text-sm text-slate-800">Auditar Velocidade de Estoque</h5>
+                    <p className="text-xs text-slate-500">Recalcula consumo semanal e previsÃ£o de tÃ©rmino</p>
+                  </div>
+                  <button 
+                    onClick={() => showToast("Auditoria e recÃ¡lculo de estoque realizados.", "success")}
+                    className="px-4 py-2 bg-blue-700 text-white rounded-xl text-xs font-bold hover:bg-blue-800 transition-all"
+                  >
+                    Recalcular
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {settingsTab === 'info' && (
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 mb-1">Nome da Unidade</label>
+                  <input 
+                    type="text"
+                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold"
+                    value={donationUnitName}
+                    onChange={e => setDonationUnitName(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 mb-1">EndereÃ§o da Unidade</label>
+                  <input 
+                    type="text"
+                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold"
+                    value={donationUnitAddress}
+                    onChange={e => setDonationUnitAddress(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 mb-1">CNPJ da Unidade</label>
+                  <input 
+                    type="text"
+                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold"
+                    value={donationUnitCNPJ}
+                    onChange={e => setDonationUnitCNPJ(e.target.value)}
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="pt-4 border-t border-slate-100 flex justify-end">
+              <button 
+                onClick={() => setShowSettingsModal(false)}
+                className="px-6 py-2.5 bg-slate-900 text-white rounded-2xl font-bold text-sm hover:bg-slate-800 transition-all"
+              >
+                ConcluÃ­do
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Merge Suppliers Modal */}
+      {showMergeSuppliers && (
+        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <h3 className="text-base font-black text-slate-900">Mesclar Fornecedores</h3>
+              <button onClick={() => setShowMergeSuppliers(false)} className="p-1 text-slate-400 hover:text-slate-700">
+                <X size={18} />
+              </button>
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Fornecedor de Origem (SerÃ¡ substituÃ­do)</label>
+              <input 
+                type="text"
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold"
+                placeholder="Nome exato..."
+                value={sourceSupplier}
+                onChange={e => setSourceSupplier(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Fornecedor Destino (Nome final)</label>
+              <input 
+                type="text"
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold"
+                placeholder="Nome padronizado..."
+                value={targetSupplier}
+                onChange={e => setTargetSupplier(e.target.value)}
+              />
+            </div>
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button 
+                onClick={() => setShowMergeSuppliers(false)}
+                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl"
+              >
+                Cancelar
+              </button>
+              <button 
+                onClick={handleMergeSuppliers}
+                disabled={isMerging}
+                className="px-5 py-2 bg-blue-700 text-white text-xs font-bold rounded-xl hover:bg-blue-800 transition-all disabled:opacity-50"
+              >
+                {isMerging ? 'Mesclando...' : 'Confirmar Mesclagem'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Merge Items Modal */}
+      {showMergeItems && (
+        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <h3 className="text-base font-black text-slate-900">Mesclar Materiais</h3>
+              <button onClick={() => setShowMergeItems(false)} className="p-1 text-slate-400 hover:text-slate-700">
+                <X size={18} />
+              </button>
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Material Origem (SerÃ¡ renomeado)</label>
+              <input 
+                type="text"
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold"
+                placeholder="Nome do item antigo..."
+                value={sourceItemName}
+                onChange={e => setSourceItemName(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Material Destino (Nome final unificado)</label>
+              <input 
+                type="text"
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold"
+                placeholder="Nome correto..."
+                value={targetItemName}
+                onChange={e => setTargetItemName(e.target.value)}
+              />
+            </div>
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button 
+                onClick={() => setShowMergeItems(false)}
+                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl"
+              >
+                Cancelar
+              </button>
+              <button 
+                onClick={handleMergeItems}
+                disabled={isMerging}
+                className="px-5 py-2 bg-blue-700 text-white text-xs font-bold rounded-xl hover:bg-blue-800 transition-all disabled:opacity-50"
+              >
+                {isMerging ? 'Mesclando...' : 'Confirmar Mesclagem'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Room Inventory Modal */}
+      {showRoomInventoryModal && (
+        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <h3 className="text-base font-black text-slate-900">InventÃ¡rio FÃ­sico por Sala</h3>
+              <button onClick={() => setShowRoomInventoryModal(false)} className="p-1 text-slate-400 hover:text-slate-700">
+                <X size={18} />
+              </button>
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Nome da Sala / Local</label>
+              <input 
+                type="text"
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold"
+                placeholder="Ex: Sala A / ConsultÃ³rio 1"
+                value={customRoomName}
+                onChange={e => setCustomRoomName(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Filtrar Categorias</label>
+              <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-2 bg-slate-50 rounded-xl border border-slate-200">
+                {categories.map(cat => {
+                  const isSel = selectedRoomCategories.includes(cat);
+                  return (
+                    <button 
+                      key={cat}
+                      type="button"
+                      onClick={() => {
+                        setSelectedRoomCategories(prev => 
+                          isSel ? prev.filter(c => c !== cat) : [...prev, cat]
+                        );
+                      }}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all ${
+                        isSel ? 'bg-blue-700 text-white' : 'bg-white text-slate-600 border border-slate-200'
+                      }`}
+                    >
+                      {cat}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button 
+                onClick={() => setShowRoomInventoryModal(false)}
+                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl"
+              >
+                Cancelar
+              </button>
+              <button 
+                onClick={() => handleExportRoomInventoryPDF(selectedRoom, customRoomName || selectedRoom, selectedRoomCategories)}
+                className="px-5 py-2 bg-blue-700 text-white text-xs font-bold rounded-xl hover:bg-blue-800 transition-all flex items-center gap-1.5"
+              >
+                <Download size={14} /> Gerar PDF
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Change Category Modal */}
+      {showChangeCategoryModal && (
+        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <h3 className="text-base font-black text-slate-900">Alterar Categoria de Material</h3>
+              <button onClick={() => setShowChangeCategoryModal(false)} className="p-1 text-slate-400 hover:text-slate-700">
+                <X size={18} />
+              </button>
+            </div>
+            <p className="text-xs text-slate-600">
+              Material: <strong>{categoryModalMaterial}</strong>
+            </p>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Nova Categoria</label>
+              <select 
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold"
+                value={categoryModalNewCategory}
+                onChange={e => setCategoryModalNewCategory(e.target.value)}
+              >
+                <option value="">Selecione...</option>
+                {categories.map(c => <option key={c} value={c}>{c}</option>)}
+                <option value="__NEW__">+ Outra / Nova Categoria</option>
+              </select>
+            </div>
+            {categoryModalNewCategory === '__NEW__' && (
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Nome da Nova Categoria</label>
+                <input 
+                  type="text"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold"
+                  placeholder="Nome da categoria..."
+                  value={customModalCategory}
+                  onChange={e => setCustomModalCategory(e.target.value)}
+                />
+              </div>
+            )}
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button 
+                onClick={() => setShowChangeCategoryModal(false)}
+                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl"
+              >
+                Cancelar
+              </button>
+              <button 
+                onClick={handleModalChangeCategory}
+                disabled={isUpdatingCategory}
+                className="px-5 py-2 bg-blue-700 text-white text-xs font-bold rounded-xl hover:bg-blue-800 transition-all disabled:opacity-50"
+              >
+                {isUpdatingCategory ? 'Atualizando...' : 'Salvar AlteraÃ§Ã£o'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Critical Report Modal */}
+      {showCriticalReportModal && (
+        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <h3 className="text-base font-black text-slate-900">Exportar RelatÃ³rio de Alertas</h3>
+              <button onClick={() => setShowCriticalReportModal(false)} className="p-1 text-slate-400 hover:text-slate-700">
+                <X size={18} />
+              </button>
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Tipo de Alerta</label>
+              <select 
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold"
+                value={criticalReportFilter}
+                onChange={e => setCriticalReportFilter(e.target.value as any)}
+              >
+                <option value="all">Todos os Alertas</option>
+                <option value="low_stock">Estoque Baixo / CrÃ­tico</option>
+                <option value="expiry">Itens Vencidos / PrÃ³ximos ao Vencimento</option>
+              </select>
+            </div>
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button 
+                onClick={() => setShowCriticalReportModal(false)}
+                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl"
+              >
+                Cancelar
+              </button>
+              <button 
+                onClick={() => handleExportCriticalReportPDF(criticalReportFilter)}
+                className="px-5 py-2 bg-blue-700 text-white text-xs font-bold rounded-xl hover:bg-blue-800 transition-all flex items-center gap-1.5"
+              >
+                <Download size={14} /> Gerar PDF
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Purchase Planning Modal */}
+      {showPurchasePlanningModal && (
+        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2.5">
+                <div className="bg-blue-50 text-blue-700 p-2 rounded-xl">
+                  <BarChart3 size={20} />
+                </div>
+                <h3 className="text-base font-black text-slate-900">Planejamento de Compras (PCA)</h3>
+              </div>
+              <button onClick={() => setShowPurchasePlanningModal(false)} className="p-1 text-slate-400 hover:text-slate-700">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">MÃªs Alvo</label>
+                <select 
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold"
+                  value={planningTargetMonth}
+                  onChange={e => setPlanningTargetMonth(parseInt(e.target.value))}
+                >
+                  {['Janeiro', 'Fevereiro', 'MarÃ§o', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'].map((m, i) => (
+                    <option key={m} value={i}>{m}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Ano Alvo</label>
+                <input 
+                  type="number"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold"
+                  value={planningTargetYear}
+                  onChange={e => setPlanningTargetYear(parseInt(e.target.value))}
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Margem de SeguranÃ§a</label>
+                <select 
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold"
+                  value={planningSafetyOption}
+                  onChange={e => setPlanningSafetyOption(e.target.value as any)}
+                >
+                  <option value="standard_8w">PadrÃ£o (8 Semanas de Reserva)</option>
+                  <option value="margin_10">Margem Adicional de 10%</option>
+                  <option value="margin_20">Margem Adicional de 20%</option>
+                  <option value="none">Sem Margem (Consumo LÃ­quido)</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Categoria</label>
+                <select 
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold"
+                  value={planningCategory}
+                  onChange={e => setPlanningCategory(e.target.value)}
+                >
+                  <option value="all">Todas as Categorias</option>
+                  {categories.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 pt-2">
+              <input 
+                type="checkbox"
+                id="onlyDeficit"
+                checked={planningOnlyWithDeficit}
+                onChange={e => setPlanningOnlyWithDeficit(e.target.checked)}
+                className="rounded text-blue-600 focus:ring-blue-500"
+              />
+              <label htmlFor="onlyDeficit" className="text-xs font-bold text-slate-700 cursor-pointer">
+                Exibir apenas itens com necessidade de compra (DÃ©ficit &gt; 0)
+              </label>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+              <button 
+                onClick={() => setShowPurchasePlanningModal(false)}
+                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl"
+              >
+                Fechar
+              </button>
+              <button 
+                onClick={handleExportPurchasePlanningExcel}
+                className="px-4 py-2 bg-emerald-600 text-white text-xs font-bold rounded-xl hover:bg-emerald-700 transition-all flex items-center gap-1.5"
+              >
+                <Download size={14} /> Excel
+              </button>
+              <button 
+                onClick={handleExportPurchasePlanningPDF}
+                className="px-4 py-2 bg-blue-700 text-white text-xs font-bold rounded-xl hover:bg-blue-800 transition-all flex items-center gap-1.5"
+              >
+                <Download size={14} /> PDF
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Item Exits Modal */}
+      {showItemExitsModal.show && (
+        <ItemExitsModal
+          isOpen={showItemExitsModal.show}
+          onClose={() => setShowItemExitsModal({ show: false, materialName: '', batchNumber: null })}
+          materialName={showItemExitsModal.materialName}
+          initialBatchNumber={showItemExitsModal.batchNumber}
+          transactions={transactions}
+          items={items}
+          appLogo={appLogo}
+          appRectangularLogo={appRectangularLogo}
+        />
+      )}
+
+      {/* Floating Toast */}
+      {toast.show && (
+        <div className={`fixed bottom-6 right-6 z-50 px-5 py-3.5 rounded-2xl shadow-xl flex items-center gap-3 text-sm font-bold text-white transition-all transform animate-bounce ${
+          toast.type === 'success' ? 'bg-emerald-600 shadow-emerald-600/30' :
+          toast.type === 'error' ? 'bg-rose-600 shadow-rose-600/30' :
+          'bg-slate-900 shadow-slate-900/30'
+        }`}>
+          {toast.type === 'success' && <CheckCircle size={18} />}
+          {toast.type === 'error' && <AlertTriangle size={18} />}
+          {toast.type === 'info' && <Info size={18} />}
+          <span>{toast.message}</span>
+        </div>
+      )}
+    </div>
+  );
+}

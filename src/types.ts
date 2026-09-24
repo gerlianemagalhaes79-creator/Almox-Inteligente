@@ -68,43 +68,6 @@ export interface Item {
   deletedBy?: string;
 }
 
-export interface BalanceAdjustmentItem {
-  itemId: string;
-  itemName: string;
-  description?: string;
-  category?: string;
-  unit_measure?: string;
-  batch_number?: string;
-  expiry_date?: string | null;
-  location?: 'Almoxarifado' | 'Farmácia';
-  room?: string;
-  unit_price: number;
-  systemQuantity: number;
-  countedQuantity: number;
-  difference: number;
-  reason?: string;
-  notes?: string;
-  adjusted: boolean;
-}
-
-export interface BalanceRecord {
-  id: string;
-  date: string;
-  responsibleName: string;
-  responsibleEmail: string;
-  location: 'Almoxarifado' | 'Farmácia' | 'Geral';
-  title?: string;
-  status: 'CONCLUÍDO' | 'EM_ANDAMENTO';
-  totalItemsAudited: number;
-  divergentItemsCount: number;
-  totalStockBefore: number;
-  totalStockAfter: number;
-  financialImpact: number;
-  justificationGeneral?: string;
-  items: BalanceAdjustmentItem[];
-  createdAt: string;
-}
-
 export interface Transaction {
   id: string;
   item_id: string;
@@ -122,13 +85,20 @@ export interface Transaction {
   deletedAt?: string;
   deletionReason?: string;
   deletedByEmail?: string;
-  exitReason?: 'consumo' | 'doacao' | 'vencido' | 'perda';
+  exitReason?: 'consumo' | 'doacao' | 'troca' | 'vencido' | 'perda';
   expiryReason?: string;
   donationUnitName?: string;
   donationUnitAddress?: string;
   donationUnitCNPJ?: string;
   donationRevisionDate?: string;
   donationNumber?: string;
+  exchangePartnerName?: string;
+  exchangePartnerCNPJ?: string;
+  exchangePartnerAddress?: string;
+  exchangePartnerContact?: string;
+  exchangeReason?: string;
+  exchangeNumber?: string;
+  exchangeReceivedItems?: string;
   batch_number?: string;
   expiry_date?: string;
   isReturn?: boolean;
@@ -136,3 +106,23 @@ export interface Transaction {
   observation?: string;
 }
 
+export interface DocumentTemplate {
+  id: string;
+  title: string;
+  type: 'donation' | 'exchange';
+  htmlContent: string;
+  cssContent: string;
+  description?: string;
+  lastModified?: string;
+  lastModifiedBy?: string;
+}
+
+export interface CatalogMaterial {
+  name: string;
+  category?: string | null;
+  unit_measure?: string | null;
+  min_quantity?: number | null;
+  unit_price?: number | null;
+  supplier?: string | null;
+  totalStock?: number;
+}

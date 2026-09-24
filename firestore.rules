@@ -111,7 +111,7 @@ service cloud.firestore {
       allow write: if isAuthenticated();
     }
 
-    match /balances/{balanceId} {
+    match /document_templates/{templateId} {
       allow read: if isAuthenticated();
       allow create, update, delete: if isAdmin();
     }

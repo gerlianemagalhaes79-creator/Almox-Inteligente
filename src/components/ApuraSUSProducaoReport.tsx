@@ -17,7 +17,8 @@ import {
   PieChart as PieChartIcon,
   BarChart3,
   Sparkles,
-  Layers
+  Layers,
+  ArrowLeft
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -39,6 +40,7 @@ interface ApuraSUSProducaoReportProps {
   showToast: (message: string, type?: 'success' | 'error' | 'info') => void;
   isAdmin: boolean;
   selectedSector: string;
+  onBack?: () => void;
 }
 
 export const ApuraSUSProducaoReport: React.FC<ApuraSUSProducaoReportProps> = ({
@@ -49,6 +51,7 @@ export const ApuraSUSProducaoReport: React.FC<ApuraSUSProducaoReportProps> = ({
   letterheadImage,
   inventoryLocation,
   showToast,
+  onBack,
 }) => {
   // Current competence month (default: current month)
   const [selectedMonthDate, setSelectedMonthDate] = useState<Date>(() => new Date());
@@ -431,6 +434,14 @@ export const ApuraSUSProducaoReport: React.FC<ApuraSUSProducaoReportProps> = ({
 
           {/* Quick Action Buttons */}
           <div className="flex flex-wrap items-center gap-2.5">
+            {onBack && (
+              <button
+                onClick={onBack}
+                className="px-3.5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold text-xs flex items-center gap-1.5 transition-all cursor-pointer border border-slate-200/80 shrink-0"
+              >
+                <ArrowLeft size={16} /> Voltar aos Relatórios
+              </button>
+            )}
             <button
               onClick={handleExportPDF}
               className="px-4 py-2.5 bg-blue-700 hover:bg-blue-800 text-white rounded-xl text-xs sm:text-sm font-bold flex items-center gap-2 transition-all shadow-sm cursor-pointer"
