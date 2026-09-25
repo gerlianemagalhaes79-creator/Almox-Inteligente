@@ -117,6 +117,15 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
     return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
   }, [items]);
 
+  // Map material name to unit measure for convenient display in basket
+  const materialUnitMap = useMemo(() => {
+    const map = new Map<string, string>();
+    materialGroups.forEach(m => {
+      map.set(m.name, m.unit);
+    });
+    return map;
+  }, [materialGroups]);
+
   // Suggested materials: ONLY populated when searchTerm is non-empty!
   // When search is empty, DO NOT show materials list.
   const suggestedMaterials = useMemo(() => {
@@ -166,7 +175,7 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
       }];
     });
 
-    // Reset local counter
+    // Reset local counter and give feedback
     setItemQuantities(prev => ({ ...prev, [material.name]: 1 }));
     setLastAddedMaterial(material.name);
     setTimeout(() => {
@@ -190,14 +199,10 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
     setRequestBasket(prev => prev.filter((_, i) => i !== index));
   };
 
-  const handleQuickSearch = (keyword: string) => {
-    setSearchTerm(keyword);
-  };
-
   const isSearchEmpty = searchTerm.trim().length === 0;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 max-w-5xl mx-auto">
       {/* Header card */}
       <div className="bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white p-6 lg:p-8 rounded-3xl shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-6">
         <div>
@@ -208,7 +213,7 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
             {editingRequest ? `Editando Solicitação #${editingRequest.id.slice(-6).toUpperCase()}` : 'Nova Solicitação de Materiais'}
           </h2>
           <p className="text-xs text-blue-200/80 mt-1 max-w-xl">
-            Pesquise os materiais necessários para o seu setor pelo campo de busca abaixo, selecione as sugestões correspondentes e adicione à sua cesta de solicitação.
+            Pesquise os materiais necessários para o seu setor no campo de busca abaixo, selecione as sugestões correspondentes e adicione à sua cesta de solicitação.
           </p>
         </div>
 
@@ -231,130 +236,95 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
         </div>
       </div>
 
-      {/* Main Grid: Catalogue on Left, Basket on Right */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left Column: Catalogue Search & Selection (7 cols) */}
-        <div className="lg:col-span-7 space-y-4">
-          {/* Search bar & Category filter */}
-          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col sm:flex-row gap-3 items-center justify-between">
-            <div className="relative w-full sm:flex-1">
-              <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input
-                type="text"
-                placeholder="Pesquisar material... (ex: seringa, ácido, luva)"
-                value={searchTerm}
-                onChange={(e) => {
-                  setSearchTerm(e.target.value);
-                  setSelectedMaterialName(null);
-                }}
-                className="w-full pl-10 pr-9 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-              />
-              {searchTerm && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSearchTerm('');
-                    setSelectedMaterialName(null);
-                  }}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 hover:bg-slate-200 rounded-md transition-all"
-                  title="Limpar pesquisa"
-                >
-                  <X size={14} />
-                </button>
-              )}
+      {/* Area 1: Prominent Material Search & Autocomplete Suggestions */}
+      <div className="bg-white rounded-3xl border-2 border-blue-100 p-5 sm:p-6 lg:p-7 shadow-lg shadow-blue-500/5 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-1">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 bg-blue-50 text-blue-600 rounded-xl border border-blue-100">
+              <Search size={20} />
             </div>
-
-            <div className="flex items-center gap-2 w-full sm:w-auto shrink-0">
-              <Filter size={14} className="text-slate-400 shrink-0" />
-              <select
-                value={selectedCategory}
-                onChange={(e) => setSelectedCategory(e.target.value)}
-                className="bg-slate-50 border border-slate-200 text-slate-700 text-xs font-bold px-3 py-2.5 rounded-xl focus:outline-none cursor-pointer w-full sm:w-auto"
-              >
-                <option value="all">Todas as Categorias</option>
-                {categories.map(c => (
-                  <option key={c} value={c}>{c}</option>
-                ))}
-              </select>
+            <div>
+              <h3 className="text-sm sm:text-base font-black text-slate-800">
+                Pesquisar Material para Solicitação
+              </h3>
+              <p className="text-xs text-slate-500">
+                Digite o nome ou parte do material para ver as sugestões disponíveis
+              </p>
             </div>
           </div>
+          
+          {/* Category filter */}
+          <div className="flex items-center gap-2 self-start sm:self-auto">
+            <Filter size={14} className="text-slate-400 shrink-0" />
+            <select
+              value={selectedCategory}
+              onChange={(e) => setSelectedCategory(e.target.value)}
+              className="bg-slate-50 border border-slate-200 text-slate-700 text-xs font-bold px-3 py-2 rounded-xl focus:outline-none cursor-pointer"
+            >
+              <option value="all">Todas as Categorias</option>
+              {categories.map(c => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          </div>
+        </div>
 
-          {/* Autocomplete / Suggestions Container */}
-          <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden min-h-[360px]">
-            {isSearchEmpty ? (
-              /* State 1: Search is Empty - Do NOT show any materials! */
-              <div className="p-8 sm:p-12 text-center flex flex-col items-center justify-center space-y-4">
-                <div className="w-16 h-16 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center shadow-inner border border-blue-100">
-                  <Search size={30} />
-                </div>
-                <div className="max-w-md space-y-1.5">
-                  <h3 className="text-sm sm:text-base font-extrabold text-slate-800">
-                    Digite no campo acima para pesquisar materiais
-                  </h3>
-                  <p className="text-xs text-slate-500 leading-relaxed">
-                    Para solicitar itens, comece a digitar o nome ou parte do material (ex: <span className="font-semibold text-slate-700">seringa</span>, <span className="font-semibold text-slate-700">ácido</span>, <span className="font-semibold text-slate-700">luva</span>). O sistema exibirá as sugestões disponíveis para você selecionar e adicionar à cesta.
-                  </p>
-                </div>
+        {/* Evident Search Bar */}
+        <div className="relative">
+          <Search size={22} className="absolute left-4 top-1/2 -translate-y-1/2 text-blue-600" />
+          <input
+            type="text"
+            placeholder="Pesquisar material... (ex: seringa, ácido, luva, algodão)"
+            value={searchTerm}
+            onChange={(e) => {
+              setSearchTerm(e.target.value);
+              setSelectedMaterialName(null);
+            }}
+            className="w-full pl-12 pr-12 py-4 bg-slate-50 border-2 border-slate-200 hover:border-blue-300 focus:border-blue-600 focus:bg-white rounded-2xl text-sm sm:text-base font-semibold text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-4 focus:ring-blue-500/10 shadow-inner transition-all"
+          />
+          {searchTerm && (
+            <button
+              type="button"
+              onClick={() => {
+                setSearchTerm('');
+                setSelectedMaterialName(null);
+              }}
+              className="absolute right-3.5 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200 rounded-xl transition-all"
+              title="Limpar pesquisa"
+            >
+              <X size={18} />
+            </button>
+          )}
+        </div>
 
-                {/* Quick suggestion search tags */}
-                <div className="pt-2">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-2">
-                    Sugestões rápidas de busca:
-                  </span>
-                  <div className="flex flex-wrap items-center justify-center gap-1.5 max-w-sm">
-                    {['Seringa', 'Ácido', 'Luva', 'Agulha', 'Álcool', 'Gaze', 'Máscara', 'Cateter'].map(tag => (
-                      <button
-                        key={tag}
-                        type="button"
-                        onClick={() => handleQuickSearch(tag)}
-                        className="px-2.5 py-1 bg-slate-100 hover:bg-blue-50 hover:text-blue-700 hover:border-blue-200 border border-slate-200 text-slate-600 rounded-lg text-xs font-semibold transition-all"
-                      >
-                        {tag}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            ) : suggestedMaterials.length === 0 ? (
-              /* State 2: Term typed, but no materials matched */
-              <div className="p-10 text-center flex flex-col items-center justify-center space-y-3">
-                <div className="w-14 h-14 rounded-2xl bg-slate-100 text-slate-400 flex items-center justify-center border border-slate-200">
-                  <Package size={26} />
-                </div>
-                <div className="space-y-1">
-                  <p className="text-xs font-extrabold text-slate-700">
-                    Nenhum material encontrado com o termo "{searchTerm}"
-                  </p>
-                  <p className="text-[11px] text-slate-400 max-w-xs">
-                    Tente digitar apenas parte do nome (ex: "sering", "acid") ou certifique-se de que a categoria selecionada inclui o material.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setSearchTerm('')}
-                  className="mt-2 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all"
-                >
-                  Limpar busca
-                </button>
+        {/* Suggestions Results Dropdown / Panel: Only renders when typing */}
+        {!isSearchEmpty && (
+          <div className="border border-slate-200 rounded-2xl overflow-hidden bg-slate-50/50 shadow-sm animate-in fade-in slide-in-from-top-2 duration-150">
+            {suggestedMaterials.length === 0 ? (
+              <div className="p-6 text-center text-slate-500 space-y-1.5 bg-white">
+                <Package size={28} className="mx-auto text-slate-300" />
+                <p className="text-xs font-extrabold text-slate-700">
+                  Nenhum material encontrado com o termo "{searchTerm}"
+                </p>
+                <p className="text-[11px] text-slate-400">
+                  Tente digitar apenas parte do nome (ex: "sering", "acid") ou alterne o filtro de categorias.
+                </p>
               </div>
             ) : (
-              /* State 3: Matching suggestions list */
               <div>
-                {/* Header count */}
-                <div className="px-5 py-3 bg-slate-50/80 border-b border-slate-100 flex items-center justify-between text-xs">
-                  <div className="flex items-center gap-1.5 font-bold text-slate-600">
+                <div className="px-4 py-2.5 bg-blue-50/70 border-b border-blue-100 flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-1.5 font-bold text-blue-900">
                     <Sparkles size={14} className="text-blue-600" />
                     <span>
-                      {suggestedMaterials.length} {suggestedMaterials.length === 1 ? 'sugestão encontrada' : 'sugestões encontradas'} para <span className="text-blue-700 font-extrabold">"{searchTerm}"</span>
+                      {suggestedMaterials.length} {suggestedMaterials.length === 1 ? 'sugestão encontrada' : 'sugestões encontradas'} para <strong className="text-blue-700">"{searchTerm}"</strong>
                     </span>
                   </div>
-                  <span className="text-[11px] text-slate-400">
-                    Selecione e informe a quantidade
+                  <span className="text-[11px] text-slate-400 font-medium">
+                    Selecione a quantidade e clique em Adicionar
                   </span>
                 </div>
 
-                {/* Suggestions items */}
-                <div className="divide-y divide-slate-100 max-h-[560px] overflow-y-auto">
+                <div className="divide-y divide-slate-100 max-h-[380px] overflow-y-auto bg-white">
                   {suggestedMaterials.map(mat => {
                     const qty = itemQuantities[mat.name] || 1;
                     const inBasket = requestBasket.find(b => b.product_name === mat.name);
@@ -365,8 +335,8 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
                       <div 
                         key={mat.name} 
                         onClick={() => setSelectedMaterialName(mat.name)}
-                        className={`p-4 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 cursor-pointer ${
-                          isSelected ? 'bg-blue-50/70 border-l-4 border-blue-600' : 'hover:bg-slate-50/80'
+                        className={`p-3.5 sm:p-4 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 cursor-pointer ${
+                          isSelected ? 'bg-blue-50/60 border-l-4 border-blue-600' : 'hover:bg-slate-50'
                         }`}
                       >
                         <div className="min-w-0 flex-1">
@@ -381,7 +351,7 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
                             )}
                             {wasJustAdded && (
                               <span className="shrink-0 bg-emerald-100 text-emerald-800 text-[10px] font-black px-2 py-0.5 rounded-full border border-emerald-200 animate-in fade-in">
-                                ✓ Adicionado!
+                                ✓ Adicionado à cesta!
                               </span>
                             )}
                           </div>
@@ -418,7 +388,7 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
                           </div>
                         </div>
 
-                        {/* Quantity and Add Action */}
+                        {/* Quantity Stepper and Add Action */}
                         <div 
                           className="flex items-center gap-2 shrink-0 pt-2 sm:pt-0"
                           onClick={(e) => e.stopPropagation()}
@@ -430,7 +400,7 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
                                 ...prev,
                                 [mat.name]: Math.max(1, (prev[mat.name] || 1) - 1)
                               }))}
-                              className="p-1 text-slate-500 hover:text-slate-800 hover:bg-white rounded-lg transition-all"
+                              className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-white rounded-lg transition-all"
                               title="Diminuir quantidade"
                             >
                               <Minus size={13} />
@@ -454,7 +424,7 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
                                 ...prev,
                                 [mat.name]: (prev[mat.name] || 1) + 1
                               }))}
-                              className="p-1 text-slate-500 hover:text-slate-800 hover:bg-white rounded-lg transition-all"
+                              className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-white rounded-lg transition-all"
                               title="Aumentar quantidade"
                             >
                               <Plus size={13} />
@@ -464,7 +434,7 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
                           <button
                             type="button"
                             onClick={() => handleAddItemToBasket(mat)}
-                            className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white rounded-xl text-xs font-extrabold shadow-sm transition-all"
+                            className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white rounded-xl text-xs font-black shadow-md shadow-blue-600/20 transition-all"
                           >
                             <Plus size={14} /> Adicionar
                           </button>
@@ -476,83 +446,120 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
               </div>
             )}
           </div>
+        )}
+      </div>
+
+      {/* Area 2: Cesta de Solicitação (Located directly below the material search area) */}
+      <div className="bg-white rounded-3xl border border-slate-200 p-5 sm:p-6 lg:p-7 shadow-sm space-y-6">
+        <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 bg-blue-50 text-blue-600 rounded-xl">
+              <ShoppingCart size={20} />
+            </div>
+            <div>
+              <h3 className="font-black text-base text-slate-800">Cesta de Solicitação</h3>
+              <p className="text-xs text-slate-400">
+                Itens selecionados para a requisição do setor {selectedSector}
+              </p>
+            </div>
+          </div>
+          <span className="text-xs font-black text-blue-700 bg-blue-50 px-3 py-1.5 rounded-full border border-blue-100">
+            {requestBasket.length} {requestBasket.length === 1 ? 'material' : 'materiais'} na cesta
+          </span>
         </div>
 
-        {/* Right Column: Request Basket & Submit (5 cols) */}
-        <div className="lg:col-span-5 space-y-4">
-          <div className="bg-white rounded-3xl border border-slate-200 p-5 lg:p-6 shadow-sm space-y-5">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div className="flex items-center gap-2">
-                <ShoppingCart size={18} className="text-blue-600" />
-                <h3 className="font-extrabold text-sm text-slate-800">Cesta de Solicitação</h3>
-              </div>
-              <span className="text-xs font-bold text-blue-700 bg-blue-50 px-2.5 py-1 rounded-full border border-blue-100">
-                {requestBasket.length} {requestBasket.length === 1 ? 'item' : 'itens'}
-              </span>
-            </div>
+        {/* Empty or Populated Basket */}
+        {requestBasket.length === 0 ? (
+          <div className="py-10 px-4 text-center bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200 flex flex-col items-center justify-center space-y-2">
+            <ShoppingCart size={32} className="text-slate-300" />
+            <p className="text-xs font-extrabold text-slate-600">Sua cesta de solicitação está vazia</p>
+            <p className="text-[11px] text-slate-400 max-w-sm">
+              Utilize o campo de busca de materiais acima para pesquisar, selecionar as sugestões e adicionar itens ao seu pedido.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="border border-slate-200 rounded-2xl overflow-hidden divide-y divide-slate-100">
+              {requestBasket.map((item, index) => {
+                const unit = materialUnitMap.get(item.product_name) || 'UN';
 
-            {requestBasket.length === 0 ? (
-              <div className="p-8 text-center bg-slate-50 rounded-2xl border border-dashed border-slate-200">
-                <ShoppingCart size={28} className="text-slate-300 mx-auto mb-2" />
-                <p className="text-xs font-bold text-slate-600">Sua cesta está vazia</p>
-                <p className="text-[11px] text-slate-400 mt-0.5">
-                  Pesquise e selecione materiais nas sugestões ao lado para incluir no seu pedido.
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-3 max-h-[300px] overflow-y-auto pr-1">
-                {requestBasket.map((item, index) => (
-                  <div key={index} className="flex items-center justify-between p-3 bg-slate-50 rounded-2xl border border-slate-100 text-xs">
+                return (
+                  <div key={index} className="p-3.5 sm:p-4 bg-slate-50/70 hover:bg-slate-50 transition-colors flex items-center justify-between gap-3 text-xs">
                     <div className="min-w-0 flex-1 pr-2">
-                      <p className="font-bold text-slate-800 truncate">{item.product_name}</p>
+                      <p className="font-extrabold text-slate-800 text-xs sm:text-sm truncate">
+                        {item.product_name}
+                      </p>
+                      <span className="text-[11px] text-slate-500 font-semibold">
+                        Unidade: <strong className="text-slate-700">{unit}</strong>
+                      </span>
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <input
-                        type="number"
-                        min="1"
-                        value={item.quantity}
-                        onChange={(e) => handleUpdateBasketQty(index, parseInt(e.target.value) || 0)}
-                        className="w-14 px-2 py-1 bg-white border border-slate-200 rounded-lg text-xs font-black text-center text-slate-800 focus:outline-none"
-                      />
+
+                    <div className="flex items-center gap-3 shrink-0">
+                      <div className="flex items-center bg-white border border-slate-200 rounded-xl p-0.5 shadow-sm">
+                        <button
+                          type="button"
+                          onClick={() => handleUpdateBasketQty(index, Math.max(1, item.quantity - 1))}
+                          className="p-1 text-slate-400 hover:text-slate-700 rounded-lg"
+                          title="Diminuir quantidade"
+                        >
+                          <Minus size={12} />
+                        </button>
+                        <input
+                          type="number"
+                          min="1"
+                          value={item.quantity}
+                          onChange={(e) => handleUpdateBasketQty(index, Math.max(1, parseInt(e.target.value) || 1))}
+                          className="w-14 px-1 py-1 bg-transparent text-xs font-black text-center text-slate-800 focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleUpdateBasketQty(index, item.quantity + 1)}
+                          className="p-1 text-slate-400 hover:text-slate-700 rounded-lg"
+                          title="Aumentar quantidade"
+                        >
+                          <Plus size={12} />
+                        </button>
+                      </div>
+
                       <button
                         onClick={() => handleRemoveBasketItem(index)}
-                        className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
-                        title="Remover item"
+                        className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all"
+                        title="Remover material da cesta"
                       >
-                        <Trash2 size={14} />
+                        <Trash2 size={16} />
                       </button>
                     </div>
                   </div>
-                ))}
-              </div>
-            )}
+                );
+              })}
+            </div>
 
             {/* Observation field */}
             <div className="space-y-1.5 pt-2">
-              <label className="block text-[11px] font-extrabold uppercase text-slate-500">
-                Observação / Justificativa (Opcional)
+              <label className="block text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
+                Observação / Justificativa do Pedido (Opcional)
               </label>
               <textarea
                 rows={3}
-                placeholder="Ex: Material necessário para procedimento cirúrgico na sala 2..."
+                placeholder="Ex: Material necessário para procedimentos previstos no setor na data..."
                 value={requestObservation}
                 onChange={(e) => setRequestObservation(e.target.value)}
-                className="w-full p-3 bg-slate-50 border border-slate-200 rounded-2xl text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 resize-none font-medium"
+                className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 resize-none font-medium transition-all"
               />
             </div>
 
             {/* Actions */}
-            <div className="space-y-2 pt-2 border-t border-slate-100">
+            <div className="space-y-2.5 pt-2">
               <button
                 onClick={onSubmitRequest}
                 disabled={isSubmitting || requestBasket.length === 0}
-                className="w-full py-3.5 bg-gradient-to-r from-blue-600 to-indigo-700 hover:from-blue-700 hover:to-indigo-800 disabled:opacity-50 text-white rounded-2xl text-xs font-black uppercase tracking-wider shadow-lg shadow-blue-600/20 flex items-center justify-center gap-2 transition-all active:scale-[0.99]"
+                className="w-full py-4 bg-gradient-to-r from-blue-600 via-blue-700 to-indigo-800 hover:from-blue-700 hover:to-indigo-900 disabled:opacity-50 text-white rounded-2xl text-xs sm:text-sm font-black uppercase tracking-wider shadow-xl shadow-blue-600/25 flex items-center justify-center gap-2 transition-all active:scale-[0.99] cursor-pointer"
               >
                 {isSubmitting ? (
                   <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
                 ) : (
                   <>
-                    <Send size={15} /> {editingRequest ? 'Salvar Alterações da Solicitação' : 'Enviar Solicitação ao Almoxarifado'}
+                    <Send size={16} /> {editingRequest ? 'Salvar Alterações da Solicitação' : 'Enviar Solicitação ao Almoxarifado'}
                   </>
                 )}
               </button>
@@ -576,14 +583,14 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
                   type="button"
                   onClick={onApproveAndDeliverImmediate}
                   disabled={isSubmitting}
-                  className="w-full py-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-2xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all"
+                  className="w-full py-3 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-2xl text-xs font-extrabold flex items-center justify-center gap-2 transition-all"
                 >
-                  <CheckCircle2 size={14} className="text-emerald-600" /> Aprovar e Entregar Imediatamente
+                  <CheckCircle2 size={16} className="text-emerald-600" /> Aprovar e Entregar Imediatamente
                 </button>
               )}
             </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );
