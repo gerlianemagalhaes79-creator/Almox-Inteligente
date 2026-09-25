@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { 
   Plus, 
   Minus,
@@ -40,6 +40,14 @@ interface NewRequestTabProps {
   isSubmitting: boolean;
 }
 
+interface MaterialGroup {
+  name: string;
+  category: string;
+  totalStock: number;
+  unit: string;
+  sampleId: string;
+}
+
 // Normalizes strings for robust accent-insensitive and case-insensitive matching
 const normalize = (str?: string) => 
   (str || '')
@@ -69,9 +77,14 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
-  const [itemQuantities, setItemQuantities] = useState<Record<string, number>>({});
-  const [selectedMaterialName, setSelectedMaterialName] = useState<string | null>(null);
-  const [lastAddedMaterial, setLastAddedMaterial] = useState<string | null>(null);
+  
+  // Single active selected material workflow
+  const [selectedMaterial, setSelectedMaterial] = useState<MaterialGroup | null>(null);
+  const [selectedQty, setSelectedQty] = useState<number>(1);
+  const [lastAddedFeedback, setLastAddedFeedback] = useState<string | null>(null);
+
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const qtyInputRef = useRef<HTMLInputElement>(null);
 
   // Determine if user has permission to see actual stock quantities (Almoxarifado / Patrimônio / Admin)
   const hasStockPermission = useMemo(() => {
@@ -89,15 +102,9 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
   }, [canViewStockQuantity, isAdmin, userProfile]);
 
   // Group active items by name so user sees unified materials with aggregated available stock
-  const materialGroups = useMemo(() => {
+  const materialGroups = useMemo<MaterialGroup[]>(() => {
     const active = items.filter(i => !i.deletedAt);
-    const map = new Map<string, {
-      name: string;
-      category: string;
-      totalStock: number;
-      unit: string;
-      sampleId: string;
-    }>();
+    const map = new Map<string, MaterialGroup>();
 
     active.forEach(item => {
       const existing = map.get(item.name);
@@ -126,11 +133,10 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
     return map;
   }, [materialGroups]);
 
-  // Suggested materials: ONLY populated when searchTerm is non-empty!
-  // When search is empty, DO NOT show materials list.
+  // Suggested materials: ONLY populated when searchTerm is non-empty and no material is currently selected
   const suggestedMaterials = useMemo(() => {
     const trimmed = searchTerm.trim();
-    if (!trimmed) {
+    if (!trimmed || selectedMaterial) {
       return [];
     }
 
@@ -138,8 +144,7 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
     const tokens = normQuery.split(/\s+/).filter(Boolean);
 
     return materialGroups.filter(mat => {
-      // For requesting sectors without stock permissions, only show materials that have stock available to request,
-      // without revealing quantities or depleted stock balances.
+      // For requesting sectors without stock permissions, only show materials that have stock available to request
       if (!hasStockPermission && mat.totalStock <= 0) {
         return false;
       }
@@ -152,14 +157,34 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
 
       return tokens.every(token => normName.includes(token) || normCat.includes(token));
     });
-  }, [materialGroups, selectedCategory, searchTerm, hasStockPermission]);
+  }, [materialGroups, selectedCategory, searchTerm, hasStockPermission, selectedMaterial]);
 
-  const handleAddItemToBasket = (material: { name: string, sampleId: string, totalStock: number }) => {
-    const qty = itemQuantities[material.name] || 1;
-    if (qty <= 0) return;
+  // Auto-focus quantity input when a material is selected
+  useEffect(() => {
+    if (selectedMaterial && qtyInputRef.current) {
+      qtyInputRef.current.focus();
+      qtyInputRef.current.select();
+    }
+  }, [selectedMaterial]);
+
+  // 1. User clicks/selects a suggested material:
+  // IMEDIATAMENTE após a seleção, as sugestões desaparecem e o campo de pesquisa é limpo
+  const handleSelectMaterial = (material: MaterialGroup) => {
+    setSelectedMaterial(material);
+    setSelectedQty(1);
+    setSearchTerm(''); // Fechar e ocultar todas as outras sugestões imediatamente
+  };
+
+  // 2. User confirms quantity:
+  // Material enters the basket, selected material clears, search input becomes ready for the next material
+  const handleConfirmAddToBasket = () => {
+    if (!selectedMaterial || selectedQty <= 0) return;
+
+    const mat = selectedMaterial;
+    const qty = selectedQty;
 
     setRequestBasket(prev => {
-      const existingIndex = prev.findIndex(p => p.product_name === material.name);
+      const existingIndex = prev.findIndex(p => p.product_name === mat.name);
       if (existingIndex >= 0) {
         const next = [...prev];
         next[existingIndex] = {
@@ -169,18 +194,39 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
         return next;
       }
       return [...prev, {
-        product_id: material.sampleId,
-        product_name: material.name,
+        product_id: mat.sampleId,
+        product_name: mat.name,
         quantity: qty
       }];
     });
 
-    // Reset local counter and give feedback
-    setItemQuantities(prev => ({ ...prev, [material.name]: 1 }));
-    setLastAddedMaterial(material.name);
+    // Provide immediate feedback
+    setLastAddedFeedback(`${mat.name} (${qty} ${mat.unit}) adicionado à cesta!`);
     setTimeout(() => {
-      setLastAddedMaterial(prev => prev === material.name ? null : prev);
-    }, 2500);
+      setLastAddedFeedback(null);
+    }, 3500);
+
+    // Reset selection and prepare search for the next material
+    setSelectedMaterial(null);
+    setSelectedQty(1);
+    setSearchTerm('');
+
+    // Re-focus search bar
+    setTimeout(() => {
+      if (searchInputRef.current) {
+        searchInputRef.current.focus();
+      }
+    }, 100);
+  };
+
+  // User cancels selection / wants to pick another
+  const handleCancelSelection = () => {
+    setSelectedMaterial(null);
+    setSelectedQty(1);
+    setSearchTerm('');
+    if (searchInputRef.current) {
+      searchInputRef.current.focus();
+    }
   };
 
   const handleUpdateBasketQty = (index: number, newQty: number) => {
@@ -213,7 +259,7 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
             {editingRequest ? `Editando Solicitação #${editingRequest.id.slice(-6).toUpperCase()}` : 'Nova Solicitação de Materiais'}
           </h2>
           <p className="text-xs text-blue-200/80 mt-1 max-w-xl">
-            Pesquise os materiais necessários para o seu setor no campo de busca abaixo, selecione as sugestões correspondentes e adicione à sua cesta de solicitação.
+            Pesquise um material por vez, defina a quantidade necessária e adicione à cesta. Ao finalizar, envie o pedido ao almoxarifado.
           </p>
         </div>
 
@@ -236,6 +282,19 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
         </div>
       </div>
 
+      {/* Feedback banner when item added */}
+      {lastAddedFeedback && (
+        <div className="p-4 bg-emerald-50 border-2 border-emerald-300 text-emerald-900 rounded-2xl flex items-center justify-between shadow-sm animate-in fade-in slide-in-from-top-2">
+          <div className="flex items-center gap-2.5">
+            <CheckCircle2 size={20} className="text-emerald-600 shrink-0" />
+            <span className="text-xs sm:text-sm font-extrabold">{lastAddedFeedback}</span>
+          </div>
+          <span className="text-[11px] font-bold text-emerald-700 bg-emerald-100/80 px-2.5 py-1 rounded-lg">
+            Item incluído na cesta abaixo
+          </span>
+        </div>
+      )}
+
       {/* Area 1: Prominent Material Search & Autocomplete Suggestions */}
       <div className="bg-white rounded-3xl border-2 border-blue-100 p-5 sm:p-6 lg:p-7 shadow-lg shadow-blue-500/5 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-1">
@@ -248,7 +307,7 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
                 Pesquisar Material para Solicitação
               </h3>
               <p className="text-xs text-slate-500">
-                Digite o nome ou parte do material para ver as sugestões disponíveis
+                Digite o nome ou parte do material (ex: agulha, seringa, ácido, luva)
               </p>
             </div>
           </div>
@@ -273,21 +332,25 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
         <div className="relative">
           <Search size={22} className="absolute left-4 top-1/2 -translate-y-1/2 text-blue-600" />
           <input
+            ref={searchInputRef}
             type="text"
-            placeholder="Pesquisar material... (ex: seringa, ácido, luva, algodão)"
+            placeholder="Pesquisar material... (ex: seringa, agulha, ácido, luva)"
             value={searchTerm}
+            disabled={Boolean(selectedMaterial)}
             onChange={(e) => {
               setSearchTerm(e.target.value);
-              setSelectedMaterialName(null);
             }}
-            className="w-full pl-12 pr-12 py-4 bg-slate-50 border-2 border-slate-200 hover:border-blue-300 focus:border-blue-600 focus:bg-white rounded-2xl text-sm sm:text-base font-semibold text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-4 focus:ring-blue-500/10 shadow-inner transition-all"
+            className={`w-full pl-12 pr-12 py-4 rounded-2xl text-sm sm:text-base font-semibold placeholder-slate-400 focus:outline-none transition-all ${
+              selectedMaterial 
+                ? 'bg-slate-100 border-2 border-slate-200 text-slate-400 cursor-not-allowed'
+                : 'bg-slate-50 border-2 border-slate-200 hover:border-blue-300 focus:border-blue-600 focus:bg-white text-slate-800 focus:ring-4 focus:ring-blue-500/10 shadow-inner'
+            }`}
           />
-          {searchTerm && (
+          {searchTerm && !selectedMaterial && (
             <button
               type="button"
               onClick={() => {
                 setSearchTerm('');
-                setSelectedMaterialName(null);
               }}
               className="absolute right-3.5 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200 rounded-xl transition-all"
               title="Limpar pesquisa"
@@ -297,8 +360,8 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
           )}
         </div>
 
-        {/* Suggestions Results Dropdown / Panel: Only renders when typing */}
-        {!isSearchEmpty && (
+        {/* Step A: Suggestions List - Only shows while typing and before any selection */}
+        {!isSearchEmpty && !selectedMaterial && (
           <div className="border border-slate-200 rounded-2xl overflow-hidden bg-slate-50/50 shadow-sm animate-in fade-in slide-in-from-top-2 duration-150">
             {suggestedMaterials.length === 0 ? (
               <div className="p-6 text-center text-slate-500 space-y-1.5 bg-white">
@@ -307,7 +370,7 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
                   Nenhum material encontrado com o termo "{searchTerm}"
                 </p>
                 <p className="text-[11px] text-slate-400">
-                  Tente digitar apenas parte do nome (ex: "sering", "acid") ou alterne o filtro de categorias.
+                  Verifique a grafia, digite apenas uma parte do nome ou altere a categoria selecionada.
                 </p>
               </div>
             ) : (
@@ -319,44 +382,34 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
                       {suggestedMaterials.length} {suggestedMaterials.length === 1 ? 'sugestão encontrada' : 'sugestões encontradas'} para <strong className="text-blue-700">"{searchTerm}"</strong>
                     </span>
                   </div>
-                  <span className="text-[11px] text-slate-400 font-medium">
-                    Selecione a quantidade e clique em Adicionar
+                  <span className="text-[11px] text-slate-400 font-bold">
+                    Clique no material para selecioná-lo
                   </span>
                 </div>
 
                 <div className="divide-y divide-slate-100 max-h-[380px] overflow-y-auto bg-white">
                   {suggestedMaterials.map(mat => {
-                    const qty = itemQuantities[mat.name] || 1;
                     const inBasket = requestBasket.find(b => b.product_name === mat.name);
-                    const isSelected = selectedMaterialName === mat.name;
-                    const wasJustAdded = lastAddedMaterial === mat.name;
 
                     return (
                       <div 
                         key={mat.name} 
-                        onClick={() => setSelectedMaterialName(mat.name)}
-                        className={`p-3.5 sm:p-4 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 cursor-pointer ${
-                          isSelected ? 'bg-blue-50/60 border-l-4 border-blue-600' : 'hover:bg-slate-50'
-                        }`}
+                        onClick={() => handleSelectMaterial(mat)}
+                        className="p-3.5 sm:p-4 hover:bg-blue-50/80 transition-all flex items-center justify-between gap-3 cursor-pointer group"
                       >
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-extrabold text-xs sm:text-sm text-slate-800">
+                            <span className="font-extrabold text-xs sm:text-sm text-slate-800 group-hover:text-blue-700 transition-colors">
                               {mat.name}
                             </span>
                             {inBasket && (
                               <span className="shrink-0 bg-blue-100 text-blue-800 text-[10px] font-black px-2 py-0.5 rounded-full border border-blue-200">
-                                {inBasket.quantity} na cesta
-                              </span>
-                            )}
-                            {wasJustAdded && (
-                              <span className="shrink-0 bg-emerald-100 text-emerald-800 text-[10px] font-black px-2 py-0.5 rounded-full border border-emerald-200 animate-in fade-in">
-                                ✓ Adicionado à cesta!
+                                {inBasket.quantity} já na cesta
                               </span>
                             )}
                           </div>
 
-                          <div className="flex items-center gap-2 mt-1.5 text-[11px] text-slate-500 flex-wrap">
+                          <div className="flex items-center gap-2 mt-1 text-[11px] text-slate-500 flex-wrap">
                             <span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded-md font-bold text-[10px]">
                               {mat.category}
                             </span>
@@ -388,56 +441,10 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
                           </div>
                         </div>
 
-                        {/* Quantity Stepper and Add Action */}
-                        <div 
-                          className="flex items-center gap-2 shrink-0 pt-2 sm:pt-0"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <div className="flex items-center bg-slate-100 border border-slate-200 rounded-xl p-0.5">
-                            <button
-                              type="button"
-                              onClick={() => setItemQuantities(prev => ({
-                                ...prev,
-                                [mat.name]: Math.max(1, (prev[mat.name] || 1) - 1)
-                              }))}
-                              className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-white rounded-lg transition-all"
-                              title="Diminuir quantidade"
-                            >
-                              <Minus size={13} />
-                            </button>
-                            <input
-                              type="number"
-                              min="1"
-                              value={qty}
-                              onChange={(e) => {
-                                const val = parseInt(e.target.value) || 1;
-                                setItemQuantities(prev => ({
-                                  ...prev,
-                                  [mat.name]: Math.max(1, val)
-                                }));
-                              }}
-                              className="w-12 px-1 py-1 bg-transparent text-xs font-black text-center text-slate-800 focus:outline-none"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => setItemQuantities(prev => ({
-                                ...prev,
-                                [mat.name]: (prev[mat.name] || 1) + 1
-                              }))}
-                              className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-white rounded-lg transition-all"
-                              title="Aumentar quantidade"
-                            >
-                              <Plus size={13} />
-                            </button>
-                          </div>
-
-                          <button
-                            type="button"
-                            onClick={() => handleAddItemToBasket(mat)}
-                            className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white rounded-xl text-xs font-black shadow-md shadow-blue-600/20 transition-all"
-                          >
-                            <Plus size={14} /> Adicionar
-                          </button>
+                        {/* Click to select button indicator */}
+                        <div className="shrink-0 flex items-center gap-1.5 text-xs font-black text-blue-600 bg-blue-50 group-hover:bg-blue-600 group-hover:text-white px-3 py-1.5 rounded-xl border border-blue-200 transition-all">
+                          <span>Selecionar</span>
+                          <ArrowRight size={13} />
                         </div>
                       </div>
                     );
@@ -445,6 +452,114 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {/* Step B: Selected Material Configuration Card */}
+        {/* Appears IMMEDIATELY when a material is clicked, closing all other suggestions */}
+        {selectedMaterial && (
+          <div className="p-5 sm:p-6 bg-gradient-to-br from-blue-50/90 via-indigo-50/60 to-white rounded-2xl border-2 border-blue-500 shadow-md animate-in fade-in zoom-in-95 duration-200 space-y-4">
+            <div className="flex items-start justify-between gap-3 border-b border-blue-100 pb-3">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-black uppercase tracking-wider text-blue-700 bg-blue-100 px-2 py-0.5 rounded-md border border-blue-200 flex items-center gap-1">
+                    <CheckCircle2 size={12} /> Material Selecionado
+                  </span>
+                  <span className="text-[10px] font-bold text-slate-500 bg-white px-2 py-0.5 rounded-md border border-slate-200">
+                    {selectedMaterial.category}
+                  </span>
+                </div>
+                <h4 className="text-base sm:text-lg font-black text-slate-900 leading-snug">
+                  {selectedMaterial.name}
+                </h4>
+                <div className="flex items-center gap-2 text-xs text-slate-600">
+                  <span className="font-semibold">
+                    Unidade de Medida: <strong className="text-slate-900 font-black">{selectedMaterial.unit}</strong>
+                  </span>
+                  {hasStockPermission ? (
+                    <>
+                      <span>•</span>
+                      <span className="font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 text-[10px]">
+                        Estoque: {selectedMaterial.totalStock} {selectedMaterial.unit}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span>•</span>
+                      <span className="font-bold text-emerald-700 text-[11px] inline-flex items-center gap-1">
+                        <CheckCircle2 size={12} /> Disponível para solicitação
+                      </span>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleCancelSelection}
+                className="px-2.5 py-1.5 text-xs font-bold text-slate-500 hover:text-slate-800 hover:bg-white rounded-xl border border-transparent hover:border-slate-200 transition-all flex items-center gap-1 shrink-0"
+                title="Trocar este material por outro"
+              >
+                <X size={14} /> Trocar material
+              </button>
+            </div>
+
+            {/* Quantity selection & confirmation */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-1">
+              <div>
+                <label className="block text-xs font-extrabold uppercase text-slate-700 mb-1.5">
+                  Informe a quantidade desejada:
+                </label>
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center bg-white border-2 border-blue-400 rounded-2xl p-1 shadow-sm">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedQty(prev => Math.max(1, prev - 1))}
+                      className="p-2 text-slate-600 hover:text-blue-700 hover:bg-blue-50 rounded-xl transition-all"
+                      title="Diminuir quantidade"
+                    >
+                      <Minus size={16} />
+                    </button>
+                    <input
+                      ref={qtyInputRef}
+                      type="number"
+                      min="1"
+                      value={selectedQty}
+                      onChange={(e) => setSelectedQty(Math.max(1, parseInt(e.target.value) || 1))}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleConfirmAddToBasket();
+                        }
+                      }}
+                      className="w-16 px-1 py-1 bg-transparent text-base font-black text-center text-slate-900 focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setSelectedQty(prev => prev + 1)}
+                      className="p-2 text-slate-600 hover:text-blue-700 hover:bg-blue-50 rounded-xl transition-all"
+                      title="Aumentar quantidade"
+                    >
+                      <Plus size={16} />
+                    </button>
+                  </div>
+                  <span className="font-black text-slate-700 text-sm">
+                    {selectedMaterial.unit}
+                  </span>
+                </div>
+              </div>
+
+              {/* Confirm Add Button */}
+              <div className="flex items-center gap-2 self-stretch sm:self-end">
+                <button
+                  type="button"
+                  onClick={handleConfirmAddToBasket}
+                  className="flex-1 sm:flex-none px-6 py-3.5 bg-gradient-to-r from-blue-600 via-blue-700 to-indigo-800 hover:from-blue-700 hover:to-indigo-900 active:scale-95 text-white rounded-2xl text-xs sm:text-sm font-black uppercase tracking-wider shadow-lg shadow-blue-600/30 flex items-center justify-center gap-2 transition-all cursor-pointer"
+                >
+                  <Plus size={18} /> Confirmar e Adicionar à Cesta
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </div>
@@ -459,7 +574,7 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
             <div>
               <h3 className="font-black text-base text-slate-800">Cesta de Solicitação</h3>
               <p className="text-xs text-slate-400">
-                Itens selecionados para a requisição do setor {selectedSector}
+                Materiais acumulados para o pedido do setor {selectedSector}
               </p>
             </div>
           </div>
@@ -474,7 +589,7 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
             <ShoppingCart size={32} className="text-slate-300" />
             <p className="text-xs font-extrabold text-slate-600">Sua cesta de solicitação está vazia</p>
             <p className="text-[11px] text-slate-400 max-w-sm">
-              Utilize o campo de busca de materiais acima para pesquisar, selecionar as sugestões e adicionar itens ao seu pedido.
+              Pesquise o material no campo de busca acima, selecione-o, informe a quantidade e confirme a inclusão na cesta.
             </p>
           </div>
         ) : (
