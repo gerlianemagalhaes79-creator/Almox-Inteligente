@@ -30,6 +30,7 @@ interface RequestDetailModalProps {
   onAddExtraItem?: (requestId: string, productName: string, productId: string, qty: number) => void;
   showToast?: (msg: string, type: 'success' | 'error' | 'info') => void;
   canViewStockQuantity?: boolean;
+  canPrintRequests?: boolean;
 }
 
 export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
@@ -43,7 +44,8 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
   onPrintRequest,
   onAddExtraItem,
   showToast,
-  canViewStockQuantity = true
+  canViewStockQuantity = true,
+  canPrintRequests = false
 }) => {
   const req = modalState.request;
   if (!modalState.show || !req) return null;
@@ -298,12 +300,14 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
         {/* Modal Footer / Workflow Actions */}
         <div className="bg-slate-50 p-5 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => onPrintRequest(req)}
-              className="flex items-center gap-1.5 px-3.5 py-2.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold shadow-sm transition-all"
-            >
-              <Printer size={14} /> Imprimir Guia
-            </button>
+            {canPrintRequests && onPrintRequest && (
+              <button
+                onClick={() => onPrintRequest(req)}
+                className="flex items-center gap-1.5 px-3.5 py-2.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold shadow-sm transition-all"
+              >
+                <Printer size={14} /> Imprimir Guia
+              </button>
+            )}
           </div>
 
           <div className="flex items-center gap-2">

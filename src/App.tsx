@@ -563,6 +563,19 @@ export default function App() {
     return false;
   }, [isAdmin, userProfile]);
 
+  // Permission to print requests: exclusively for users with Almoxarifado permissions or Admin
+  const canPrintRequests = useMemo(() => {
+    if (userProfile?.role === 'ADMIN') return true;
+    if (user?.email === 'gerlianemagalhaes79@gmail.com' || user?.email === 'poli.almoxarifado@gmail.com') return true;
+    const isAlmox = (s?: string) => {
+      if (!s) return false;
+      return s.toLowerCase().includes('almoxarifado');
+    };
+    if (isAlmox(userProfile?.sector)) return true;
+    if (userProfile?.allowedSectors?.some(s => isAlmox(s))) return true;
+    return false;
+  }, [userProfile, user]);
+
   useEffect(() => {
     if (userProfile?.sector === 'Farmácia' || selectedSector === 'Farmácia') {
       if (!isAdmin) {
@@ -1980,6 +1993,12 @@ export default function App() {
   };
 
   const handlePrintRequests = async () => {
+    // Access control check: Only Almoxarifado/Admin profiles are permitted to print requests
+    if (!canPrintRequests) {
+      showToast("Acesso restrito: a impressão de solicitações é permitida exclusivamente para o setor de Almoxarifado.", "error");
+      return;
+    }
+
     const filteredRequests = requests.filter(req => {
       if (req.deletedAt || (req.status !== 'PENDENTE' && req.status !== 'EM_SEPARACAO')) return false;
       const reqDate = req.date.split('T')[0];
@@ -2323,6 +2342,12 @@ export default function App() {
   };
 
   const handlePrintSingleRequest = async (request: MaterialRequest) => {
+    // Access control check: Only Almoxarifado/Admin profiles are permitted to print requests
+    if (!canPrintRequests) {
+      showToast("Acesso restrito: a impressão de solicitações é permitida exclusivamente para o setor de Almoxarifado.", "error");
+      return;
+    }
+
     // 1. If the request is in PENDENTE state, transition it to EM_SEPARACAO
     if (request.isNewFlow && request.status === 'PENDENTE') {
       try {
@@ -5139,6 +5164,12 @@ export default function App() {
   };
 
   const handleExportRequestsPDF = () => {
+    // Access control check: Only Almoxarifado/Admin profiles are permitted to export/print requests
+    if (!canPrintRequests) {
+      showToast("Acesso restrito: a geração de relatório/impressão de solicitações é permitida exclusivamente para o setor de Almoxarifado.", "error");
+      return;
+    }
+
     try {
       const doc = new jsPDF();
       
@@ -8327,7 +8358,7 @@ export default function App() {
                   )}
                 </div>
               )}
-              {(activeTab === 'requests' || activeTab === 'my-requests' || activeTab === 'admin-devolutions' || activeTab === 'devolution') && (
+              {canPrintRequests && (activeTab === 'requests' || activeTab === 'my-requests' || activeTab === 'admin-devolutions' || activeTab === 'devolution') && (
                 <div className="flex items-center gap-4 mt-2">
                   <button 
                     onClick={handleExportRequestsPDF}
@@ -11515,7 +11546,8 @@ export default function App() {
                 userProfile={userProfile}
                 onEditRequest={handleEditRequest}
                 onDeleteRequest={handleDeleteRequest}
-                onPrintRequest={handlePrintSingleRequest}
+                onPrintRequest={canPrintRequests ? handlePrintSingleRequest : undefined}
+                canPrint={canPrintRequests}
                 onOpenDevolutionModal={(req) => setShowDevolutionModal({ show: true, request: req })}
                 onNavigateToNewRequest={() => {
                   setEditingRequest(null);
@@ -11548,7 +11580,8 @@ export default function App() {
                 setDevolutionObservation={setDevolutionObservation}
                 onRequestDevolution={handleRequestDevolution}
                 isProcessingDevolution={isProcessingDevolution}
-                onPrintRequest={handlePrintSingleRequest}
+                onPrintRequest={canPrintRequests ? handlePrintSingleRequest : undefined}
+                canPrint={canPrintRequests}
                 onOpenDevolutionModal={(req) => setShowDevolutionModal({ show: true, request: req })}
               />
             </div>
@@ -11579,10 +11612,11 @@ export default function App() {
         onDeliverRequest={handleDeliverRequest}
         onApproveRequest={handleApproveRequest}
         onRejectRequest={handleRejectRequest}
-        onPrintRequest={handlePrintSingleRequest}
+        onPrintRequest={canPrintRequests ? handlePrintSingleRequest : undefined}
         onAddExtraItem={handleAddExtraItemToRequest}
         showToast={showToast}
         canViewStockQuantity={canViewStockQuantity}
+        canPrintRequests={canPrintRequests}
       />
 
       {/* Devolution Modal */}

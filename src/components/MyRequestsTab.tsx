@@ -27,7 +27,8 @@ interface MyRequestsTabProps {
   userProfile: UserProfile | null;
   onEditRequest: (req: MaterialRequest) => void;
   onDeleteRequest: (requestId: string) => void;
-  onPrintRequest: (req: MaterialRequest) => void;
+  onPrintRequest?: (req: MaterialRequest) => void;
+  canPrint?: boolean;
   onOpenDevolutionModal: (req: MaterialRequest) => void;
   onNavigateToNewRequest: () => void;
 }
@@ -40,12 +41,21 @@ export const MyRequestsTab: React.FC<MyRequestsTabProps> = ({
   onEditRequest,
   onDeleteRequest,
   onPrintRequest,
+  canPrint,
   onOpenDevolutionModal,
   onNavigateToNewRequest
 }) => {
   const [statusFilter, setStatusFilter] = useState<string>('TODOS');
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [expandedRequestId, setExpandedRequestId] = useState<string | null>(null);
+
+  // Permission to print: exclusively for users with Almoxarifado permissions
+  const hasPrintPermission = useMemo(() => {
+    if (canPrint !== undefined) return canPrint;
+    if (userProfile?.role === 'ADMIN') return true;
+    const isAlmox = (s?: string) => s?.toLowerCase().includes('almoxarifado') || false;
+    return isAlmox(userProfile?.sector) || Boolean(userProfile?.allowedSectors?.some(isAlmox));
+  }, [canPrint, userProfile]);
 
   // Sector's active requests - strictly isolated for Leaders / non-admin to what is registered in their user profile
   const sectorRequests = useMemo(() => {
@@ -238,13 +248,15 @@ export const MyRequestsTab: React.FC<MyRequestsTabProps> = ({
                   </div>
 
                   <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => onPrintRequest(req)}
-                      className="p-2 text-slate-600 hover:bg-slate-100 rounded-xl transition-all border border-slate-200"
-                      title="Imprimir Guia"
-                    >
-                      <Printer size={15} />
-                    </button>
+                    {hasPrintPermission && onPrintRequest && (
+                      <button
+                        onClick={() => onPrintRequest(req)}
+                        className="p-2 text-slate-600 hover:bg-slate-100 rounded-xl transition-all border border-slate-200"
+                        title="Imprimir Guia"
+                      >
+                        <Printer size={15} />
+                      </button>
+                    )}
 
                     {isPending && (
                       <>

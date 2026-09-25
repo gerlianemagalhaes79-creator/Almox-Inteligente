@@ -34,7 +34,8 @@ interface DevolutionTabProps {
   setDevolutionObservation: (obs: string) => void;
   onRequestDevolution: () => void;
   isProcessingDevolution: boolean;
-  onPrintRequest: (req: MaterialRequest) => void;
+  onPrintRequest?: (req: MaterialRequest) => void;
+  canPrint?: boolean;
   onOpenDevolutionModal: (req: MaterialRequest) => void;
 }
 
@@ -57,8 +58,17 @@ export const DevolutionTab: React.FC<DevolutionTabProps> = ({
   onRequestDevolution,
   isProcessingDevolution,
   onPrintRequest,
+  canPrint,
   onOpenDevolutionModal
 }) => {
+  // Permission to print: exclusively for Almoxarifado or Admin
+  const hasPrintPermission = useMemo(() => {
+    if (canPrint !== undefined) return canPrint;
+    if (userProfile?.role === 'ADMIN') return true;
+    const isAlmox = (s?: string) => s?.toLowerCase().includes('almoxarifado') || false;
+    return isAlmox(userProfile?.sector) || Boolean(userProfile?.allowedSectors?.some(isAlmox));
+  }, [canPrint, userProfile]);
+
   const userSectors = useMemo(() => {
     if (userProfile?.role === 'ADMIN') return null; // Admin can access any
     return (userProfile?.allowedSectors && userProfile.allowedSectors.length > 0)
@@ -295,14 +305,16 @@ export const DevolutionTab: React.FC<DevolutionTabProps> = ({
                       </div>
                     </div>
 
-                    <div className="flex justify-end pt-1">
-                      <button
-                        onClick={() => onPrintRequest(req)}
-                        className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-600 border border-slate-200 rounded-xl text-xs font-bold transition-all"
-                      >
-                        <Printer size={13} /> Imprimir Comprovante
-                      </button>
-                    </div>
+                    {hasPrintPermission && onPrintRequest && (
+                      <div className="flex justify-end pt-1">
+                        <button
+                          onClick={() => onPrintRequest(req)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-600 border border-slate-200 rounded-xl text-xs font-bold transition-all"
+                        >
+                          <Printer size={13} /> Imprimir Comprovante
+                        </button>
+                      </div>
+                    )}
                   </div>
                 );
               })}
