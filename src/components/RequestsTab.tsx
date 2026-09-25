@@ -32,6 +32,7 @@ interface RequestsTabProps {
   items: Item[];
   onOpenDetail: (request: MaterialRequest) => void;
   onPrintRequest: (request: MaterialRequest) => void;
+  onPrintFinalDeliverySheet?: (request: MaterialRequest) => void;
   onDeleteRequest: (requestId: string) => void;
   onDeliverRequest: (requestId: string, items: RequestItem[]) => void;
   onApproveRequest: (requestId: string, items: RequestItem[]) => void;
@@ -49,6 +50,7 @@ export const RequestsTab: React.FC<RequestsTabProps> = ({
   items,
   onOpenDetail,
   onPrintRequest,
+  onPrintFinalDeliverySheet,
   onDeleteRequest,
   showToast,
   onExportPDF,
@@ -350,9 +352,9 @@ export const RequestsTab: React.FC<RequestsTabProps> = ({
                             </button>
 
                             <button
-                              onClick={() => onPrintRequest(req)}
+                              onClick={() => (req.status === 'ENTREGUE' && onPrintFinalDeliverySheet) ? onPrintFinalDeliverySheet(req) : onPrintRequest(req)}
                               className="p-1.5 bg-slate-50 hover:bg-slate-100 text-slate-600 border border-slate-200 rounded-lg transition-all shadow-xs cursor-pointer"
-                              title="Imprimir Folha de Solicitação"
+                              title={req.status === 'ENTREGUE' ? "Imprimir Folha Final de Entrega" : "Imprimir Guia de Separação Física"}
                             >
                               <Printer size={14} />
                             </button>
@@ -526,9 +528,9 @@ export const RequestsTab: React.FC<RequestsTabProps> = ({
 
                     {/* Print single request guide */}
                     <button
-                      onClick={() => onPrintRequest(req)}
+                      onClick={() => (req.status === 'ENTREGUE' && onPrintFinalDeliverySheet) ? onPrintFinalDeliverySheet(req) : onPrintRequest(req)}
                       className="p-2 bg-slate-50 hover:bg-slate-100 text-slate-600 border border-slate-200 rounded-xl transition-all shadow-xs cursor-pointer"
-                      title="Imprimir Folha de Solicitação"
+                      title={req.status === 'ENTREGUE' ? "Imprimir Folha Final de Entrega" : "Imprimir Guia de Separação Física"}
                     >
                       <Printer size={15} />
                     </button>

@@ -27,6 +27,7 @@ interface RequestDetailModalProps {
   onApproveRequest: (requestId: string, items: RequestItem[]) => void;
   onRejectRequest: (requestId: string) => void;
   onPrintRequest: (request: MaterialRequest) => void;
+  onPrintFinalDeliverySheet?: (request: MaterialRequest, items?: RequestItem[]) => void;
   onAddExtraItem?: (requestId: string, productName: string, productId: string, qty: number) => void;
   showToast?: (msg: string, type: 'success' | 'error' | 'info') => void;
   canViewStockQuantity?: boolean;
@@ -42,6 +43,7 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
   onApproveRequest,
   onRejectRequest,
   onPrintRequest,
+  onPrintFinalDeliverySheet,
   onAddExtraItem,
   showToast,
   canViewStockQuantity = true,
@@ -88,12 +90,28 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
     }
   };
 
-  const handleProcessDelivery = () => {
+  const handleApproveAndDeliver = async () => {
     const updatedItems = reqItems.map(item => ({
       ...item,
       quantity_approved: approvedQtys[item.id] !== undefined ? approvedQtys[item.id] : item.quantity_requested
     }));
+
+    if (adminNote !== (req.adminObservation || '')) {
+      try {
+        await updateDoc(doc(db, 'requests', req.id), {
+          adminObservation: adminNote
+        });
+      } catch (e) {
+        console.error("Erro ao salvar observação:", e);
+      }
+    }
+
     onDeliverRequest(req.id, updatedItems);
+
+    // Automatically print the Folha Final de Entrega do Material
+    if (onPrintFinalDeliverySheet) {
+      onPrintFinalDeliverySheet(req, updatedItems);
+    }
   };
 
   const handleStartSeparation = () => {
@@ -225,10 +243,10 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
               <table className="w-full text-left text-xs">
                 <thead className="bg-slate-100 text-slate-500 font-black uppercase text-[10px] border-b border-slate-200">
                   <tr>
-                    <th className="p-3">Material</th>
+                    <th className="p-3">Material Solicitado</th>
                     <th className="p-3 text-center">Qtd Solicitada</th>
-                    <th className="p-3 text-center">Qtd Aprovada</th>
-                    {canViewStockQuantity && <th className="p-3 text-center">Estoque Total</th>}
+                    <th className="p-3 text-center">Qtd para Entrega (Aprovação)</th>
+                    {canViewStockQuantity && <th className="p-3 text-center">Estoque Almoxarifado</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200">
@@ -299,13 +317,29 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
 
         {/* Modal Footer / Workflow Actions */}
         <div className="bg-slate-50 p-5 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {canPrintRequests && onPrintFinalDeliverySheet && (
+              <button
+                type="button"
+                onClick={() => onPrintFinalDeliverySheet(req, reqItems.map(item => ({
+                  ...item,
+                  quantity_approved: approvedQtys[item.id] !== undefined ? approvedQtys[item.id] : item.quantity_requested
+                })))}
+                className="flex items-center gap-1.5 px-3.5 py-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-xl text-xs font-bold shadow-xs transition-all cursor-pointer"
+                title="Imprimir Folha Final de Entrega do Material (com assinatura do líder recebedor)"
+              >
+                <FileText size={14} className="text-emerald-700" /> Folha de Entrega
+              </button>
+            )}
+
             {canPrintRequests && onPrintRequest && (
               <button
+                type="button"
                 onClick={() => onPrintRequest(req)}
-                className="flex items-center gap-1.5 px-3.5 py-2.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold shadow-sm transition-all"
+                className="flex items-center gap-1.5 px-3.5 py-2.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold shadow-xs transition-all cursor-pointer"
+                title="Imprimir Guia de Separação Física (Almoxarifado)"
               >
-                <Printer size={14} /> Imprimir Guia
+                <Printer size={14} /> Guia de Separação
               </button>
             )}
           </div>
@@ -314,33 +348,39 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
             {!isDelivered && !isRejected && (
               <>
                 <button
+                  type="button"
                   onClick={() => onRejectRequest(req.id)}
-                  className="flex items-center gap-1 px-3.5 py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold transition-all"
+                  className="flex items-center gap-1 px-3.5 py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold transition-all cursor-pointer"
                 >
                   <XCircle size={14} /> Recusar
                 </button>
 
                 {isPending && (
                   <button
+                    type="button"
                     onClick={handleStartSeparation}
-                    className="flex items-center gap-1.5 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-extrabold shadow-sm transition-all"
+                    className="flex items-center gap-1.5 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-extrabold shadow-sm transition-all cursor-pointer"
+                    title="Iniciar separação física no almoxarifado"
                   >
                     <Layers size={14} /> Iniciar Separação
                   </button>
                 )}
 
                 <button
-                  onClick={handleProcessDelivery}
-                  className="flex items-center gap-1.5 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black shadow-md shadow-emerald-600/20 transition-all"
+                  type="button"
+                  onClick={handleApproveAndDeliver}
+                  className="flex items-center gap-1.5 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black shadow-md shadow-emerald-600/20 transition-all cursor-pointer"
+                  title="Aprovar solicitação com os quantitativos definidos e emitir a Folha Final de Entrega"
                 >
-                  <PackageCheck size={14} /> Aprovar & Entregar
+                  <PackageCheck size={16} /> Aprovar Solicitação
                 </button>
               </>
             )}
 
             <button
+              type="button"
               onClick={onClose}
-              className="px-4 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl text-xs font-bold transition-all"
+              className="px-4 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl text-xs font-bold transition-all cursor-pointer"
             >
               Fechar
             </button>

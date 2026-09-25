@@ -249,38 +249,29 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
-      {/* Header card */}
-      <div className="bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white p-6 lg:p-8 rounded-3xl shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-6">
-        <div>
-          <div className="flex items-center gap-2 text-blue-200 text-xs font-black uppercase tracking-widest mb-1">
-            <Plus size={16} /> Requisição de Materiais
+      {/* Active edit notification if editing an existing request */}
+      {editingRequest && (
+        <div className="p-4 bg-amber-50 border-2 border-amber-300 text-amber-900 rounded-2xl flex items-center justify-between shadow-sm animate-in fade-in">
+          <div className="flex items-center gap-2.5">
+            <AlertCircle size={20} className="text-amber-600 shrink-0" />
+            <div>
+              <p className="text-xs sm:text-sm font-extrabold">
+                Editando Solicitação #{editingRequest.id.slice(-6).toUpperCase()}
+              </p>
+              <p className="text-[11px] text-amber-700">
+                Setor: <strong className="font-black">{editingRequest.sector}</strong> • Ao concluir, as alterações atualizarão esta solicitação existente.
+              </p>
+            </div>
           </div>
-          <h2 className="text-xl lg:text-2xl font-black">
-            {editingRequest ? `Editando Solicitação #${editingRequest.id.slice(-6).toUpperCase()}` : 'Nova Solicitação de Materiais'}
-          </h2>
-          <p className="text-xs text-blue-200/80 mt-1 max-w-xl">
-            Pesquise um material por vez, defina a quantidade necessária e adicione à cesta. Ao finalizar, envie o pedido ao almoxarifado.
-          </p>
+          <button
+            type="button"
+            onClick={() => setEditingRequest(null)}
+            className="text-xs bg-amber-200 hover:bg-amber-300 text-amber-900 px-3 py-1.5 rounded-xl font-bold transition-all shrink-0"
+          >
+            Cancelar Edição
+          </button>
         </div>
-
-        {/* Sector display / selector */}
-        <div className="bg-white/10 backdrop-blur-md px-5 py-3.5 rounded-2xl border border-white/10 shrink-0">
-          <label className="block text-[10px] uppercase font-bold text-blue-200 mb-1">Setor Solicitante</label>
-          {isAdmin || (allowedSectors && allowedSectors.length > 1) ? (
-            <select
-              value={selectedSector}
-              onChange={(e) => setSelectedSector(e.target.value)}
-              className="bg-white text-slate-900 text-xs font-black px-3 py-1.5 rounded-xl focus:outline-none cursor-pointer shadow-sm"
-            >
-              {(allowedSectors && allowedSectors.length > 0 ? allowedSectors : [selectedSector]).map(s => (
-                <option key={s} value={s}>{s}</option>
-              ))}
-            </select>
-          ) : (
-            <span className="text-base font-black text-white">{selectedSector}</span>
-          )}
-        </div>
-      </div>
+      )}
 
       {/* Feedback banner when item added */}
       {lastAddedFeedback && (
@@ -297,7 +288,7 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
 
       {/* Area 1: Prominent Material Search & Autocomplete Suggestions */}
       <div className="bg-white rounded-3xl border-2 border-blue-100 p-5 sm:p-6 lg:p-7 shadow-lg shadow-blue-500/5 space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-1">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-1">
           <div className="flex items-center gap-2.5">
             <div className="p-2 bg-blue-50 text-blue-600 rounded-xl border border-blue-100">
               <Search size={20} />
@@ -312,19 +303,37 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
             </div>
           </div>
           
-          {/* Category filter */}
-          <div className="flex items-center gap-2 self-start sm:self-auto">
-            <Filter size={14} className="text-slate-400 shrink-0" />
-            <select
-              value={selectedCategory}
-              onChange={(e) => setSelectedCategory(e.target.value)}
-              className="bg-slate-50 border border-slate-200 text-slate-700 text-xs font-bold px-3 py-2 rounded-xl focus:outline-none cursor-pointer"
-            >
-              <option value="all">Todas as Categorias</option>
-              {categories.map(c => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
+          <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+            {/* Sector selector for users with multi-sector permission or Admin */}
+            {(isAdmin || (allowedSectors && allowedSectors.length > 1)) && (
+              <div className="flex items-center gap-1.5">
+                <span className="text-[11px] font-bold text-slate-500">Setor:</span>
+                <select
+                  value={selectedSector}
+                  onChange={(e) => setSelectedSector(e.target.value)}
+                  className="bg-slate-50 border border-slate-200 text-slate-700 text-xs font-bold px-3 py-2 rounded-xl focus:outline-none cursor-pointer"
+                >
+                  {(allowedSectors && allowedSectors.length > 0 ? allowedSectors : [selectedSector]).map(s => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {/* Category filter */}
+            <div className="flex items-center gap-1.5">
+              <Filter size={14} className="text-slate-400 shrink-0" />
+              <select
+                value={selectedCategory}
+                onChange={(e) => setSelectedCategory(e.target.value)}
+                className="bg-slate-50 border border-slate-200 text-slate-700 text-xs font-bold px-3 py-2 rounded-xl focus:outline-none cursor-pointer"
+              >
+                <option value="all">Todas as Categorias</option>
+                {categories.map(c => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
 

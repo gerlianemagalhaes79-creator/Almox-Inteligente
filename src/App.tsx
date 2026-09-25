@@ -2252,11 +2252,8 @@ export default function App() {
                 </table>
 
                 <div class="card-signatures">
-                  <div>
-                    <div class="sig-line">Almoxarifado (Separação)</div>
-                  </div>
-                  <div>
-                    <div class="sig-line">Setor Solicitante (Recebimento)</div>
+                  <div style="width: 100%; max-width: 280px; margin: 0 auto;">
+                    <div class="sig-line">Responsável pela Separação (Almoxarifado)</div>
                   </div>
                 </div>
 
@@ -2814,23 +2811,519 @@ export default function App() {
               2. O setor solicitante deve conferir a integridade, embalagens e quantidades no ato do recebimento antes de apor assinatura.
             </div>
 
-            <!-- SIGNATURES -->
-            <div class="signature-section">
+            <!-- SIGNATURES (Apenas Almoxarifado / Separação) -->
+            <div class="signature-section" style="grid-template-columns: 1fr; max-width: 380px; margin: 24px auto 0 auto;">
               <div class="signature-box">
                 <br/><br/>
                 <div class="signature-title">Responsável pela Separação</div>
-                <div class="signature-sub">Almoxarifado Central • Data: ____/____/________</div>
+                <div class="signature-sub">Almoxarifado Central • CPSMS • Data: ____/____/________</div>
               </div>
-              <div class="signature-box">
-                <br/><br/>
-                <div class="signature-title">Responsável pelo Recebimento</div>
-                <div class="signature-sub">Setor ${request.sector} • Data: ____/____/________</div>
-              </div>
+            </div>
+            <div style="text-align: center; margin-top: 10px; font-size: 8px; color: #64748B; font-style: italic;">
+              * Guia exclusivamente interna de separação física. A conferência e assinatura do setor recebedor ocorrem na Folha Final de Entrega.
             </div>
 
             <!-- FOOTER -->
             <div class="doc-footer">
               Documento emitido eletronicamente via Sistema de Almoxarifado • Policlínica Bernardo Félix da Silva - Sobral/CE • Emissão em ${nowStr}
+            </div>
+          </div>
+
+          <script>
+            window.onload = () => {
+              window.print();
+            };
+          </script>
+        </body>
+      </html>
+    `;
+
+    printWindow.document.write(content);
+    printWindow.document.close();
+  };
+
+  const handlePrintFinalDeliverySheet = async (request: MaterialRequest, customItems?: RequestItem[]) => {
+    // Access control check: Only Almoxarifado/Admin profiles are permitted to print
+    if (!canPrintRequests) {
+      showToast("Acesso restrito: a emissão da Folha Final de Entrega é permitida exclusivamente para o setor de Almoxarifado.", "error");
+      return;
+    }
+
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      showToast("Por favor, permita popups para imprimir a Folha Final de Entrega.", "error");
+      return;
+    }
+
+    const reqItemsList = (customItems && customItems.length > 0)
+      ? customItems
+      : allRequestItems.filter(ri => ri.request_id === request.id);
+
+    const dateReqStr = new Date(request.date).toLocaleDateString('pt-BR');
+    const timeReqStr = new Date(request.date).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    const nowStr = new Date().toLocaleString('pt-BR');
+    const logoToUse = appRectangularLogo || appLogo;
+    const protocolCode = `#${request.id.slice(-6).toUpperCase()}`;
+
+    const totalQtyRequested = reqItemsList.reduce((acc, i) => acc + (i.quantity_requested || 0), 0);
+    const totalQtyApproved = reqItemsList.reduce((acc, i) => acc + (i.quantity_approved !== undefined && i.quantity_approved !== null ? i.quantity_approved : i.quantity_requested), 0);
+
+    const content = `
+      <!DOCTYPE html>
+      <html lang="pt-BR">
+        <head>
+          <meta charset="UTF-8">
+          <title>Folha Final de Entrega de Material - ${protocolCode}</title>
+          <style>
+            @page {
+              size: A4 portrait;
+              margin: 10mm 12mm 10mm 12mm;
+            }
+            * { box-sizing: border-box; }
+            body {
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+              color: #0F172A;
+              background-color: #FFFFFF;
+              margin: 0;
+              padding: 12px;
+              font-size: 10px;
+              line-height: 1.35;
+            }
+            .sheet-container {
+              max-width: 100%;
+              margin: 0 auto;
+            }
+            /* Institutional Header */
+            .header-banner {
+              display: flex;
+              align-items: center;
+              justify-content: space-between;
+              border-bottom: 2.5px solid #059669;
+              padding-bottom: 10px;
+              margin-bottom: 12px;
+            }
+            .header-left {
+              display: flex;
+              align-items: center;
+              gap: 12px;
+            }
+            .logo-circle {
+              width: 50px;
+              height: 50px;
+              border-radius: 50%;
+              background: linear-gradient(135deg, #059669, #047857);
+              color: #FFFFFF;
+              font-weight: 900;
+              font-size: 17px;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              border: 2px solid #D1FAE5;
+              flex-shrink: 0;
+            }
+            .logo-img {
+              max-height: 48px;
+              max-width: 120px;
+              object-fit: contain;
+            }
+            .header-institution {
+              display: flex;
+              flex-direction: column;
+            }
+            .inst-name {
+              font-size: 13px;
+              font-weight: 900;
+              color: #0F172A;
+              text-transform: uppercase;
+              letter-spacing: -0.2px;
+            }
+            .inst-sub {
+              font-size: 9.5px;
+              font-weight: 700;
+              color: #059669;
+              text-transform: uppercase;
+              margin-top: 1px;
+            }
+            .inst-sector {
+              font-size: 8.5px;
+              font-weight: 600;
+              color: #64748B;
+              margin-top: 1px;
+            }
+            .header-right {
+              text-align: right;
+              display: flex;
+              flex-direction: column;
+              align-items: flex-end;
+            }
+            .doc-title {
+              font-size: 12.5px;
+              font-weight: 900;
+              color: #065F46;
+              text-transform: uppercase;
+              background-color: #ECFDF5;
+              border: 1px solid #A7F3D0;
+              padding: 3px 8px;
+              border-radius: 6px;
+              letter-spacing: 0.3px;
+            }
+            .protocol-badge {
+              font-size: 12px;
+              font-weight: 900;
+              color: #0F172A;
+              margin-top: 3px;
+            }
+            .status-badge {
+              display: inline-block;
+              font-size: 8.5px;
+              font-weight: 800;
+              padding: 2px 7px;
+              border-radius: 4px;
+              text-transform: uppercase;
+              margin-top: 3px;
+              background-color: #DCFCE7;
+              color: #166534;
+              border: 1px solid #86EFAC;
+            }
+
+            /* Meta Card */
+            .meta-card {
+              background-color: #F8FAFC;
+              border: 1px solid #E2E8F0;
+              border-radius: 8px;
+              padding: 10px 12px;
+              margin-bottom: 12px;
+              display: grid;
+              grid-template-columns: 1.2fr 1fr 1fr;
+              gap: 8px;
+            }
+            .meta-item {
+              display: flex;
+              flex-direction: column;
+            }
+            .meta-label {
+              font-size: 8px;
+              font-weight: 800;
+              text-transform: uppercase;
+              color: #64748B;
+              letter-spacing: 0.5px;
+            }
+            .meta-val {
+              font-size: 10.5px;
+              font-weight: 700;
+              color: #0F172A;
+              margin-top: 1px;
+            }
+            .meta-full {
+              grid-column: 1 / -1;
+              border-top: 1px dashed #CBD5E1;
+              padding-top: 6px;
+              margin-top: 2px;
+            }
+
+            /* Section Header */
+            .section-header {
+              font-size: 10px;
+              font-weight: 800;
+              color: #1E293B;
+              text-transform: uppercase;
+              letter-spacing: 0.5px;
+              margin: 0 0 6px 0;
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+            }
+
+            /* Items Table */
+            .items-table {
+              width: 100%;
+              border-collapse: collapse;
+              margin-bottom: 12px;
+              font-size: 9.5px;
+            }
+            .items-table th {
+              background-color: #064E3B;
+              color: #FFFFFF;
+              font-weight: 800;
+              font-size: 8.5px;
+              text-transform: uppercase;
+              letter-spacing: 0.4px;
+              padding: 6px 8px;
+              border: 1px solid #064E3B;
+              text-align: left;
+            }
+            .items-table th.center, .items-table td.center {
+              text-align: center;
+            }
+            .items-table td {
+              border: 1px solid #CBD5E1;
+              padding: 5px 8px;
+              vertical-align: middle;
+            }
+            .items-table tr:nth-child(even) {
+              background-color: #F8FAFC;
+            }
+            .qty-col {
+              font-weight: 900;
+              font-size: 10.5px;
+            }
+
+            /* Totals Box */
+            .totals-row {
+              background-color: #ECFDF5 !important;
+              font-weight: 900;
+            }
+
+            /* Declaration */
+            .declaration-box {
+              background-color: #F0FDF4;
+              border: 1px solid #BBF7D0;
+              border-radius: 6px;
+              padding: 8px 12px;
+              margin-bottom: 18px;
+              font-size: 8.5px;
+              color: #166534;
+              line-height: 1.4;
+            }
+
+            /* Signatures */
+            .signature-section {
+              display: grid;
+              grid-template-columns: 1fr 1.3fr;
+              gap: 20px;
+              margin-top: 20px;
+              page-break-inside: avoid;
+            }
+            .signature-box {
+              border: 1px solid #CBD5E1;
+              background-color: #FAFAFA;
+              border-radius: 8px;
+              padding: 10px 14px;
+              font-size: 9px;
+            }
+            .signature-box.highlight {
+              border: 1.5px solid #059669;
+              background-color: #F0FDF4;
+            }
+            .signature-line {
+              border-bottom: 1.5px solid #0F172A;
+              margin: 28px 8px 8px 8px;
+            }
+            .signature-title {
+              font-weight: 900;
+              color: #0F172A;
+              text-transform: uppercase;
+              text-align: center;
+              font-size: 9px;
+            }
+            .signature-sub {
+              font-size: 8.5px;
+              color: #059669;
+              font-weight: 700;
+              text-align: center;
+              margin-top: 2px;
+            }
+            .signature-fields {
+              margin-top: 8px;
+              padding-top: 6px;
+              border-top: 1px dashed #CBD5E1;
+              font-size: 8px;
+              color: #334155;
+              line-height: 1.6;
+            }
+
+            /* Footer */
+            .doc-footer {
+              margin-top: 14px;
+              text-align: center;
+              font-size: 7.5px;
+              color: #64748B;
+              border-top: 1px solid #E2E8F0;
+              padding-top: 6px;
+            }
+
+            @media print {
+              .no-print { display: none !important; }
+              body { padding: 0; }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="sheet-container">
+            <!-- HEADER -->
+            <div class="header-banner">
+              <div class="header-left">
+                ${logoToUse ? `
+                  <img src="${logoToUse}" alt="Logo" class="logo-img" />
+                ` : `
+                  <div class="logo-circle">MM</div>
+                `}
+                <div class="header-institution">
+                  <span class="inst-name">Policlínica Bernardo Félix da Silva</span>
+                  <span class="inst-sub">Consórcio Público de Saúde da Microrregião de Sobral — CPSMS</span>
+                  <span class="inst-sector">Setor de Almoxarifado Central & Logística Hospitalar</span>
+                </div>
+              </div>
+              <div class="header-right">
+                <div class="doc-title">Folha Final de Entrega de Material</div>
+                <div class="protocol-badge">${protocolCode}</div>
+                <div class="status-badge">
+                  Pronto para Recebimento / Entrega
+                </div>
+              </div>
+            </div>
+
+            <!-- METADATA CARD -->
+            <div class="meta-card">
+              <div class="meta-item">
+                <span class="meta-label">Setor Solicitante / Destino</span>
+                <span class="meta-val" style="color: #047857; font-size: 11px;">${request.sector}</span>
+              </div>
+              <div class="meta-item">
+                <span class="meta-label">Data da Solicitação</span>
+                <span class="meta-val">${dateReqStr} às ${timeReqStr}</span>
+              </div>
+              <div class="meta-item">
+                <span class="meta-label">Data / Hora de Entrega</span>
+                <span class="meta-val">${nowStr}</span>
+              </div>
+              <div class="meta-item">
+                <span class="meta-label">Usuário Solicitante</span>
+                <span class="meta-val">${request.requesterEmail || 'Não informado'}</span>
+              </div>
+              <div class="meta-item">
+                <span class="meta-label">Responsável pela Liberação</span>
+                <span class="meta-val">Almoxarifado Central</span>
+              </div>
+              <div class="meta-item">
+                <span class="meta-label">Modalidade</span>
+                <span class="meta-val">Requisição Regular de Setor</span>
+              </div>
+              ${request.observation ? `
+                <div class="meta-item meta-full">
+                  <span class="meta-label">Justificativa do Setor:</span>
+                  <span class="meta-val" style="font-weight: 500; font-style: italic;">"${request.observation}"</span>
+                </div>
+              ` : ''}
+              ${request.adminObservation ? `
+                <div class="meta-item meta-full" style="border-top: 1px dashed #A7F3D0; background-color: #ECFDF5; padding: 4px 6px; border-radius: 4px;">
+                  <span class="meta-label" style="color: #047857;">Despacho / Observações do Almoxarifado:</span>
+                  <span class="meta-val" style="color: #065F46; font-weight: 600;">${request.adminObservation}</span>
+                </div>
+              ` : ''}
+            </div>
+
+            <!-- SECTION HEADER -->
+            <div class="section-header">
+              <span>Relação de Materiais Entregues (${reqItemsList.length} itens)</span>
+              <span style="font-size: 8.5px; color: #059669; font-weight: 800;">Conferência Final de Entrega</span>
+            </div>
+
+            <!-- ITEMS TABLE -->
+            <table class="items-table">
+              <thead>
+                <tr>
+                  <th style="width: 25px;" class="center">#</th>
+                  <th style="width: 40%;">Material / Descrição do Produto</th>
+                  <th style="width: 8%;" class="center">Unid.</th>
+                  <th style="width: 14%;" class="center">Qtd. Solicitada</th>
+                  <th style="width: 14%;" class="center">Qtd. Separada</th>
+                  <th style="width: 14%;" class="center">Qtd. a Entregar</th>
+                  <th style="width: 10%;" class="center">Conf.</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${reqItemsList.map((item, idx) => {
+                  const qtySolic = item.quantity_requested || 0;
+                  const qtySep = item.quantity_approved !== undefined && item.quantity_approved !== null ? item.quantity_approved : qtySolic;
+                  const qtyDeliv = qtySep;
+                  
+                  // Inventory match for unit measure
+                  const invItem = items.find(i => normalizeString(i.name) === normalizeString(item.product_name));
+                  const unit = invItem?.unit_measure || 'UN';
+
+                  return `
+                    <tr>
+                      <td class="center" style="font-weight: 800; color: #64748B;">${idx + 1}</td>
+                      <td>
+                        <strong style="color: #0F172A; font-size: 10px;">${item.product_name}</strong>
+                      </td>
+                      <td class="center" style="font-size: 9px; font-weight: 700; color: #475569;">
+                        ${unit}
+                      </td>
+                      <td class="center qty-col" style="color: #0369A1;">
+                        ${qtySolic}
+                      </td>
+                      <td class="center qty-col" style="color: #475569;">
+                        ${qtySep}
+                      </td>
+                      <td class="center qty-col" style="color: #047857; background-color: #F0FDF4;">
+                        ${qtyDeliv}
+                      </td>
+                      <td class="center" style="font-size: 9px; color: #047857; font-weight: bold;">
+                        [ &nbsp; ]
+                      </td>
+                    </tr>
+                  `;
+                }).join('')}
+                <tr class="totals-row">
+                  <td colspan="3" style="text-align: right; text-transform: uppercase; font-size: 9px; padding: 6px 8px;">
+                    Totalizadores Finais:
+                  </td>
+                  <td class="center qty-col" style="color: #0369A1;">
+                    ${totalQtyRequested}
+                  </td>
+                  <td class="center qty-col" style="color: #475569;">
+                    ${totalQtyApproved}
+                  </td>
+                  <td class="center qty-col" style="color: #047857;">
+                    ${totalQtyApproved}
+                  </td>
+                  <td class="center" style="font-size: 8px; color: #047857;">
+                    OK
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+
+            <!-- DECLARATION -->
+            <div class="declaration-box">
+              <strong>TERMO DE CONFERÊNCIA E RECEBIMENTO:</strong>
+              Declaro para os devidos fins de controle institucional que conferi fisicamente e recebi em perfeitas condições de integridade, identificação e embalagem todos os materiais e quantitativos discriminados nesta <strong>Folha Final de Entrega</strong>, destinados às atividades do setor <strong>${request.sector}</strong>.
+            </div>
+
+            <!-- SIGNATURE SECTION -->
+            <div class="signature-section">
+              <div class="signature-box">
+                <div class="signature-line"></div>
+                <div class="signature-title">Responsável pela Entrega</div>
+                <div class="signature-sub">Almoxarifado Central • CPSMS</div>
+                <div class="signature-fields">
+                  <div>Nome: _________________________________________</div>
+                  <div>Matrícula: ____________________________________</div>
+                  <div>Data: ____/____/202___</div>
+                </div>
+              </div>
+
+              <div class="signature-box highlight">
+                <div class="signature-line" style="border-bottom: 2px solid #064E3B;"></div>
+                <div class="signature-title" style="color: #064E3B; font-size: 9.5px;">
+                  Assinatura do Líder / Responsável pelo Setor Recebedor
+                </div>
+                <div class="signature-sub" style="color: #047857;">
+                  Setor: <strong>${request.sector}</strong>
+                </div>
+                <div class="signature-fields">
+                  <div>Nome Legível: __________________________________________________</div>
+                  <div>Cargo / Matrícula: _____________________________________________</div>
+                  <div>Data do Recebimento: ____/____/202___ &nbsp;&nbsp;&nbsp; Horário: ______:______</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- FOOTER -->
+            <div class="doc-footer">
+              Folha Final de Entrega gerada eletronicamente pelo Sistema de Almoxarifado • Policlínica Bernardo Félix da Silva - Sobral/CE • Emissão em ${nowStr}
             </div>
           </div>
 
@@ -11470,6 +11963,7 @@ export default function App() {
                 items={items}
                 onOpenDetail={(req) => setShowRequestDetailModal({ show: true, request: req })}
                 onPrintRequest={handlePrintSingleRequest}
+                onPrintFinalDeliverySheet={canPrintRequests ? handlePrintFinalDeliverySheet : undefined}
                 onDeleteRequest={handleDeleteRequest}
                 onDeliverRequest={handleDeliverRequest}
                 onApproveRequest={handleApproveRequest}
@@ -11613,6 +12107,7 @@ export default function App() {
         onApproveRequest={handleApproveRequest}
         onRejectRequest={handleRejectRequest}
         onPrintRequest={canPrintRequests ? handlePrintSingleRequest : undefined}
+        onPrintFinalDeliverySheet={canPrintRequests ? handlePrintFinalDeliverySheet : undefined}
         onAddExtraItem={handleAddExtraItemToRequest}
         showToast={showToast}
         canViewStockQuantity={canViewStockQuantity}
@@ -11647,7 +12142,7 @@ export default function App() {
       {/* Transaction Modal (Exit) */}
       {showTransactionModal.show && (
         <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white rounded-3xl max-w-2xl w-full p-6 lg:p-8 shadow-2xl border border-slate-200 space-y-6">
+          <div className="bg-white rounded-3xl max-w-2xl w-full p-6 lg:p-8 shadow-2xl border border-slate-200 space-y-6 overflow-hidden my-auto">
             <div className="flex items-center justify-between pb-4 border-b border-slate-100">
               <div className="flex items-center gap-3">
                 <div className="bg-rose-50 text-rose-600 p-2.5 rounded-2xl">
@@ -11710,53 +12205,58 @@ export default function App() {
               )}
 
               {/* Item selection */}
-              <div className="space-y-3 pt-2">
-                <label className="block text-[11px] font-bold text-slate-600">Selecionar Item</label>
-                <div className="flex gap-2">
-                  <select 
-                    className="flex-1 px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold"
-                    value={selectedItemId}
-                    onChange={e => setSelectedItemId(e.target.value)}
-                  >
-                    <option value="">Selecione um material...</option>
-                    {items.filter(i => (i.quantity || 0) > 0).map(i => (
-                      <option key={i.id} value={i.id}>
-                        {i.name} (Disponível: {i.quantity} {i.unit_measure || 'UN'}) - Lote: {i.batch_number || 'S/L'}
-                      </option>
-                    ))}
-                  </select>
-                  <input 
-                    type="number"
-                    min="1"
-                    className="w-24 px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold"
-                    placeholder="Qtd"
-                    value={transactionQty}
-                    onChange={e => setTransactionQty(parseInt(e.target.value) || 1)}
-                  />
-                  <button 
-                    type="button"
-                    onClick={() => {
-                      if (!selectedItemId) return;
-                      const it = items.find(i => i.id === selectedItemId);
-                      if (!it) return;
-                      if (transactionQty > (it.quantity || 0)) {
-                        showToast(`Quantidade excede o estoque disponível (${it.quantity})`, "error");
-                        return;
-                      }
-                      setBasket(prev => {
-                        const existing = prev.find(p => p.item_id === selectedItemId);
-                        if (existing) {
-                          return prev.map(p => p.item_id === selectedItemId ? { ...p, quantity: p.quantity + transactionQty } : p);
+              <div className="space-y-2 pt-2">
+                <label className="block text-[11px] font-bold text-slate-600">Selecionar Item para Saída</label>
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 w-full min-w-0">
+                  <div className="flex-1 min-w-0">
+                    <select 
+                      className="w-full min-w-0 px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold truncate focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 focus:outline-none"
+                      value={selectedItemId}
+                      onChange={e => setSelectedItemId(e.target.value)}
+                    >
+                      <option value="">Selecione um material...</option>
+                      {items.filter(i => (i.quantity || 0) > 0).map(i => (
+                        <option key={i.id} value={i.id}>
+                          {i.name} (Disponível: {i.quantity} {i.unit_measure || 'UN'}) - Lote: {i.batch_number || 'S/L'}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <input 
+                      type="number"
+                      min="1"
+                      className="w-20 sm:w-24 px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-center focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 focus:outline-none"
+                      placeholder="Qtd"
+                      value={transactionQty}
+                      onChange={e => setTransactionQty(parseInt(e.target.value) || 1)}
+                    />
+                    <button 
+                      type="button"
+                      onClick={() => {
+                        if (!selectedItemId) return;
+                        const it = items.find(i => i.id === selectedItemId);
+                        if (!it) return;
+                        if (transactionQty > (it.quantity || 0)) {
+                          showToast(`Quantidade excede o estoque disponível (${it.quantity})`, "error");
+                          return;
                         }
-                        return [...prev, { item_id: selectedItemId, quantity: transactionQty }];
-                      });
-                      setSelectedItemId('');
-                      setTransactionQty(1);
-                    }}
-                    className="px-4 py-2.5 bg-slate-900 text-white rounded-xl font-bold text-xs hover:bg-slate-800 transition-all"
-                  >
-                    Adicionar
-                  </button>
+                        setBasket(prev => {
+                          const existing = prev.find(p => p.item_id === selectedItemId);
+                          if (existing) {
+                            return prev.map(p => p.item_id === selectedItemId ? { ...p, quantity: p.quantity + transactionQty } : p);
+                          }
+                          return [...prev, { item_id: selectedItemId, quantity: transactionQty }];
+                        });
+                        setSelectedItemId('');
+                        setTransactionQty(1);
+                      }}
+                      className="flex-1 sm:flex-none px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-1.5 shadow-sm active:scale-95 whitespace-nowrap shrink-0"
+                    >
+                      <Plus size={15} />
+                      Adicionar
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -11764,20 +12264,21 @@ export default function App() {
               {basket.length > 0 && (
                 <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200/80 space-y-2">
                   <span className="text-xs font-black text-slate-500 uppercase tracking-wider">Itens na Cesta de Saída:</span>
-                  <div className="divide-y divide-slate-200/60">
+                  <div className="divide-y divide-slate-200/60 max-h-48 overflow-y-auto">
                     {basket.map(b => {
                       const it = items.find(i => i.id === b.item_id);
                       return (
-                        <div key={b.item_id} className="py-2 flex items-center justify-between text-sm">
-                          <span className="font-bold text-slate-800">{it?.name || 'Item'}</span>
-                          <div className="flex items-center gap-3">
-                            <span className="text-xs font-semibold bg-rose-100 text-rose-800 px-2 py-0.5 rounded-md">
+                        <div key={b.item_id} className="py-2 flex items-center justify-between gap-3 text-sm">
+                          <span className="font-bold text-slate-800 min-w-0 truncate">{it?.name || 'Item'}</span>
+                          <div className="flex items-center gap-2.5 shrink-0">
+                            <span className="text-xs font-semibold bg-rose-100 text-rose-800 px-2 py-0.5 rounded-md whitespace-nowrap">
                               {b.quantity} {it?.unit_measure || 'UN'}
                             </span>
                             <button 
                               type="button"
                               onClick={() => setBasket(prev => prev.filter(p => p.item_id !== b.item_id))}
-                              className="text-slate-400 hover:text-rose-600"
+                              className="text-slate-400 hover:text-rose-600 p-1 rounded-lg hover:bg-rose-50 transition-colors"
+                              title="Remover item"
                             >
                               <X size={16} />
                             </button>
