@@ -24,6 +24,7 @@ interface NewRequestTabProps {
   allowedSectors: string[];
   userProfile: UserProfile | null;
   isAdmin: boolean;
+  canViewStockQuantity?: boolean;
   requestBasket: Array<{ product_id: string, product_name: string, quantity: number }>;
   setRequestBasket: React.Dispatch<React.SetStateAction<Array<{ product_id: string, product_name: string, quantity: number }>>>;
   requestObservation: string;
@@ -43,6 +44,7 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
   allowedSectors,
   userProfile,
   isAdmin,
+  canViewStockQuantity,
   requestBasket,
   setRequestBasket,
   requestObservation,
@@ -56,6 +58,21 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [itemQuantities, setItemQuantities] = useState<Record<string, number>>({});
+
+  // Determine if user has permission to see actual stock quantities (Almoxarifado / Patrimônio / Admin)
+  const hasStockPermission = useMemo(() => {
+    if (canViewStockQuantity !== undefined) return canViewStockQuantity;
+    if (isAdmin) return true;
+    if (userProfile?.role === 'ADMIN') return true;
+    const isAlmoxOrPatrimonio = (s?: string) => {
+      if (!s) return false;
+      const lower = s.toLowerCase();
+      return lower.includes('almoxarifado') || lower.includes('patrimonio') || lower.includes('patrimônio');
+    };
+    if (isAlmoxOrPatrimonio(userProfile?.sector)) return true;
+    if (userProfile?.allowedSectors?.some(s => isAlmoxOrPatrimonio(s))) return true;
+    return false;
+  }, [canViewStockQuantity, isAdmin, userProfile]);
 
   // Group active items by name so user sees unified materials with aggregated available stock
   const materialGroups = useMemo(() => {
@@ -89,6 +106,11 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
   // Filtered catalogue
   const filteredMaterials = useMemo(() => {
     return materialGroups.filter(mat => {
+      // For requesting sectors without stock permissions, only show materials that have stock available to request,
+      // without revealing quantities or depleted stock balances.
+      if (!hasStockPermission && mat.totalStock <= 0) {
+        return false;
+      }
       if (selectedCategory !== 'all' && mat.category !== selectedCategory) {
         return false;
       }
@@ -100,7 +122,7 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
       }
       return true;
     });
-  }, [materialGroups, selectedCategory, searchTerm]);
+  }, [materialGroups, selectedCategory, searchTerm, hasStockPermission]);
 
   const handleAddItemToBasket = (material: { name: string, sampleId: string, totalStock: number }) => {
     const qty = itemQuantities[material.name] || 1;
@@ -235,9 +257,22 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
                       <div className="flex items-center gap-2 mt-1 text-[11px] text-slate-500">
                         <span className="bg-slate-100 px-2 py-0.5 rounded-md font-medium text-slate-600">{mat.category}</span>
                         <span>•</span>
-                        <span className={`font-bold ${mat.totalStock > 0 ? 'text-emerald-700' : 'text-slate-400'}`}>
-                          {mat.totalStock} {mat.unit} disponível em estoque
-                        </span>
+                        <span className="font-semibold text-slate-600">Unidade: {mat.unit}</span>
+                        {hasStockPermission ? (
+                          <>
+                            <span>•</span>
+                            <span className={`font-bold ${mat.totalStock > 0 ? 'text-emerald-700' : 'text-slate-400'}`}>
+                              {mat.totalStock} {mat.unit} disponível em estoque
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <span>•</span>
+                            <span className="inline-flex items-center gap-1 font-bold text-emerald-700">
+                              <CheckCircle2 size={12} className="text-emerald-600" /> Disponível para solicitação
+                            </span>
+                          </>
+                        )}
                       </div>
                     </div>
 

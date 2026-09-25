@@ -786,16 +786,105 @@ export const BulkEntryModal: React.FC<BulkEntryModalProps> = ({
                         />
                       </div>
 
-                      {/* Unidade */}
-                      <div>
-                        <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Unidade</label>
-                        <input 
-                          type="text"
-                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:bg-white focus:ring-2 focus:ring-blue-500/20"
-                          placeholder="UN, CX, PCT..."
-                          value={row.unit_measure || 'Unidade (UN)'}
-                          onChange={e => updateBulkItem(row.id, 'unit_measure', e.target.value)}
-                        />
+                      {/* Unidade with Autocomplete & Suggestions Dropdown */}
+                      <div 
+                        className="relative" 
+                        ref={el => { unitDropdownRefs.current[row.id] = el; }}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="block text-[10px] font-extrabold text-slate-600 uppercase tracking-wider">
+                            Unidade *
+                          </label>
+                          <span className="text-[9px] font-bold text-blue-600 flex items-center gap-0.5">
+                            <Sparkles size={9} /> Opções
+                          </span>
+                        </div>
+
+                        <div className="relative">
+                          <input 
+                            type="text"
+                            required
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:bg-white focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all pr-7"
+                            placeholder="UN, CX, PCT..."
+                            value={row.unit_measure || ''}
+                            onFocus={() => setActiveUnitDropdownRowId(row.id)}
+                            onChange={e => {
+                              updateBulkItem(row.id, 'unit_measure', e.target.value);
+                              setActiveUnitDropdownRowId(row.id);
+                            }}
+                            autoComplete="off"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setActiveUnitDropdownRowId(prev => prev === row.id ? null : row.id)}
+                            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 rounded-md cursor-pointer"
+                            title="Ver opções de unidade"
+                          >
+                            <ChevronDown size={14} className={`transition-transform duration-150 ${isUnitDropdownOpen ? 'rotate-180 text-blue-600' : ''}`} />
+                          </button>
+                        </div>
+
+                        {/* Quick chips below input for frequent units */}
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {['UN', 'CX', 'PCT', 'FR', 'AMP'].map(code => {
+                            const isSelected = (row.unit_measure || '').toUpperCase().includes(code);
+                            const matchingOpt = unitMemory.find(u => u.code === code) || { label: code };
+                            return (
+                              <button
+                                key={code}
+                                type="button"
+                                onClick={() => {
+                                  updateBulkItem(row.id, 'unit_measure', matchingOpt.label);
+                                  setActiveUnitDropdownRowId(null);
+                                }}
+                                className={`text-[9px] font-black px-1.5 py-0.5 rounded-md border transition-all cursor-pointer ${
+                                  isSelected 
+                                    ? 'bg-blue-600 text-white border-blue-600 shadow-2xs' 
+                                    : 'bg-slate-100 hover:bg-blue-50 text-slate-600 hover:text-blue-700 border-slate-200/80'
+                                }`}
+                                title={`Selecionar ${matchingOpt.label}`}
+                              >
+                                {code}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        {/* Floating Units Dropdown */}
+                        {isUnitDropdownOpen && rowUnitSuggestions.length > 0 && (
+                          <div className="absolute z-50 left-auto right-0 top-full mt-1.5 bg-white border border-slate-200 rounded-2xl shadow-2xl overflow-hidden py-1 max-h-56 overflow-y-auto animate-in fade-in-50 duration-150 min-w-[210px]">
+                            <div className="px-3 py-1 text-[9.5px] font-black uppercase text-slate-400 tracking-wider flex items-center justify-between bg-slate-50 border-b border-slate-100">
+                              <span>Opções de Unidade</span>
+                              <span>Código</span>
+                            </div>
+                            {rowUnitSuggestions.map(u => {
+                              const isCurrent = normalize(row.unit_measure) === u.normalized || normalize(row.unit_measure) === normalize(u.code);
+                              return (
+                                <button
+                                  key={u.label}
+                                  type="button"
+                                  onClick={() => {
+                                    updateBulkItem(row.id, 'unit_measure', u.label);
+                                    setActiveUnitDropdownRowId(null);
+                                  }}
+                                  className={`w-full px-3 py-1.5 text-left flex items-center justify-between hover:bg-blue-50/80 transition-colors border-b border-slate-50 last:border-b-0 cursor-pointer ${
+                                    isCurrent ? 'bg-blue-50 text-blue-700 font-black' : 'text-slate-800'
+                                  }`}
+                                >
+                                  <div className="flex items-center gap-1.5 truncate">
+                                    <span className="text-xs font-bold truncate">{u.label}</span>
+                                    {u.count > 0 && (
+                                      <span className="text-[9px] text-slate-400 font-medium">({u.count})</span>
+                                    )}
+                                  </div>
+                                  <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-100 shrink-0">
+                                    {u.code}
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
                     </div>
 

@@ -546,6 +546,23 @@ export default function App() {
                   user?.email === 'poli.almoxarifado@gmail.com' || 
                   userProfile?.sector === 'Almoxarifado';
 
+  // Permission to view stock quantities: only Almoxarifado, Patrimônio, and Admins can see stock balances
+  const canViewStockQuantity = useMemo(() => {
+    if (isAdmin) return true;
+    if (userProfile?.role === 'ADMIN') return true;
+
+    const isAlmoxOrPatrimonio = (s?: string) => {
+      if (!s) return false;
+      const lower = s.toLowerCase();
+      return lower.includes('almoxarifado') || lower.includes('patrimonio') || lower.includes('patrimônio');
+    };
+
+    if (isAlmoxOrPatrimonio(userProfile?.sector)) return true;
+    if (userProfile?.allowedSectors?.some(s => isAlmoxOrPatrimonio(s))) return true;
+
+    return false;
+  }, [isAdmin, userProfile]);
+
   useEffect(() => {
     if (userProfile?.sector === 'Farmácia' || selectedSector === 'Farmácia') {
       if (!isAdmin) {
@@ -1816,7 +1833,9 @@ export default function App() {
           const originalName = requestBasket.find(i => normalizeString(i.product_name) === productNameKey)?.product_name || "Produto";
           console.warn(`Stock check failed for ${productNameKey}: requested ${requestedQty}, available ${totalAvailable}`);
           showToast(
-            `Estoque insuficiente para "${originalName}". Disponível: ${totalAvailable}.`, 
+            canViewStockQuantity 
+              ? `Estoque insuficiente para "${originalName}". Disponível: ${totalAvailable}.`
+              : `Quantidade solicitada indisponível no momento para "${originalName}". Por favor, informe uma quantidade menor.`, 
             "error"
           );
           setIsSubmittingRequest(false);
@@ -2694,7 +2713,7 @@ export default function App() {
                   <th style="width: 38%;">Produto / Descrição do Material</th>
                   <th style="width: 10%;" class="center">Qtd Solic.</th>
                   <th style="width: 14%;" class="center">Qtd Separada</th>
-                  <th style="width: 38%;">Lotes em Estoque (Sugestão FEFO) / Conferência</th>
+                  <th style="width: 38%;" class="${canViewStockQuantity ? '' : 'center'}">${canViewStockQuantity ? 'Lotes em Estoque (Sugestão FEFO) / Conferência' : 'Conferência / Recebimento'}</th>
                 </tr>
               </thead>
               <tbody>
@@ -2711,7 +2730,13 @@ export default function App() {
                   const hasSingle = productBatches.length === 1;
 
                   let stockInfo = '';
-                  if (hasMultiple) {
+                  if (!canViewStockQuantity) {
+                    stockInfo = `
+                      <div style="font-size: 8px; color: #475569; text-align: center; padding: 3px;">
+                        <span>[ &nbsp; ] Conferido no recebimento</span>
+                      </div>
+                    `;
+                  } else if (hasMultiple) {
                     stockInfo = `
                       <div>
                         <span class="multiple-batches-warning">⚠️ ${productBatches.length} LOTES EM ESTOQUE</span>
@@ -11466,6 +11491,7 @@ export default function App() {
                 allowedSectors={userProfile?.allowedSectors && userProfile.allowedSectors.length > 0 ? userProfile.allowedSectors : [selectedSector]}
                 userProfile={userProfile}
                 isAdmin={isAdmin}
+                canViewStockQuantity={canViewStockQuantity}
                 requestBasket={requestBasket}
                 setRequestBasket={setRequestBasket}
                 requestObservation={requestObservation}
@@ -11556,6 +11582,7 @@ export default function App() {
         onPrintRequest={handlePrintSingleRequest}
         onAddExtraItem={handleAddExtraItemToRequest}
         showToast={showToast}
+        canViewStockQuantity={canViewStockQuantity}
       />
 
       {/* Devolution Modal */}

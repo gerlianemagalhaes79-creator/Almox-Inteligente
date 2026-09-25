@@ -29,6 +29,7 @@ interface RequestDetailModalProps {
   onPrintRequest: (request: MaterialRequest) => void;
   onAddExtraItem?: (requestId: string, productName: string, productId: string, qty: number) => void;
   showToast?: (msg: string, type: 'success' | 'error' | 'info') => void;
+  canViewStockQuantity?: boolean;
 }
 
 export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
@@ -41,7 +42,8 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
   onRejectRequest,
   onPrintRequest,
   onAddExtraItem,
-  showToast
+  showToast,
+  canViewStockQuantity = true
 }) => {
   const req = modalState.request;
   if (!modalState.show || !req) return null;
@@ -188,7 +190,10 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
                       <option value="">Selecione um item do estoque...</option>
                       {activeItems.map(i => (
                         <option key={i.id} value={i.id}>
-                          {i.name} ({i.quantity} {i.unit_measure || 'UN'} disponíveis)
+                          {canViewStockQuantity 
+                            ? `${i.name} (${i.quantity} ${i.unit_measure || 'UN'} disponíveis)`
+                            : `${i.name} (${i.unit_measure || 'UN'})`
+                          }
                         </option>
                       ))}
                     </select>
@@ -221,7 +226,7 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
                     <th className="p-3">Material</th>
                     <th className="p-3 text-center">Qtd Solicitada</th>
                     <th className="p-3 text-center">Qtd Aprovada</th>
-                    <th className="p-3 text-center">Estoque Total</th>
+                    {canViewStockQuantity && <th className="p-3 text-center">Estoque Total</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200">
@@ -251,11 +256,13 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
                             />
                           )}
                         </td>
-                        <td className="p-3 text-center">
-                          <span className={`font-bold ${totalAvailable < item.quantity_requested ? 'text-rose-600' : 'text-slate-600'}`}>
-                            {totalAvailable} un.
-                          </span>
-                        </td>
+                        {canViewStockQuantity && (
+                          <td className="p-3 text-center">
+                            <span className={`font-bold ${totalAvailable < item.quantity_requested ? 'text-rose-600' : 'text-slate-600'}`}>
+                              {totalAvailable} un.
+                            </span>
+                          </td>
+                        )}
                       </tr>
                     );
                   })}
