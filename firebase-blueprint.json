@@ -118,6 +118,26 @@
         "lastModifiedBy": { "type": "string" }
       },
       "required": ["title", "type", "htmlContent"]
+    },
+    "InventoryCompletion": {
+      "title": "InventoryCompletion",
+      "description": "Records completion and status of inventory checks per material category",
+      "type": "object",
+      "properties": {
+        "category": { "type": "string" },
+        "status": { "type": "string", "enum": ["CONCLUÍDO", "EM ANDAMENTO", "NÃO INICIADO"] },
+        "completedAt": { "type": "string", "format": "date-time" },
+        "completionDate": { "type": "string" },
+        "completionTime": { "type": "string" },
+        "responsible": { "type": "string" },
+        "responsibleEmail": { "type": "string" },
+        "totalItemsChecked": { "type": "number" },
+        "itemsWithoutDivergence": { "type": "number" },
+        "itemsWithDivergence": { "type": "number" },
+        "divergences": { "type": "array" },
+        "location": { "type": "string" }
+      },
+      "required": ["category", "status", "responsible"]
     }
   },
   "firestore": {
@@ -156,6 +176,10 @@
     "/document_templates": {
       "schema": "DocumentTemplate",
       "description": "Collection of HTML/CSS document templates"
+    },
+    "/inventory_completions": {
+      "schema": "InventoryCompletion",
+      "description": "Collection of inventory completion and audit records"
     }
   }
 }

@@ -34,15 +34,19 @@ import {
   ArrowRight,
   RotateCcw,
   FileCheck2,
-  FileText
+  FileText,
+  CheckCircle,
+  HelpCircle,
+  ListChecks,
+  Printer as PrinterIcon
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import * as XLSX from 'xlsx';
 import { format, parseISO, differenceInDays, startOfDay } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
-import { Item, UserProfile, Transaction } from '../types';
-import { doc, updateDoc, addDoc, collection, serverTimestamp } from 'firebase/firestore';
+import { Item, UserProfile, Transaction, InventoryCompletion, InventoryCategoryStatus, InventoryDivergenceRecord } from '../types';
+import { doc, updateDoc, addDoc, collection, serverTimestamp, setDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 
 interface BalancoReportProps {
@@ -230,6 +234,73 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
   // History Modal state
   const [showHistoryModal, setShowHistoryModal] = useState<boolean>(false);
 
+  // Real-time inventory completions per category from Firestore
+  const [completions, setCompletions] = useState<Record<string, InventoryCompletion>>({});
+  const [, setLoadingCompletions] = useState<boolean>(true);
+
+  // In-progress categories tracker (persisted in localStorage)
+  const [inProgressCategories, setInProgressCategories] = useState<Record<string, boolean>>(() => {
+    try {
+      const saved = localStorage.getItem('inventory_in_progress_categories');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  // Main view tab: 'itens' (Lotes & Itens) or 'historico' (Histórico e Controle de Conclusão)
+  const [mainViewTab, setMainViewTab] = useState<'itens' | 'historico'>('itens');
+
+  // Confirmation modal to conclude inventory for a category
+  const [confirmCompletionModal, setConfirmCompletionModal] = useState<{
+    show: boolean;
+    category: string;
+    isSaving: boolean;
+  }>({
+    show: false,
+    category: '',
+    isSaving: false
+  });
+
+  // Modal to view / print Completion Report
+  const [completionReportModal, setCompletionReportModal] = useState<{
+    show: boolean;
+    completion: InventoryCompletion | null;
+  }>({
+    show: false,
+    completion: null
+  });
+
+  // Filter and search for History Table
+  const [historyStatusFilter, setHistoryStatusFilter] = useState<'all' | 'CONCLUÍDO' | 'EM ANDAMENTO' | 'NÃO INICIADO'>('all');
+  const [historySearchTerm, setHistorySearchTerm] = useState<string>('');
+
+  // Firestore listener for inventory completions
+  React.useEffect(() => {
+    try {
+      const colRef = collection(db, 'inventory_completions');
+      const unsubscribe = onSnapshot(colRef, (snapshot) => {
+        const map: Record<string, InventoryCompletion> = {};
+        snapshot.forEach(docSnap => {
+          const data = docSnap.data() as InventoryCompletion;
+          map[data.category] = {
+            ...data,
+            id: docSnap.id
+          };
+        });
+        setCompletions(map);
+        setLoadingCompletions(false);
+      }, (err) => {
+        console.error("Erro ao carregar conclusões de inventário:", err);
+        setLoadingCompletions(false);
+      });
+      return () => unsubscribe();
+    } catch (e) {
+      console.error(e);
+      setLoadingCompletions(false);
+    }
+  }, []);
+
   // Active items (excluding soft deleted)
   const activeItems = useMemo(() => {
     return items.filter(i => !i.deletedAt);
@@ -245,6 +316,85 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
     });
     return Array.from(set).sort();
   }, [activeItems, categories, CATEGORY_COLORS]);
+
+  const markCategoryInProgress = (cat: string) => {
+    setInProgressCategories(prev => {
+      const next = { ...prev, [cat]: true };
+      try {
+        localStorage.setItem('inventory_in_progress_categories', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  };
+
+  const getCategoryStatus = (cat: string): InventoryCategoryStatus => {
+    if (completions[cat]?.status === 'CONCLUÍDO') {
+      return 'CONCLUÍDO';
+    }
+    if (inProgressCategories[cat]) {
+      return 'EM ANDAMENTO';
+    }
+    const catItems = activeItems.filter(i => (i.category || 'Geral') === cat);
+    const hasCounts = catItems.some(i => physicalCounts[i.id] !== undefined);
+    if (hasCounts) {
+      return 'EM ANDAMENTO';
+    }
+    return 'NÃO INICIADO';
+  };
+
+  // Resumo Geral do Inventário (Requirement 7)
+  const inventorySummary = useMemo(() => {
+    const totalTypes = availableCategories.length;
+    let completed = 0;
+    let inProgress = 0;
+    let notStarted = 0;
+    let totalDivergences = 0;
+
+    availableCategories.forEach(cat => {
+      const st = getCategoryStatus(cat);
+      if (st === 'CONCLUÍDO') {
+        completed++;
+        totalDivergences += completions[cat]?.itemsWithDivergence || 0;
+      } else if (st === 'EM ANDAMENTO') {
+        inProgress++;
+        const catItems = activeItems.filter(i => (i.category || 'Geral') === cat);
+        catItems.forEach(item => {
+          const pVal = physicalCounts[item.id];
+          if (pVal !== undefined && pVal !== (item.quantity || 0)) {
+            totalDivergences++;
+          }
+        });
+      } else {
+        notStarted++;
+      }
+    });
+
+    return {
+      totalTypes,
+      completed,
+      inProgress,
+      notStarted,
+      totalDivergences
+    };
+  }, [availableCategories, completions, inProgressCategories, physicalCounts, activeItems]);
+
+  // Filtered categories for the History and Inventory Completion table
+  const filteredHistoryCategories = useMemo(() => {
+    return availableCategories.filter(cat => {
+      const status = getCategoryStatus(cat);
+      if (historyStatusFilter !== 'all' && status !== historyStatusFilter) {
+        return false;
+      }
+      if (historySearchTerm.trim()) {
+        const term = historySearchTerm.toLowerCase().trim();
+        const matchesCat = cat.toLowerCase().includes(term);
+        const comp = completions[cat];
+        const matchesResp = (comp?.responsible || '').toLowerCase().includes(term);
+        if (!matchesCat && !matchesResp) return false;
+      }
+      return true;
+    });
+  }, [availableCategories, completions, inProgressCategories, physicalCounts, activeItems, historyStatusFilter, historySearchTerm]);
 
   // Category counts
   const categoryCounts = useMemo(() => {
@@ -599,6 +749,11 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
       }
       return copy;
     });
+
+    const targetItem = activeItems.find(i => i.id === itemId);
+    if (targetItem && targetItem.category) {
+      markCategoryInProgress(targetItem.category);
+    }
   };
 
   // Clear all physical counts
@@ -1811,6 +1966,480 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
     }
   };
 
+  // Start inventory for a category
+  const handleStartInventory = (cat: string) => {
+    markCategoryInProgress(cat);
+    setSelectedCategory(cat);
+    setIsCountMode(true);
+    setMainViewTab('itens');
+    showToast(`Conferência iniciada para "${cat}". Modo de contagem ativado!`, "info");
+  };
+
+  // Continue inventory for a category
+  const handleContinueInventory = (cat: string) => {
+    setSelectedCategory(cat);
+    setIsCountMode(true);
+    setMainViewTab('itens');
+  };
+
+  // Open confirmation modal to conclude inventory for a category
+  const handleOpenConfirmCompletion = (cat: string) => {
+    setConfirmCompletionModal({
+      show: true,
+      category: cat,
+      isSaving: false
+    });
+  };
+
+  // Confirm and save completion of inventory for a category
+  const handleConfirmCompletion = async (cat: string) => {
+    try {
+      setConfirmCompletionModal(prev => ({ ...prev, isSaving: true }));
+
+      const catItems = activeItems.filter(i => (i.category || 'Geral') === cat);
+      const catDivergences: InventoryDivergenceRecord[] = [];
+      let withoutDivCount = 0;
+
+      catItems.forEach(item => {
+        const sysQty = item.quantity || 0;
+        const physQty = physicalCounts[item.id] !== undefined ? physicalCounts[item.id] : sysQty;
+        const diff = physQty - sysQty;
+        if (diff !== 0) {
+          catDivergences.push({
+            id: item.id,
+            name: item.name || 'Sem nome',
+            code: item.batch_number || item.id.slice(0, 8),
+            systemQty: sysQty,
+            physicalQty: physQty,
+            difference: diff,
+            unit: item.unit_measure || 'UN',
+            unitPrice: item.unit_price || 0,
+            financialImpact: diff * (item.unit_price || 0),
+            observation: diff > 0 ? 'Sobra identificada na contagem física' : 'Falta identificada na contagem física',
+            category: cat,
+            expiryDate: item.expiry_date
+          });
+        } else {
+          withoutDivCount++;
+        }
+      });
+
+      const now = new Date();
+      const docId = `comp_${cat.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()}`;
+      const userStr = currentUser?.displayName || userProfile?.name || auth.currentUser?.displayName || auth.currentUser?.email || 'Almoxarifado Central';
+
+      const completionRecord: InventoryCompletion = {
+        id: docId,
+        category: cat,
+        status: 'CONCLUÍDO',
+        completedAt: now.toISOString(),
+        completionDate: format(now, 'dd/MM/yyyy'),
+        completionTime: format(now, 'HH:mm'),
+        responsible: userStr,
+        responsibleEmail: currentUser?.email || auth.currentUser?.email || '',
+        totalItemsChecked: catItems.length,
+        itemsWithoutDivergence: withoutDivCount,
+        itemsWithDivergence: catDivergences.length,
+        divergences: catDivergences,
+        location: inventoryLocation
+      };
+
+      await setDoc(doc(db, 'inventory_completions', docId), completionRecord);
+
+      // Clean inProgress flag for this category
+      setInProgressCategories(prev => {
+        const next = { ...prev };
+        delete next[cat];
+        try {
+          localStorage.setItem('inventory_in_progress_categories', JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+
+      setConfirmCompletionModal({ show: false, category: '', isSaving: false });
+      showToast(`Inventário de "${cat}" CONCLUÍDO com sucesso!`, "success");
+
+      // Open the completion report for printing/viewing right away
+      setCompletionReportModal({
+        show: true,
+        completion: completionRecord
+      });
+    } catch (err: any) {
+      console.error("Erro ao concluir inventário:", err);
+      showToast(`Erro ao concluir inventário: ${err.message}`, "error");
+      setConfirmCompletionModal(prev => ({ ...prev, isSaving: false }));
+    }
+  };
+
+  // Reopen inventory for a category
+  const handleReopenInventory = async (cat: string) => {
+    if (!window.confirm(`Deseja reabrir a conferência do tipo de material "${cat}"? O status voltará para "EM ANDAMENTO".`)) {
+      return;
+    }
+    try {
+      const docId = `comp_${cat.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()}`;
+      await deleteDoc(doc(db, 'inventory_completions', docId));
+      markCategoryInProgress(cat);
+      setSelectedCategory(cat);
+      setIsCountMode(true);
+      showToast(`Conferência de "${cat}" reaberta para ajustes!`, "info");
+    } catch (err: any) {
+      console.error(err);
+      showToast(`Erro ao reabrir conferência: ${err.message}`, "error");
+    }
+  };
+
+  // Open completion report modal
+  const handleOpenCompletionReport = (completion: InventoryCompletion) => {
+    setCompletionReportModal({
+      show: true,
+      completion
+    });
+  };
+
+  // Print completion report via styled iframe
+  const handlePrintCompletionReport = (completion: InventoryCompletion) => {
+    const printFrame = document.createElement('iframe');
+    printFrame.style.position = 'fixed';
+    printFrame.style.right = '0';
+    printFrame.style.bottom = '0';
+    printFrame.style.width = '0';
+    printFrame.style.height = '0';
+    printFrame.style.border = '0';
+    document.body.appendChild(printFrame);
+
+    const docHtml = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Relatório de Conclusão de Inventário - ${completion.category}</title>
+        <meta charset="utf-8" />
+        <style>
+          @page { size: A4 portrait; margin: 15mm; }
+          * { box-sizing: border-box; }
+          body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #0f172a; margin: 0; padding: 15px; font-size: 11px; }
+          .header { border-bottom: 2px solid #0f172a; padding-bottom: 12px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: flex-start; }
+          .inst-title { font-size: 14px; font-weight: 900; color: #1e3a8a; margin: 0; text-transform: uppercase; }
+          .doc-title { font-size: 16px; font-weight: 900; color: #0f172a; margin: 4px 0 2px 0; text-transform: uppercase; letter-spacing: -0.5px; }
+          .doc-sub { font-size: 10px; color: #64748b; margin: 0; }
+          .badge-status { display: inline-block; padding: 4px 10px; background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; border-radius: 9999px; font-weight: 800; font-size: 10px; }
+          
+          .meta-grid { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 14px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 18px; font-size: 11px; }
+          .meta-item strong { color: #475569; font-weight: 700; margin-right: 4px; }
+          .meta-item span { color: #0f172a; font-weight: 800; }
+
+          .kpi-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 18px; }
+          .kpi-box { border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; text-align: center; background: #ffffff; }
+          .kpi-val { font-size: 18px; font-weight: 900; color: #0f172a; }
+          .kpi-lbl { font-size: 9px; font-weight: 800; text-transform: uppercase; color: #64748b; margin-top: 2px; }
+
+          .section-title { font-size: 12px; font-weight: 900; text-transform: uppercase; color: #0f172a; margin: 16px 0 8px 0; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; display: flex; align-items: center; justify-content: space-between; }
+          
+          table { width: 100%; border-collapse: collapse; margin-bottom: 18px; font-size: 10px; }
+          th { background: #f1f5f9; color: #334155; font-weight: 800; text-align: left; padding: 7px 8px; border: 1px solid #cbd5e1; text-transform: uppercase; font-size: 9px; }
+          td { padding: 6px 8px; border: 1px solid #cbd5e1; }
+          tr:nth-child(even) { background: #f8fafc; }
+          .text-center { text-align: center; }
+          .text-right { text-align: right; }
+          .diff-pos { color: #16a34a; font-weight: 800; }
+          .diff-neg { color: #dc2626; font-weight: 800; }
+          
+          .no-divergences-box { background: #ecfdf5; border: 1.5px solid #10b981; border-radius: 8px; padding: 16px; text-align: center; margin-bottom: 20px; }
+          .no-divergences-text { font-size: 13px; font-weight: 900; color: #065f46; letter-spacing: -0.2px; }
+          .no-divergences-sub { font-size: 10px; color: #047857; margin-top: 3px; }
+
+          .conclusion-statement { background: #f8fafc; border-left: 4px solid #10b981; padding: 10px 14px; font-size: 10.5px; font-style: italic; color: #334155; margin-bottom: 25px; line-height: 1.5; border-radius: 0 6px 6px 0; }
+          
+          .sig-container { margin-top: 30px; display: grid; grid-template-columns: 2fr 1fr; gap: 30px; }
+          .sig-line { border-top: 1px solid #475569; padding-top: 5px; font-size: 10px; }
+          .sig-label { font-weight: 800; color: #0f172a; }
+          .sig-sub { color: #64748b; font-size: 9px; }
+
+          .footer-note { font-size: 8.5px; color: #94a3b8; text-align: center; margin-top: 25px; border-top: 1px dashed #e2e8f0; padding-top: 8px; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <div>
+            <div class="inst-title">Policlínica Regional Bernardo Félix da Silva</div>
+            <div class="doc-title">Relatório de Conclusão de Inventário</div>
+            <div class="doc-sub">Consórcio Público de Saúde da Microrregião de Sobral (CPSMS) • Almoxarifado Central e Farmácia</div>
+          </div>
+          <div style="text-align: right;">
+            <span class="badge-status">🟢 INVENTÁRIO CONCLUÍDO</span>
+          </div>
+        </div>
+
+        <div class="meta-grid">
+          <div class="meta-item"><strong>Tipo de material:</strong> <span>${completion.category}</span></div>
+          <div class="meta-item"><strong>Data e hora da conclusão:</strong> <span>${completion.completionDate} às ${completion.completionTime}</span></div>
+          <div class="meta-item"><strong>Responsável:</strong> <span>${completion.responsible}</span></div>
+          <div class="meta-item"><strong>Local / Setor:</strong> <span>${completion.location || inventoryLocation}</span></div>
+        </div>
+
+        <div class="kpi-row">
+          <div class="kpi-box">
+            <div class="kpi-val">${completion.totalItemsChecked}</div>
+            <div class="kpi-lbl">Quantidade de itens conferidos</div>
+          </div>
+          <div class="kpi-box" style="border-top: 3px solid #10b981;">
+            <div class="kpi-val" style="color: #059669;">${completion.itemsWithoutDivergence}</div>
+            <div class="kpi-lbl">Quantidade sem divergência</div>
+          </div>
+          <div class="kpi-box" style="border-top: 3px solid ${completion.itemsWithDivergence > 0 ? '#e11d48' : '#cbd5e1'};">
+            <div class="kpi-val" style="color: ${completion.itemsWithDivergence > 0 ? '#e11d48' : '#059669'};">${completion.itemsWithDivergence}</div>
+            <div class="kpi-lbl">Quantidade com divergência</div>
+          </div>
+        </div>
+
+        <div class="section-title">
+          <span>Divergências Encontradas</span>
+          <span style="font-size: 10px; font-weight: normal; color: #64748b;">${completion.divergences.length} apurada(s)</span>
+        </div>
+
+        ${completion.divergences.length === 0 ? `
+          <div class="no-divergences-box">
+            <div class="no-divergences-text">✓ NÃO FORAM IDENTIFICADAS DIVERGÊNCIAS NA CONFERÊNCIA.</div>
+            <div class="no-divergences-sub">Todos os itens e lotes conferidos coincidem exatamente com o saldo físico registrado no sistema.</div>
+          </div>
+        ` : `
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 25px;" class="text-center">#</th>
+                <th>Material</th>
+                <th style="width: 100px;" class="text-center">Código / Lote</th>
+                <th style="width: 75px;" class="text-right">Qtd. Sistema</th>
+                <th style="width: 80px;" class="text-right">Qtd. Encontrada</th>
+                <th style="width: 85px;" class="text-center">Diferença</th>
+                <th style="width: 130px;">Observação</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${completion.divergences.map((d, i) => `
+                <tr>
+                  <td class="text-center" style="font-weight: 800; color: #64748b;">${i + 1}</td>
+                  <td><strong>${d.name}</strong></td>
+                  <td class="text-center" style="font-family: monospace;">${d.code || 'S/ Lote'}</td>
+                  <td class="text-right font-mono">${d.systemQty} ${d.unit || 'UN'}</td>
+                  <td class="text-right font-mono" style="font-weight: 800; color: #1e40af;">${d.physicalQty} ${d.unit || 'UN'}</td>
+                  <td class="text-center ${d.difference > 0 ? 'diff-pos' : 'diff-neg'}">
+                    ${d.difference > 0 ? `+${d.difference} (Sobra)` : `${d.difference} (Falta)`}
+                  </td>
+                  <td style="font-style: italic; color: #475569;">${d.observation || (d.difference > 0 ? 'Sobra física' : 'Falta física')}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `}
+
+        <div class="conclusion-statement">
+          “Inventário concluído em ${completion.completionDate} às ${completion.completionTime}, permanecendo registradas neste relatório as divergências identificadas durante a conferência.”
+        </div>
+
+        <div class="sig-container">
+          <div>
+            <div class="sig-line">
+              <div class="sig-label">Responsável pelo inventário: ${completion.responsible}</div>
+              <div class="sig-sub">Conferência Física In Loco • Almoxarifado / Farmácia</div>
+            </div>
+          </div>
+          <div>
+            <div class="sig-line">
+              <div class="sig-label">Assinatura / Visto: _______________________</div>
+              <div class="sig-sub">Data: ${completion.completionDate}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="footer-note">
+          Documento emitido eletronicamente pelo Sistema de Almoxarifado • Policlínica Regional Bernardo Félix da Silva - Sobral/CE
+        </div>
+      </body>
+      </html>
+    `;
+
+    printFrame.contentDocument?.write(docHtml);
+    printFrame.contentDocument?.close();
+    printFrame.contentWindow?.focus();
+    setTimeout(() => {
+      try {
+        printFrame.contentWindow?.print();
+      } catch (e) {
+        console.error("Print error:", e);
+      }
+      setTimeout(() => {
+        if (printFrame.parentNode) {
+          document.body.removeChild(printFrame);
+        }
+      }, 3000);
+    }, 400);
+  };
+
+  // Export completion report to PDF via jsPDF
+  const handleExportCompletionReportPDF = (completion: InventoryCompletion) => {
+    try {
+      const doc = new jsPDF({
+        orientation: 'portrait',
+        unit: 'mm',
+        format: 'a4'
+      });
+
+      const pageWidth = doc.internal.pageSize.getWidth();
+      let startY = 15;
+
+      // Header
+      doc.setFillColor(15, 23, 42);
+      doc.rect(14, 12, 3, 14, 'F');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(13);
+      doc.setTextColor(15, 23, 42);
+      doc.text('POLICLÍNICA REGIONAL BERNARDO FÉLIX DA SILVA', 20, 17);
+
+      doc.setFontSize(11);
+      doc.setTextColor(5, 150, 105);
+      doc.text('RELATÓRIO DE CONCLUSÃO DE INVENTÁRIO', 20, 23);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8.5);
+      doc.setTextColor(100, 116, 139);
+      doc.text('Consórcio Público de Saúde da Microrregião de Sobral (CPSMS)', 20, 27);
+
+      startY = 33;
+
+      // Meta box
+      doc.setFillColor(248, 250, 252);
+      doc.setDrawColor(226, 232, 240);
+      doc.roundedRect(14, startY, pageWidth - 28, 26, 2, 2, 'FD');
+
+      doc.setFontSize(8.5);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(51, 65, 85);
+      doc.text('TIPO DE MATERIAL:', 18, startY + 6);
+      doc.setFont('helvetica', 'normal');
+      doc.text(completion.category, 55, startY + 6);
+
+      doc.setFont('helvetica', 'bold');
+      doc.text('DATA E HORA:', 18, startY + 12);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`${completion.completionDate} às ${completion.completionTime}`, 55, startY + 12);
+
+      doc.setFont('helvetica', 'bold');
+      doc.text('RESPONSÁVEL:', 18, startY + 18);
+      doc.setFont('helvetica', 'normal');
+      doc.text(completion.responsible, 55, startY + 18);
+
+      doc.setFont('helvetica', 'bold');
+      doc.text('STATUS:', 115, startY + 6);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(5, 150, 105);
+      doc.text('CONCLUÍDO', 135, startY + 6);
+
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(51, 65, 85);
+      doc.text('ITENS CONFERIDOS:', 115, startY + 12);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`${completion.totalItemsChecked} itens`, 150, startY + 12);
+
+      doc.setFont('helvetica', 'bold');
+      doc.text('DIVERGÊNCIAS:', 115, startY + 18);
+      doc.setFont('helvetica', 'bold');
+      if (completion.itemsWithDivergence > 0) {
+        doc.setTextColor(225, 29, 72);
+        doc.text(`${completion.itemsWithDivergence} com divergência`, 145, startY + 18);
+      } else {
+        doc.setTextColor(5, 150, 105);
+        doc.text('0 (100% sem divergência)', 145, startY + 18);
+      }
+
+      startY += 32;
+
+      // Section title
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(9.5);
+      doc.setTextColor(15, 23, 42);
+      doc.text('DIVERGÊNCIAS ENCONTRADAS', 14, startY);
+
+      if (completion.divergences.length === 0) {
+        doc.setFillColor(236, 253, 245);
+        doc.setDrawColor(167, 243, 208);
+        doc.roundedRect(14, startY + 3, pageWidth - 28, 14, 2, 2, 'FD');
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(9);
+        doc.setTextColor(5, 150, 105);
+        doc.text('NÃO FORAM IDENTIFICADAS DIVERGÊNCIAS NA CONFERÊNCIA.', pageWidth / 2, startY + 11.5, { align: 'center' });
+        startY += 24;
+      } else {
+        const head = [['#', 'Material', 'Lote / Código', 'Qtd. Sistema', 'Qtd. Encontrada', 'Diferença', 'Observação']];
+        const body = completion.divergences.map((d, idx) => [
+          String(idx + 1),
+          d.name,
+          d.code || 'S/ Lote',
+          `${d.systemQty} ${d.unit || 'UN'}`,
+          `${d.physicalQty} ${d.unit || 'UN'}`,
+          d.difference > 0 ? `+${d.difference} (Sobra)` : `${d.difference} (Falta)`,
+          d.observation || ''
+        ]);
+
+        autoTable(doc, {
+          startY: startY + 3,
+          head: head,
+          body: body,
+          theme: 'grid',
+          styles: { fontSize: 8, cellPadding: 2.5 },
+          headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold' },
+          margin: { left: 14, right: 14 }
+        });
+
+        startY = (doc as any).lastAutoTable?.finalY + 8 || startY + 40;
+      }
+
+      // Conclusion Statement
+      doc.setFont('helvetica', 'italic');
+      doc.setFontSize(8.5);
+      doc.setTextColor(71, 85, 105);
+      doc.text(
+        `“Inventário concluído em ${completion.completionDate} às ${completion.completionTime}, permanecendo registradas neste relatório as divergências identificadas durante a conferência.”`,
+        14,
+        startY,
+        { maxWidth: pageWidth - 28 }
+      );
+
+      startY += 18;
+
+      // Signatures
+      doc.setDrawColor(148, 163, 184);
+      doc.setLineWidth(0.3);
+
+      doc.line(16, startY, 95, startY);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8);
+      doc.setTextColor(15, 23, 42);
+      doc.text(`Responsável: ${completion.responsible}`, 16, startY + 4.5);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7);
+      doc.setTextColor(100, 116, 139);
+      doc.text('Conferência Física In Loco', 16, startY + 8);
+
+      doc.line(115, startY, 194, startY);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8);
+      doc.setTextColor(15, 23, 42);
+      doc.text('Assinatura: ___________________________', 115, startY + 4.5);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7);
+      doc.setTextColor(100, 116, 139);
+      doc.text(`Data: ${completion.completionDate}`, 115, startY + 8);
+
+      doc.save(`Comprovante_Inventario_${completion.category.replace(/\W+/g, '_')}_${completion.completionDate.replace(/\//g, '-')}.pdf`);
+      showToast("Relatório de Conclusão baixado em PDF com sucesso!", "success");
+    } catch (err: any) {
+      console.error(err);
+      showToast(`Erro ao gerar PDF: ${err.message}`, "error");
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Top Banner & Header Card */}
@@ -1863,13 +2492,13 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
               {/* Documento de Divergencias - Destaque com Badge */}
               <button
                 onClick={() => setShowDivergencesDocModal(true)}
-                className="w-full inline-flex items-center justify-center gap-2 px-3.5 py-2.5 bg-gradient-to-r from-amber-600 via-rose-600 to-rose-700 hover:from-amber-700 hover:to-rose-800 text-white font-extrabold text-xs sm:text-sm rounded-xl shadow-sm shadow-rose-700/20 hover:shadow-md transition-all cursor-pointer whitespace-nowrap active:scale-[0.98]"
+                className="w-full h-11 sm:h-12 inline-flex items-center justify-center gap-2 px-3 bg-gradient-to-r from-amber-600 via-rose-600 to-rose-700 hover:from-amber-700 hover:to-rose-800 text-white font-extrabold text-xs sm:text-sm rounded-xl shadow-sm shadow-rose-700/20 hover:shadow-md transition-all cursor-pointer whitespace-nowrap active:scale-[0.98]"
                 title="Visualizar, Imprimir e Emitir Documento Oficial de Divergências de Estoque"
               >
                 <FileText size={16} className="shrink-0" />
-                <span>Documento de Divergências</span>
+                <span className="truncate">Documento de Divergências</span>
                 {(sessionDivergentItems.length > 0 || recordedDivergentItems.length > 0) && (
-                  <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 text-[11px] font-black rounded-full bg-white text-rose-700 shadow-2xs">
+                  <span className="shrink-0 inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 text-[11px] font-black rounded-full bg-white text-rose-700 shadow-2xs leading-none">
                     {sessionDivergentItems.length || recordedDivergentItems.length}
                   </span>
                 )}
@@ -1878,42 +2507,42 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
               {/* Folha de Contagem (PDF) */}
               <button
                 onClick={() => handleExportPDF(false)}
-                className="w-full inline-flex items-center justify-center gap-2 px-3.5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-extrabold text-xs sm:text-sm rounded-xl shadow-sm hover:shadow transition-all cursor-pointer whitespace-nowrap active:scale-[0.98]"
+                className="w-full h-11 sm:h-12 inline-flex items-center justify-center gap-2 px-3 bg-slate-900 hover:bg-slate-800 text-white font-extrabold text-xs sm:text-sm rounded-xl shadow-sm hover:shadow transition-all cursor-pointer whitespace-nowrap active:scale-[0.98]"
                 title="Gerar Folha de Balanço Oficial em PDF para prancheta"
               >
                 <Printer size={16} className="text-blue-300 shrink-0" />
-                <span>Folha de Contagem (PDF)</span>
+                <span className="truncate">Folha de Contagem (PDF)</span>
               </button>
 
               {/* PDF com Valores */}
               <button
                 onClick={() => handleExportPDF(true)}
-                className="w-full inline-flex items-center justify-center gap-2 px-3.5 py-2.5 bg-white hover:bg-slate-50 text-slate-700 hover:text-slate-900 border border-slate-200/90 hover:border-slate-300 font-bold text-xs sm:text-sm rounded-xl shadow-2xs transition-all cursor-pointer whitespace-nowrap active:scale-[0.98]"
+                className="w-full h-11 sm:h-12 inline-flex items-center justify-center gap-2 px-3 bg-white hover:bg-slate-50 text-slate-700 hover:text-slate-900 border border-slate-200/90 hover:border-slate-300 font-bold text-xs sm:text-sm rounded-xl shadow-2xs transition-all cursor-pointer whitespace-nowrap active:scale-[0.98]"
                 title="Gerar Relatório com Valores Financeiros"
               >
                 <FileSpreadsheet size={16} className="text-slate-500 shrink-0" />
-                <span>PDF com Valores</span>
+                <span className="truncate">PDF com Valores</span>
               </button>
 
               {/* Exportar Excel */}
               <button
                 onClick={handleExportExcel}
-                className="w-full inline-flex items-center justify-center gap-2 px-3.5 py-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 hover:text-emerald-900 border border-emerald-200/80 font-bold text-xs sm:text-sm rounded-xl shadow-2xs transition-all cursor-pointer whitespace-nowrap active:scale-[0.98]"
+                className="w-full h-11 sm:h-12 inline-flex items-center justify-center gap-2 px-3 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 hover:text-emerald-900 border border-emerald-200/80 font-bold text-xs sm:text-sm rounded-xl shadow-2xs transition-all cursor-pointer whitespace-nowrap active:scale-[0.98]"
                 title="Exportar Planilha Excel Completa (.xlsx)"
               >
                 <Download size={16} className="text-emerald-600 shrink-0" />
-                <span>Exportar Excel</span>
+                <span className="truncate">Exportar Excel</span>
               </button>
             </div>
           </div>
         </div>
 
         {/* Mode Selector: View Mode vs Interactive Count Mode */}
-        <div className="mt-5 pt-4 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
+        <div className="mt-4 pt-3.5 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2.5">
             <button
               onClick={() => setIsCountMode(!isCountMode)}
-              className={`px-3.5 py-2 rounded-xl text-xs font-extrabold flex items-center gap-2 transition-all cursor-pointer ${
+              className={`h-9 px-3.5 rounded-xl text-xs font-extrabold inline-flex items-center gap-2 transition-all cursor-pointer ${
                 isCountMode
                   ? 'bg-amber-600 text-white shadow-sm shadow-amber-600/20 ring-2 ring-amber-400/40'
                   : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
@@ -1926,7 +2555,7 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
             {isCountMode && stats.countedItemsCount > 0 && (
               <button
                 onClick={handleResetCounts}
-                className="text-xs font-bold text-rose-600 hover:text-rose-800 underline decoration-dotted flex items-center gap-1 cursor-pointer"
+                className="h-9 px-2 text-xs font-bold text-rose-600 hover:text-rose-800 underline decoration-dotted inline-flex items-center gap-1 cursor-pointer"
               >
                 <RefreshCw size={12} /> Limpar contagens digitadas ({stats.countedItemsCount})
               </button>
@@ -1934,7 +2563,7 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
 
             <button
               onClick={() => setShowHistoryModal(true)}
-              className="px-3 py-2 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer"
+              className="h-9 px-3.5 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 transition-all cursor-pointer"
               title="Visualizar histórico e auditoria de ajustes realizados via balanço"
             >
               <History size={14} className="text-slate-500" />
@@ -1945,23 +2574,10 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
                 </span>
               )}
             </button>
-
-            <button
-              onClick={() => setShowDivergencesDocModal(true)}
-              className="px-3 py-2 bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-200 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap"
-              title="Visualizar e emitir o Termo Oficial de Divergências"
-            >
-              <FileText size={14} className="text-rose-600 shrink-0" />
-              <span>Doc. de Divergências</span>
-              {(sessionDivergentItems.length > 0 || recordedDivergentItems.length > 0) && (
-                <span className="inline-flex items-center justify-center min-w-[18px] h-4 px-1 bg-rose-200 text-rose-900 rounded-full text-[10px] font-black">
-                  {sessionDivergentItems.length || recordedDivergentItems.length}
-                </span>
-              )}
-            </button>
           </div>
 
-          <div className="flex items-center gap-2 text-xs text-slate-500 font-medium">
+          <div className="h-9 px-3 rounded-xl bg-slate-50 border border-slate-200/80 text-xs font-semibold text-slate-500 inline-flex items-center gap-1.5 whitespace-nowrap shrink-0">
+            <Clock size={13} className="text-slate-400 shrink-0" />
             <span>Última atualização: {format(new Date(), 'dd/MM/yyyy HH:mm')}</span>
           </div>
         </div>

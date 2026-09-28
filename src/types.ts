@@ -126,3 +126,37 @@ export interface CatalogMaterial {
   supplier?: string | null;
   totalStock?: number;
 }
+
+export interface InventoryDivergenceRecord {
+  id?: string;
+  name: string;
+  code?: string;
+  systemQty: number;
+  physicalQty: number;
+  difference: number;
+  unit?: string;
+  unitPrice?: number;
+  financialImpact?: number;
+  observation?: string;
+  category?: string;
+  expiryDate?: string | null;
+}
+
+export type InventoryCategoryStatus = 'NÃO INICIADO' | 'EM ANDAMENTO' | 'CONCLUÍDO';
+
+export interface InventoryCompletion {
+  id: string;
+  category: string;
+  status: InventoryCategoryStatus;
+  completedAt: string;
+  completionDate: string;
+  completionTime: string;
+  responsible: string;
+  responsibleEmail?: string;
+  totalItemsChecked: number;
+  itemsWithoutDivergence: number;
+  itemsWithDivergence: number;
+  divergences: InventoryDivergenceRecord[];
+  location?: string;
+  notes?: string;
+}
