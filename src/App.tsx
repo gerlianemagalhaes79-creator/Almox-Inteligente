@@ -463,6 +463,7 @@ export default function App() {
   const [donationRevisionDate, setDonationRevisionDate] = useState('');
   const [letterheadImage, setLetterheadImage] = useState<string | null>(null);
   const [reportsTab, setReportsTab] = useState<'overview' | 'balanco' | 'apurasus_producao' | 'apurasus_custos' | 'quantitativo' | 'letterhead'>('overview');
+  const [openDivergencesDocOnMount, setOpenDivergencesDocOnMount] = useState(false);
   const [quantitativoSource, setQuantitativoSource] = useState<'sample' | 'system'>('system');
   const [quantitativoPeriodPreset, setQuantitativoPeriodPreset] = useState<'1_semestre_2026' | '2_semestre_2026' | 'ano_2026' | 'custom'>('1_semestre_2026');
   const [quantitativoCustomStart, setQuantitativoCustomStart] = useState('2026-01-01');
@@ -10744,12 +10745,25 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="mt-5 pt-4 border-t border-slate-100">
+                  <div className="mt-5 pt-4 border-t border-slate-100 flex flex-col sm:flex-row gap-2">
                     <button 
-                      onClick={() => setReportsTab('balanco')}
-                      className="w-full bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white px-4 py-2.5 rounded-xl font-extrabold text-xs flex items-center justify-center gap-2 hover:from-blue-800 hover:to-indigo-950 transition-all shadow-md shadow-blue-600/20 whitespace-nowrap cursor-pointer"
+                      onClick={() => {
+                        setOpenDivergencesDocOnMount(false);
+                        setReportsTab('balanco');
+                      }}
+                      className="flex-1 bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white px-3.5 py-2.5 rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 hover:from-blue-800 hover:to-indigo-950 transition-all shadow-md shadow-blue-600/20 whitespace-nowrap cursor-pointer"
                     >
-                      <ClipboardList size={15} /> Acessar Balanço de Estoque
+                      <ClipboardList size={14} /> Acessar Balanço
+                    </button>
+                    <button 
+                      onClick={() => {
+                        setOpenDivergencesDocOnMount(true);
+                        setReportsTab('balanco');
+                      }}
+                      className="bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-200 px-3 py-2.5 rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 transition-all shadow-2xs whitespace-nowrap cursor-pointer"
+                      title="Gerar Termo e Relatório Oficial de Divergências de Estoque"
+                    >
+                      <FileText size={14} className="text-rose-600" /> Doc. Divergências
                     </button>
                   </div>
                 </div>
@@ -11384,6 +11398,11 @@ export default function App() {
                   inventoryLocation={inventoryLocation}
                   showToast={showToast}
                   onBack={() => setReportsTab('overview')}
+                  currentUser={user}
+                  userProfile={userProfile}
+                  transactions={transactions}
+                  checkStockAndNotify={checkStockAndNotify}
+                  initialOpenDivergencesDoc={openDivergencesDocOnMount}
                 />
               )}
 
