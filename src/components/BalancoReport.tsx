@@ -38,7 +38,9 @@ import {
   CheckCircle,
   HelpCircle,
   ListChecks,
-  Printer as PrinterIcon
+  Printer as PrinterIcon,
+  Plus,
+  PlusCircle
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -231,6 +233,40 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
   });
   const [isBatchSaving, setIsBatchSaving] = useState<boolean>(false);
 
+  // Modal to add a physical batch that is not in the system
+  const [addBatchModal, setAddBatchModal] = useState<{
+    show: boolean;
+    materialName: string;
+    description: string;
+    category: string;
+    batchNumber: string;
+    expiryDate: string;
+    isIndeterminateExpiry: boolean;
+    physicalQty: string;
+    unitMeasure: string;
+    unitPrice: string;
+    supplier: string;
+    location: 'Almoxarifado' | 'Farmácia';
+    room: string;
+    observation: string;
+  }>({
+    show: false,
+    materialName: '',
+    description: '',
+    category: '',
+    batchNumber: '',
+    expiryDate: '',
+    isIndeterminateExpiry: false,
+    physicalQty: '',
+    unitMeasure: 'UN',
+    unitPrice: '',
+    supplier: '',
+    location: 'Almoxarifado',
+    room: '',
+    observation: 'Lote físico identificado durante a conferência física do inventário/balanço'
+  });
+  const [isSavingNewBatch, setIsSavingNewBatch] = useState<boolean>(false);
+
   // History Modal state
   const [showHistoryModal, setShowHistoryModal] = useState<boolean>(false);
 
@@ -335,7 +371,7 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
       return 'EM ANDAMENTO';
     }
     const catItems = activeItems.filter(i => (i.category || 'Geral') === cat);
-    const hasCounts = catItems.some(i => physicalCounts[i.id] !== undefined);
+    const hasCounts = catItems.some(i => physicalCounts[i.id] !== undefined || ((i as any).lastBalancoDiff !== undefined && (i as any).lastBalancoDiff !== 0));
     if (hasCounts) {
       return 'EM ANDAMENTO';
     }
@@ -361,6 +397,8 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
         catItems.forEach(item => {
           const pVal = physicalCounts[item.id];
           if (pVal !== undefined && pVal !== (item.quantity || 0)) {
+            totalDivergences++;
+          } else if (pVal === undefined && (item as any).lastBalancoDiff !== undefined && (item as any).lastBalancoDiff !== 0) {
             totalDivergences++;
           }
         });
@@ -824,7 +862,7 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
         batch_number: item.batch_number || '',
         expiry_date: item.expiry_date || '',
         observation: `[Ajuste de Balanço] Ajuste direto de contagem física: Saldo anterior: ${oldQty} un -> Novo saldo: ${newPhysicalQty} un (Dif: ${diff > 0 ? '+' : ''}${diff} un).`,
-        exitReason: diff < 0 ? 'perda' : undefined
+        ...(diff < 0 ? { exitReason: 'perda' as const } : {})
       });
 
       if (checkStockAndNotify) {
@@ -913,7 +951,7 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
           batch_number: newBatch || '',
           expiry_date: newExpiry || '',
           observation: `[Ajuste de Balanço / Inventário] ${diff > 0 ? 'Sobra física' : 'Falta / Quebra física'}. Saldo anterior: ${oldQty} un -> Novo saldo: ${newQty} un (Diferença: ${diff > 0 ? '+' : ''}${diff} un). Motivo: ${adjustModal.reason}${adjustModal.observation ? ` - Obs: ${adjustModal.observation}` : ''}`,
-          exitReason: diff < 0 ? 'perda' : undefined
+          ...(diff < 0 ? { exitReason: 'perda' as const } : {})
         });
       }
 
@@ -1007,7 +1045,7 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
           batch_number: item.batch_number || '',
           expiry_date: item.expiry_date || '',
           observation: `[Balanço em Lote] ${diff > 0 ? 'Sobra de contagem' : 'Falta de contagem'}. Saldo anterior: ${oldQty} un -> Novo saldo: ${newQty} un (Dif: ${diff > 0 ? '+' : ''}${diff} un). Motivo: ${batchAdjustModal.reason}${batchAdjustModal.observation ? ` - Obs: ${batchAdjustModal.observation}` : ''}`,
-          exitReason: diff < 0 ? 'perda' : undefined
+          ...(diff < 0 ? { exitReason: 'perda' as const } : {})
         });
 
         // 3. Stock notification check
@@ -1027,6 +1065,174 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
       showToast(`Erro ao aplicar ajustes em lote: ${error.message}`, "error");
     } finally {
       setIsBatchSaving(false);
+    }
+  };
+
+  // Distinct active products in the system for easy selection when adding physical batches
+  const uniqueCatalogProducts = useMemo(() => {
+    const map = new Map<string, Item>();
+    activeItems.forEach(i => {
+      const key = i.name.trim().toLowerCase();
+      if (!map.has(key)) {
+        map.set(key, i);
+      }
+    });
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [activeItems]);
+
+  // Open modal to add a physical batch not currently in the system
+  const handleOpenAddBatchModal = (prefillItem?: Item) => {
+    const defaultCat = prefillItem?.category || (selectedCategory !== 'all' ? selectedCategory : (availableCategories[0] || 'EPI'));
+    const defaultLoc = prefillItem?.location || (inventoryLocation === 'Farmácia' ? 'Farmácia' : 'Almoxarifado');
+
+    setAddBatchModal({
+      show: true,
+      materialName: prefillItem?.name || '',
+      description: prefillItem?.description || prefillItem?.name || '',
+      category: defaultCat,
+      batchNumber: '',
+      expiryDate: '',
+      isIndeterminateExpiry: false,
+      physicalQty: '',
+      unitMeasure: prefillItem?.unit_measure || 'UN',
+      unitPrice: prefillItem?.unit_price ? String(prefillItem.unit_price) : '',
+      supplier: prefillItem?.supplier || '',
+      location: defaultLoc,
+      room: prefillItem?.room || '',
+      observation: 'Lote físico identificado durante a conferência física do inventário/balanço'
+    });
+  };
+
+  // Auto-fill fields when selecting an existing product
+  const handleSelectCatalogProduct = (productName: string) => {
+    const found = uniqueCatalogProducts.find(p => p.name.trim().toLowerCase() === productName.trim().toLowerCase());
+    if (found) {
+      setAddBatchModal(prev => ({
+        ...prev,
+        materialName: found.name,
+        description: found.description || found.name,
+        category: found.category || prev.category,
+        unitMeasure: found.unit_measure || prev.unitMeasure,
+        unitPrice: found.unit_price ? String(found.unit_price) : prev.unitPrice,
+        supplier: found.supplier || prev.supplier,
+        location: found.location || prev.location,
+        room: found.room || prev.room
+      }));
+    } else {
+      setAddBatchModal(prev => ({
+        ...prev,
+        materialName: productName,
+        description: prev.description || productName
+      }));
+    }
+  };
+
+  // Save new physical batch into the system and register it in the inventory
+  const handleSaveNewBatch = async () => {
+    if (!addBatchModal.materialName.trim()) {
+      showToast("Informe o nome ou descrição do material.", "info");
+      return;
+    }
+    if (!addBatchModal.batchNumber.trim()) {
+      showToast("Informe o número do lote físico encontrado.", "info");
+      return;
+    }
+    const qty = parseInt(addBatchModal.physicalQty, 10);
+    if (isNaN(qty) || qty < 0) {
+      showToast("Informe uma quantidade física válida (maior ou igual a 0).", "error");
+      return;
+    }
+    if (!addBatchModal.isIndeterminateExpiry && !addBatchModal.expiryDate) {
+      showToast("Informe a data de validade do lote ou marque 'Sem Validade'.", "info");
+      return;
+    }
+
+    setIsSavingNewBatch(true);
+    try {
+      const userEmail = currentUser?.email || auth.currentUser?.email || '';
+      const userName = currentUser?.displayName || userProfile?.name || auth.currentUser?.displayName || userEmail || 'Almoxarifado';
+      const cleanName = addBatchModal.materialName.trim();
+      const cleanBatch = addBatchModal.batchNumber.trim().toUpperCase();
+      const cleanCategory = addBatchModal.category.trim() || 'Geral';
+      const cleanUnit = addBatchModal.unitMeasure.trim().toUpperCase() || 'UN';
+      const expiry = addBatchModal.isIndeterminateExpiry ? null : addBatchModal.expiryDate;
+      const unitPriceVal = parseFloat(addBatchModal.unitPrice.replace(',', '.')) || 0;
+      const now = new Date();
+
+      // Check if this batch already exists for this material to prevent accidental duplicates
+      const existingBatch = activeItems.find(i => 
+        i.name.trim().toLowerCase() === cleanName.toLowerCase() &&
+        (i.batch_number || '').trim().toUpperCase() === cleanBatch
+      );
+
+      if (existingBatch) {
+        showToast(`O lote "${cleanBatch}" já existe para "${cleanName}". Utilize o botão "Ajustar Item" na tabela.`, "info");
+        setIsSavingNewBatch(false);
+        return;
+      }
+
+      // 1. Create item in Firestore
+      const newItemData: any = {
+        name: cleanName,
+        description: addBatchModal.description.trim() || cleanName,
+        quantity: qty,
+        min_quantity: 10,
+        expiry_date: expiry,
+        origin: 'extra',
+        unit_price: unitPriceVal,
+        supplier: addBatchModal.supplier.trim() || null,
+        category: cleanCategory,
+        batch_number: cleanBatch,
+        location: addBatchModal.location,
+        room: addBatchModal.room.trim() || '',
+        unit_measure: cleanUnit,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        lastBalancoAt: now.toISOString(),
+        lastBalancoBy: userEmail,
+        lastBalancoDiff: qty,
+        lastBalancoReason: 'Lote físico cadastrado durante a conferência do balanço'
+      };
+
+      const docRef = await addDoc(collection(db, 'items'), newItemData);
+      const newId = docRef.id;
+
+      // 2. Register entry transaction for audit trail
+      if (qty > 0) {
+        await addDoc(collection(db, 'transactions'), {
+          item_id: newId,
+          item_name: cleanName,
+          type: 'entry',
+          origin: 'extra',
+          quantity: qty,
+          sector: 'Almoxarifado',
+          location: addBatchModal.location,
+          room: addBatchModal.room.trim() || '',
+          date: now.toISOString(),
+          responsible: userName,
+          responsibleEmail: userEmail,
+          batch_number: cleanBatch,
+          expiry_date: expiry || '',
+          observation: `[Inclusão no Balanço] Lote físico identificado na conferência física do inventário. Saldo inicial apurado: ${qty} ${cleanUnit}. Motivo: ${addBatchModal.observation || 'Conferência de balanço'}`
+        });
+      }
+
+      // 3. Mark as counted in physicalCounts so it appears reconciled (divergência = 0)
+      setPhysicalCounts(prev => ({
+        ...prev,
+        [newId]: qty
+      }));
+
+      // 4. Mark category in progress
+      markCategoryInProgress(cleanCategory);
+
+      showToast(`Lote físico "${cleanBatch}" de "${cleanName}" (${qty} ${cleanUnit}) adicionado ao balanço com sucesso!`, "success");
+      setAddBatchModal(prev => ({ ...prev, show: false }));
+    } catch (err: any) {
+      console.error("Erro ao adicionar lote físico:", err);
+      showToast(`Erro ao adicionar lote: ${err.message || 'Erro desconhecido'}`, "error");
+    } finally {
+      setIsSavingNewBatch(false);
     }
   };
 
@@ -2002,20 +2208,37 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
 
       catItems.forEach(item => {
         const sysQty = item.quantity || 0;
-        const physQty = physicalCounts[item.id] !== undefined ? physicalCounts[item.id] : sysQty;
-        const diff = physQty - sysQty;
-        if (diff !== 0) {
+        const pVal = physicalCounts[item.id];
+        if (pVal !== undefined && pVal !== sysQty) {
+          const diff = pVal - sysQty;
           catDivergences.push({
             id: item.id,
             name: item.name || 'Sem nome',
             code: item.batch_number || item.id.slice(0, 8),
             systemQty: sysQty,
-            physicalQty: physQty,
+            physicalQty: pVal,
             difference: diff,
             unit: item.unit_measure || 'UN',
             unitPrice: item.unit_price || 0,
             financialImpact: diff * (item.unit_price || 0),
             observation: diff > 0 ? 'Sobra identificada na contagem física' : 'Falta identificada na contagem física',
+            category: cat,
+            expiryDate: item.expiry_date
+          });
+        } else if ((item as any).lastBalancoDiff !== undefined && (item as any).lastBalancoDiff !== 0) {
+          const diff = (item as any).lastBalancoDiff;
+          const origSys = Math.max(0, sysQty - diff);
+          catDivergences.push({
+            id: item.id,
+            name: item.name || 'Sem nome',
+            code: item.batch_number || item.id.slice(0, 8),
+            systemQty: origSys,
+            physicalQty: sysQty,
+            difference: diff,
+            unit: item.unit_measure || 'UN',
+            unitPrice: item.unit_price || 0,
+            financialImpact: diff * (item.unit_price || 0),
+            observation: (item as any).lastBalancoReason || (diff > 0 ? 'Sobra ajustada no balanço' : 'Falta ajustada no balanço'),
             category: cat,
             expiryDate: item.expiry_date
           });
@@ -2097,25 +2320,26 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
     });
   };
 
-  // Print completion report via styled iframe
+  // Print completion report via styled window or iframe
   const handlePrintCompletionReport = (completion: InventoryCompletion) => {
-    const printFrame = document.createElement('iframe');
-    printFrame.style.position = 'fixed';
-    printFrame.style.right = '0';
-    printFrame.style.bottom = '0';
-    printFrame.style.width = '0';
-    printFrame.style.height = '0';
-    printFrame.style.border = '0';
-    document.body.appendChild(printFrame);
+    const catName = completion?.category || selectedCategory || 'Geral';
+    const compDate = completion?.completionDate || (completion?.completedAt ? format(parseISO(completion.completedAt), 'dd/MM/yyyy') : format(new Date(), 'dd/MM/yyyy'));
+    const compTime = completion?.completionTime || (completion?.completedAt ? format(parseISO(completion.completedAt), 'HH:mm') : format(new Date(), 'HH:mm'));
+    const compResp = completion?.responsible || currentUser?.displayName || userProfile?.name || 'Almoxarifado Central';
+    const compLoc = completion?.location || inventoryLocation || 'Almoxarifado Geral';
+    const totalChecked = Number(completion?.totalItemsChecked) || 0;
+    const itemsWithout = Number(completion?.itemsWithoutDivergence) || 0;
+    const itemsWith = Number(completion?.itemsWithDivergence) || 0;
+    const divergencesList = Array.isArray(completion?.divergences) ? completion.divergences : [];
 
     const docHtml = `
       <!DOCTYPE html>
       <html>
       <head>
-        <title>Relatório de Conclusão de Inventário - ${completion.category}</title>
+        <title>Relatório de Conclusão de Inventário - ${catName}</title>
         <meta charset="utf-8" />
         <style>
-          @page { size: A4 portrait; margin: 15mm; }
+          @page { size: A4 portrait; margin: 12mm 15mm; }
           * { box-sizing: border-box; }
           body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #0f172a; margin: 0; padding: 15px; font-size: 11px; }
           .header { border-bottom: 2px solid #0f172a; padding-bottom: 12px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: flex-start; }
@@ -2171,33 +2395,33 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
         </div>
 
         <div class="meta-grid">
-          <div class="meta-item"><strong>Tipo de material:</strong> <span>${completion.category}</span></div>
-          <div class="meta-item"><strong>Data e hora da conclusão:</strong> <span>${completion.completionDate} às ${completion.completionTime}</span></div>
-          <div class="meta-item"><strong>Responsável:</strong> <span>${completion.responsible}</span></div>
-          <div class="meta-item"><strong>Local / Setor:</strong> <span>${completion.location || inventoryLocation}</span></div>
+          <div class="meta-item"><strong>Tipo de material:</strong> <span>${catName}</span></div>
+          <div class="meta-item"><strong>Data e hora da conclusão:</strong> <span>${compDate} às ${compTime}</span></div>
+          <div class="meta-item"><strong>Responsável:</strong> <span>${compResp}</span></div>
+          <div class="meta-item"><strong>Local / Setor:</strong> <span>${compLoc}</span></div>
         </div>
 
         <div class="kpi-row">
           <div class="kpi-box">
-            <div class="kpi-val">${completion.totalItemsChecked}</div>
+            <div class="kpi-val">${totalChecked}</div>
             <div class="kpi-lbl">Quantidade de itens conferidos</div>
           </div>
           <div class="kpi-box" style="border-top: 3px solid #10b981;">
-            <div class="kpi-val" style="color: #059669;">${completion.itemsWithoutDivergence}</div>
+            <div class="kpi-val" style="color: #059669;">${itemsWithout}</div>
             <div class="kpi-lbl">Quantidade sem divergência</div>
           </div>
-          <div class="kpi-box" style="border-top: 3px solid ${completion.itemsWithDivergence > 0 ? '#e11d48' : '#cbd5e1'};">
-            <div class="kpi-val" style="color: ${completion.itemsWithDivergence > 0 ? '#e11d48' : '#059669'};">${completion.itemsWithDivergence}</div>
+          <div class="kpi-box" style="border-top: 3px solid ${itemsWith > 0 ? '#e11d48' : '#cbd5e1'};">
+            <div class="kpi-val" style="color: ${itemsWith > 0 ? '#e11d48' : '#059669'};">${itemsWith}</div>
             <div class="kpi-lbl">Quantidade com divergência</div>
           </div>
         </div>
 
         <div class="section-title">
           <span>Divergências Encontradas</span>
-          <span style="font-size: 10px; font-weight: normal; color: #64748b;">${completion.divergences.length} apurada(s)</span>
+          <span style="font-size: 10px; font-weight: normal; color: #64748b;">${divergencesList.length} apurada(s)</span>
         </div>
 
-        ${completion.divergences.length === 0 ? `
+        ${divergencesList.length === 0 ? `
           <div class="no-divergences-box">
             <div class="no-divergences-text">✓ NÃO FORAM IDENTIFICADAS DIVERGÊNCIAS NA CONFERÊNCIA.</div>
             <div class="no-divergences-sub">Todos os itens e lotes conferidos coincidem exatamente com o saldo físico registrado no sistema.</div>
@@ -2216,17 +2440,17 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
               </tr>
             </thead>
             <tbody>
-              ${completion.divergences.map((d, i) => `
+              ${divergencesList.map((d, i) => `
                 <tr>
                   <td class="text-center" style="font-weight: 800; color: #64748b;">${i + 1}</td>
-                  <td><strong>${d.name}</strong></td>
+                  <td><strong>${d.name || 'Sem nome'}</strong></td>
                   <td class="text-center" style="font-family: monospace;">${d.code || 'S/ Lote'}</td>
-                  <td class="text-right font-mono">${d.systemQty} ${d.unit || 'UN'}</td>
-                  <td class="text-right font-mono" style="font-weight: 800; color: #1e40af;">${d.physicalQty} ${d.unit || 'UN'}</td>
-                  <td class="text-center ${d.difference > 0 ? 'diff-pos' : 'diff-neg'}">
-                    ${d.difference > 0 ? `+${d.difference} (Sobra)` : `${d.difference} (Falta)`}
+                  <td class="text-right font-mono">${d.systemQty ?? 0} ${d.unit || 'UN'}</td>
+                  <td class="text-right font-mono" style="font-weight: 800; color: #1e40af;">${d.physicalQty ?? 0} ${d.unit || 'UN'}</td>
+                  <td class="text-center ${(d.difference ?? 0) > 0 ? 'diff-pos' : 'diff-neg'}">
+                    ${(d.difference ?? 0) > 0 ? `+${d.difference} (Sobra)` : `${d.difference ?? 0} (Falta)`}
                   </td>
-                  <td style="font-style: italic; color: #475569;">${d.observation || (d.difference > 0 ? 'Sobra física' : 'Falta física')}</td>
+                  <td style="font-style: italic; color: #475569;">${d.observation || ((d.difference ?? 0) > 0 ? 'Sobra física' : 'Falta física')}</td>
                 </tr>
               `).join('')}
             </tbody>
@@ -2234,20 +2458,20 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
         `}
 
         <div class="conclusion-statement">
-          “Inventário concluído em ${completion.completionDate} às ${completion.completionTime}, permanecendo registradas neste relatório as divergências identificadas durante a conferência.”
+          “Inventário concluído em ${compDate} às ${compTime}, permanecendo registradas neste relatório as divergências identificadas durante a conferência.”
         </div>
 
         <div class="sig-container">
           <div>
             <div class="sig-line">
-              <div class="sig-label">Responsável pelo inventário: ${completion.responsible}</div>
+              <div class="sig-label">Responsável pelo inventário: ${compResp}</div>
               <div class="sig-sub">Conferência Física In Loco • Almoxarifado / Farmácia</div>
             </div>
           </div>
           <div>
             <div class="sig-line">
               <div class="sig-label">Assinatura / Visto: _______________________</div>
-              <div class="sig-sub">Data: ${completion.completionDate}</div>
+              <div class="sig-sub">Data: ${compDate}</div>
             </div>
           </div>
         </div>
@@ -2255,9 +2479,43 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
         <div class="footer-note">
           Documento emitido eletronicamente pelo Sistema de Almoxarifado • Policlínica Regional Bernardo Félix da Silva - Sobral/CE
         </div>
+
+        <script>
+          window.onload = function() {
+            setTimeout(function() {
+              window.focus();
+              try { window.print(); } catch(e) {}
+            }, 300);
+          };
+        </script>
       </body>
       </html>
     `;
+
+    // Try popup window first (preferred for print/save-as-pdf dialogs)
+    let printWin: Window | null = null;
+    try {
+      printWin = window.open('', '_blank');
+    } catch {}
+
+    if (printWin) {
+      printWin.document.write(docHtml);
+      printWin.document.close();
+      printWin.focus();
+      return;
+    }
+
+    // Fallback: styled hidden iframe
+    const printFrame = document.createElement('iframe');
+    printFrame.style.position = 'fixed';
+    printFrame.style.right = '0';
+    printFrame.style.bottom = '0';
+    printFrame.style.width = '1px';
+    printFrame.style.height = '1px';
+    printFrame.style.opacity = '0.01';
+    printFrame.style.border = '0';
+    printFrame.style.pointerEvents = 'none';
+    document.body.appendChild(printFrame);
 
     printFrame.contentDocument?.write(docHtml);
     printFrame.contentDocument?.close();
@@ -2272,13 +2530,25 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
         if (printFrame.parentNode) {
           document.body.removeChild(printFrame);
         }
-      }, 3000);
+      }, 4000);
     }, 400);
   };
 
-  // Export completion report to PDF via jsPDF
+  // Export completion report to PDF via jsPDF with multi-tier download fallbacks
   const handleExportCompletionReportPDF = (completion: InventoryCompletion) => {
     try {
+      showToast("Gerando arquivo PDF do Relatório de Conclusão...", "info");
+
+      const catName = completion?.category || selectedCategory || 'Geral';
+      const compDate = completion?.completionDate || (completion?.completedAt ? format(parseISO(completion.completedAt), 'dd/MM/yyyy') : format(new Date(), 'dd/MM/yyyy'));
+      const compTime = completion?.completionTime || (completion?.completedAt ? format(parseISO(completion.completedAt), 'HH:mm') : format(new Date(), 'HH:mm'));
+      const compResp = completion?.responsible || currentUser?.displayName || userProfile?.name || 'Almoxarifado Central';
+      const compLoc = completion?.location || inventoryLocation || 'Almoxarifado Geral';
+      const totalChecked = Number(completion?.totalItemsChecked) || 0;
+      const itemsWithout = Number(completion?.itemsWithoutDivergence) || 0;
+      const itemsWith = Number(completion?.itemsWithDivergence) || 0;
+      const divergencesList = Array.isArray(completion?.divergences) ? completion.divergences : [];
+
       const doc = new jsPDF({
         orientation: 'portrait',
         unit: 'mm',
@@ -2286,6 +2556,7 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
       });
 
       const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
       let startY = 15;
 
       // Header
@@ -2318,17 +2589,17 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
       doc.setTextColor(51, 65, 85);
       doc.text('TIPO DE MATERIAL:', 18, startY + 6);
       doc.setFont('helvetica', 'normal');
-      doc.text(completion.category, 55, startY + 6);
+      doc.text(catName, 55, startY + 6);
 
       doc.setFont('helvetica', 'bold');
       doc.text('DATA E HORA:', 18, startY + 12);
       doc.setFont('helvetica', 'normal');
-      doc.text(`${completion.completionDate} às ${completion.completionTime}`, 55, startY + 12);
+      doc.text(`${compDate} às ${compTime}`, 55, startY + 12);
 
       doc.setFont('helvetica', 'bold');
       doc.text('RESPONSÁVEL:', 18, startY + 18);
       doc.setFont('helvetica', 'normal');
-      doc.text(completion.responsible, 55, startY + 18);
+      doc.text(compResp, 55, startY + 18);
 
       doc.setFont('helvetica', 'bold');
       doc.text('STATUS:', 115, startY + 6);
@@ -2340,14 +2611,14 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
       doc.setTextColor(51, 65, 85);
       doc.text('ITENS CONFERIDOS:', 115, startY + 12);
       doc.setFont('helvetica', 'normal');
-      doc.text(`${completion.totalItemsChecked} itens`, 150, startY + 12);
+      doc.text(`${totalChecked} itens`, 150, startY + 12);
 
       doc.setFont('helvetica', 'bold');
       doc.text('DIVERGÊNCIAS:', 115, startY + 18);
       doc.setFont('helvetica', 'bold');
-      if (completion.itemsWithDivergence > 0) {
+      if (itemsWith > 0) {
         doc.setTextColor(225, 29, 72);
-        doc.text(`${completion.itemsWithDivergence} com divergência`, 145, startY + 18);
+        doc.text(`${itemsWith} com divergência`, 145, startY + 18);
       } else {
         doc.setTextColor(5, 150, 105);
         doc.text('0 (100% sem divergência)', 145, startY + 18);
@@ -2361,7 +2632,7 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
       doc.setTextColor(15, 23, 42);
       doc.text('DIVERGÊNCIAS ENCONTRADAS', 14, startY);
 
-      if (completion.divergences.length === 0) {
+      if (divergencesList.length === 0) {
         doc.setFillColor(236, 253, 245);
         doc.setDrawColor(167, 243, 208);
         doc.roundedRect(14, startY + 3, pageWidth - 28, 14, 2, 2, 'FD');
@@ -2372,13 +2643,13 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
         startY += 24;
       } else {
         const head = [['#', 'Material', 'Lote / Código', 'Qtd. Sistema', 'Qtd. Encontrada', 'Diferença', 'Observação']];
-        const body = completion.divergences.map((d, idx) => [
+        const body = divergencesList.map((d, idx) => [
           String(idx + 1),
-          d.name,
+          d.name || 'Sem nome',
           d.code || 'S/ Lote',
-          `${d.systemQty} ${d.unit || 'UN'}`,
-          `${d.physicalQty} ${d.unit || 'UN'}`,
-          d.difference > 0 ? `+${d.difference} (Sobra)` : `${d.difference} (Falta)`,
+          `${d.systemQty ?? 0} ${d.unit || 'UN'}`,
+          `${d.physicalQty ?? 0} ${d.unit || 'UN'}`,
+          (d.difference ?? 0) > 0 ? `+${d.difference} (Sobra)` : `${d.difference ?? 0} (Falta)`,
           d.observation || ''
         ]);
 
@@ -2395,12 +2666,18 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
         startY = (doc as any).lastAutoTable?.finalY + 8 || startY + 40;
       }
 
+      // Check if we need a new page for conclusion and signatures
+      if (startY + 45 > pageHeight) {
+        doc.addPage();
+        startY = 20;
+      }
+
       // Conclusion Statement
       doc.setFont('helvetica', 'italic');
       doc.setFontSize(8.5);
       doc.setTextColor(71, 85, 105);
       doc.text(
-        `“Inventário concluído em ${completion.completionDate} às ${completion.completionTime}, permanecendo registradas neste relatório as divergências identificadas durante a conferência.”`,
+        `“Inventário concluído em ${compDate} às ${compTime}, permanecendo registradas neste relatório as divergências identificadas durante a conferência.”`,
         14,
         startY,
         { maxWidth: pageWidth - 28 }
@@ -2416,7 +2693,7 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(8);
       doc.setTextColor(15, 23, 42);
-      doc.text(`Responsável: ${completion.responsible}`, 16, startY + 4.5);
+      doc.text(`Responsável: ${compResp}`, 16, startY + 4.5);
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7);
       doc.setTextColor(100, 116, 139);
@@ -2430,13 +2707,60 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7);
       doc.setTextColor(100, 116, 139);
-      doc.text(`Data: ${completion.completionDate}`, 115, startY + 8);
+      doc.text(`Data: ${compDate}`, 115, startY + 8);
 
-      doc.save(`Comprovante_Inventario_${completion.category.replace(/\W+/g, '_')}_${completion.completionDate.replace(/\//g, '-')}.pdf`);
+      const cleanCat = catName.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9]/g, '_');
+      const cleanDate = compDate.replace(/[^a-zA-Z0-9]/g, '-');
+      const fileName = `Comprovante_Inventario_${cleanCat}_${cleanDate}.pdf`;
+
+      // Multi-tier resilient save and download:
+      let downloadDone = false;
+
+      // Strategy 1: doc.save
+      try {
+        doc.save(fileName);
+        downloadDone = true;
+      } catch (errSave) {
+        console.warn("doc.save normal falhou, tentando fallback Blob:", errSave);
+      }
+
+      // Strategy 2: Blob with anchor click
+      if (!downloadDone) {
+        try {
+          const blob = doc.output('blob');
+          const blobUrl = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = blobUrl;
+          link.download = fileName;
+          link.target = '_blank';
+          document.body.appendChild(link);
+          link.click();
+          setTimeout(() => {
+            if (link.parentNode) document.body.removeChild(link);
+            URL.revokeObjectURL(blobUrl);
+          }, 3000);
+          downloadDone = true;
+        } catch (errBlob) {
+          console.warn("Download via Blob falhou:", errBlob);
+        }
+      }
+
+      // Strategy 3: Open in new window if direct download was blocked by browser
+      if (!downloadDone) {
+        try {
+          const blob = doc.output('blob');
+          const blobUrl = URL.createObjectURL(blob);
+          window.open(blobUrl, '_blank');
+          downloadDone = true;
+        } catch (errWin) {
+          console.warn("window.open blob falhou:", errWin);
+        }
+      }
+
       showToast("Relatório de Conclusão baixado em PDF com sucesso!", "success");
     } catch (err: any) {
-      console.error(err);
-      showToast(`Erro ao gerar PDF: ${err.message}`, "error");
+      console.error("Erro ao gerar PDF:", err);
+      showToast(`Erro ao gerar PDF: ${err.message || 'Erro desconhecido'}`, "error");
     }
   };
 
@@ -2488,7 +2812,17 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
             </div>
 
             {/* Action Buttons Toolbar - Justified directly below the title */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 w-full">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-2.5 w-full">
+              {/* Adicionar Lote Fisico Nao Cadastrado */}
+              <button
+                onClick={() => handleOpenAddBatchModal()}
+                className="w-full h-11 sm:h-12 inline-flex items-center justify-center gap-2 px-3 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white font-extrabold text-xs sm:text-sm rounded-xl shadow-sm shadow-emerald-700/20 hover:shadow-md transition-all cursor-pointer whitespace-nowrap active:scale-[0.98]"
+                title="Cadastrar lote físico encontrado no estoque que ainda não consta no sistema"
+              >
+                <PlusCircle size={16} className="shrink-0" />
+                <span className="truncate">+ Adicionar Lote Físico</span>
+              </button>
+
               {/* Documento de Divergencias - Destaque com Badge */}
               <button
                 onClick={() => setShowDivergencesDocModal(true)}
@@ -2583,8 +2917,536 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
         </div>
       </div>
 
-      {/* KPI Stats Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
+      {/* ========================================================================= */}
+      {/* RESUMO GERAL DO INVENTÁRIO (Requirement 7)                               */}
+      {/* ========================================================================= */}
+      <div className="bg-white rounded-2xl border border-slate-200/90 p-4 sm:p-5 shadow-xs space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-slate-100">
+          <div className="flex items-center gap-2">
+            <div className="p-1.5 bg-blue-50 text-blue-700 rounded-lg shrink-0">
+              <ListChecks size={18} />
+            </div>
+            <div>
+              <h3 className="text-xs font-black text-slate-800 uppercase tracking-wider">
+                Resumo Geral do Inventário de Estoque
+              </h3>
+              <p className="text-[11px] text-slate-500">
+                Acompanhamento e apuração em tempo real por tipo de material
+              </p>
+            </div>
+          </div>
+          <span className="text-[11px] font-bold text-slate-500 bg-slate-50 border border-slate-200 px-3 py-1 rounded-full">
+            {inventorySummary.completed} de {inventorySummary.totalTypes} concluídos ({inventorySummary.totalTypes > 0 ? Math.round((inventorySummary.completed / inventorySummary.totalTypes) * 100) : 0}%)
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+          {/* TOTAL DE TIPOS DE MATERIAL */}
+          <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80">
+            <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 block">
+              TOTAL DE TIPOS DE MATERIAL
+            </span>
+            <span className="text-2xl font-black text-slate-900 mt-1 block">
+              {inventorySummary.totalTypes}
+            </span>
+            <span className="text-[10px] text-slate-400">categorias cadastradas</span>
+          </div>
+
+          {/* 🟢 CONCLUÍDOS */}
+          <div className="p-3 bg-emerald-50/70 rounded-xl border border-emerald-300">
+            <div className="flex items-center gap-1.5 text-emerald-800">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" />
+              <span className="text-[10px] font-black uppercase tracking-wider">
+                🟢 CONCLUÍDOS
+              </span>
+            </div>
+            <span className="text-2xl font-black text-emerald-700 mt-1 block">
+              {inventorySummary.completed}
+            </span>
+            <span className="text-[10px] text-emerald-600 font-bold">inventário finalizado</span>
+          </div>
+
+          {/* 🟡 EM ANDAMENTO */}
+          <div className="p-3 bg-amber-50/70 rounded-xl border border-amber-300">
+            <div className="flex items-center gap-1.5 text-amber-900">
+              <span className="w-2.5 h-2.5 rounded-full bg-amber-500 inline-block" />
+              <span className="text-[10px] font-black uppercase tracking-wider">
+                🟡 EM ANDAMENTO
+              </span>
+            </div>
+            <span className="text-2xl font-black text-amber-800 mt-1 block">
+              {inventorySummary.inProgress}
+            </span>
+            <span className="text-[10px] text-amber-700 font-bold">em conferência física</span>
+          </div>
+
+          {/* ⚪ NÃO INICIADOS */}
+          <div className="p-3 bg-slate-100/70 rounded-xl border border-slate-200">
+            <div className="flex items-center gap-1.5 text-slate-600">
+              <span className="w-2.5 h-2.5 rounded-full bg-slate-400 inline-block" />
+              <span className="text-[10px] font-black uppercase tracking-wider">
+                ⚪ NÃO INICIADOS
+              </span>
+            </div>
+            <span className="text-2xl font-black text-slate-700 mt-1 block">
+              {inventorySummary.notStarted}
+            </span>
+            <span className="text-[10px] text-slate-400 font-semibold">aguardando início</span>
+          </div>
+
+          {/* TOTAL DE DIVERGÊNCIAS */}
+          <div className={`p-3 rounded-xl border ${
+            inventorySummary.totalDivergences > 0 
+              ? 'bg-rose-50/70 border-rose-200' 
+              : 'bg-slate-50 border-slate-200/80'
+          }`}>
+            <span className={`text-[10px] font-black uppercase tracking-wider block ${
+              inventorySummary.totalDivergences > 0 ? 'text-rose-700' : 'text-slate-500'
+            }`}>
+              TOTAL DE DIVERGÊNCIAS
+            </span>
+            <span className={`text-2xl font-black mt-1 block ${
+              inventorySummary.totalDivergences > 0 ? 'text-rose-700' : 'text-slate-700'
+            }`}>
+              {inventorySummary.totalDivergences}
+            </span>
+            <span className={`text-[10px] ${
+              inventorySummary.totalDivergences > 0 ? 'text-rose-600 font-bold' : 'text-slate-400'
+            }`}>
+              {inventorySummary.totalDivergences > 0 ? 'itens com sobra/falta' : 'nenhuma divergência'}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* ========================================================================= */}
+      {/* NAVEGAÇÃO DE VISTAS: HISTÓRICO DO INVENTÁRIO vs CONFERÊNCIA DETALHADA     */}
+      {/* ========================================================================= */}
+      <div className="flex border-b border-slate-200 gap-2">
+        <button
+          type="button"
+          onClick={() => setMainViewTab('historico')}
+          className={`pb-3 px-4 font-black text-xs sm:text-sm flex items-center gap-2 border-b-2 transition-all cursor-pointer ${
+            mainViewTab === 'historico'
+              ? 'border-blue-600 text-blue-700'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <ClipboardList size={16} />
+          <span>HISTÓRICO DO INVENTÁRIO (Controle por Tipo de Material)</span>
+          <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-blue-100 text-blue-800">
+            {inventorySummary.completed}/{inventorySummary.totalTypes}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setMainViewTab('itens')}
+          className={`pb-3 px-4 font-black text-xs sm:text-sm flex items-center gap-2 border-b-2 transition-all cursor-pointer ${
+            mainViewTab === 'itens'
+              ? 'border-blue-600 text-blue-700'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <Boxes size={16} />
+          <span>CONFERÊNCIA DETALHADA DE LOTES & ITENS</span>
+          <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-slate-100 text-slate-700">
+            {balanceItems.length} lotes
+          </span>
+        </button>
+      </div>
+
+      {/* ========================================================================= */}
+      {/* VISTA 1: HISTÓRICO DO INVENTÁRIO (Requirement 4)                         */}
+      {/* ========================================================================= */}
+      {mainViewTab === 'historico' && (
+        <div className="bg-white rounded-2xl border border-slate-200/90 shadow-sm overflow-hidden space-y-0">
+          {/* Section Header & Filters */}
+          <div className="p-4 sm:p-5 border-b border-slate-200/80 bg-slate-50/70 flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-blue-100 text-blue-800 border border-blue-200">
+                  Histórico e Auditoria Oficial
+                </span>
+                <span className="text-xs font-bold text-slate-400">
+                  {filteredHistoryCategories.length} de {availableCategories.length} tipos de material
+                </span>
+              </div>
+              <h3 className="text-base sm:text-lg font-black text-slate-900 tracking-tight mt-1">
+                HISTÓRICO DO INVENTÁRIO
+              </h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Controle de conclusão e emissão de relatórios oficiais com comprovação das divergências
+              </p>
+            </div>
+
+            {/* History Filters */}
+            <div className="flex flex-wrap items-center gap-2.5">
+              <div className="relative">
+                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Buscar tipo de material..."
+                  value={historySearchTerm}
+                  onChange={(e) => setHistorySearchTerm(e.target.value)}
+                  className="pl-8 pr-7 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20 w-44 sm:w-56"
+                />
+                {historySearchTerm && (
+                  <button
+                    onClick={() => setHistorySearchTerm('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 cursor-pointer"
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
+
+              <select
+                value={historyStatusFilter}
+                onChange={(e) => setHistoryStatusFilter(e.target.value as any)}
+                className="px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:outline-none cursor-pointer"
+              >
+                <option value="all">Todos os Status</option>
+                <option value="CONCLUÍDO">🟢 Concluídos ({inventorySummary.completed})</option>
+                <option value="EM ANDAMENTO">🟡 Em Andamento ({inventorySummary.inProgress})</option>
+                <option value="NÃO INICIADO">⚪ Não Iniciados ({inventorySummary.notStarted})</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Table (Requirement 4) */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="bg-slate-100/90 text-slate-700 font-extrabold uppercase text-[10px] tracking-wider border-b border-slate-200">
+                  <th className="py-3 px-4 w-12 text-center">#</th>
+                  <th className="py-3 px-4">TIPO DE MATERIAL</th>
+                  <th className="py-3 px-4 text-center">STATUS</th>
+                  <th className="py-3 px-4 text-center">DATA DE CONCLUSÃO</th>
+                  <th className="py-3 px-4 text-center">RESPONSÁVEL</th>
+                  <th className="py-3 px-4 text-center">DIVERGÊNCIAS</th>
+                  <th className="py-3 px-4 text-right">RELATÓRIO / AÇÕES</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {filteredHistoryCategories.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="py-12 text-center text-slate-400 text-xs">
+                      Nenhum tipo de material encontrado com os filtros selecionados.
+                    </td>
+                  </tr>
+                ) : (
+                  filteredHistoryCategories.map((cat, idx) => {
+                    const status = getCategoryStatus(cat);
+                    const isConcluded = status === 'CONCLUÍDO';
+                    const isInProgress = status === 'EM ANDAMENTO';
+                    const comp = completions[cat];
+
+                    const catItems = activeItems.filter(i => (i.category || 'Geral') === cat);
+                    let activeDivCount = 0;
+                    if (isInProgress) {
+                      catItems.forEach(item => {
+                        const pVal = physicalCounts[item.id];
+                        if (pVal !== undefined && pVal !== (item.quantity || 0)) {
+                          activeDivCount++;
+                        } else if ((item as any).lastBalancoDiff !== undefined && (item as any).lastBalancoDiff !== 0) {
+                          activeDivCount++;
+                        }
+                      });
+                    }
+
+                    return (
+                      <tr
+                        key={cat}
+                        className={`transition-colors ${
+                          isConcluded
+                            ? 'bg-emerald-50/40 hover:bg-emerald-50/70 border-l-4 border-l-emerald-500'
+                            : isInProgress
+                              ? 'bg-amber-50/25 hover:bg-amber-50/50 border-l-4 border-l-amber-400'
+                              : 'hover:bg-slate-50 border-l-4 border-l-transparent'
+                        }`}
+                      >
+                        <td className="py-3 px-4 text-center font-mono text-slate-400 font-bold">
+                          {idx + 1}
+                        </td>
+
+                        <td className="py-3 px-4">
+                          <div className="flex items-center gap-2">
+                            <span
+                              className="w-2.5 h-2.5 rounded-full shrink-0"
+                              style={{ backgroundColor: getCategoryColor(cat) }}
+                            />
+                            <span className="font-extrabold text-slate-900 text-xs sm:text-sm">
+                              {cat}
+                            </span>
+                            <span className="text-[10px] font-bold text-slate-400 px-1.5 py-0.5 rounded-full bg-slate-100 border border-slate-200">
+                              {catItems.length} lotes
+                            </span>
+                          </div>
+                        </td>
+
+                        <td className="py-3 px-4 text-center whitespace-nowrap">
+                          {isConcluded ? (
+                            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black bg-emerald-100 text-emerald-800 border border-emerald-300 shadow-2xs">
+                              <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse" />
+                              🟢 CONCLUÍDO
+                            </span>
+                          ) : isInProgress ? (
+                            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs">
+                              <span className="w-2 h-2 rounded-full bg-amber-500" />
+                              🟡 EM ANDAMENTO
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-600 border border-slate-200">
+                              <span className="w-2 h-2 rounded-full bg-slate-400" />
+                              ⚪ NÃO INICIADO
+                            </span>
+                          )}
+                        </td>
+
+                        <td className="py-3 px-4 text-center font-mono text-xs whitespace-nowrap">
+                          {isConcluded && comp ? (
+                            <span className="font-bold text-slate-700">
+                              {comp.completionDate} <span className="text-slate-400 font-normal">{comp.completionTime}</span>
+                            </span>
+                          ) : (
+                            <span className="text-slate-300 font-bold">—</span>
+                          )}
+                        </td>
+
+                        <td className="py-3 px-4 text-center text-xs whitespace-nowrap">
+                          {isConcluded && comp ? (
+                            <span className="font-extrabold text-slate-800">
+                              {comp.responsible}
+                            </span>
+                          ) : (
+                            <span className="text-slate-300 font-bold">—</span>
+                          )}
+                        </td>
+
+                        <td className="py-3 px-4 text-center font-mono text-xs whitespace-nowrap">
+                          {isConcluded && comp ? (
+                            comp.itemsWithDivergence === 0 ? (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-black text-xs">
+                                <Check size={12} /> 0
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-800 font-black text-xs">
+                                <AlertTriangle size={12} /> {comp.itemsWithDivergence}
+                              </span>
+                            )
+                          ) : isInProgress ? (
+                            activeDivCount > 0 ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-black text-xs">
+                                {activeDivCount} apurada(s)
+                              </span>
+                            ) : (
+                              <span className="text-slate-500 font-bold">0</span>
+                            )
+                          ) : (
+                            <span className="text-slate-300 font-bold">—</span>
+                          )}
+                        </td>
+
+                        <td className="py-3 px-4 text-right whitespace-nowrap">
+                          <div className="inline-flex items-center justify-end gap-1.5">
+                            {isConcluded && comp ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => handleExportCompletionReportPDF(comp)}
+                                  className="px-2.5 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-black inline-flex items-center gap-1 shadow-2xs transition-all cursor-pointer"
+                                  title="Baixar Relatório Oficial de Conclusão em PDF"
+                                >
+                                  <Download size={13} />
+                                  <span>PDF</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handlePrintCompletionReport(comp)}
+                                  className="px-2.5 py-1.5 bg-gradient-to-r from-blue-700 to-indigo-800 hover:from-blue-800 hover:to-indigo-900 text-white rounded-xl text-xs font-black inline-flex items-center gap-1 shadow-2xs transition-all cursor-pointer"
+                                  title="Imprimir Relatório Oficial de Conclusão ou Salvar em PDF"
+                                >
+                                  <Printer size={13} />
+                                  <span>Imprimir</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenCompletionReport(comp)}
+                                  className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                                  title="Visualizar documento em tela ou baixar PDF"
+                                >
+                                  <Eye size={14} />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleReopenInventory(cat)}
+                                  className="p-1.5 bg-slate-50 hover:bg-rose-50 text-slate-400 hover:text-rose-700 rounded-xl transition-all cursor-pointer"
+                                  title="Reabrir conferência deste tipo de material"
+                                >
+                                  <RotateCcw size={13} />
+                                </button>
+                              </>
+                            ) : isInProgress ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenConfirmCompletion(cat)}
+                                  className="px-3.5 py-1.5 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white rounded-xl text-xs font-black inline-flex items-center gap-1.5 shadow-sm shadow-emerald-700/20 transition-all cursor-pointer animate-pulse"
+                                  title="Concluir inventário deste tipo de material e registrar no banco de dados"
+                                >
+                                  <CheckCircle2 size={13} />
+                                  <span>CONCLUIR INVENTÁRIO</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleContinueInventory(cat)}
+                                  className="px-2.5 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 rounded-xl text-xs font-extrabold inline-flex items-center gap-1 transition-all cursor-pointer"
+                                  title="Continuar conferência de lotes"
+                                >
+                                  <span>Continuar</span>
+                                  <ArrowRight size={12} />
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => handleStartInventory(cat)}
+                                className="px-3 py-1.5 bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-700 border border-slate-200 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 transition-all cursor-pointer"
+                                title="Iniciar conferência física deste tipo de material"
+                              >
+                                <span>Iniciar Conferência</span>
+                                <ArrowRight size={12} />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Table Footer */}
+          <div className="p-3.5 sm:p-4 bg-slate-50 border-t border-slate-200/90 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-600">
+            <div>
+              Total de <strong>{filteredHistoryCategories.length}</strong> tipos de material listados | <strong>{inventorySummary.completed}</strong> concluídos
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-800">
+                <span className="w-2 h-2 rounded-full bg-emerald-500" /> Os itens concluídos permanecem verdes
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* VISTA 2: CONFERÊNCIA DETALHADA DE LOTES & ITENS                           */}
+      {/* ========================================================================= */}
+      {mainViewTab === 'itens' && (
+        <div className="space-y-5">
+          {/* Selected Category Status Banner (When specific category is chosen) */}
+          {selectedCategory !== 'all' && (() => {
+            const catStatus = getCategoryStatus(selectedCategory);
+            const comp = completions[selectedCategory];
+            const isCatConcluded = catStatus === 'CONCLUÍDO';
+            const isCatInProgress = catStatus === 'EM ANDAMENTO';
+
+            return (
+              <div className={`p-4 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs ${
+                isCatConcluded
+                  ? 'bg-emerald-50/80 border-emerald-300 text-emerald-950'
+                  : isCatInProgress
+                    ? 'bg-amber-50/80 border-amber-300 text-amber-950'
+                    : 'bg-white border-slate-200/90 text-slate-800'
+              }`}>
+                <div className="flex items-center gap-3">
+                  <div className={`p-2.5 rounded-xl shrink-0 ${
+                    isCatConcluded ? 'bg-emerald-600 text-white' : isCatInProgress ? 'bg-amber-500 text-white' : 'bg-slate-200 text-slate-700'
+                  }`}>
+                    <Layers size={20} />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+                        Tipo Selecionado
+                      </span>
+                      <span className={`px-2.5 py-0.5 rounded-full text-xs font-black ${
+                        isCatConcluded
+                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                          : isCatInProgress
+                            ? 'bg-amber-100 text-amber-800 border border-amber-300'
+                            : 'bg-slate-100 text-slate-600 border border-slate-200'
+                      }`}>
+                        {isCatConcluded ? '🟢 CONCLUÍDO' : isCatInProgress ? '🟡 EM ANDAMENTO' : '⚪ NÃO INICIADO'}
+                      </span>
+                    </div>
+                    <h3 className="text-base font-black tracking-tight mt-0.5">
+                      {selectedCategory}
+                    </h3>
+                    {isCatConcluded && comp && (
+                      <p className="text-[11px] text-emerald-800 mt-0.5">
+                        Concluído em <strong>{comp.completionDate} às {comp.completionTime}</strong> por <strong>{comp.responsible}</strong>
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  {isCatInProgress && (
+                    <button
+                      type="button"
+                      onClick={() => handleOpenConfirmCompletion(selectedCategory)}
+                      className="px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white rounded-xl text-xs font-black flex items-center gap-1.5 shadow-md shadow-emerald-700/20 transition-all cursor-pointer"
+                    >
+                      <CheckCircle2 size={15} />
+                      <span>CONCLUIR INVENTÁRIO DE {selectedCategory.toUpperCase()}</span>
+                    </button>
+                  )}
+
+                  {isCatConcluded && comp && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleExportCompletionReportPDF(comp)}
+                        className="px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-black flex items-center gap-1.5 shadow-2xs transition-all cursor-pointer"
+                        title="Baixar Relatório Oficial em PDF"
+                      >
+                        <Download size={14} />
+                        <span>BAIXAR PDF</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handlePrintCompletionReport(comp)}
+                        className="px-3.5 py-2 bg-gradient-to-r from-blue-700 to-indigo-800 hover:from-blue-800 hover:to-indigo-900 text-white rounded-xl text-xs font-black flex items-center gap-1.5 shadow-2xs transition-all cursor-pointer"
+                        title="Imprimir Relatório Oficial ou Salvar em PDF"
+                      >
+                        <Printer size={14} />
+                        <span>IMPRIMIR RELATÓRIO</span>
+                      </button>
+                    </div>
+                  )}
+
+                  {!isCatConcluded && !isCatInProgress && (
+                    <button
+                      type="button"
+                      onClick={() => handleStartInventory(selectedCategory)}
+                      className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-black flex items-center gap-1.5 shadow-2xs transition-all cursor-pointer"
+                    >
+                      <span>Iniciar Contagem deste Tipo</span>
+                      <ArrowRight size={14} />
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* KPI Stats Cards */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
         {/* Total Lotes */}
         <div className="bg-white p-4 rounded-2xl border border-slate-200/90 shadow-xs">
           <div className="flex items-center justify-between">
@@ -2768,19 +3630,35 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
             {availableCategories.map(cat => {
               const count = categoryCounts[cat]?.count || 0;
               const isSelected = selectedCategory === cat;
+              const catStatus = getCategoryStatus(cat);
+              const isConcluded = catStatus === 'CONCLUÍDO';
+              const isInProgress = catStatus === 'EM ANDAMENTO';
               return (
                 <button
                   key={cat}
                   onClick={() => setSelectedCategory(cat)}
                   className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all flex items-center gap-1.5 cursor-pointer ${
                     isSelected
-                      ? 'bg-blue-600 text-white shadow-sm'
-                      : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200'
+                      ? 'bg-blue-600 text-white shadow-sm ring-2 ring-blue-400/50'
+                      : isConcluded
+                        ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300'
+                        : isInProgress
+                          ? 'bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300'
+                          : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200'
                   }`}
                 >
+                  <span className="text-[10px]">
+                    {isConcluded ? '🟢' : isInProgress ? '🟡' : '⚪'}
+                  </span>
                   <span>{cat}</span>
-                  <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${
-                    isSelected ? 'bg-blue-800 text-blue-100' : 'bg-slate-200/80 text-slate-600'
+                  <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                    isSelected
+                      ? 'bg-blue-800 text-blue-100'
+                      : isConcluded
+                        ? 'bg-emerald-200/80 text-emerald-900'
+                        : isInProgress
+                          ? 'bg-amber-200/80 text-amber-900'
+                          : 'bg-slate-200/80 text-slate-600'
                   }`}>
                     {count}
                   </span>
@@ -2864,7 +3742,7 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
 
       {/* Main Table of Inventory Batches */}
       <div className="bg-white rounded-2xl border border-slate-200/90 shadow-sm overflow-hidden">
-        <div className="p-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
+        <div className="p-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <span className="text-xs font-extrabold text-slate-700">
               Relação de Lotes para Conferência:
@@ -2874,8 +3752,24 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
             </span>
           </div>
 
-          <div className="flex items-center gap-3 text-xs text-slate-500 font-medium">
-            <span>Dica: Para o balanço impresso, clique em <strong>Folha de Contagem (PDF)</strong></span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => handleOpenAddBatchModal()}
+              className="px-3.5 py-1.5 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white rounded-xl text-xs font-black inline-flex items-center gap-1.5 shadow-xs shadow-emerald-700/20 transition-all cursor-pointer"
+              title="Cadastrar lote físico encontrado no estoque que ainda não consta no sistema"
+            >
+              <PlusCircle size={14} />
+              <span>+ Adicionar Lote Físico</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => handleExportPDF(false)}
+              className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold inline-flex items-center gap-1 transition-all cursor-pointer"
+            >
+              <Printer size={13} />
+              <span>Folha de Contagem</span>
+            </button>
           </div>
         </div>
 
@@ -2883,9 +3777,17 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
           <div className="p-12 text-center">
             <Boxes size={36} className="mx-auto text-slate-300 mb-2" />
             <h4 className="text-sm font-bold text-slate-700">Nenhum lote encontrado</h4>
-            <p className="text-xs text-slate-400 mt-1">
-              Verifique os filtros selecionados (tipo de material, saldo ou termo de busca).
+            <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
+              Verifique os filtros selecionados ou cadastre um novo lote físico encontrado no estoque.
             </p>
+            <button
+              type="button"
+              onClick={() => handleOpenAddBatchModal()}
+              className="mt-4 px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white rounded-xl text-xs font-black inline-flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+            >
+              <PlusCircle size={14} />
+              <span>+ Cadastrar Lote Físico deste Material</span>
+            </button>
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -3065,27 +3967,38 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
 
                       {/* Action / Adjust Column */}
                       <td className="py-2 px-3 text-center bg-amber-50/20 border-x border-amber-100/60 whitespace-nowrap">
-                        {diff !== null && diff !== 0 ? (
+                        <div className="inline-flex items-center gap-1.5">
+                          {diff !== null && diff !== 0 ? (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenAdjustModal(item, physicalVal)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-black bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white shadow-xs transition-all cursor-pointer"
+                              title="Resolver divergência: ajustar saldo, lote e validade no estoque do sistema"
+                            >
+                              <SlidersHorizontal size={13} />
+                              <span>Resolver Divergência</span>
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenAdjustModal(item)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-bold text-slate-700 hover:text-blue-700 bg-slate-100 hover:bg-blue-50 border border-slate-200 hover:border-blue-300 transition-all cursor-pointer"
+                              title="Ajustar quantidade, número do lote e data de validade"
+                            >
+                              <Wrench size={12} className="text-slate-500" />
+                              <span>Ajustar</span>
+                            </button>
+                          )}
                           <button
                             type="button"
-                            onClick={() => handleOpenAdjustModal(item, physicalVal)}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-black bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white shadow-xs transition-all cursor-pointer"
-                            title="Resolver divergência: ajustar saldo, lote e validade no estoque do sistema"
+                            onClick={() => handleOpenAddBatchModal(item)}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded-xl text-[11px] font-extrabold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 hover:border-emerald-300 transition-all cursor-pointer"
+                            title={`Adicionar novo lote físico para "${item.name}"`}
                           >
-                            <SlidersHorizontal size={13} />
-                            <span>Resolver Divergência</span>
+                            <Plus size={12} />
+                            <span>+ Lote</span>
                           </button>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => handleOpenAdjustModal(item)}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-bold text-slate-700 hover:text-blue-700 bg-slate-100 hover:bg-blue-50 border border-slate-200 hover:border-blue-300 transition-all cursor-pointer"
-                            title="Ajustar quantidade, número do lote e data de validade"
-                          >
-                            <Wrench size={12} className="text-slate-500" />
-                            <span>Ajustar Item</span>
-                          </button>
-                        )}
+                        </div>
                       </td>
 
                       <td className="py-2.5 px-3 text-right text-slate-600 font-mono">
@@ -3113,6 +4026,303 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
           </div>
         </div>
       </div>
+    </div>
+  )}
+
+      {/* ========================================================================= */}
+      {/* MODAL 0: ADICIONAR LOTE FÍSICO NÃO CADASTRADO NO BALANÇO                  */}
+      {/* ========================================================================= */}
+      {addBatchModal.show && (
+        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-2xl w-full shadow-2xl border border-slate-100 overflow-hidden my-auto animate-in fade-in zoom-in-95 duration-150 flex flex-col max-h-[92vh]">
+            {/* Top decorative accent */}
+            <div className="h-1.5 w-full bg-gradient-to-r from-emerald-600 via-teal-600 to-blue-600 shrink-0" />
+
+            {/* Header */}
+            <div className="p-5 sm:p-6 border-b border-slate-100 flex items-start justify-between gap-4 shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-emerald-50 text-emerald-700 rounded-2xl border border-emerald-200 shrink-0">
+                  <Boxes size={22} />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-black text-slate-900 tracking-tight">
+                    Adicionar Lote Físico no Balanço
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium mt-0.5">
+                    Cadastre lotes físicos encontrados no estoque que ainda não constam no sistema
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAddBatchModal(prev => ({ ...prev, show: false }))}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Form body */}
+            <div className="p-5 sm:p-6 overflow-y-auto space-y-4 text-xs">
+              {/* Quick Catalog Selector */}
+              <div>
+                <label className="block text-[11px] font-black uppercase tracking-wider text-slate-600 mb-1.5">
+                  1. Vincular a Produto do Catálogo (Opcional - Preenche automático):
+                </label>
+                <select
+                  value={addBatchModal.materialName}
+                  onChange={(e) => handleSelectCatalogProduct(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-800 text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-none cursor-pointer"
+                >
+                  <option value="">-- Selecionar produto existente ou digitar novo abaixo --</option>
+                  {uniqueCatalogProducts.map(p => (
+                    <option key={p.id} value={p.name}>
+                      {p.name} ({p.category || 'Geral'}) - {p.unit_measure || 'UN'}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Material Name / Description */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <div>
+                  <label className="block text-[11px] font-black uppercase tracking-wider text-slate-700 mb-1">
+                    Nome / Descrição do Material <span className="text-rose-600">*</span>:
+                  </label>
+                  <input
+                    type="text"
+                    value={addBatchModal.materialName}
+                    onChange={(e) => setAddBatchModal(prev => ({ ...prev, materialName: e.target.value }))}
+                    placeholder="Ex: Luva de Procedimento Tamanho M"
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl font-bold text-slate-900 text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-black uppercase tracking-wider text-slate-700 mb-1">
+                    Tipo de Material / Categoria <span className="text-rose-600">*</span>:
+                  </label>
+                  <select
+                    value={addBatchModal.category}
+                    onChange={(e) => setAddBatchModal(prev => ({ ...prev, category: e.target.value }))}
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl font-bold text-slate-900 text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-none cursor-pointer"
+                  >
+                    {availableCategories.map(cat => (
+                      <option key={cat} value={cat}>{cat}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Batch Number & Expiry Date */}
+              <div className="p-3.5 bg-emerald-50/60 border border-emerald-200 rounded-2xl space-y-3">
+                <div className="flex items-center gap-1.5 text-xs font-black text-emerald-900">
+                  <Boxes size={15} className="text-emerald-700" />
+                  <span>Dados Específicos do Lote Físico:</span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-black uppercase tracking-wider text-slate-700 mb-1">
+                      Número do Lote Físico <span className="text-rose-600">*</span>:
+                    </label>
+                    <input
+                      type="text"
+                      value={addBatchModal.batchNumber}
+                      onChange={(e) => setAddBatchModal(prev => ({ ...prev, batchNumber: e.target.value.toUpperCase() }))}
+                      placeholder="Ex: LOTE-2409A, AB1098..."
+                      className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl font-mono font-black text-slate-900 text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-[11px] font-black uppercase tracking-wider text-slate-700">
+                        Data de Validade {!addBatchModal.isIndeterminateExpiry && <span className="text-rose-600">*</span>}:
+                      </label>
+                      <label className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-600 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={addBatchModal.isIndeterminateExpiry}
+                          onChange={(e) => setAddBatchModal(prev => ({
+                            ...prev,
+                            isIndeterminateExpiry: e.target.checked,
+                            expiryDate: e.target.checked ? '' : prev.expiryDate
+                          }))}
+                          className="rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                        />
+                        <span>Sem Validade</span>
+                      </label>
+                    </div>
+
+                    <input
+                      type="date"
+                      disabled={addBatchModal.isIndeterminateExpiry}
+                      value={addBatchModal.expiryDate}
+                      onChange={(e) => setAddBatchModal(prev => ({ ...prev, expiryDate: e.target.value }))}
+                      className={`w-full px-3 py-2 border rounded-xl font-mono text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-none ${
+                        addBatchModal.isIndeterminateExpiry 
+                          ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
+                          : 'bg-white border-slate-300 font-bold text-slate-900'
+                      }`}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Physical Quantity, Unit and Location */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-[11px] font-black uppercase tracking-wider text-slate-700 mb-1">
+                    Qtd. Física Contada <span className="text-rose-600">*</span>:
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={addBatchModal.physicalQty}
+                    onChange={(e) => setAddBatchModal(prev => ({ ...prev, physicalQty: e.target.value }))}
+                    placeholder="Ex: 50"
+                    className="w-full px-3 py-2 bg-white border border-emerald-400 rounded-xl font-mono font-black text-slate-900 text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none shadow-2xs"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-black uppercase tracking-wider text-slate-700 mb-1">
+                    Unidade de Medida:
+                  </label>
+                  <select
+                    value={addBatchModal.unitMeasure}
+                    onChange={(e) => setAddBatchModal(prev => ({ ...prev, unitMeasure: e.target.value }))}
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl font-bold text-slate-800 text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-none cursor-pointer"
+                  >
+                    <option value="UN">UN - Unidade</option>
+                    <option value="CX">CX - Caixa</option>
+                    <option value="FR">FR - Frasco</option>
+                    <option value="PCT">PCT - Pacote</option>
+                    <option value="AMP">AMP - Ampola</option>
+                    <option value="RL">RL - Rolo</option>
+                    <option value="PAR">PAR - Par</option>
+                    <option value="KG">KG - Quilograma</option>
+                    <option value="L">L - Litro</option>
+                    <option value="GL">GL - Galão</option>
+                    <option value="RES">RES - Resma</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-black uppercase tracking-wider text-slate-700 mb-1">
+                    Unidade / Estoque:
+                  </label>
+                  <select
+                    value={addBatchModal.location}
+                    onChange={(e) => setAddBatchModal(prev => ({ ...prev, location: e.target.value as any }))}
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl font-bold text-slate-800 text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-none cursor-pointer"
+                  >
+                    <option value="Almoxarifado">Almoxarifado Geral</option>
+                    <option value="Farmácia">Farmácia Hospitalar</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Complementary fields: Endereço & Preço & Fornecedor */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+                <div>
+                  <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">
+                    Sala / Prateleira (Opcional):
+                  </label>
+                  <input
+                    type="text"
+                    value={addBatchModal.room}
+                    onChange={(e) => setAddBatchModal(prev => ({ ...prev, room: e.target.value }))}
+                    placeholder="Ex: Prateleira B3"
+                    className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">
+                    Preço Unitário (R$):
+                  </label>
+                  <input
+                    type="text"
+                    value={addBatchModal.unitPrice}
+                    onChange={(e) => setAddBatchModal(prev => ({ ...prev, unitPrice: e.target.value }))}
+                    placeholder="0,00"
+                    className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono font-bold text-slate-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">
+                    Fabricante / Fornecedor:
+                  </label>
+                  <input
+                    type="text"
+                    value={addBatchModal.supplier}
+                    onChange={(e) => setAddBatchModal(prev => ({ ...prev, supplier: e.target.value }))}
+                    placeholder="Ex: MedQuímica, 3M..."
+                    className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              {/* Justification / Observation */}
+              <div>
+                <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">
+                  Observação do Balanço:
+                </label>
+                <input
+                  type="text"
+                  value={addBatchModal.observation}
+                  onChange={(e) => setAddBatchModal(prev => ({ ...prev, observation: e.target.value }))}
+                  placeholder="Ex: Lote físico identificado durante a conferência física"
+                  className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl text-[11px] text-blue-900 leading-relaxed flex items-start gap-2">
+                <CheckCircle2 size={16} className="text-blue-700 shrink-0 mt-0.5" />
+                <span>
+                  Ao salvar, este lote físico será inserido no banco de dados do sistema, terá sua entrada registrada no histórico com usuário responsável e constará imediatamente no balanço como <strong>conferido (sem divergência)</strong>.
+                </span>
+              </div>
+            </div>
+
+            {/* Footer actions */}
+            <div className="p-4 sm:p-5 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-end gap-2.5 shrink-0">
+              <button
+                type="button"
+                disabled={isSavingNewBatch}
+                onClick={() => setAddBatchModal(prev => ({ ...prev, show: false }))}
+                className="px-4 py-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 font-bold rounded-xl text-xs transition-colors cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={isSavingNewBatch}
+                onClick={handleSaveNewBatch}
+                className="px-5 py-2 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white font-extrabold rounded-xl text-xs shadow-md shadow-emerald-700/20 flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
+              >
+                {isSavingNewBatch ? (
+                  <>
+                    <RefreshCw size={14} className="animate-spin" />
+                    <span>Cadastrando Lote...</span>
+                  </>
+                ) : (
+                  <>
+                    <Save size={14} />
+                    <span>Cadastrar Lote no Balanço</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ========================================================================= */}
       {/* MODAL 1: AJUSTAR ITEM NO BALANÇO (QUANTIDADE, LOTE, VALIDADE, MOTIVO)    */}
@@ -4096,6 +5306,323 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
                   Fechar
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL 5: CONFIRMAÇÃO DE CONCLUSÃO DE INVENTÁRIO (Requirement 3)          */}
+      {/* ========================================================================= */}
+      {confirmCompletionModal.show && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-lg w-full shadow-2xl border border-slate-100 overflow-hidden my-auto animate-in fade-in zoom-in-95 duration-150">
+            <div className="h-2 w-full bg-gradient-to-r from-emerald-500 via-teal-500 to-blue-600" />
+            <div className="p-6 space-y-4">
+              <div className="flex items-start gap-3">
+                <div className="p-3 bg-emerald-100 text-emerald-700 rounded-2xl shrink-0">
+                  <CheckCircle2 size={24} />
+                </div>
+                <div>
+                  <h3 className="text-lg font-black text-slate-900">
+                    Concluir Inventário: {confirmCompletionModal.category}
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Confirmação e registro oficial de encerramento da conferência
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-xs text-amber-900 leading-relaxed space-y-2">
+                <p className="font-extrabold text-amber-950 flex items-center gap-1.5 text-xs">
+                  <AlertCircle size={15} className="text-amber-700 shrink-0" />
+                  Tem certeza que deseja concluir o inventário deste tipo de material?
+                </p>
+                <p className="text-[11px] text-amber-800">
+                  Após a conclusão, serão registrados automaticamente no banco de dados a <strong>data e hora da conclusão</strong>, o <strong>usuário responsável</strong> ({currentUser?.displayName || userProfile?.name || auth.currentUser?.displayName || 'Almoxarifado'}) e a <strong>relação das divergências encontradas</strong>.
+                </p>
+              </div>
+
+              {/* Category inspection stats */}
+              {(() => {
+                const cat = confirmCompletionModal.category;
+                const catItems = activeItems.filter(i => (i.category || 'Geral') === cat);
+                let divCount = 0;
+                let okCount = 0;
+                catItems.forEach(item => {
+                  const pVal = physicalCounts[item.id];
+                  const sys = item.quantity || 0;
+                  if (pVal !== undefined && pVal !== sys) {
+                    divCount++;
+                  } else if ((item as any).lastBalancoDiff !== undefined && (item as any).lastBalancoDiff !== 0) {
+                    divCount++;
+                  } else {
+                    okCount++;
+                  }
+                });
+
+                return (
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200">
+                      <span className="text-[10px] font-bold text-slate-500 uppercase block">Total Itens</span>
+                      <span className="text-base font-black text-slate-900">{catItems.length}</span>
+                    </div>
+                    <div className="p-2.5 bg-emerald-50 rounded-xl border border-emerald-200">
+                      <span className="text-[10px] font-bold text-emerald-700 uppercase block">Sem Divergência</span>
+                      <span className="text-base font-black text-emerald-700">{okCount}</span>
+                    </div>
+                    <div className={`p-2.5 rounded-xl border ${divCount > 0 ? 'bg-rose-50 border-rose-200' : 'bg-slate-50 border-slate-200'}`}>
+                      <span className={`text-[10px] font-bold uppercase block ${divCount > 0 ? 'text-rose-700' : 'text-slate-500'}`}>Com Divergência</span>
+                      <span className={`text-base font-black ${divCount > 0 ? 'text-rose-700' : 'text-slate-700'}`}>{divCount}</span>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              <p className="text-[11px] text-slate-500 italic">
+                O status será alterado para 🟢 CONCLUÍDO e o relatório oficial será liberado imediatamente para impressão.
+              </p>
+
+              <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  disabled={confirmCompletionModal.isSaving}
+                  onClick={() => setConfirmCompletionModal({ show: false, category: '', isSaving: false })}
+                  className="px-4 py-2.5 rounded-xl text-xs font-bold text-slate-600 hover:text-slate-800 hover:bg-slate-100 transition-all cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  disabled={confirmCompletionModal.isSaving}
+                  onClick={() => handleConfirmCompletion(confirmCompletionModal.category)}
+                  className="px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white rounded-xl text-xs font-black flex items-center gap-2 shadow-md shadow-emerald-700/20 transition-all cursor-pointer disabled:opacity-50"
+                >
+                  {confirmCompletionModal.isSaving ? (
+                    <>
+                      <RefreshCw size={14} className="animate-spin" />
+                      <span>Concluindo...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 size={15} />
+                      <span>Sim, Concluir Inventário</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL 6: RELATÓRIO DE COMPROVAÇÃO DE INVENTÁRIO (Requirements 5 & 6)       */}
+      {/* ========================================================================= */}
+      {completionReportModal.show && completionReportModal.completion && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5 overflow-y-auto">
+          <div className="bg-slate-100 rounded-3xl shadow-2xl border border-slate-300 w-full max-w-4xl my-auto max-h-[92vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            {/* Modal Top Bar */}
+            <div className="p-4 sm:p-5 bg-white border-b border-slate-200 flex flex-wrap items-center justify-between gap-4 shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-emerald-600 text-white rounded-2xl shadow-md shadow-emerald-600/20">
+                  <FileCheck2 size={22} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-emerald-100 text-emerald-800 border border-emerald-300">
+                      🟢 CONCLUÍDO
+                    </span>
+                    <span className="text-xs font-bold text-slate-400">
+                      {completionReportModal.completion.completionDate} às {completionReportModal.completion.completionTime}
+                    </span>
+                  </div>
+                  <h3 className="text-base sm:text-lg font-black text-slate-900 leading-tight">
+                    Relatório de Conclusão de Inventário — {completionReportModal.completion.category}
+                  </h3>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleExportCompletionReportPDF(completionReportModal.completion!)}
+                  className="px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white font-extrabold rounded-xl text-xs flex items-center gap-1.5 shadow-md shadow-emerald-700/20 transition-all cursor-pointer"
+                  title="Baixar arquivo PDF oficial do relatório de conclusão"
+                >
+                  <Download size={15} /> <span>Baixar PDF</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handlePrintCompletionReport(completionReportModal.completion!)}
+                  className="px-4 py-2 bg-gradient-to-r from-blue-700 to-indigo-800 hover:from-blue-800 hover:to-indigo-900 text-white font-extrabold rounded-xl text-xs flex items-center gap-1.5 shadow-sm shadow-blue-700/20 transition-all cursor-pointer"
+                  title="Abrir tela de impressão ou salvar como PDF no navegador"
+                >
+                  <PrinterIcon size={15} /> <span>Imprimir / Salvar em PDF</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCompletionReportModal({ show: false, completion: null })}
+                  className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-all cursor-pointer"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Report Preview Content */}
+            <div className="p-4 sm:p-8 overflow-y-auto flex-1 bg-slate-200/50">
+              <div className="bg-white rounded-2xl shadow-lg border border-slate-300 p-6 sm:p-10 max-w-3xl mx-auto space-y-6 text-slate-900">
+                {/* Institutional Header */}
+                <div className="border-b-2 border-slate-900 pb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs sm:text-sm font-black tracking-tight text-blue-900 uppercase">
+                      POLICLÍNICA REGIONAL BERNARDO FÉLIX DA SILVA
+                    </p>
+                    <h2 className="text-base sm:text-lg font-black text-slate-900 uppercase">
+                      RELATÓRIO DE CONCLUSÃO DE INVENTÁRIO
+                    </h2>
+                    <p className="text-[10px] text-slate-500">
+                      Consórcio Público de Saúde da Microrregião de Sobral (CPSMS) • Almoxarifado Central e Farmácia
+                    </p>
+                  </div>
+                  <div className="text-left sm:text-right shrink-0">
+                    <span className="inline-flex items-center gap-1 px-3 py-1 bg-emerald-50 border border-emerald-300 rounded-full text-xs font-black text-emerald-800">
+                      🟢 INVENTÁRIO CONCLUÍDO
+                    </span>
+                  </div>
+                </div>
+
+                {/* Metadata Box */}
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 text-xs grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-500 uppercase block">Tipo de material:</span>
+                    <strong className="text-slate-900 text-sm">{completionReportModal.completion.category}</strong>
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-500 uppercase block">Data e hora da conclusão:</span>
+                    <strong className="text-slate-900">{completionReportModal.completion.completionDate} às {completionReportModal.completion.completionTime}</strong>
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-500 uppercase block">Responsável:</span>
+                    <strong className="text-slate-900">{completionReportModal.completion.responsible}</strong>
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-500 uppercase block">Localização / Setor:</span>
+                    <strong className="text-slate-900">{completionReportModal.completion.location || inventoryLocation}</strong>
+                  </div>
+                </div>
+
+                {/* Counts KPIs */}
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 text-center">
+                    <span className="text-2xl font-black text-slate-900 block">{completionReportModal.completion.totalItemsChecked}</span>
+                    <span className="text-[10px] font-bold text-slate-500 uppercase mt-0.5 block">Quantidade de itens conferidos</span>
+                  </div>
+                  <div className="p-3.5 bg-emerald-50 rounded-xl border border-emerald-200 text-center">
+                    <span className="text-2xl font-black text-emerald-700 block">{completionReportModal.completion.itemsWithoutDivergence}</span>
+                    <span className="text-[10px] font-bold text-emerald-800 uppercase mt-0.5 block">Quantidade sem divergência</span>
+                  </div>
+                  <div className={`p-3.5 rounded-xl border text-center ${completionReportModal.completion.itemsWithDivergence > 0 ? 'bg-rose-50 border-rose-200' : 'bg-slate-50 border-slate-200'}`}>
+                    <span className={`text-2xl font-black block ${completionReportModal.completion.itemsWithDivergence > 0 ? 'text-rose-700' : 'text-slate-700'}`}>
+                      {completionReportModal.completion.itemsWithDivergence}
+                    </span>
+                    <span className={`text-[10px] font-bold uppercase mt-0.5 block ${completionReportModal.completion.itemsWithDivergence > 0 ? 'text-rose-700' : 'text-slate-500'}`}>
+                      Quantidade com divergência
+                    </span>
+                  </div>
+                </div>
+
+                {/* Divergências Encontradas (Requirement 5 & 6) */}
+                <div className="space-y-2">
+                  <h4 className="text-xs font-black text-slate-900 uppercase tracking-wider border-b border-slate-200 pb-1.5 flex items-center justify-between">
+                    <span>Divergências Encontradas</span>
+                    <span className="text-[11px] font-normal text-slate-500">
+                      {completionReportModal.completion.divergences?.length || 0} apurada(s)
+                    </span>
+                  </h4>
+
+                  {(!completionReportModal.completion.divergences || completionReportModal.completion.divergences.length === 0) ? (
+                    <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-5 text-center space-y-1">
+                      <CheckCircle className="mx-auto text-emerald-600 mb-1" size={26} />
+                      <p className="text-xs sm:text-sm font-black text-emerald-800">
+                        NÃO FORAM IDENTIFICADAS DIVERGÊNCIAS NA CONFERÊNCIA.
+                      </p>
+                      <p className="text-[11px] text-emerald-600">
+                        Todos os itens e lotes conferidos coincidem exatamente com os dados registrados no sistema.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="border border-slate-200 rounded-xl overflow-hidden">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead className="bg-slate-100 text-slate-700 font-bold">
+                          <tr>
+                            <th className="py-2 px-2.5 w-8 text-center">#</th>
+                            <th className="py-2 px-2.5">Material</th>
+                            <th className="py-2 px-2.5 text-center w-24">Código/Tombamento</th>
+                            <th className="py-2 px-2.5 text-right w-24">Qtd. no Sistema</th>
+                            <th className="py-2 px-2.5 text-right w-24">Qtd. Encontrada</th>
+                            <th className="py-2 px-2.5 text-center w-24">Diferença</th>
+                            <th className="py-2 px-2.5">Observação</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {completionReportModal.completion.divergences.map((d, i) => (
+                            <tr key={i} className="hover:bg-slate-50">
+                              <td className="py-2 px-2.5 text-center text-slate-400 font-mono">{i + 1}</td>
+                              <td className="py-2 px-2.5 font-bold text-slate-800">{d.name}</td>
+                              <td className="py-2 px-2.5 text-center font-mono text-[11px] text-slate-600">{d.code || 'S/ Lote'}</td>
+                              <td className="py-2 px-2.5 text-right font-mono">{d.systemQty} {d.unit || 'UN'}</td>
+                              <td className="py-2 px-2.5 text-right font-mono font-bold text-blue-700">{d.physicalQty} {d.unit || 'UN'}</td>
+                              <td className="py-2 px-2.5 text-center font-bold">
+                                <span className={d.difference > 0 ? 'text-emerald-700' : 'text-rose-700'}>
+                                  {d.difference > 0 ? `+${d.difference} (Sobra)` : `${d.difference} (Falta)`}
+                                </span>
+                              </td>
+                              <td className="py-2 px-2.5 text-[11px] text-slate-500 italic">{d.observation || '—'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
+                {/* Statement */}
+                <div className="bg-slate-50 border-l-4 border-emerald-600 p-3.5 rounded-r-xl text-xs text-slate-700 italic">
+                  “Inventário concluído em {completionReportModal.completion.completionDate} às {completionReportModal.completion.completionTime}, permanecendo registradas neste relatório as divergências identificadas durante a conferência.”
+                </div>
+
+                {/* Signature Spaces */}
+                <div className="pt-6 border-t border-slate-200 grid grid-cols-1 sm:grid-cols-2 gap-8 text-xs">
+                  <div className="space-y-1">
+                    <div className="border-t border-slate-700 pt-1.5 font-black text-slate-800">
+                      Responsável pelo inventário: {completionReportModal.completion.responsible}
+                    </div>
+                    <p className="text-[10px] text-slate-400">Conferente / Responsável Técnico</p>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="border-t border-slate-700 pt-1.5 font-black text-slate-800">
+                      Assinatura: ___________________________
+                    </div>
+                    <p className="text-[10px] text-slate-400">Data: {completionReportModal.completion.completionDate}</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Bottom Bar */}
+            <div className="p-4 bg-white border-t border-slate-200 flex items-center justify-between">
+              <span className="text-xs text-slate-500">
+                Documento oficial com validade para comprovação e auditoria do inventário
+              </span>
+              <button
+                type="button"
+                onClick={() => setCompletionReportModal({ show: false, completion: null })}
+                className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold rounded-xl text-xs transition-all cursor-pointer"
+              >
+                Fechar
+              </button>
             </div>
           </div>
         </div>

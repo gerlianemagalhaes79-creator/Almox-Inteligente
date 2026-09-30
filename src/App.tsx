@@ -2866,8 +2866,7 @@ export default function App() {
     const logoToUse = appRectangularLogo || appLogo;
     const protocolCode = `#${request.id.slice(-6).toUpperCase()}`;
 
-    const totalQtyRequested = reqItemsList.reduce((acc, i) => acc + (i.quantity_requested || 0), 0);
-    const totalQtyApproved = reqItemsList.reduce((acc, i) => acc + (i.quantity_approved !== undefined && i.quantity_approved !== null ? i.quantity_approved : i.quantity_requested), 0);
+    const totalQtyDelivered = reqItemsList.reduce((acc, i) => acc + (i.quantity_approved !== undefined && i.quantity_approved !== null ? i.quantity_approved : i.quantity_requested), 0);
 
     const content = `
       <!DOCTYPE html>
@@ -3089,48 +3088,45 @@ export default function App() {
 
             /* Signatures */
             .signature-section {
-              display: grid;
-              grid-template-columns: 1fr 1.3fr;
-              gap: 20px;
+              display: flex;
+              justify-content: center;
               margin-top: 20px;
               page-break-inside: avoid;
             }
             .signature-box {
-              border: 1px solid #CBD5E1;
-              background-color: #FAFAFA;
-              border-radius: 8px;
-              padding: 10px 14px;
-              font-size: 9px;
-            }
-            .signature-box.highlight {
+              width: 100%;
+              max-width: 580px;
               border: 1.5px solid #059669;
               background-color: #F0FDF4;
+              border-radius: 8px;
+              padding: 12px 18px;
+              font-size: 9px;
             }
             .signature-line {
-              border-bottom: 1.5px solid #0F172A;
-              margin: 28px 8px 8px 8px;
+              border-bottom: 2px solid #064E3B;
+              margin: 32px 16px 8px 16px;
             }
             .signature-title {
               font-weight: 900;
-              color: #0F172A;
+              color: #064E3B;
               text-transform: uppercase;
               text-align: center;
-              font-size: 9px;
+              font-size: 10px;
             }
             .signature-sub {
               font-size: 8.5px;
-              color: #059669;
+              color: #047857;
               font-weight: 700;
               text-align: center;
               margin-top: 2px;
             }
             .signature-fields {
-              margin-top: 8px;
-              padding-top: 6px;
-              border-top: 1px dashed #CBD5E1;
-              font-size: 8px;
-              color: #334155;
-              line-height: 1.6;
+              margin-top: 10px;
+              padding-top: 8px;
+              border-top: 1px dashed #A7F3D0;
+              font-size: 8.5px;
+              color: #1E293B;
+              line-height: 1.8;
             }
 
             /* Footer */
@@ -3169,7 +3165,7 @@ export default function App() {
                 <div class="doc-title">Folha Final de Entrega de Material</div>
                 <div class="protocol-badge">${protocolCode}</div>
                 <div class="status-badge">
-                  Pronto para Recebimento / Entrega
+                  Conferência e Recebimento pelo Setor
                 </div>
               </div>
             </div>
@@ -3185,7 +3181,7 @@ export default function App() {
                 <span class="meta-val">${dateReqStr} às ${timeReqStr}</span>
               </div>
               <div class="meta-item">
-                <span class="meta-label">Data / Hora de Entrega</span>
+                <span class="meta-label">Data e Hora da Entrega</span>
                 <span class="meta-val">${nowStr}</span>
               </div>
               <div class="meta-item">
@@ -3216,28 +3212,25 @@ export default function App() {
 
             <!-- SECTION HEADER -->
             <div class="section-header">
-              <span>Relação de Materiais Entregues (${reqItemsList.length} itens)</span>
-              <span style="font-size: 8.5px; color: #059669; font-weight: 800;">Conferência Final de Entrega</span>
+              <span>Relação de Materiais Entregues (${reqItemsList.length} ${reqItemsList.length === 1 ? 'item' : 'itens'})</span>
+              <span style="font-size: 8.5px; color: #059669; font-weight: 800;">Conferência Física do Setor Recebedor</span>
             </div>
 
             <!-- ITEMS TABLE -->
             <table class="items-table">
               <thead>
                 <tr>
-                  <th style="width: 25px;" class="center">#</th>
-                  <th style="width: 40%;">Material / Descrição do Produto</th>
-                  <th style="width: 8%;" class="center">Unid.</th>
-                  <th style="width: 14%;" class="center">Qtd. Solicitada</th>
-                  <th style="width: 14%;" class="center">Qtd. Separada</th>
-                  <th style="width: 14%;" class="center">Qtd. a Entregar</th>
-                  <th style="width: 10%;" class="center">Conf.</th>
+                  <th style="width: 32px;" class="center">#</th>
+                  <th style="width: 50%;">Material / Descrição do Produto</th>
+                  <th style="width: 14%;" class="center">Unidade</th>
+                  <th style="width: 18%;" class="center">Qtd. Entregue</th>
+                  <th style="width: 18%;" class="center">Conferência / OK</th>
                 </tr>
               </thead>
               <tbody>
                 ${reqItemsList.map((item, idx) => {
                   const qtySolic = item.quantity_requested || 0;
-                  const qtySep = item.quantity_approved !== undefined && item.quantity_approved !== null ? item.quantity_approved : qtySolic;
-                  const qtyDeliv = qtySep;
+                  const qtyDeliv = item.quantity_approved !== undefined && item.quantity_approved !== null ? item.quantity_approved : qtySolic;
                   
                   // Inventory match for unit measure
                   const invItem = items.find(i => normalizeString(i.name) === normalizeString(item.product_name));
@@ -3252,36 +3245,24 @@ export default function App() {
                       <td class="center" style="font-size: 9px; font-weight: 700; color: #475569;">
                         ${unit}
                       </td>
-                      <td class="center qty-col" style="color: #0369A1;">
-                        ${qtySolic}
-                      </td>
-                      <td class="center qty-col" style="color: #475569;">
-                        ${qtySep}
-                      </td>
-                      <td class="center qty-col" style="color: #047857; background-color: #F0FDF4;">
+                      <td class="center qty-col" style="color: #047857; background-color: #F0FDF4; font-size: 11px;">
                         ${qtyDeliv}
                       </td>
-                      <td class="center" style="font-size: 9px; color: #047857; font-weight: bold;">
-                        [ &nbsp; ]
+                      <td class="center" style="font-size: 9.5px; color: #047857; font-weight: bold;">
+                        [ &nbsp;&nbsp;&nbsp;&nbsp; ] OK
                       </td>
                     </tr>
                   `;
                 }).join('')}
                 <tr class="totals-row">
-                  <td colspan="3" style="text-align: right; text-transform: uppercase; font-size: 9px; padding: 6px 8px;">
-                    Totalizadores Finais:
+                  <td colspan="3" style="text-align: right; text-transform: uppercase; font-size: 9px; padding: 7px 10px;">
+                    Total de Itens: <strong>${reqItemsList.length}</strong> &nbsp;|&nbsp; Quantidade Total Entregue:
                   </td>
-                  <td class="center qty-col" style="color: #0369A1;">
-                    ${totalQtyRequested}
+                  <td class="center qty-col" style="color: #047857; font-size: 11.5px;">
+                    ${totalQtyDelivered}
                   </td>
-                  <td class="center qty-col" style="color: #475569;">
-                    ${totalQtyApproved}
-                  </td>
-                  <td class="center qty-col" style="color: #047857;">
-                    ${totalQtyApproved}
-                  </td>
-                  <td class="center" style="font-size: 8px; color: #047857;">
-                    OK
+                  <td class="center" style="font-size: 8.5px; color: #047857; font-weight: 800;">
+                    CONFERIDO
                   </td>
                 </tr>
               </tbody>
@@ -3297,27 +3278,16 @@ export default function App() {
             <div class="signature-section">
               <div class="signature-box">
                 <div class="signature-line"></div>
-                <div class="signature-title">Responsável pela Entrega</div>
-                <div class="signature-sub">Almoxarifado Central • CPSMS</div>
-                <div class="signature-fields">
-                  <div>Nome: _________________________________________</div>
-                  <div>Matrícula: ____________________________________</div>
-                  <div>Data: ____/____/202___</div>
-                </div>
-              </div>
-
-              <div class="signature-box highlight">
-                <div class="signature-line" style="border-bottom: 2px solid #064E3B;"></div>
-                <div class="signature-title" style="color: #064E3B; font-size: 9.5px;">
+                <div class="signature-title">
                   Assinatura do Líder / Responsável pelo Setor Recebedor
                 </div>
-                <div class="signature-sub" style="color: #047857;">
+                <div class="signature-sub">
                   Setor: <strong>${request.sector}</strong>
                 </div>
                 <div class="signature-fields">
-                  <div>Nome Legível: __________________________________________________</div>
-                  <div>Cargo / Matrícula: _____________________________________________</div>
-                  <div>Data do Recebimento: ____/____/202___ &nbsp;&nbsp;&nbsp; Horário: ______:______</div>
+                  <div><strong>Nome Legível:</strong> ____________________________________________________________________</div>
+                  <div><strong>Cargo / Matrícula:</strong> _______________________________________________________________</div>
+                  <div><strong>Data do Recebimento:</strong> _____ / _____ / 202___ &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <strong>Horário:</strong> _____ : _____</div>
                 </div>
               </div>
             </div>
