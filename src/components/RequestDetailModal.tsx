@@ -72,8 +72,20 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
   const [extraItemQty, setExtraItemQty] = useState(1);
   const [selectedExtraItem, setSelectedExtraItem] = useState<Item | null>(null);
 
-  // Active items for adding extra
-  const activeItems = useMemo(() => items.filter(i => !i.deletedAt), [items]);
+  // Active items consolidated by material for adding extra
+  const consolidatedMaterials = useMemo(() => {
+    const map = new Map<string, { sampleItem: Item; totalQty: number }>();
+    items.filter(i => !i.deletedAt).forEach(i => {
+      const norm = (i.name || '').trim().toLowerCase();
+      if (!map.has(norm)) {
+        map.set(norm, { sampleItem: i, totalQty: Number(i.quantity) || 0 });
+      } else {
+        const existing = map.get(norm)!;
+        existing.totalQty += (Number(i.quantity) || 0);
+      }
+    });
+    return Array.from(map.values()).sort((a, b) => a.sampleItem.name.localeCompare(b.sampleItem.name));
+  }, [items]);
 
   const handleSaveAdminNote = async () => {
     try {
@@ -139,7 +151,7 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm overflow-y-auto">
-      <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-3xl overflow-hidden my-8 animate-in fade-in zoom-in-95 duration-200">
+      <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-3xl lg:max-w-4xl xl:max-w-5xl overflow-hidden my-8 animate-in fade-in zoom-in-95 duration-200">
         {/* Modal Header */}
         <div className="bg-gradient-to-r from-blue-900 to-indigo-950 text-white p-6 flex items-start justify-between">
           <div>
@@ -202,17 +214,17 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
                     <select
                       value={selectedExtraItem?.id || ''}
                       onChange={(e) => {
-                        const it = activeItems.find(i => i.id === e.target.value);
-                        setSelectedExtraItem(it || null);
+                        const mat = consolidatedMaterials.find(m => m.sampleItem.id === e.target.value);
+                        setSelectedExtraItem(mat ? mat.sampleItem : null);
                       }}
                       className="w-full p-2 bg-white border border-blue-200 rounded-xl text-xs font-semibold text-slate-800"
                     >
                       <option value="">Selecione um item do estoque...</option>
-                      {activeItems.map(i => (
-                        <option key={i.id} value={i.id}>
+                      {consolidatedMaterials.map(m => (
+                        <option key={m.sampleItem.id} value={m.sampleItem.id}>
                           {canViewStockQuantity 
-                            ? `${i.name} (${i.quantity} ${i.unit_measure || 'UN'} disponíveis)`
-                            : `${i.name} (${i.unit_measure || 'UN'})`
+                            ? `${m.sampleItem.name} (${m.totalQty} ${m.sampleItem.unit_measure || 'UN'} disponíveis)`
+                            : `${m.sampleItem.name} (${m.sampleItem.unit_measure || 'UN'})`
                           }
                         </option>
                       ))}

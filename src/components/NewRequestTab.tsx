@@ -248,7 +248,7 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
   const isSearchEmpty = searchTerm.trim().length === 0;
 
   return (
-    <div className="space-y-6 max-w-5xl mx-auto">
+    <div className="space-y-6 max-w-7xl mx-auto">
       {/* Active edit notification if editing an existing request */}
       {editingRequest && (
         <div className="p-4 bg-amber-50 border-2 border-amber-300 text-amber-900 rounded-2xl flex items-center justify-between shadow-sm animate-in fade-in">
@@ -286,7 +286,11 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
         </div>
       )}
 
-      {/* Area 1: Prominent Material Search & Autocomplete Suggestions */}
+      {/* Desktop Responsive Grid: 7 cols Search & Catalog, 5 cols Live Basket */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        {/* Left Column (Catalog & Search Selection) */}
+        <div className="lg:col-span-7 space-y-6">
+          {/* Area 1: Prominent Material Search & Autocomplete Suggestions */}
       <div className="bg-white rounded-3xl border-2 border-blue-100 p-5 sm:p-6 lg:p-7 shadow-lg shadow-blue-500/5 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-1">
           <div className="flex items-center gap-2.5">
@@ -571,9 +575,12 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
             </div>
           </div>
         )}
+        </div>
       </div>
 
-      {/* Area 2: Cesta de Solicitação (Located directly below the material search area) */}
+      {/* Right Column (Live Shopping Basket & Submission - Sticky on Desktop) */}
+      <div className="lg:col-span-5 lg:sticky lg:top-4 space-y-6">
+        {/* Area 2: Cesta de Solicitação (Located directly below the material search area) */}
       <div className="bg-white rounded-3xl border border-slate-200 p-5 sm:p-6 lg:p-7 shadow-sm space-y-6">
         <div className="flex items-center justify-between pb-4 border-b border-slate-100">
           <div className="flex items-center gap-2.5">
@@ -715,6 +722,8 @@ export const NewRequestTab: React.FC<NewRequestTabProps> = ({
             </div>
           </div>
         )}
+      </div>
+      </div>
       </div>
     </div>
   );

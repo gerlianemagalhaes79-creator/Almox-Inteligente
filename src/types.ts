@@ -66,6 +66,25 @@ export interface Item {
   unit_measure?: string;
   deletedAt?: string;
   deletedBy?: string;
+  code?: string;
+  material_id?: string;
+  material_code?: string;
+}
+
+export interface ItemGroup {
+  material_id: string;
+  material_code?: string;
+  name: string;
+  total_quantity: number;
+  min_quantity: number;
+  isDynamicMin?: boolean;
+  monthlyExitRate?: number;
+  category: string | null;
+  supplier: string | null;
+  unit_measure?: string | null;
+  batches: Item[];
+  weeklyExitRate: number;
+  durationWeeks: number | 'infinite';
 }
 
 export interface Transaction {

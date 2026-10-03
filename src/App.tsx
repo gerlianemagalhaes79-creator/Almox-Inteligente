@@ -47,6 +47,7 @@ import {
   ClipboardList,
   Boxes,
   ArrowLeft,
+  Layers,
   Eye
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
@@ -125,23 +126,45 @@ import { format, subDays, isWithinInterval, startOfDay, endOfDay, parseISO, diff
 import { ptBR } from 'date-fns/locale';
 
 interface ItemGroup {
+  material_id: string;
+  material_code?: string;
   name: string;
-  total_quantity: number;
-  min_quantity: number;
+  total_quantity: number; // Estoque consolidado do material = soma do saldo de todos os lotes
+  min_quantity: number;   // Estoque mínimo consolidado do material (média dos últimos 3 meses ou inicial)
+  isDynamicMin?: boolean; // Se o estoque mínimo foi derivado da média de saídas dos últimos 3 meses
+  monthlyExitRate?: number; // Média mensal de saídas dos últimos 3 meses
   category: string | null;
   supplier: string | null;
   unit_measure?: string | null;
-  batches: Item[];
-  weeklyExitRate: number;
+  batches: Item[];        // Controle individual de cada lote
+  weeklyExitRate: number; // Consumo semanal consolidado do material
   durationWeeks: number | 'infinite';
 }
 
 const normalizeString = (str: string | null | undefined) => 
-  (str || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  (str || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
 
 const getSafeDocId = (name: string | null | undefined) => {
   const normalized = normalizeString(name);
   return normalized.replace(/[^a-z0-9]/gi, '_');
+};
+
+const getMaterialIdentifier = (item: { name?: string; material_id?: string; material_code?: string; code?: string }) => {
+  const explicitId = (item.material_id && item.material_id.trim()) || 
+                     (item.material_code && item.material_code.trim()) || 
+                     (item.code && item.code.trim());
+  if (explicitId) {
+    return {
+      key: explicitId.toLowerCase(),
+      code: explicitId.toUpperCase()
+    };
+  }
+  const normName = normalizeString(item.name?.trim());
+  const cleanCode = (item.name || 'item').normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase();
+  return {
+    key: normName || 'sem_nome',
+    code: `MAT-${cleanCode || 'GERAL'}`
+  };
 };
 
 interface DurationMonthInfo {
@@ -596,25 +619,38 @@ export default function App() {
     }
   }, [isAdmin, userProfile, activeTab]);
 
-  const weeklyExitRates = useMemo(() => {
-    const twentyOneDaysAgo = new Date();
-    twentyOneDaysAgo.setDate(twentyOneDaysAgo.getDate() - 21);
+  // Cálculo dinâmico do ritmo de consumo dos últimos 3 meses (90 dias)
+  const exitRatesLast3Months = useMemo(() => {
+    const ninetyDaysAgo = new Date();
+    ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
     
-    const rates: Record<string, number> = {};
+    const totals: Record<string, number> = {};
     
     transactions.forEach(t => {
-      if (t.type === 'exit' && !t.deletedAt && new Date(t.date) >= twentyOneDaysAgo) {
-        rates[t.item_name] = (rates[t.item_name] || 0) + t.quantity;
+      if (t.type === 'exit' && !t.deletedAt && new Date(t.date) >= ninetyDaysAgo) {
+        const normKey = normalizeString(t.item_name);
+        totals[normKey] = (totals[normKey] || 0) + (Number(t.quantity) || 0);
+        if (t.item_name) {
+          totals[t.item_name] = (totals[t.item_name] || 0) + (Number(t.quantity) || 0);
+        }
       }
     });
     
-    // Convert to weekly average (21 days is exactly 3 weeks)
-    Object.keys(rates).forEach(name => {
-      rates[name] = rates[name] / 3;
+    // Média mensal dos últimos 3 meses (total de saídas em 90 dias dividido por 3)
+    const monthly: Record<string, number> = {};
+    // Ritmo semanal para cálculo de projeção de semanas (90 dias / ~12.857 semanas)
+    const weekly: Record<string, number> = {};
+    
+    Object.keys(totals).forEach(k => {
+      monthly[k] = Math.ceil(totals[k] / 3);
+      weekly[k] = totals[k] / 12.857;
     });
     
-    return rates;
+    return { monthly, weekly };
   }, [transactions]);
+
+  const weeklyExitRates = useMemo(() => exitRatesLast3Months.weekly, [exitRatesLast3Months]);
+  const monthlyExitRates = useMemo(() => exitRatesLast3Months.monthly, [exitRatesLast3Months]);
 
   // Request states
   const [requestBasket, setRequestBasket] = useState<{product_id: string, product_name: string, quantity: number}[]>([]);
@@ -622,26 +658,34 @@ export default function App() {
   const [adminObservation, setAdminObservation] = useState('');
   const [isSyncingStock, setIsSyncingStock] = useState(false);
 
-  // Auto-update Minimum Stock based on consumption velocity (8 weeks / 2 months coverage)
+  // Auto-update Minimum Stock based on dynamic 3-month consumption average
   useEffect(() => {
     if (!isAdmin || items.length === 0 || transactions.length === 0 || isSyncingStock) return;
 
     const syncStockVelocity = async () => {
       const updates: { id: string, newMin: number }[] = [];
       
-      // We analyze items with history to ensure minimum stock covers 2 months (8 weeks)
-      Object.keys(weeklyExitRates).forEach(itemName => {
-        const weeklyRate = weeklyExitRates[itemName];
-        if (weeklyRate > 0) {
-          const recommendedMin = Math.ceil(weeklyRate * 8);
-          
-          // Find all batches of this item and check if their min_quantity needs update
-          items.forEach(item => {
-            if (item.name === itemName && !item.deletedAt) {
-              // Only update if difference is more than 0 and actually different from stored
-              if (recommendedMin !== item.min_quantity) {
-                updates.push({ id: item.id, newMin: recommendedMin });
-              }
+      // Group items by material to ensure all batches of the same material share the identical consolidated minimum stock
+      const materialsMap: Record<string, { recommendedMin: number; batches: Item[] }> = {};
+
+      items.forEach(item => {
+        if (item.deletedAt) return;
+        const matId = getMaterialIdentifier(item);
+        if (!materialsMap[matId.key]) {
+          const norm = normalizeString(item.name);
+          const monthlyAvg = monthlyExitRates[norm] || monthlyExitRates[item.name] || 0;
+          // A quantidade mínima é a média dos últimos três meses
+          const recMin = monthlyAvg > 0 ? Math.ceil(monthlyAvg) : 0;
+          materialsMap[matId.key] = { recommendedMin: recMin, batches: [] };
+        }
+        materialsMap[matId.key].batches.push(item);
+      });
+
+      Object.values(materialsMap).forEach(mat => {
+        if (mat.recommendedMin > 0) {
+          mat.batches.forEach(b => {
+            if (mat.recommendedMin !== b.min_quantity) {
+              updates.push({ id: b.id, newMin: mat.recommendedMin });
             }
           });
         }
@@ -650,7 +694,7 @@ export default function App() {
       if (updates.length > 0) {
         setIsSyncingStock(true);
         try {
-          console.log(`Auto-otimizando estoque mínimo para ${updates.length} lotes...`);
+          console.log(`Auto-otimizando estoque mínimo (média 3 meses) para ${updates.length} lotes...`);
           // Batch updates to Firestore (max 500 per batch)
           for (let i = 0; i < updates.length; i += 450) {
             const batch = writeBatch(db);
@@ -680,7 +724,7 @@ export default function App() {
       clearTimeout(initialSync);
       clearInterval(intervalSync);
     };
-  }, [isAdmin, items, transactions, weeklyExitRates, isSyncingStock]);
+  }, [isAdmin, items, transactions, monthlyExitRates, isSyncingStock]);
   const [isSubmittingRequest, setIsSubmittingRequest] = useState(false);
   const [editingRequest, setEditingRequest] = useState<MaterialRequest | null>(null);
   const [showRoomInventoryModal, setShowRoomInventoryModal] = useState(false);
@@ -873,14 +917,15 @@ export default function App() {
           }
           const updatedItem = { ...item, [field]: processedValue };
           
-          // Auto-fill min_quantity if name is changed and we have a calculated rate (8 weeks / 2 months)
+          // Auto-fill min_quantity if name is changed and we have a calculated rate (média 3 meses)
           if (field === 'name' && processedValue) {
-            const weeklyRate = weeklyExitRates[processedValue] || 0;
-            if (weeklyRate > 0) {
-              updatedItem.min_quantity = Math.ceil(weeklyRate * 8);
+            const norm = normalizeString(processedValue);
+            const monthlyAvg = monthlyExitRates[norm] || monthlyExitRates[processedValue] || 0;
+            if (monthlyAvg > 0) {
+              updatedItem.min_quantity = Math.ceil(monthlyAvg);
             } else {
               // Try to find if the item exists but has no history yet, use its current min_quantity
-              const existingItem = items.find(i => i.name === processedValue);
+              const existingItem = items.find(i => normalizeString(i.name) === norm);
               if (existingItem) {
                 updatedItem.min_quantity = existingItem.min_quantity;
               }
@@ -4268,10 +4313,11 @@ export default function App() {
 
         const initial_qty = isNaN(itemData.initial_quantity) ? 0 : itemData.initial_quantity;
         
-        // Dynamic min stock calculation (8 weeks / 2 months coverage)
-        const weeklyRate = weeklyExitRates[trimmedName] || 0;
-        const calculatedMin = weeklyRate > 0 ? Math.ceil(weeklyRate * 8) : 5;
-        const min_qty = isNaN(itemData.min_quantity) ? calculatedMin : itemData.min_quantity;
+        // Dynamic min stock calculation (média dos últimos 3 meses)
+        const normName = normalizeString(trimmedName);
+        const monthlyAvg = monthlyExitRates[normName] || monthlyExitRates[trimmedName] || 0;
+        const calculatedMin = monthlyAvg > 0 ? Math.ceil(monthlyAvg) : 5;
+        const min_qty = monthlyAvg > 0 ? calculatedMin : (isNaN(itemData.min_quantity) ? calculatedMin : itemData.min_quantity);
         
         // Inherit price from existing batches if not provided
         const existingPrice = items.find(i => i.name.toLowerCase() === trimmedName.toLowerCase() && (Number(i.unit_price) || 0) > 0)?.unit_price || 0;
@@ -4557,9 +4603,10 @@ export default function App() {
           return;
         }
 
-        const weeklyRate = weeklyExitRates[item.name] || 0;
-        const calculatedMin = weeklyRate > 0 ? Math.ceil(weeklyRate * 8) : item.min_quantity;
-        const finalMinStock = isNaN(transactionMinStock) ? calculatedMin : transactionMinStock;
+        const normName = normalizeString(item.name);
+        const monthlyAvg = monthlyExitRates[normName] || monthlyExitRates[item.name] || 0;
+        const calculatedMin = monthlyAvg > 0 ? Math.ceil(monthlyAvg) : item.min_quantity;
+        const finalMinStock = monthlyAvg > 0 ? calculatedMin : (isNaN(transactionMinStock) ? calculatedMin : transactionMinStock);
         
         await runTransaction(db, async (transaction) => {
           const itemDoc = doc(db, 'items', item.id);
@@ -4749,14 +4796,17 @@ export default function App() {
         const monthInfo = getDurationMonthInfo(group.durationWeeks);
         
         return {
-          'Item': group.name,
+          'Código': group.material_code || group.material_id || '---',
+          'Item / Material': group.name,
           'Categoria': group.category || '---',
-          'Estoque Total': group.total_quantity,
+          'Estoque Consolidado': group.total_quantity,
+          'Qtd Lotes': group.batches.length,
           'Consumo Semanal': group.weeklyExitRate > 0 ? Number(group.weeklyExitRate.toFixed(1)) : 0,
           'Duração (Semanas)': group.durationWeeks === 'infinite' ? '∞' : Number(group.durationWeeks.toFixed(1)),
           'Previsão até Mês': monthInfo.monthYear,
-          'Mínimo (8 Semanas)': group.min_quantity,
-          'Status': status
+          'Mínimo Consolidado': group.min_quantity,
+          'Status': status,
+          'Detalhamento dos Lotes': group.batches.map(b => `${b.batch_number || 'S/L'}: ${b.quantity} un (val: ${b.expiry_date || 'Indet.'})`).join('; ')
         };
       });
 
@@ -4855,7 +4905,7 @@ export default function App() {
 
           autoTable(doc, {
             startY: currentY,
-            head: [['Item / Insumo', 'Categoria', 'Estoque', 'Consumo/Sem', 'Duração', 'Dura até', 'Mínimo (8 sem)', 'Status']],
+            head: [['Item / Insumo', 'Categoria', 'Estoque Consolidado', 'Consumo/Sem', 'Duração', 'Dura até', 'Mínimo (3 meses)', 'Status']],
             body: tableData,
             theme: 'striped',
             headStyles: { 
@@ -4895,11 +4945,7 @@ export default function App() {
       } else {
         // Standard single table for alphabetical or other sorting
         const tableData = groupedArray.map(group => {
-          let status = group.total_quantity <= group.min_quantity ? 'BAIXO' : 'OK';
-          if (group.durationWeeks !== 'infinite') {
-            if (group.durationWeeks <= 4) status = 'MUITO CRÍTICO';
-            else if (group.durationWeeks <= 8) status = 'CRÍTICO';
-          }
+          let status = group.total_quantity <= 0 ? 'ZERADO' : group.total_quantity <= group.min_quantity ? 'BAIXO' : 'OK';
           const info = getDurationMonthInfo(group.durationWeeks);
           const durationStr = group.durationWeeks === 'infinite' ? '∞' : `${group.durationWeeks.toFixed(1)} sem`;
           const exitRateStr = group.weeklyExitRate > 0 ? `${group.weeklyExitRate.toFixed(1)}/sem` : '---';
@@ -4918,7 +4964,7 @@ export default function App() {
 
         autoTable(doc, {
           startY: startY + 4,
-          head: [['Item / Insumo', 'Categoria', 'Estoque', 'Consumo/Sem', 'Duração', 'Dura até', 'Mínimo (8 sem)', 'Status']],
+          head: [['Item / Insumo', 'Categoria', 'Estoque Consolidado', 'Consumo/Sem', 'Duração', 'Dura até', 'Mínimo (3 meses)', 'Status']],
           body: tableData,
           theme: 'striped',
           headStyles: { fillColor: [28, 25, 23], halign: 'center', fontSize: 8.5 },
@@ -4975,36 +5021,13 @@ export default function App() {
 
       let currentY = drawPDFLetterhead(doc, title, subtitle);
 
-      // Collect all active items for current location
+      // Collect all active batches for current location for expiry check
       const activeLocationItems = items.filter(
-        i => !i.deletedAt && i.quantity > 0 && (i.location || 'Almoxarifado') === inventoryLocation
+        i => !i.deletedAt && (Number(i.quantity) || 0) > 0 && (i.location || 'Almoxarifado') === inventoryLocation
       );
 
-      const locationGrouped: Record<string, ItemGroup> = {};
-      activeLocationItems.forEach(item => {
-        if (!locationGrouped[item.name]) {
-          const weeklyRate = weeklyExitRates[item.name] || 0;
-          locationGrouped[item.name] = {
-            name: item.name,
-            total_quantity: 0,
-            min_quantity: weeklyRate > 0 ? Math.ceil(weeklyRate * 8) : item.min_quantity,
-            category: item.category,
-            supplier: item.supplier,
-            unit_measure: item.unit_measure || null,
-            batches: [],
-            weeklyExitRate: weeklyRate,
-            durationWeeks: 0
-          };
-        }
-        locationGrouped[item.name].total_quantity += item.quantity;
-        if (!locationGrouped[item.name].unit_measure && item.unit_measure) {
-          locationGrouped[item.name].unit_measure = item.unit_measure;
-        }
-        locationGrouped[item.name].batches.push(item);
-      });
-
-      // Filter groups where total_quantity <= min_quantity
-      const lowStockGroupsList = Object.values(locationGrouped).filter(
+      // Low stock list based EXCLUSIVELY on consolidated materials (sum of all lots)
+      const lowStockGroupsList = Object.values(groupedItems).filter(
         g => g.total_quantity <= g.min_quantity
       );
 
@@ -5146,6 +5169,7 @@ export default function App() {
           }
 
           const unitText = group.unit_measure ? ` ${group.unit_measure}` : '';
+          const lotSummary = group.batches.map(b => `${b.batch_number || 'S/L'}: ${b.quantity} un`).join(', ');
 
           return [
             group.name,
@@ -5153,13 +5177,14 @@ export default function App() {
             `${group.total_quantity}${unitText}`,
             `${group.min_quantity}${unitText}`,
             `${deficit}${unitText}`,
+            lotSummary || 'Sem lotes ativos',
             status
           ];
         });
 
         autoTable(doc, {
           startY: currentY + 4,
-          head: [['Material / Medicamento', 'Categoria', 'Estoque Atual', 'Estoque Mínimo', 'Déficit (Reposição)', 'Status Crítico']],
+          head: [['Material / Medicamento', 'Categoria', 'Estoque Consolidado', 'Estoque Mínimo', 'Déficit (Reposição)', 'Detalhamento dos Lotes', 'Status Crítico']],
           body: tableData,
           theme: 'striped',
           headStyles: { fillColor: [180, 83, 9], halign: 'center', fontStyle: 'bold' }, // Amber-700
@@ -5167,11 +5192,12 @@ export default function App() {
             2: { halign: 'center' },
             3: { halign: 'center' },
             4: { halign: 'center', fontStyle: 'bold' },
-            5: { halign: 'center' }
+            5: { halign: 'left' },
+            6: { halign: 'center' }
           },
-          styles: { fontSize: 8.5, cellPadding: 3 },
+          styles: { fontSize: 8, cellPadding: 2.5 },
           didParseCell: function(data) {
-            if (data.section === 'body' && data.column.index === 5) {
+            if (data.section === 'body' && data.column.index === 6) {
               const text = data.cell.text[0];
               if (text.includes('ZERADO') || text === 'MUITO CRÍTICO') {
                 data.cell.styles.textColor = [220, 38, 38];
@@ -5297,6 +5323,7 @@ export default function App() {
             status = 'MUITO CRÍTICO';
           }
           const unitText = group.unit_measure ? ` ${group.unit_measure}` : '';
+          const lotSummary = group.batches.map(b => `${b.batch_number || 'S/L'}: ${b.quantity} un`).join(', ');
 
           return [
             group.name,
@@ -5304,13 +5331,14 @@ export default function App() {
             `${group.total_quantity}${unitText}`,
             `${group.min_quantity}${unitText}`,
             `${deficit}${unitText}`,
+            lotSummary || 'Sem lotes ativos',
             status
           ];
         });
 
         autoTable(doc, {
           startY: currentY + 7,
-          head: [['Material / Medicamento', 'Categoria', 'Estoque Atual', 'Estoque Mínimo', 'Déficit (Reposição)', 'Status Crítico']],
+          head: [['Material / Medicamento', 'Categoria', 'Estoque Consolidado', 'Estoque Mínimo', 'Déficit (Reposição)', 'Detalhamento dos Lotes', 'Status Crítico']],
           body: lowStockTableData,
           theme: 'striped',
           headStyles: { fillColor: [180, 83, 9], halign: 'center', fontStyle: 'bold' },
@@ -5318,11 +5346,12 @@ export default function App() {
             2: { halign: 'center' },
             3: { halign: 'center' },
             4: { halign: 'center', fontStyle: 'bold' },
-            5: { halign: 'center' }
+            5: { halign: 'left' },
+            6: { halign: 'center' }
           },
           styles: { fontSize: 8, cellPadding: 2.5 },
           didParseCell: function(data) {
-            if (data.section === 'body' && data.column.index === 5) {
+            if (data.section === 'body' && data.column.index === 6) {
               const text = data.cell.text[0];
               if (text.includes('ZERADO') || text === 'MUITO CRÍTICO') {
                 data.cell.styles.textColor = [220, 38, 38];
@@ -8089,8 +8118,10 @@ export default function App() {
       return (i.location || 'Almoxarifado') === planningLocation;
     });
 
-    // Group items by name
+    // Group items by material identifier
     const groupedByName: Record<string, {
+      material_id: string;
+      material_code?: string;
       name: string;
       category: string;
       supplier: string;
@@ -8100,9 +8131,13 @@ export default function App() {
     }> = {};
 
     filteredActiveItems.forEach(i => {
-      if (!groupedByName[i.name]) {
-        groupedByName[i.name] = {
-          name: i.name,
+      const matId = getMaterialIdentifier(i);
+      const key = matId.key;
+      if (!groupedByName[key]) {
+        groupedByName[key] = {
+          material_id: i.material_id || matId.key,
+          material_code: i.material_code || i.code || matId.code,
+          name: (i.name || '').trim(),
           category: i.category || 'Geral',
           supplier: i.supplier || 'Diversos',
           unit_measure: i.unit_measure || 'UN',
@@ -8110,15 +8145,15 @@ export default function App() {
           batches: []
         };
       }
-      groupedByName[i.name].total_quantity += (Number(i.quantity) || 0);
-      groupedByName[i.name].batches.push(i);
-      if (i.unit_measure) groupedByName[i.name].unit_measure = i.unit_measure;
-      if (i.category) groupedByName[i.name].category = i.category;
+      groupedByName[key].total_quantity += (Number(i.quantity) || 0);
+      groupedByName[key].batches.push(i);
+      if (i.unit_measure) groupedByName[key].unit_measure = i.unit_measure;
+      if (i.category) groupedByName[key].category = i.category;
     });
 
     const calculatedItems: PurchasePlanningItem[] = Object.values(groupedByName).map(group => {
       const currentStock = group.total_quantity;
-      const weeklyRate = weeklyExitRates[group.name] || 0;
+      const weeklyRate = weeklyExitRates[normalizeString(group.name)] || weeklyExitRates[group.name] || 0;
       const monthlyRate = weeklyRate * 4.33;
       
       const durationWeeks = weeklyRate > 0 ? (currentStock / weeklyRate) : 'infinite';
@@ -8250,6 +8285,172 @@ export default function App() {
     planningSort
   ]);
 
+  const isExpired = (item: Item) => {
+    if (item.quantity <= 0) return false;
+    const dateStr = item.expiry_date;
+    if (!dateStr || dateStr === 'Indeterminada') return false;
+    const expiry = new Date(dateStr);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return expiry < today;
+  };
+
+  const isNearExpiry = (item: Item) => {
+    if (item.quantity <= 0) return false;
+    const dateStr = item.expiry_date;
+    if (!dateStr || dateStr === 'Indeterminada') return false;
+    const expiry = new Date(dateStr);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const twoMonthsFromNow = new Date();
+    twoMonthsFromNow.setMonth(today.getMonth() + 2);
+    return expiry >= today && expiry <= twoMonthsFromNow;
+  };
+
+  const filteredItems = items.filter(i => {
+    const normalizedSearch = normalizeString(searchTerm);
+    const itemLocation = i.location || 'Almoxarifado';
+    return !i.deletedAt && 
+    i.quantity > 0 && 
+    itemLocation === inventoryLocation &&
+    ((normalizeString(i.name).includes(normalizedSearch) || 
+    normalizeString(i.supplier).includes(normalizedSearch) ||
+    normalizeString(i.category).includes(normalizedSearch) ||
+    normalizeString(i.batch_number).includes(normalizedSearch)) &&
+    (originFilter === 'all' || i.origin === originFilter) &&
+    (categoryFilter === 'all' || i.category === categoryFilter));
+  });
+
+  // CONSOLIDATED MATERIAL STOCK LOGIC:
+  // ESTOQUE TOTAL DO MATERIAL = SOMA DO SALDO DE TODOS OS LOTES DO MESMO MATERIAL
+  // O material é identificado pelo código/ID do material ou nome normalizado, independentemente do lote.
+  const groupedItems = useMemo(() => {
+    return items
+      .filter(i => !i.deletedAt && (i.location || 'Almoxarifado') === inventoryLocation)
+      .reduce((acc, item) => {
+        const matId = getMaterialIdentifier(item);
+        const groupKey = matId.key;
+
+        if (!acc[groupKey]) {
+          const normName = normalizeString(item.name);
+          const monthlyAvg = monthlyExitRates[normName] || monthlyExitRates[item.name] || 0;
+          const weeklyExitRate = weeklyExitRates[normName] || weeklyExitRates[item.name] || 0;
+          const isDynamic = monthlyAvg > 0;
+          
+          acc[groupKey] = {
+            material_id: item.material_id || matId.key,
+            material_code: item.material_code || item.code || matId.code,
+            name: (item.name || '').trim(),
+            total_quantity: 0, // Estoque consolidado do material = soma dos saldos de todos os lotes
+            // Quantidade mínima baseada na média dos últimos três meses de saída (se houver saídas)
+            min_quantity: isDynamic ? Math.ceil(monthlyAvg) : (Number(item.min_quantity) || 5),
+            isDynamicMin: isDynamic,
+            monthlyExitRate: monthlyAvg,
+            category: item.category,
+            supplier: item.supplier,
+            unit_measure: item.unit_measure || null,
+            batches: [],
+            weeklyExitRate: weeklyExitRate,
+            durationWeeks: 0
+          };
+        }
+
+        const group = acc[groupKey];
+        // SOMA DO SALDO DE CADA LOTE INDIVIDUAL PARA COMPOR O ESTOQUE CONSOLIDADO DO MATERIAL
+        group.total_quantity += (Number(item.quantity) || 0);
+
+        // Se ainda não houver histórico de saídas nos últimos 3 meses, usa o estoque mínimo inicial configurado
+        if (!group.isDynamicMin && Number(item.min_quantity) > group.min_quantity) {
+          group.min_quantity = Number(item.min_quantity);
+        }
+
+        if (!group.unit_measure && item.unit_measure) {
+          group.unit_measure = item.unit_measure;
+        }
+        if (!group.supplier && item.supplier) {
+          group.supplier = item.supplier;
+        }
+        if (!group.category && item.category) {
+          group.category = item.category;
+        }
+        group.batches.push(item);
+        
+        // Atualiza previsão de consumo e duração com base no ESTOQUE CONSOLIDADO
+        if (group.weeklyExitRate > 0) {
+          group.durationWeeks = group.total_quantity / group.weeklyExitRate;
+        } else {
+          group.durationWeeks = 'infinite';
+        }
+        
+        return acc;
+      }, {} as Record<string, ItemGroup>);
+  }, [items, inventoryLocation, weeklyExitRates, monthlyExitRates]);
+
+  // REGRA PRINCIPAL:
+  // Alertas de estoque baixo são avaliados EXCLUSIVAMENTE pelo estoque total consolidado do material!
+  // Se um lote específico tiver pouco saldo, mas outros lotes suprirem o material, NÃO gera alerta de estoque baixo.
+  const lowStockItems = useMemo(() => {
+    return Object.values(groupedItems).filter(group => 
+      group.total_quantity <= group.min_quantity
+    );
+  }, [groupedItems]);
+
+  const expiredItems = items.filter(i => !i.deletedAt && (i.location || 'Almoxarifado') === inventoryLocation && isExpired(i));
+  const nearExpiryItems = items.filter(i => !i.deletedAt && (i.location || 'Almoxarifado') === inventoryLocation && isNearExpiry(i));
+  const totalAlertsCount = lowStockItems.length + expiredItems.length + nearExpiryItems.length;
+  const totalVolume = items
+    .filter(i => !i.deletedAt && (i.location || 'Almoxarifado') === inventoryLocation)
+    .reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
+  const totalInventoryValue = items
+    .filter(i => !i.deletedAt && (i.location || 'Almoxarifado') === inventoryLocation)
+    .reduce((sum, item) => sum + ((Number(item.quantity) || 0) * (Number(item.unit_price) || 0)), 0);
+
+  const recentTransactions = transactions
+    .filter(t => (t.location || 'Almoxarifado') === inventoryLocation)
+    .slice(0, 5);
+
+  const pendingRequestsCount = requests.filter(r => 
+    !r.deletedAt && 
+    (r.status === 'PENDENTE' || r.status === 'EM_SEPARACAO' || r.status === 'DEVOLUCAO_PENDENTE') &&
+    (isAdmin ? true : r.sector === selectedSector)
+  ).length;
+
+  const groupedArray: ItemGroup[] = useMemo(() => {
+    return (Object.values(groupedItems) as ItemGroup[])
+      .filter(group => {
+        // Apenas materiais que possuam saldo consolidado > 0 (ou que atendam busca ativa)
+        const normalizedSearch = normalizeString(searchTerm);
+        if (group.total_quantity <= 0 && !normalizedSearch) return false;
+
+        const matchesSearch = !normalizedSearch ||
+          normalizeString(group.name).includes(normalizedSearch) ||
+          normalizeString(group.supplier).includes(normalizedSearch) ||
+          normalizeString(group.category).includes(normalizedSearch) ||
+          normalizeString(group.material_code).includes(normalizedSearch) ||
+          group.batches.some(b => normalizeString(b.batch_number).includes(normalizedSearch));
+        
+        const matchesOrigin = originFilter === 'all' || group.batches.some(b => b.origin === originFilter);
+        const matchesCategory = categoryFilter === 'all' || group.category === categoryFilter;
+        
+        return matchesSearch && matchesOrigin && matchesCategory;
+      })
+      .sort((a, b) => {
+        if (inventorySort === 'name_asc') {
+          return a.name.localeCompare(b.name);
+        } else if (inventorySort === 'name_desc') {
+          return b.name.localeCompare(a.name);
+        } else if (inventorySort === 'duration_asc') {
+          const durA = a.durationWeeks === 'infinite' ? Number.MAX_SAFE_INTEGER : a.durationWeeks;
+          const durB = b.durationWeeks === 'infinite' ? Number.MAX_SAFE_INTEGER : b.durationWeeks;
+          return durA - durB;
+        } else {
+          const durA = a.durationWeeks === 'infinite' ? Number.MAX_SAFE_INTEGER : a.durationWeeks;
+          const durB = b.durationWeeks === 'infinite' ? Number.MAX_SAFE_INTEGER : b.durationWeeks;
+          return durB - durA;
+        }
+      });
+  }, [groupedItems, searchTerm, originFilter, categoryFilter, inventorySort]);
+
   if (loading) {
     return (
       <div className="min-h-screen bg-[#F5F5F4] flex items-center justify-center">
@@ -8314,127 +8515,6 @@ export default function App() {
       </div>
     );
   }
-
-  const isExpired = (item: Item) => {
-    if (item.quantity <= 0) return false;
-    const dateStr = item.expiry_date;
-    if (!dateStr || dateStr === 'Indeterminada') return false;
-    const expiry = new Date(dateStr);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    return expiry < today;
-  };
-
-  const isNearExpiry = (item: Item) => {
-    if (item.quantity <= 0) return false;
-    const dateStr = item.expiry_date;
-    if (!dateStr || dateStr === 'Indeterminada') return false;
-    const expiry = new Date(dateStr);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const twoMonthsFromNow = new Date();
-    twoMonthsFromNow.setMonth(today.getMonth() + 2);
-    return expiry >= today && expiry <= twoMonthsFromNow;
-  };
-
-  const filteredItems = items.filter(i => {
-    const normalizedSearch = normalizeString(searchTerm);
-    const itemLocation = i.location || 'Almoxarifado';
-    return !i.deletedAt && 
-    i.quantity > 0 && 
-    itemLocation === inventoryLocation &&
-    ((normalizeString(i.name).includes(normalizedSearch) || 
-    normalizeString(i.supplier).includes(normalizedSearch) ||
-    normalizeString(i.category).includes(normalizedSearch) ||
-    normalizeString(i.batch_number).includes(normalizedSearch)) &&
-    (originFilter === 'all' || i.origin === originFilter) &&
-    (categoryFilter === 'all' || i.category === categoryFilter));
-  });
-
-  const groupedItems = items.filter(i => !i.deletedAt && i.quantity > 0 && (i.location || 'Almoxarifado') === inventoryLocation).reduce((acc, item) => {
-    if (!acc[item.name]) {
-      const weeklyExitRate = weeklyExitRates[item.name] || 0;
-      
-      acc[item.name] = {
-        name: item.name,
-        total_quantity: 0,
-        min_quantity: weeklyExitRate > 0 ? Math.ceil(weeklyExitRate * 8) : item.min_quantity,
-        category: item.category,
-        supplier: item.supplier,
-        unit_measure: item.unit_measure || null,
-        batches: [],
-        weeklyExitRate: weeklyExitRate,
-        durationWeeks: 0
-      };
-    }
-    acc[item.name].total_quantity += item.quantity;
-    if (!acc[item.name].unit_measure && item.unit_measure) {
-      acc[item.name].unit_measure = item.unit_measure;
-    }
-    acc[item.name].batches.push(item);
-    
-    // Update duration
-    if (acc[item.name].weeklyExitRate > 0) {
-      acc[item.name].durationWeeks = acc[item.name].total_quantity / acc[item.name].weeklyExitRate;
-    } else {
-      acc[item.name].durationWeeks = 'infinite';
-    }
-    
-    return acc;
-  }, {} as Record<string, ItemGroup>);
-
-  const lowStockItems = Object.values(groupedItems).filter(group => 
-    group.total_quantity <= group.min_quantity
-  );
-
-  const expiredItems = items.filter(i => !i.deletedAt && (i.location || 'Almoxarifado') === inventoryLocation && isExpired(i));
-  const nearExpiryItems = items.filter(i => !i.deletedAt && (i.location || 'Almoxarifado') === inventoryLocation && isNearExpiry(i));
-  const totalAlertsCount = lowStockItems.length + expiredItems.length + nearExpiryItems.length;
-  const totalVolume = items
-    .filter(i => !i.deletedAt && (i.location || 'Almoxarifado') === inventoryLocation)
-    .reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
-  const totalInventoryValue = items
-    .filter(i => !i.deletedAt && (i.location || 'Almoxarifado') === inventoryLocation)
-    .reduce((sum, item) => sum + ((Number(item.quantity) || 0) * (Number(item.unit_price) || 0)), 0);
-
-  const recentTransactions = transactions
-    .filter(t => (t.location || 'Almoxarifado') === inventoryLocation)
-    .slice(0, 5);
-
-  const pendingRequestsCount = requests.filter(r => 
-    !r.deletedAt && 
-    (r.status === 'PENDENTE' || r.status === 'EM_SEPARACAO' || r.status === 'DEVOLUCAO_PENDENTE') &&
-    (isAdmin ? true : r.sector === selectedSector)
-  ).length;
-
-  const groupedArray: ItemGroup[] = (Object.values(groupedItems) as ItemGroup[])
-    .filter(group => {
-      // Apply search and filters to the grouped items for the inventory list
-      const normalizedSearch = normalizeString(searchTerm);
-      const matchesSearch = normalizeString(group.name).includes(normalizedSearch) ||
-                           normalizeString(group.supplier).includes(normalizedSearch) ||
-                           normalizeString(group.category).includes(normalizedSearch);
-      
-      const matchesOrigin = originFilter === 'all' || group.batches.some(b => b.origin === originFilter);
-      const matchesCategory = categoryFilter === 'all' || group.category === categoryFilter;
-      
-      return matchesSearch && matchesOrigin && matchesCategory;
-    })
-    .sort((a, b) => {
-      if (inventorySort === 'name_asc') {
-        return a.name.localeCompare(b.name);
-      } else if (inventorySort === 'name_desc') {
-        return b.name.localeCompare(a.name);
-      } else if (inventorySort === 'duration_asc') {
-        const durA = a.durationWeeks === 'infinite' ? Number.MAX_SAFE_INTEGER : a.durationWeeks;
-        const durB = b.durationWeeks === 'infinite' ? Number.MAX_SAFE_INTEGER : b.durationWeeks;
-        return durA - durB;
-      } else {
-        const durA = a.durationWeeks === 'infinite' ? Number.MAX_SAFE_INTEGER : a.durationWeeks;
-        const durB = b.durationWeeks === 'infinite' ? Number.MAX_SAFE_INTEGER : b.durationWeeks;
-        return durB - durA;
-      }
-    });
 
   return (
     <div className="min-h-screen bg-[#F5F5F4] text-[#1C1917] font-sans">
@@ -8729,10 +8809,10 @@ export default function App() {
       </aside>
 
       {/* Main Content */}
-      <main className="lg:ml-64 p-4 lg:p-10 max-w-7xl mx-auto mt-16 lg:mt-0">
-        <header className="flex flex-col lg:flex-row lg:justify-between lg:items-center gap-4 mb-6 lg:mb-10">
+      <main className="lg:ml-64 p-4 sm:p-6 lg:p-8 xl:p-10 w-full max-w-[1720px] mx-auto mt-16 lg:mt-0 transition-all">
+        <header className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 lg:mb-8 pb-4 border-b border-slate-200/80">
           <div>
-            <h2 className="text-xl lg:text-3xl font-bold tracking-tight mb-1">
+            <h2 className="text-xl sm:text-2xl lg:text-3xl font-black tracking-tight text-slate-900">
               {activeTab === 'dashboard' && 'Visão Geral'}
               {activeTab === 'inventory' && 'Gerenciamento de Estoque'}
               {activeTab === 'history' && 'Histórico de Movimentações'}
@@ -8746,286 +8826,198 @@ export default function App() {
               {activeTab === 'reports' && 'Relatórios e Análises'}
               {activeTab === 'leader-stats' && 'Estatísticas do Almoxarifado'}
             </h2>
-              {activeTab === 'dashboard' && (
-                <div className="flex items-center gap-4 mt-2">
-                  <p className="text-[#78716C]">
-                    {new Date().toLocaleDateString('pt-BR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
-                  </p>
-                  {isAdmin && (
-                    <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border border-[#E7E5E4]">
-                      <Package size={14} className="text-[#A8A29E]" />
-                      <select 
-                        className="text-xs font-bold focus:outline-none bg-transparent"
-                        value={inventoryLocation}
-                        onChange={e => setInventoryLocation(e.target.value as 'Almoxarifado' | 'Farmácia')}
-                      >
-                        <option value="Almoxarifado">Almoxarifado</option>
-                        <option value="Farmácia">Farmácia</option>
-                      </select>
-                    </div>
-                  )}
-                </div>
-              )}
-              {activeTab === 'history' && (
-                <p className="text-[#78716C]">
-                  {new Date().toLocaleDateString('pt-BR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
-                </p>
-              )}
-              {activeTab === 'reports' && (
-                <div className="flex flex-wrap items-center gap-3 mt-3">
-                  <div className="flex items-center gap-2 bg-white px-3.5 py-2 rounded-2xl border border-slate-200/90 shadow-sm hover:border-blue-300 transition-all">
-                    <Calendar size={15} className="text-blue-600" />
-                    <input 
-                      type="date" 
-                      className="text-xs font-extrabold text-slate-700 focus:outline-none cursor-pointer"
-                      value={reportRange.start}
-                      onChange={e => setReportRange({...reportRange, start: e.target.value})}
-                    />
-                    <span className="text-slate-400 text-xs font-bold">até</span>
-                    <input 
-                      type="date" 
-                      className="text-xs font-extrabold text-slate-700 focus:outline-none cursor-pointer"
-                      value={reportRange.end}
-                      onChange={e => setReportRange({...reportRange, end: e.target.value})}
-                    />
-                  </div>
-                  {isAdmin && (
-                    <div className="flex items-center gap-2 bg-white px-3.5 py-2 rounded-2xl border border-slate-200/90 shadow-sm hover:border-blue-300 transition-all">
-                      <Filter size={15} className="text-blue-600" />
-                      <select 
-                        className="text-xs font-extrabold text-slate-700 focus:outline-none bg-transparent cursor-pointer"
-                        value={reportSectorFilter}
-                        onChange={e => setReportSectorFilter(e.target.value)}
-                      >
-                        <option value="all">Todos os Setores</option>
-                        {SECTORS.map(s => (
-                          <option key={s} value={s}>{s}</option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-                  {isAdmin && (
-                    <button 
-                      onClick={handleExportExcel}
-                      className="flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-700 text-white px-4 py-2 rounded-2xl text-xs font-extrabold hover:from-emerald-700 hover:to-teal-800 transition-all shadow-md shadow-emerald-600/20"
-                    >
-                      <Download size={15} /> Exportar Excel
-                    </button>
-                  )}
-                  {!isAdmin && (
-                    <button 
-                      onClick={handleExportMaterialsCatalogPDF}
-                      className="flex items-center gap-2 bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white px-4 py-2 rounded-2xl text-xs font-extrabold hover:from-blue-800 hover:to-indigo-950 transition-all shadow-md shadow-blue-600/20"
-                    >
-                      <FileText size={15} /> Catálogo de Itens
-                    </button>
-                  )}
-                </div>
-              )}
-              {canPrintRequests && (activeTab === 'requests' || activeTab === 'my-requests' || activeTab === 'admin-devolutions' || activeTab === 'devolution') && (
-                <div className="flex items-center gap-4 mt-2">
-                  <button 
-                    onClick={handleExportRequestsPDF}
-                    className="flex items-center gap-2 bg-rose-600 text-white px-4 py-1.5 rounded-xl text-xs font-bold hover:bg-rose-700 transition-all shadow-sm"
-                  >
-                    <Download size={14} /> Exportar PDF
-                  </button>
-                </div>
+            <div className="flex flex-wrap items-center gap-2.5 sm:gap-4 mt-1.5 text-xs text-slate-500 font-medium">
+              <span>
+                {new Date().toLocaleDateString('pt-BR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+              </span>
+              <span className="text-slate-300">·</span>
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-800 border border-blue-200/80 font-bold text-[11px]">
+                <Package size={12} className="text-blue-600" />
+                Local: <strong className="font-black">{inventoryLocation}</strong>
+              </span>
+              {selectedSector && (
+                <>
+                  <span className="text-slate-300">·</span>
+                  <span className="text-slate-600 font-semibold">
+                    Setor: <strong className="text-slate-900">{selectedSector}</strong>
+                  </span>
+                </>
               )}
             </div>
+            {activeTab === 'reports' && (
+              <div className="flex flex-wrap items-center gap-3 mt-3">
+                <div className="flex items-center gap-2 bg-white px-3.5 py-2 rounded-2xl border border-slate-200/90 shadow-xs hover:border-blue-300 transition-all">
+                  <Calendar size={15} className="text-blue-600" />
+                  <input 
+                    type="date" 
+                    className="text-xs font-extrabold text-slate-700 focus:outline-none cursor-pointer"
+                    value={reportRange.start}
+                    onChange={e => setReportRange({...reportRange, start: e.target.value})}
+                  />
+                  <span className="text-slate-400 text-xs font-bold">até</span>
+                  <input 
+                    type="date" 
+                    className="text-xs font-extrabold text-slate-700 focus:outline-none cursor-pointer"
+                    value={reportRange.end}
+                    onChange={e => setReportRange({...reportRange, end: e.target.value})}
+                  />
+                </div>
+                {isAdmin && (
+                  <div className="flex items-center gap-2 bg-white px-3.5 py-2 rounded-2xl border border-slate-200/90 shadow-xs hover:border-blue-300 transition-all">
+                    <Filter size={15} className="text-blue-600" />
+                    <select 
+                      className="text-xs font-extrabold text-slate-700 focus:outline-none bg-transparent cursor-pointer"
+                      value={reportSectorFilter}
+                      onChange={e => setReportSectorFilter(e.target.value)}
+                    >
+                      <option value="all">Todos os Setores</option>
+                      {SECTORS.map(s => (
+                        <option key={s} value={s}>{s}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                {isAdmin && (
+                  <button 
+                    onClick={handleExportExcel}
+                    className="flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-700 text-white px-4 py-2 rounded-2xl text-xs font-extrabold hover:from-emerald-700 hover:to-teal-800 transition-all shadow-sm shadow-emerald-600/20 cursor-pointer"
+                  >
+                    <Download size={15} /> Exportar Excel
+                  </button>
+                )}
+                {!isAdmin && (
+                  <button 
+                    onClick={handleExportMaterialsCatalogPDF}
+                    className="flex items-center gap-2 bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white px-4 py-2 rounded-2xl text-xs font-extrabold hover:from-blue-800 hover:to-indigo-950 transition-all shadow-sm shadow-blue-600/20 cursor-pointer"
+                  >
+                    <FileText size={15} /> Catálogo de Itens
+                  </button>
+                )}
+              </div>
+            )}
+            {canPrintRequests && (activeTab === 'requests' || activeTab === 'my-requests' || activeTab === 'admin-devolutions' || activeTab === 'devolution') && (
+              <div className="flex items-center gap-4 mt-2">
+                <button 
+                  onClick={handleExportRequestsPDF}
+                  className="flex items-center gap-2 bg-rose-600 text-white px-4 py-1.5 rounded-xl text-xs font-bold hover:bg-rose-700 transition-all shadow-xs cursor-pointer"
+                >
+                  <Download size={14} /> Exportar PDF
+                </button>
+              </div>
+            )}
+          </div>
           
-          <div className="flex gap-4 items-center">
+          <div className="flex items-center gap-3">
             <div className="relative">
               <button 
                 onClick={() => setShowNotifications(!showNotifications)}
-                className="relative p-2 text-[#57534E] hover:bg-white hover:shadow-sm rounded-xl transition-all"
+                className="relative p-2.5 bg-white border border-slate-200/90 text-slate-700 hover:bg-slate-50 hover:border-blue-300 rounded-2xl shadow-xs transition-all cursor-pointer"
                 title="Notificações"
               >
-                <Bell size={24} />
+                <Bell size={20} />
                 {notifications.filter(n => !n.read).length > 0 && (
-                  <span className="absolute top-1 right-1 w-5 h-5 bg-rose-600 text-white text-[10px] font-bold rounded-full flex items-center justify-center border-2 border-[#F5F5F4]">
+                  <span className="absolute -top-1 -right-1 w-5 h-5 bg-rose-600 text-white text-[10px] font-black rounded-full flex items-center justify-center border-2 border-white shadow-xs">
                     {notifications.filter(n => !n.read).length}
                   </span>
                 )}
               </button>
 
-              
-                {showNotifications && (
-                  <>
-                    <div 
-                      className="fixed inset-0 z-40" 
-                      onClick={() => setShowNotifications(false)} 
-                    />
-                    <div className="absolute right-0 mt-2 w-80 bg-white rounded-3xl shadow-2xl border border-[#E7E5E4] z-50 overflow-hidden">
-                      <div className="p-4 border-b border-[#E7E5E4] flex justify-between items-center bg-[#FAFAF9]">
-                        <h3 className="font-black text-sm">Notificações</h3>
-                        <button 
-                          onClick={async () => {
-                            const unreadSystem = notifications.filter(n => !n.read && n.userId !== 'ADMIN_GROUP');
-                            for (const n of unreadSystem) {
-                              await updateDoc(doc(db, 'notifications', n.id), { read: true });
-                            }
-                          }}
-                          className="text-[10px] font-bold text-blue-600 hover:underline uppercase tracking-wider"
-                        >
-                          Limpar Lidas
-                        </button>
-                      </div>
-                      <div className="max-h-[400px] overflow-y-auto">
-                        {notifications.length === 0 ? (
-                          <div className="p-10 text-center">
-                            <Bell size={40} className="mx-auto text-[#E7E5E4] mb-3" />
-                            <p className="text-xs text-[#A8A29E] font-medium">Nenhuma notificação</p>
-                          </div>
-                        ) : (
-                          <div className="divide-y divide-[#E7E5E4]">
-                            {notifications.filter(n => !n.read).map(n => (
-                              <div key={n.id} className={`p-4 hover:bg-[#FAFAF9] transition-colors ${n.type === 'STOCK_ZERO' ? 'bg-rose-50/30' : ''}`}>
-                                <div className="flex gap-3">
-                                  <div className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${
-                                    n.type === 'STOCK_ZERO' ? 'bg-rose-100 text-rose-600' : 
-                                    n.type === 'REQUEST' ? 'bg-blue-100 text-blue-600' : 'bg-[#F5F5F4] text-[#78716C]'
-                                  }`}>
-                                    {n.type === 'STOCK_ZERO' ? <AlertTriangle size={14} /> : <Info size={14} />}
-                                  </div>
-                                  <div className="flex-1 min-w-0">
-                                    <p className="text-xs font-bold text-[#1C1917] mb-0.5">{n.title}</p>
-                                    <p className="text-[11px] text-[#57534E] leading-relaxed mb-2">{n.message}</p>
-                                    <div className="flex items-center justify-between">
-                                      <span className="text-[9px] text-[#A8A29E] font-medium">
-                                        {new Date(n.date).toLocaleDateString('pt-BR')} {new Date(n.date).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
-                                      </span>
-                                      {n.type === 'STOCK_ZERO' ? (
-                                        <button 
-                                          onClick={() => setShowStockConfirm({ show: true, notificationId: n.id, itemName: n.itemName })}
-                                          className="text-[10px] font-bold text-rose-600 bg-rose-100 px-2 py-1 rounded-lg hover:bg-rose-200 transition-all border border-rose-200"
-                                        >
-                                          Confirmar Ciência
-                                        </button>
-                                      ) : (
-                                        <button 
-                                          onClick={() => updateDoc(doc(db, 'notifications', n.id), { read: true })}
-                                          className="text-[10px] font-bold text-blue-600 hover:bg-blue-50 px-2 py-1 rounded-lg transition-all"
-                                        >
-                                          Marcar como lida
-                                        </button>
-                                      )}
-                                    </div>
+              {showNotifications && (
+                <>
+                  <div 
+                    className="fixed inset-0 z-40" 
+                    onClick={() => setShowNotifications(false)} 
+                  />
+                  <div className="absolute right-0 mt-2 w-80 sm:w-96 bg-white rounded-3xl shadow-2xl border border-slate-200 z-50 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+                    <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                      <h3 className="font-black text-sm text-slate-900">Notificações</h3>
+                      <button 
+                        onClick={async () => {
+                          const unreadSystem = notifications.filter(n => !n.read && n.userId !== 'ADMIN_GROUP');
+                          for (const n of unreadSystem) {
+                            await updateDoc(doc(db, 'notifications', n.id), { read: true });
+                          }
+                        }}
+                        className="text-[10px] font-black text-blue-700 hover:underline uppercase tracking-wider cursor-pointer"
+                      >
+                        Limpar Lidas
+                      </button>
+                    </div>
+                    <div className="max-h-[400px] overflow-y-auto">
+                      {notifications.length === 0 ? (
+                        <div className="p-10 text-center">
+                          <Bell size={36} className="mx-auto text-slate-300 mb-2" />
+                          <p className="text-xs text-slate-500 font-medium">Nenhuma notificação</p>
+                        </div>
+                      ) : (
+                        <div className="divide-y divide-slate-100">
+                          {notifications.filter(n => !n.read).map(n => (
+                            <div key={n.id} className={`p-4 hover:bg-slate-50 transition-colors ${n.type === 'STOCK_ZERO' ? 'bg-rose-50/40' : ''}`}>
+                              <div className="flex gap-3">
+                                <div className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${
+                                  n.type === 'STOCK_ZERO' ? 'bg-rose-100 text-rose-600' : 
+                                  n.type === 'REQUEST' ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-600'
+                                }`}>
+                                  {n.type === 'STOCK_ZERO' ? <AlertTriangle size={14} /> : <Info size={14} />}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-xs font-bold text-slate-900 mb-0.5">{n.title}</p>
+                                  <p className="text-[11px] text-slate-600 leading-relaxed mb-2">{n.message}</p>
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-[9px] text-slate-400 font-medium">
+                                      {new Date(n.date).toLocaleDateString('pt-BR')} {new Date(n.date).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                                    </span>
+                                    {n.type === 'STOCK_ZERO' ? (
+                                      <button 
+                                        onClick={() => setShowStockConfirm({ show: true, notificationId: n.id, itemName: n.itemName })}
+                                        className="text-[10px] font-bold text-rose-600 bg-rose-100 px-2 py-1 rounded-lg hover:bg-rose-200 transition-all border border-rose-200 cursor-pointer"
+                                      >
+                                        Confirmar Ciência
+                                      </button>
+                                    ) : (
+                                      <button 
+                                        onClick={() => updateDoc(doc(db, 'notifications', n.id), { read: true })}
+                                        className="text-[10px] font-bold text-blue-600 hover:bg-blue-50 px-2 py-1 rounded-lg transition-all cursor-pointer"
+                                      >
+                                        Marcar como lida
+                                      </button>
+                                    )}
                                   </div>
                                 </div>
                               </div>
-                            ))}
-                            {notifications.filter(n => n.read).length > 0 && notifications.filter(n => !n.read).length === 0 && (
-                               <div className="p-10 text-center">
-                                 <CheckCircle size={40} className="mx-auto text-emerald-100 mb-3" />
-                                 <p className="text-xs text-[#A8A29E] font-medium">Tudo em dia!</p>
-                               </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
+                            </div>
+                          ))}
+                          {notifications.filter(n => n.read).length > 0 && notifications.filter(n => !n.read).length === 0 && (
+                            <div className="p-10 text-center">
+                              <CheckCircle size={36} className="mx-auto text-emerald-200 mb-2" />
+                              <p className="text-xs text-slate-500 font-medium">Tudo em dia!</p>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
-                  </>
-                )}
-              
+                  </div>
+                </>
+              )}
             </div>
 
-            <div className="relative">
-              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={17} />
-              <input 
-                type="text" 
-                placeholder="Buscar insumos e lotes..."
-                className="pl-10 pr-4 py-2 bg-white border border-slate-200 rounded-2xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 w-64 text-slate-800 shadow-sm transition-all"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-              />
-            </div>
-            {activeTab === 'inventory' && isAdmin && (
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-2xl border border-slate-200/90 shadow-sm hover:border-blue-300 transition-all">
-                  <Filter size={15} className="text-blue-600" />
-                  <select 
-                    className="text-xs font-extrabold text-slate-700 focus:outline-none bg-transparent cursor-pointer"
-                    value={categoryFilter}
-                    onChange={e => setCategoryFilter(e.target.value)}
-                  >
-                    <option value="all">Todos os Tipos</option>
-                    {Array.from(new Set([...Object.keys(CATEGORY_COLORS), ...categories, ...items.map(i => i.category).filter(Boolean)])).sort().map(cat => (
-                      <option key={cat} value={cat}>{cat}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-2xl border border-slate-200/90 shadow-sm hover:border-blue-300 transition-all">
-                  <TrendingUp size={15} className="text-blue-600" />
-                  <select 
-                    className="text-xs font-extrabold text-slate-700 focus:outline-none bg-transparent cursor-pointer"
-                    value={inventorySort}
-                    onChange={e => setInventorySort(e.target.value as any)}
-                  >
-                    <option value="name_asc">A-Z (Nome)</option>
-                    <option value="name_desc">Z-A (Nome)</option>
-                    <option value="duration_asc">Duração (Menor-Maior)</option>
-                    <option value="duration_desc">Duração (Maior-Menor)</option>
-                  </select>
-                </div>
-                <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-2xl border border-slate-200/90 shadow-sm hover:border-blue-300 transition-all">
-                  <Filter size={15} className="text-blue-600" />
-                  <select 
-                    className="text-xs font-extrabold text-slate-700 focus:outline-none bg-transparent cursor-pointer"
-                    value={originFilter}
-                    onChange={e => setOriginFilter(e.target.value as any)}
-                  >
-                    <option value="all">Todas Origens</option>
-                    <option value="contract">Contrato</option>
-                    <option value="extra">Extra</option>
-                    <option value="donation">Doação</option>
-                  </select>
-                </div>
-                {isAdmin && (
-                  <div className="flex items-center gap-2">
-                    <button 
-                      onClick={() => {
-                        setActiveTab('reports');
-                        setReportsTab('balanco');
-                      }}
-                      className="px-3.5 py-2 bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white rounded-2xl text-xs font-black flex items-center gap-1.5 hover:from-blue-800 hover:to-indigo-950 transition-all shadow-sm shadow-blue-600/20 cursor-pointer"
-                      title="Realizar Balanço e Inventário Físico"
-                    >
-                      <ClipboardList size={16} /> Balanço de Estoque
-                    </button>
-                    <button 
-                      onClick={handleExportInventory}
-                      className="p-2 bg-white border border-slate-200 rounded-2xl text-slate-600 hover:text-blue-700 hover:border-blue-300 hover:bg-blue-50/50 transition-all shadow-sm cursor-pointer"
-                      title="Baixar Planilha Excel"
-                    >
-                      <Download size={18} />
-                    </button>
-                    <button 
-                      onClick={handleExportInventoryPDF}
-                      className="p-2 bg-white border border-slate-200 rounded-2xl text-rose-600 hover:text-rose-700 hover:border-rose-300 hover:bg-rose-50 transition-all shadow-sm cursor-pointer"
-                      title="Baixar Relatório PDF de Todo Estoque"
-                    >
-                      <Printer size={18} />
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-            {activeTab === 'dashboard' && (isAdmin || selectedSector === 'Farmácia') && (
-              <>
+            {(isAdmin || selectedSector === 'Farmácia') && (
+              <div className="flex items-center gap-2">
                 <button 
                   onClick={() => setShowAddModal(true)}
-                  className="bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white px-4.5 py-2 rounded-2xl text-xs font-extrabold flex items-center gap-2 hover:from-blue-800 hover:to-indigo-950 transition-all shadow-md shadow-blue-600/20"
+                  className="bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white px-3.5 sm:px-4.5 py-2.5 rounded-2xl text-xs font-black flex items-center gap-2 hover:from-blue-800 hover:to-indigo-950 transition-all shadow-md shadow-blue-600/20 active:scale-95 cursor-pointer"
+                  title="Cadastrar nova entrada de insumos no estoque"
                 >
-                  <Plus size={18} /> Nova Entrada
+                  <Plus size={16} /> <span className="hidden sm:inline">Nova</span> Entrada
                 </button>
                 <button 
                   onClick={() => setShowTransactionModal({ show: true, type: 'exit' })}
-                  className="bg-gradient-to-r from-rose-600 to-rose-700 text-white px-4.5 py-2 rounded-2xl text-xs font-extrabold flex items-center gap-2 hover:from-rose-700 hover:to-rose-800 transition-all shadow-md shadow-rose-600/20"
+                  className="bg-gradient-to-r from-rose-600 to-rose-700 text-white px-3.5 sm:px-4.5 py-2.5 rounded-2xl text-xs font-black flex items-center gap-2 hover:from-rose-700 hover:to-rose-800 transition-all shadow-md shadow-rose-600/20 active:scale-95 cursor-pointer"
+                  title="Registrar saída e entrega de materiais"
                 >
-                  <ArrowUpRight size={18} /> Nova Saída
+                  <ArrowUpRight size={16} /> <span className="hidden sm:inline">Nova</span> Saída
                 </button>
-              </>
+              </div>
             )}
           </div>
         </header>
@@ -9034,20 +9026,20 @@ export default function App() {
           {activeTab === 'dashboard' && isAdmin && (
             <div key="dashboard" className="space-y-8">
               {/* 4 Primary KPI Stats Cards */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 xl:gap-5">
                 {/* Card 1: Volume Total */}
-                <div className="bg-white rounded-xl border border-blue-100/80 shadow-xs hover:shadow-sm hover:border-blue-200 transition-all duration-200 overflow-hidden group relative">
-                  <div className="h-1 w-full bg-gradient-to-r from-blue-600 to-cyan-500" />
-                  <div className="p-3.5">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Volume em Estoque</span>
-                      <div className="bg-gradient-to-br from-blue-600 to-blue-700 text-white p-1.5 rounded-lg shadow-xs group-hover:scale-105 transition-transform">
-                        <Package size={15} />
+                <div className="bg-white rounded-2xl border border-blue-100/90 shadow-xs hover:shadow-md hover:border-blue-300 transition-all duration-200 overflow-hidden group relative">
+                  <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 via-cyan-500 to-blue-500" />
+                  <div className="p-4.5 sm:p-5">
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="text-[11px] font-black text-slate-500 uppercase tracking-wider">Volume em Estoque</span>
+                      <div className="bg-gradient-to-br from-blue-600 to-blue-700 text-white p-2 rounded-xl shadow-xs group-hover:scale-105 transition-transform">
+                        <Package size={17} />
                       </div>
                     </div>
-                    <h3 className="text-xl font-black text-slate-900 tracking-tight">{totalVolume.toLocaleString('pt-BR')}</h3>
-                    <div className="mt-2 flex items-center gap-1.5">
-                      <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-100 uppercase tracking-wider flex items-center gap-1">
+                    <h3 className="text-2xl xl:text-3xl font-black text-slate-900 tracking-tight">{totalVolume.toLocaleString('pt-BR')}</h3>
+                    <div className="mt-3 flex items-center gap-1.5">
+                      <span className="px-2.5 py-1 rounded-lg text-[10px] font-extrabold bg-blue-50 text-blue-700 border border-blue-100 uppercase tracking-wider flex items-center gap-1.5">
                         <span className="w-1.5 h-1.5 rounded-full bg-blue-600" />
                         {groupedArray.length} tipos de insumos
                       </span>
@@ -9057,20 +9049,20 @@ export default function App() {
 
                 {/* Card 2: Patrimônio */}
                 {(isAdmin || selectedSector === 'Farmácia') && (
-                  <div className="bg-white rounded-xl border border-indigo-100/80 shadow-xs hover:shadow-sm hover:border-indigo-200 transition-all duration-200 overflow-hidden group relative">
-                    <div className="h-1 w-full bg-gradient-to-r from-indigo-600 to-blue-600" />
-                    <div className="p-3.5">
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Patrimônio Investido</span>
-                        <div className="bg-gradient-to-br from-indigo-600 to-indigo-700 text-white p-1.5 rounded-lg shadow-xs group-hover:scale-105 transition-transform">
-                          <DollarSign size={15} />
+                  <div className="bg-white rounded-2xl border border-indigo-100/90 shadow-xs hover:shadow-md hover:border-indigo-300 transition-all duration-200 overflow-hidden group relative">
+                    <div className="h-1.5 w-full bg-gradient-to-r from-indigo-600 via-blue-600 to-indigo-500" />
+                    <div className="p-4.5 sm:p-5">
+                      <div className="flex items-center justify-between mb-3">
+                        <span className="text-[11px] font-black text-slate-500 uppercase tracking-wider">Patrimônio Investido</span>
+                        <div className="bg-gradient-to-br from-indigo-600 to-indigo-700 text-white p-2 rounded-xl shadow-xs group-hover:scale-105 transition-transform">
+                          <DollarSign size={17} />
                         </div>
                       </div>
-                      <h3 className="text-lg font-black text-slate-900 tracking-tight select-all">
+                      <h3 className="text-xl xl:text-2xl font-black text-slate-900 tracking-tight select-all">
                         {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalInventoryValue)}
                       </h3>
-                      <div className="mt-2 flex items-center gap-1.5">
-                        <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-100 uppercase tracking-wider flex items-center gap-1">
+                      <div className="mt-3 flex items-center gap-1.5">
+                        <span className="px-2.5 py-1 rounded-lg text-[10px] font-extrabold bg-indigo-50 text-indigo-700 border border-indigo-100 uppercase tracking-wider flex items-center gap-1.5">
                           <span className="w-1.5 h-1.5 rounded-full bg-indigo-600" />
                           Valor financeiro ativo
                         </span>
@@ -9082,21 +9074,21 @@ export default function App() {
                 {/* Card 3: Pendências / Solicitações */}
                 <div 
                   onClick={() => setActiveTab('requests')}
-                  className="bg-white rounded-xl border border-sky-100/80 shadow-xs hover:shadow-sm hover:border-sky-300 transition-all duration-200 overflow-hidden group cursor-pointer relative"
+                  className="bg-white rounded-2xl border border-sky-100/90 shadow-xs hover:shadow-md hover:border-sky-300 transition-all duration-200 overflow-hidden group cursor-pointer relative"
                 >
-                  <div className="h-1 w-full bg-gradient-to-r from-sky-500 to-blue-600" />
-                  <div className="p-3.5">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Solicitações Pendentes</span>
-                      <div className="bg-gradient-to-br from-sky-500 to-blue-600 text-white p-1.5 rounded-lg shadow-xs group-hover:scale-105 transition-transform">
-                        <Clock size={15} />
+                  <div className="h-1.5 w-full bg-gradient-to-r from-sky-500 via-blue-600 to-cyan-500" />
+                  <div className="p-4.5 sm:p-5">
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="text-[11px] font-black text-slate-500 uppercase tracking-wider">Solicitações Pendentes</span>
+                      <div className="bg-gradient-to-br from-sky-500 to-blue-600 text-white p-2 rounded-xl shadow-xs group-hover:scale-105 transition-transform">
+                        <Clock size={17} />
                       </div>
                     </div>
-                    <h3 className={`text-xl font-black tracking-tight ${pendingRequestsCount > 0 ? 'text-sky-700' : 'text-slate-900'}`}>
+                    <h3 className={`text-2xl xl:text-3xl font-black tracking-tight ${pendingRequestsCount > 0 ? 'text-sky-700' : 'text-slate-900'}`}>
                       {pendingRequestsCount}
                     </h3>
-                    <div className="mt-2 flex items-center gap-1.5">
-                      <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 ${pendingRequestsCount > 0 ? 'bg-sky-50 text-sky-800 border border-sky-200' : 'bg-slate-50 text-slate-600 border border-slate-100'}`}>
+                    <div className="mt-3 flex items-center gap-1.5">
+                      <span className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold uppercase tracking-wider flex items-center gap-1.5 ${pendingRequestsCount > 0 ? 'bg-sky-50 text-sky-800 border border-sky-200' : 'bg-slate-50 text-slate-600 border border-slate-100'}`}>
                         <span className={`w-1.5 h-1.5 rounded-full ${pendingRequestsCount > 0 ? 'bg-sky-500' : 'bg-slate-400'}`} />
                         {pendingRequestsCount > 0 ? 'Aguardando atendimento' : 'Nenhuma pendência'}
                       </span>
@@ -9111,48 +9103,48 @@ export default function App() {
                     type: 'all_alerts', 
                     items: [...expiredItems, ...lowStockItems, ...nearExpiryItems] as any 
                   })}
-                  className={`bg-white rounded-xl border transition-all duration-200 overflow-hidden group cursor-pointer relative ${
+                  className={`bg-white rounded-2xl border transition-all duration-200 overflow-hidden group cursor-pointer relative ${
                     totalAlertsCount > 0
-                      ? 'border-amber-200/80 shadow-xs hover:border-amber-300 hover:shadow-sm'
-                      : 'border-blue-100/80 shadow-xs hover:border-blue-200'
+                      ? 'border-amber-200 shadow-xs hover:border-amber-400 hover:shadow-md'
+                      : 'border-blue-100/90 shadow-xs hover:border-blue-300'
                   }`}
                 >
-                  <div className={`h-1 w-full ${expiredItems.length > 0 ? 'bg-gradient-to-r from-rose-600 to-amber-500' : lowStockItems.length > 0 ? 'bg-gradient-to-r from-amber-500 to-rose-500' : 'bg-gradient-to-r from-emerald-500 to-blue-500'}`} />
-                  <div className="p-3.5">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Atenção Necessária</span>
-                      <div className={`p-1.5 rounded-lg shadow-xs group-hover:scale-105 transition-transform text-white ${
+                  <div className={`h-1.5 w-full ${expiredItems.length > 0 ? 'bg-gradient-to-r from-rose-600 to-amber-500' : lowStockItems.length > 0 ? 'bg-gradient-to-r from-amber-500 to-rose-500' : 'bg-gradient-to-r from-emerald-500 to-blue-500'}`} />
+                  <div className="p-4.5 sm:p-5">
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="text-[11px] font-black text-slate-500 uppercase tracking-wider">Atenção Necessária</span>
+                      <div className={`p-2 rounded-xl shadow-xs group-hover:scale-105 transition-transform text-white ${
                         expiredItems.length > 0 ? 'bg-gradient-to-br from-rose-600 to-amber-600' : lowStockItems.length > 0 ? 'bg-gradient-to-br from-amber-500 to-rose-500' : 'bg-gradient-to-br from-emerald-500 to-blue-600'
                       }`}>
-                        <AlertTriangle size={15} />
+                        <AlertTriangle size={17} />
                       </div>
                     </div>
-                    <h3 className={`text-xl font-black tracking-tight ${expiredItems.length > 0 ? 'text-rose-600' : lowStockItems.length > 0 ? 'text-amber-600' : 'text-slate-900'}`}>
+                    <h3 className={`text-2xl xl:text-3xl font-black tracking-tight ${expiredItems.length > 0 ? 'text-rose-600' : lowStockItems.length > 0 ? 'text-amber-600' : 'text-slate-900'}`}>
                       {totalAlertsCount}
                     </h3>
-                    <div className="mt-2 flex flex-wrap items-center gap-1">
+                    <div className="mt-3 flex flex-wrap items-center gap-1.5">
                       {totalAlertsCount === 0 ? (
-                        <span className="px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 bg-emerald-50 text-emerald-800 border border-emerald-200">
+                        <span className="px-2.5 py-1 rounded-lg text-[10px] font-extrabold uppercase tracking-wider flex items-center gap-1.5 bg-emerald-50 text-emerald-800 border border-emerald-200">
                           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
                           Tudo em dia
                         </span>
                       ) : (
                         <>
                           {expiredItems.length > 0 && (
-                            <span className="px-1.5 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider bg-rose-100 text-rose-800 border border-rose-300 flex items-center gap-1">
-                              <span className="w-1 h-1 rounded-full bg-rose-600" />
+                            <span className="px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider bg-rose-100 text-rose-800 border border-rose-300 flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full bg-rose-600" />
                               {expiredItems.length} vencido{expiredItems.length > 1 ? 's' : ''}
                             </span>
                           )}
                           {lowStockItems.length > 0 && (
-                            <span className="px-1.5 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider bg-amber-100 text-amber-800 border border-amber-300 flex items-center gap-1">
-                              <span className="w-1 h-1 rounded-full bg-amber-500" />
+                            <span className="px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider bg-amber-100 text-amber-800 border border-amber-300 flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
                               {lowStockItems.length} baixo estoque
                             </span>
                           )}
                           {nearExpiryItems.length > 0 && (
-                            <span className="px-1.5 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider bg-sky-100 text-sky-800 border border-sky-300 flex items-center gap-1">
-                              <span className="w-1 h-1 rounded-full bg-sky-500" />
+                            <span className="px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider bg-sky-100 text-sky-800 border border-sky-300 flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full bg-sky-500" />
                               {nearExpiryItems.length} próx. vencer
                             </span>
                           )}
@@ -9318,25 +9310,31 @@ export default function App() {
                       </div>
                     ))}
 
-                    {/* Low Stock Items */}
+                    {/* Low Stock Items (Consolidated Material) */}
                     {lowStockItems.map(group => (
-                      <div key={`low-${group.name}`} className="flex items-center justify-between p-3.5 bg-amber-50/50 rounded-2xl border border-amber-200/60 hover:bg-amber-50 transition-all duration-200">
+                      <div key={`low-${group.material_id || group.name}`} className="flex items-center justify-between p-3.5 bg-amber-50/50 rounded-2xl border border-amber-200/60 hover:bg-amber-50 transition-all duration-200">
                         <div className="flex items-center gap-3 min-w-0">
-                          <div className="w-9 h-9 bg-amber-100 text-amber-900 rounded-xl flex items-center justify-center font-black text-xs shrink-0 border border-amber-200">
-                            {group.total_quantity}
+                          <div className="w-10 h-10 bg-amber-100 text-amber-900 rounded-xl flex flex-col items-center justify-center font-black text-xs shrink-0 border border-amber-200">
+                            <span>{group.total_quantity}</span>
+                            <span className="text-[7px] text-amber-700 font-bold uppercase leading-none">Total</span>
                           </div>
                           <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-1.5">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="font-mono text-[9px] font-bold px-1 rounded bg-amber-100 text-amber-800 border border-amber-200">
+                                {group.material_code || group.material_id}
+                              </span>
                               <p className="font-extrabold text-xs text-slate-900 truncate leading-tight">{group.name}</p>
-                              <span className="text-[9px] font-black uppercase px-1.5 py-0.2 rounded bg-amber-200 text-amber-900">Estoque Baixo</span>
+                              <span className="text-[9px] font-black uppercase px-1.5 py-0.2 rounded bg-amber-200 text-amber-900">
+                                {group.total_quantity === 0 ? 'Zerado' : 'Estoque Baixo'}
+                              </span>
                             </div>
                             <p className="text-[10px] text-amber-800 font-semibold mt-0.5">
-                              Abaixo do mínimo recomendado ({group.min_quantity} un)
+                              Estoque consolidado: {group.total_quantity} un • Mínimo: {group.min_quantity} un ({group.batches.length} {group.batches.length === 1 ? 'lote' : 'lotes'})
                             </p>
                           </div>
                         </div>
                         <button 
-                          onClick={() => setShowTransactionModal({ show: true, type: 'entry', item: group.batches[0] })}
+                          onClick={() => setShowTransactionModal({ show: true, type: 'entry', item: group.batches[0] || { name: group.name, category: group.category } as any })}
                           className="bg-gradient-to-r from-amber-600 to-amber-700 text-white px-3 py-1.5 rounded-xl text-xs font-bold hover:from-amber-700 hover:to-amber-800 transition-all shadow-sm shrink-0 ml-2"
                         >
                           Repor
@@ -9458,64 +9456,160 @@ export default function App() {
 
           {activeTab === 'inventory' && isAdmin && (
             <div key="inventory" className="space-y-4">
-              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-white p-4 rounded-3xl border border-blue-100/80 shadow-sm">
-                {isAdmin ? (
-                  <div className="flex items-center gap-2 bg-slate-100/80 p-1.5 rounded-2xl border border-slate-200/80">
-                    <button 
-                      onClick={() => setInventoryLocation('Almoxarifado')}
-                      className={`px-5 py-2 rounded-xl text-xs font-extrabold transition-all duration-200 flex items-center gap-2 ${
-                        inventoryLocation === 'Almoxarifado' 
-                          ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-md shadow-blue-600/20' 
-                          : 'text-slate-600 hover:bg-slate-200/70'
-                      }`}
-                    >
-                      <Package size={15} /> Almoxarifado Geral
-                    </button>
-                    <button 
-                      onClick={() => setInventoryLocation('Farmácia')}
-                      className={`px-5 py-2 rounded-xl text-xs font-extrabold transition-all duration-200 flex items-center gap-2 ${
-                        inventoryLocation === 'Farmácia' 
-                          ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-md shadow-blue-600/20' 
-                          : 'text-slate-600 hover:bg-slate-200/70'
-                      }`}
-                    >
-                      <Users size={15} /> Estoque Farmácia
-                    </button>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-3 px-4 py-2 bg-blue-50/80 rounded-2xl border border-blue-100">
-                    <div className="p-2 bg-gradient-to-br from-blue-700 to-indigo-900 text-white rounded-xl shadow-sm">
-                      {inventoryLocation === 'Farmácia' ? <Users size={16} /> : <Package size={16} />}
+              {/* Desktop Inventory Management Toolbar */}
+              <div className="bg-white p-4 sm:p-5 rounded-3xl border border-slate-200/90 shadow-xs space-y-4">
+                {/* Row 1: Locations & Quick Actions */}
+                <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-3 pb-3 border-b border-slate-100">
+                  {isAdmin ? (
+                    <div className="flex items-center gap-2 bg-slate-100/90 p-1.5 rounded-2xl border border-slate-200/80">
+                      <button 
+                        onClick={() => setInventoryLocation('Almoxarifado')}
+                        className={`px-5 py-2 rounded-xl text-xs font-black transition-all duration-200 flex items-center gap-2 cursor-pointer ${
+                          inventoryLocation === 'Almoxarifado' 
+                            ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-md shadow-blue-600/20' 
+                            : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/70'
+                        }`}
+                      >
+                        <Package size={15} /> Almoxarifado Geral
+                      </button>
+                      <button 
+                        onClick={() => setInventoryLocation('Farmácia')}
+                        className={`px-5 py-2 rounded-xl text-xs font-black transition-all duration-200 flex items-center gap-2 cursor-pointer ${
+                          inventoryLocation === 'Farmácia' 
+                            ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-md shadow-blue-600/20' 
+                            : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/70'
+                        }`}
+                      >
+                        <Users size={15} /> Estoque Farmácia
+                      </button>
                     </div>
-                    <div>
-                      <p className="text-xs font-black text-slate-900">
-                        Estoque: <span className="text-blue-700">{inventoryLocation === 'Farmácia' ? 'Medicamentos (Farmácia)' : 'Almoxarifado Geral'}</span>
-                      </p>
-                      <p className="text-[10px] text-slate-500 font-medium">Acesso exclusivo aos medicamentos da Farmácia</p>
+                  ) : (
+                    <div className="flex items-center gap-3 px-4 py-2 bg-blue-50/80 rounded-2xl border border-blue-100">
+                      <div className="p-2 bg-gradient-to-br from-blue-700 to-indigo-900 text-white rounded-xl shadow-xs">
+                        {inventoryLocation === 'Farmácia' ? <Users size={16} /> : <Package size={16} />}
+                      </div>
+                      <div>
+                        <p className="text-xs font-black text-slate-900">
+                          Estoque: <span className="text-blue-700">{inventoryLocation === 'Farmácia' ? 'Medicamentos (Farmácia)' : 'Almoxarifado Geral'}</span>
+                        </p>
+                        <p className="text-[10px] text-slate-500 font-medium">Acesso exclusivo aos medicamentos da Farmácia</p>
+                      </div>
                     </div>
-                  </div>
-                )}
-
-                <div className="flex items-center gap-3">
-                  {inventoryLocation === 'Farmácia' && (
-                    <button 
-                      onClick={() => setActiveTab('new-request')}
-                      className="px-4 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white font-extrabold text-xs rounded-2xl shadow-md hover:shadow-lg transition-all flex items-center gap-2"
-                      title="Solicitar novos medicamentos ao Almoxarifado Geral"
-                    >
-                      <Plus size={16} /> Solicitar ao Almoxarifado
-                    </button>
                   )}
-                  <span className="text-xs font-black text-slate-500 uppercase tracking-wider bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-xl">
-                    Visualização: <span className="text-blue-700 font-black">{inventoryLocation}</span>
-                  </span>
+
+                  <div className="flex flex-wrap items-center gap-2 self-stretch lg:self-auto">
+                    {inventoryLocation === 'Farmácia' && (
+                      <button 
+                        onClick={() => setActiveTab('new-request')}
+                        className="px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white font-black text-xs rounded-xl shadow-xs transition-all flex items-center gap-2 cursor-pointer"
+                        title="Solicitar novos medicamentos ao Almoxarifado Geral"
+                      >
+                        <Plus size={15} /> Solicitar ao Almoxarifado
+                      </button>
+                    )}
+                    <button 
+                      onClick={() => {
+                        setActiveTab('reports');
+                        setReportsTab('balanco');
+                      }}
+                      className="px-4 py-2 bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white rounded-xl text-xs font-black flex items-center gap-1.5 hover:from-blue-800 hover:to-indigo-950 transition-all shadow-xs cursor-pointer"
+                      title="Realizar Balanço e Inventário Físico"
+                    >
+                      <ClipboardList size={15} /> Balanço de Estoque
+                    </button>
+                    <button 
+                      onClick={handleExportInventory}
+                      className="px-3 py-2 bg-white border border-slate-200 text-slate-700 hover:text-emerald-700 hover:border-emerald-300 hover:bg-emerald-50/50 rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 cursor-pointer"
+                      title="Exportar Planilha Excel"
+                    >
+                      <Download size={15} /> <span className="hidden sm:inline">Excel</span>
+                    </button>
+                    <button 
+                      onClick={handleExportInventoryPDF}
+                      className="px-3 py-2 bg-white border border-slate-200 text-rose-600 hover:text-rose-700 hover:border-rose-300 hover:bg-rose-50 rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 cursor-pointer"
+                      title="Baixar Relatório PDF de Todo Estoque"
+                    >
+                      <Printer size={15} /> <span className="hidden sm:inline">PDF</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Row 2: Wide Search Bar & Granular Filters for Desktop */}
+                <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
+                  <div className="relative flex-1 min-w-[280px] max-w-xl">
+                    <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={17} />
+                    <input 
+                      type="text" 
+                      placeholder="Buscar por nome, código, lote ou fornecedor..."
+                      className="w-full pl-10 pr-9 py-2.5 bg-slate-50 hover:bg-white focus:bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all shadow-inner"
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                    />
+                    {searchTerm && (
+                      <button
+                        onClick={() => setSearchTerm('')}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 rounded-full"
+                        title="Limpar busca"
+                      >
+                        <X size={15} />
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex items-center gap-1.5 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200 shadow-2xs hover:border-blue-300 transition-all">
+                      <Filter size={14} className="text-blue-600 shrink-0" />
+                      <select 
+                        className="text-xs font-bold text-slate-700 focus:outline-none bg-transparent cursor-pointer"
+                        value={categoryFilter}
+                        onChange={e => setCategoryFilter(e.target.value)}
+                      >
+                        <option value="all">Todas Categorias</option>
+                        {Array.from(new Set([...Object.keys(CATEGORY_COLORS), ...categories, ...items.map(i => i.category).filter(Boolean)])).sort().map(cat => (
+                          <option key={cat} value={cat}>{cat}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200 shadow-2xs hover:border-blue-300 transition-all">
+                      <TrendingUp size={14} className="text-blue-600 shrink-0" />
+                      <select 
+                        className="text-xs font-bold text-slate-700 focus:outline-none bg-transparent cursor-pointer"
+                        value={inventorySort}
+                        onChange={e => setInventorySort(e.target.value as any)}
+                      >
+                        <option value="name_asc">Ordem: A-Z (Nome)</option>
+                        <option value="name_desc">Ordem: Z-A (Nome)</option>
+                        <option value="duration_asc">Duração: Menor para Maior</option>
+                        <option value="duration_desc">Duração: Maior para Menor</option>
+                      </select>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200 shadow-2xs hover:border-blue-300 transition-all">
+                      <Filter size={14} className="text-blue-600 shrink-0" />
+                      <select 
+                        className="text-xs font-bold text-slate-700 focus:outline-none bg-transparent cursor-pointer"
+                        value={originFilter}
+                        onChange={e => setOriginFilter(e.target.value as any)}
+                      >
+                        <option value="all">Todas Origens</option>
+                        <option value="contract">Contrato</option>
+                        <option value="extra">Extra</option>
+                        <option value="donation">Doação</option>
+                      </select>
+                    </div>
+
+                    <span className="text-[11px] font-black text-slate-500 bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 whitespace-nowrap ml-auto lg:ml-0">
+                      {groupedArray.length} {groupedArray.length === 1 ? 'material' : 'materiais'}
+                    </span>
+                  </div>
                 </div>
               </div>
 
               <div className="bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden">
-                <div className="overflow-x-auto">
+                <div className="overflow-x-auto max-h-[75vh]">
                   <table className="w-full text-left border-collapse min-w-[1000px]">
-                <thead>
+                <thead className="sticky top-0 z-10 shadow-xs">
                   <tr className="bg-gradient-to-r from-slate-900 via-blue-950 to-slate-900 text-white">
                     <th className="px-6 py-4 font-black text-xs text-blue-200/90 uppercase tracking-wider">Item / Insumo</th>
                     <th className="px-6 py-4 font-black text-xs text-blue-200/90 uppercase tracking-wider">Categoria {isAdmin && '/ Fornecedor'}</th>
@@ -9656,6 +9750,9 @@ export default function App() {
                             ) : (
                               <div className="flex flex-col">
                                 <div className="flex items-center gap-2 group/name flex-wrap">
+                                  <span className="font-mono text-[10px] font-black px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200" title={`Código de identificação consolidada do material: ${group.material_code || group.material_id}`}>
+                                    {group.material_code || group.material_id}
+                                  </span>
                                   <p className="font-extrabold text-sm text-slate-900 group-hover/row:text-blue-700 transition-colors">{group.name}</p>
                                   
                                   {/* Eye button to view all exits of this material */}
@@ -9799,11 +9896,14 @@ export default function App() {
                         </td>
                         <td className="px-6 py-4.5 font-semibold text-slate-600 text-xs">---</td>
                         <td className="px-6 py-4.5">
-                          <div className="flex flex-col items-center justify-center bg-slate-50/90 rounded-2xl py-1.5 px-3 border border-slate-200/80 min-w-[80px]">
+                          <div className="flex flex-col items-center justify-center bg-slate-50/90 rounded-2xl py-1.5 px-3 border border-slate-200/80 min-w-[95px]">
                             <span className={`text-base font-black ${group.total_quantity <= (group.min_quantity || 0) ? 'text-amber-600' : 'text-slate-900'}`}>
                               {group.total_quantity}
                             </span>
-                            <span className="text-[8px] font-black text-slate-400 uppercase tracking-wider">Estoque Total</span>
+                            <span className="text-[8px] font-black text-slate-500 uppercase tracking-wider">Estoque Consolidado</span>
+                            <span className="text-[9px] font-bold text-blue-700">
+                              ({group.batches.length} {group.batches.length === 1 ? 'lote' : 'lotes'})
+                            </span>
                           </div>
                         </td>
                         <td className="px-6 py-4.5 text-xs font-semibold text-slate-600">
@@ -9812,7 +9912,15 @@ export default function App() {
                               {group.min_quantity !== undefined && !isNaN(group.min_quantity) ? group.min_quantity : '---'}
                               <TrendingUp size={12} className="text-blue-600" />
                             </span>
-                            {group.weeklyExitRate > 0 && <span className="text-[10px] text-slate-400">({group.weeklyExitRate.toFixed(1)}/sem)</span>}
+                            {group.isDynamicMin ? (
+                              <span className="text-[9px] text-blue-600 font-bold" title="Estoque mínimo dinâmico baseado na média dos últimos 3 meses">
+                                (Média 3 meses)
+                              </span>
+                            ) : (
+                              <span className="text-[9px] text-slate-400 font-medium" title="Estoque mínimo inicial até consolidar saídas">
+                                (Inicial)
+                              </span>
+                            )}
                           </div>
                         </td>
                         <td className="px-6 py-4.5">
@@ -9835,18 +9943,18 @@ export default function App() {
                           </div>
                         </td>
                         <td className="px-6 py-4.5 text-xs">
-                          {group.durationWeeks !== 'infinite' ? (
-                            <span className={`font-black uppercase tracking-tight text-[10px] px-2 py-0.5 rounded-md border ${
-                              group.durationWeeks <= 4 ? 'bg-rose-50 text-rose-700 border-rose-200' :
-                              group.durationWeeks <= 8 ? 'bg-amber-50 text-amber-700 border-amber-200' :
-                              'bg-emerald-50 text-emerald-700 border-emerald-200'
-                            }`}>
-                              {group.durationWeeks <= 4 ? 'Muito Crítico' :
-                               group.durationWeeks <= 8 ? 'Atenção' :
-                               'Normal'}
+                          {group.total_quantity <= 0 ? (
+                            <span className="font-black uppercase tracking-tight text-[10px] px-2 py-0.5 rounded-md border bg-rose-100 text-rose-800 border-rose-300">
+                              Zerado / Ruptura
+                            </span>
+                          ) : group.total_quantity <= group.min_quantity ? (
+                            <span className="font-black uppercase tracking-tight text-[10px] px-2 py-0.5 rounded-md border bg-amber-100 text-amber-900 border-amber-300">
+                              Estoque Baixo
                             </span>
                           ) : (
-                            <span className="text-slate-300">---</span>
+                            <span className="font-bold uppercase tracking-tight text-[10px] px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200">
+                              Normal
+                            </span>
                           )}
                         </td>
                         <td className="px-6 py-4.5 text-right">
@@ -9868,13 +9976,29 @@ export default function App() {
                                 {expandedItems.has(group.name) ? 'Recolher' : 'Ver Lotes'}
                               </button>
                               <span className="text-[10px] text-slate-400 font-medium">
-                                {group.batches.length} remessas
+                                {group.batches.length} {group.batches.length === 1 ? 'lote' : 'lotes'}
                               </span>
                             </div>
                           </div>
                         </td>
                       </tr>
                       
+                      {expandedItems.has(group.name) && (
+                        <tr className="bg-blue-50/50 border-l-4 border-blue-600">
+                          <td colSpan={isAdmin ? 9 : 8} className="px-8 py-2">
+                            <div className="flex items-center justify-between text-xs">
+                              <span className="font-extrabold text-blue-950 flex items-center gap-1.5">
+                                <Layers size={14} className="text-blue-600" />
+                                Detalhamento dos Lotes de <strong>{group.name}</strong> ({group.batches.length} {group.batches.length === 1 ? 'lote cadastrado' : 'lotes cadastrados'})
+                              </span>
+                              <span className="text-[11px] font-bold text-blue-800 bg-blue-100/90 px-2.5 py-0.5 rounded-lg border border-blue-200">
+                                Saldo Consolidado: <strong>{group.total_quantity} un</strong>
+                              </span>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+
                       {expandedItems.has(group.name) && group.batches.map(item => (
                         <tr key={item.id} className="bg-slate-50/70 hover:bg-blue-50/50 transition-all border-l-4 border-blue-600">
                           <td className="px-12 py-3.5">
@@ -9982,23 +10106,31 @@ export default function App() {
                               ) : (
                                 <div className="flex flex-col items-center group/qty">
                                   <div className="flex items-center gap-1.5">
-                                    <span className={`text-sm font-black ${item.quantity <= (item.min_quantity || 0) ? 'text-amber-600' : 'text-slate-900'}`}>
+                                    <span className={`text-sm font-black ${(item.quantity || 0) === 0 ? 'text-slate-400 italic' : 'text-slate-800'}`}>
                                       {item.quantity} un
                                     </span>
                                     <button 
                                       onClick={(e) => { e.stopPropagation(); setEditingQuantity({ id: item.id, quantity: item.quantity }); }}
                                       className="opacity-0 group-hover/qty:opacity-100 p-1 text-slate-400 hover:text-blue-700 transition-all"
-                                      title="Editar Quantidade"
+                                      title="Editar Quantidade deste Lote"
                                     >
                                       <Edit2 size={12} />
                                     </button>
                                   </div>
+                                  <span className="text-[8px] font-bold text-slate-400 uppercase">
+                                    {(item.quantity || 0) === 0 ? 'Lote Esgotado' : 'Saldo deste Lote'}
+                                  </span>
                                 </div>
                               )
                             ) : (
-                              <span className={`text-sm font-black ${item.quantity <= (item.min_quantity || 0) ? 'text-amber-600' : 'text-slate-900'}`}>
-                                {item.quantity} un
-                              </span>
+                              <div className="flex flex-col items-center">
+                                <span className={`text-sm font-black ${(item.quantity || 0) === 0 ? 'text-slate-400 italic' : 'text-slate-800'}`}>
+                                  {item.quantity} un
+                                </span>
+                                <span className="text-[8px] font-bold text-slate-400 uppercase">
+                                  {(item.quantity || 0) === 0 ? 'Lote Esgotado' : 'Saldo deste Lote'}
+                                </span>
+                              </div>
                             )}
                           </td>
                           <td className="px-6 py-3.5 text-xs text-slate-300">---</td>
@@ -12323,26 +12455,66 @@ export default function App() {
             </div>
 
             <div className="flex-1 overflow-y-auto pr-1 space-y-3">
-              {showDetailModal.items.map((item: any) => (
-                <div key={item.id || item.name} className="p-4 bg-slate-50 rounded-2xl border border-slate-200/80 flex items-center justify-between">
-                  <div>
-                    <h5 className="font-black text-slate-900 text-sm">{item.name}</h5>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      Categoria: {item.category} • Local: {item.room || item.location || 'Almoxarifado'}
-                    </p>
+              {showDetailModal.items.map((itemOrGroup: any, idx: number) => {
+                const isGroup = 'total_quantity' in itemOrGroup;
+                const totalStock = isGroup ? itemOrGroup.total_quantity : (Number(itemOrGroup.quantity) || 0);
+                const minStock = itemOrGroup.min_quantity;
+                const isZerado = totalStock <= 0;
+                
+                return (
+                  <div key={itemOrGroup.id || itemOrGroup.material_id || itemOrGroup.name || idx} className="p-4 bg-slate-50 rounded-2xl border border-slate-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-mono text-[10px] font-black px-1.5 py-0.5 rounded bg-slate-200 text-slate-700">
+                          {itemOrGroup.material_code || itemOrGroup.material_id || (itemOrGroup.batch_number ? `Lote: ${itemOrGroup.batch_number}` : 'MAT')}
+                        </span>
+                        <h5 className="font-black text-slate-900 text-sm">{itemOrGroup.name}</h5>
+                        {isGroup ? (
+                          <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-md bg-blue-100 text-blue-800 border border-blue-200">
+                            Estoque Consolidado
+                          </span>
+                        ) : (
+                          <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200">
+                            Lote Específico
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Categoria: {itemOrGroup.category || 'Geral'} • Local: {itemOrGroup.room || itemOrGroup.location || 'Almoxarifado'}
+                      </p>
+                      
+                      {isGroup && itemOrGroup.batches && itemOrGroup.batches.length > 0 && (
+                        <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                          <span className="text-[10px] font-extrabold text-slate-600">Saldo por Lote:</span>
+                          {itemOrGroup.batches.map((b: Item) => (
+                            <span key={b.id} className="text-[10px] font-semibold bg-white border border-slate-200 px-2 py-0.5 rounded-md text-slate-700 font-mono">
+                              {b.batch_number || 'Sem Lote'}: <strong>{b.quantity} un</strong>
+                              {b.expiry_date ? ` (val: ${b.expiry_date === 'Indeterminada' ? 'Indet.' : new Date(b.expiry_date).toLocaleDateString('pt-BR')})` : ''}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      {!isGroup && itemOrGroup.expiry_date && (
+                        <p className={`text-[11px] font-bold mt-1.5 ${isExpired(itemOrGroup) ? 'text-rose-600' : 'text-amber-700'}`}>
+                          Validade deste Lote: {itemOrGroup.expiry_date === 'Indeterminada' ? 'Indeterminada' : new Date(itemOrGroup.expiry_date).toLocaleDateString('pt-BR')} ({itemOrGroup.quantity} un no lote)
+                        </p>
+                      )}
+                    </div>
+                    
+                    <div className="text-right shrink-0">
+                      <span className={`text-xs font-black px-2.5 py-1.5 rounded-xl inline-block ${
+                        isZerado ? 'bg-rose-100 text-rose-800 border border-rose-300' : 'bg-amber-100 text-amber-900 border border-amber-300'
+                      }`}>
+                        {isGroup ? 'Estoque Consolidado' : 'Saldo do Lote'}: {totalStock} {itemOrGroup.unit_measure || 'UN'}
+                      </span>
+                      {minStock !== undefined && !isNaN(minStock) && (
+                        <p className="text-[10px] text-slate-500 font-bold mt-1">Mínimo do Material: {minStock} un</p>
+                      )}
+                    </div>
                   </div>
-                  <div className="text-right">
-                    <span className={`text-xs font-black px-2.5 py-1 rounded-lg ${
-                      (item.quantity || 0) <= 0 ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'
-                    }`}>
-                      Estoque: {item.quantity || 0} {item.unit_measure || 'UN'}
-                    </span>
-                    {item.min_quantity && (
-                      <p className="text-[10px] text-slate-400 mt-1">Mínimo: {item.min_quantity}</p>
-                    )}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             <div className="pt-4 border-t border-slate-100 flex justify-end shrink-0">

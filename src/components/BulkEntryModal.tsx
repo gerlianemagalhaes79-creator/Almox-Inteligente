@@ -374,7 +374,7 @@ export const BulkEntryModal: React.FC<BulkEntryModalProps> = ({
   return (
     <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
       <div 
-        className="bg-white rounded-3xl max-w-5xl w-full p-6 lg:p-8 shadow-2xl max-h-[90vh] flex flex-col border border-slate-200 transition-all duration-200"
+        className="bg-white rounded-3xl max-w-5xl lg:max-w-6xl xl:max-w-7xl w-full p-6 lg:p-8 shadow-2xl max-h-[90vh] flex flex-col border border-slate-200 transition-all duration-200"
       >
         {/* Header */}
         <div className="flex items-center justify-between pb-4 border-b border-slate-100 shrink-0">
@@ -766,7 +766,7 @@ export const BulkEntryModal: React.FC<BulkEntryModalProps> = ({
                           type="number"
                           min="0"
                           className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:bg-white focus:ring-2 focus:ring-blue-500/20"
-                          placeholder="Auto (8 sem)"
+                          placeholder="Auto (média 3 meses)"
                           value={isNaN(Number(row.min_quantity)) ? '' : row.min_quantity}
                           onChange={e => updateBulkItem(row.id, 'min_quantity', e.target.value === '' ? NaN : Number(e.target.value))}
                         />
