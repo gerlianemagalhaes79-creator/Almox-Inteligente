@@ -8517,7 +8517,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-[#F5F5F4] text-[#1C1917] font-sans">
+    <div className="min-h-screen bg-[#F5F5F4] text-[#1C1917] font-sans w-full max-w-full overflow-x-hidden relative">
       {/* Mobile Header */}
       <header className="lg:hidden fixed top-0 left-0 right-0 h-16 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-4 z-20 text-white shadow-md">
         <div className="flex items-center gap-2.5">
@@ -8809,8 +8809,9 @@ export default function App() {
       </aside>
 
       {/* Main Content */}
-      <main className="lg:ml-64 p-4 sm:p-6 lg:p-8 xl:p-10 w-full max-w-[1720px] mx-auto mt-16 lg:mt-0 transition-all">
-        <header className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 lg:mb-8 pb-4 border-b border-slate-200/80">
+      <main className="lg:pl-64 min-w-0 w-full max-w-full mt-16 lg:mt-0 transition-all flex flex-col">
+        <div className="p-3 sm:p-5 lg:p-6 xl:p-8 w-full max-w-7xl 2xl:max-w-[1536px] mx-auto min-w-0 flex-1">
+          <header className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 lg:mb-8 pb-4 border-b border-slate-200/80">
           <div>
             <h2 className="text-xl sm:text-2xl lg:text-3xl font-black tracking-tight text-slate-900">
               {activeTab === 'dashboard' && 'Visão Geral'}
@@ -12213,7 +12214,7 @@ export default function App() {
               />
             </div>
           )}
-        
+        </div>
       </main>
 
       {/* MODALS */}

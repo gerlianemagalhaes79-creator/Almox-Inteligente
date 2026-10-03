@@ -6,8 +6,8 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 }
 
-body {
-  @apply antialiased;
+html, body {
+  @apply antialiased overflow-x-hidden max-w-full;
 }
 
 @media print {

