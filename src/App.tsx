@@ -94,6 +94,7 @@ import { ApuraSUSProducaoReport } from './components/ApuraSUSProducaoReport';
 import { ApuraSUSCustosReport } from './components/ApuraSUSCustosReport';
 import { BalancoReport } from './components/BalancoReport';
 import { IndicadoresReport } from './components/IndicadoresReport';
+import { generateCompletePDFReport } from './utils/pdfReportGenerator';
 import { UserManagementTab } from './components/UserManagementTab';
 import { BulkEntryModal } from './components/BulkEntryModal';
 import { RequestsTab } from './components/RequestsTab';
@@ -959,6 +960,9 @@ export default function App() {
     end: format(new Date(), 'yyyy-MM-dd')
   });
   const [reportSectorFilter, setReportSectorFilter] = useState<string>('all');
+  const [reportCategoryFilter, setReportCategoryFilter] = useState<string>('all');
+  const [reportMaterialFilter, setReportMaterialFilter] = useState<string>('all');
+  const [isExportingOverviewPDF, setIsExportingOverviewPDF] = useState<boolean>(false);
   const [pcaRange, setPcaRange] = useState({
     start: format(subDays(new Date(), 365), 'yyyy-MM-dd'),
     end: format(new Date(), 'yyyy-MM-dd')
@@ -7672,10 +7676,25 @@ export default function App() {
       if (t.deletedAt) return false;
       const d = new Date(t.date);
       const inRange = d >= start && d <= end;
-    const matchesSector = effectiveSectorFilter === 'all' || 
-                          t.sector === effectiveSectorFilter || 
-                          (effectiveSectorFilter === 'Farmácia' && t.sector === 'Farmácia (Consumo Interno)');
-      return inRange && matchesSector;
+      const matchesSector =
+        effectiveSectorFilter === 'all' ||
+        t.sector === effectiveSectorFilter ||
+        (effectiveSectorFilter === 'Farmácia' && t.sector === 'Farmácia (Consumo Interno)');
+
+      if (!inRange || !matchesSector) return false;
+
+      if (reportCategoryFilter !== 'all' || reportMaterialFilter !== 'all') {
+        const matchedItem =
+          items.find(i => i.id === t.item_id) ||
+          items.find(i => !i.deletedAt && (i.name || '').trim().toUpperCase() === (t.item_name || '').trim().toUpperCase());
+        const itemCat = (matchedItem?.category || 'Outros').trim();
+        const itemNormName = (matchedItem?.name || t.item_name || '').trim().toUpperCase();
+
+        if (reportCategoryFilter !== 'all' && itemCat !== reportCategoryFilter) return false;
+        if (reportMaterialFilter !== 'all' && itemNormName !== reportMaterialFilter) return false;
+      }
+
+      return true;
     });
 
     const regularEntriesTrans = filteredTrans.filter(t => t.type === 'entry' && !t.isReturn);
@@ -7718,23 +7737,26 @@ export default function App() {
       }
     });
 
-    const filteredItems = items.filter(item => {
+    // Base items for location/sector (before category/material filter, for dropdown options)
+    const baseLocationItems = items.filter(item => {
       if (item.deletedAt) return false;
-      
-      // If not admin, only see items from their own location
       if (!isAdmin) {
         const userLocation = userProfile?.sector === 'Farmácia' ? 'Farmácia' : 'Almoxarifado';
         return (item.location || 'Almoxarifado') === userLocation;
       }
-      
-      // If admin, respect the sector filter if it maps to a location
       if (reportSectorFilter === 'Farmácia') {
         return item.location === 'Farmácia';
       } else if (reportSectorFilter === 'Almoxarifado') {
         return (item.location || 'Almoxarifado') === 'Almoxarifado';
       }
-      
-      // If 'all' or other sector, show everything for admin
+      return true;
+    });
+
+    const filteredItems = baseLocationItems.filter(item => {
+      const cat = (item.category || 'Outros').trim();
+      const normName = (item.name || '').trim().toUpperCase();
+      if (reportCategoryFilter !== 'all' && cat !== reportCategoryFilter) return false;
+      if (reportMaterialFilter !== 'all' && normName !== reportMaterialFilter) return false;
       return true;
     });
 
@@ -7766,24 +7788,7 @@ export default function App() {
     // Group by category for value chart
     const categoryValueData: Record<string, number> = {};
     
-    const filteredItemsForValue = items.filter(item => {
-      if (item.deletedAt) return false;
-      
-      // If not admin, only see items from their own location
-      if (!isAdmin) {
-        const userLocation = userProfile?.sector === 'Farmácia' ? 'Farmácia' : 'Almoxarifado';
-        return (item.location || 'Almoxarifado') === userLocation;
-      }
-      
-      // If admin, respect the sector filter if it maps to a location
-      if (reportSectorFilter === 'Farmácia') {
-        return item.location === 'Farmácia';
-      } else if (reportSectorFilter === 'Almoxarifado') {
-        return (item.location || 'Almoxarifado') === 'Almoxarifado';
-      }
-      
-      return true;
-    });
+    const filteredItemsForValue = filteredItems;
 
     filteredItemsForValue.forEach(item => {
       const cat = item.category || 'Outros';
@@ -8058,9 +8063,307 @@ export default function App() {
       returnsBySector,
       returnsByReason,
       totalReturnsCount,
-      totalReturnsValue
+      totalReturnsValue,
+      ...(() => {
+        // Consolidate materials across batches (sum quantities without duplicating products)
+        const consolidatedOptionsMap = new Map<
+          string,
+          { normName: string; name: string; category: string; batchesCount: number; totalQty: number }
+        >();
+        baseLocationItems.forEach(it => {
+          const cat = (it.category || 'Outros').trim();
+          if (reportCategoryFilter !== 'all' && cat !== reportCategoryFilter) return;
+          const cleanName = (it.name || '').trim();
+          const normName = cleanName.toUpperCase();
+          if (!normName) return;
+          const ex = consolidatedOptionsMap.get(normName) || {
+            normName,
+            name: cleanName,
+            category: cat,
+            batchesCount: 0,
+            totalQty: 0
+          };
+          ex.batchesCount += 1;
+          ex.totalQty += Math.max(0, Number(it.quantity) || 0);
+          consolidatedOptionsMap.set(normName, ex);
+        });
+
+        const consolidatedFilteredMap = new Map<
+          string,
+          {
+            normName: string;
+            name: string;
+            category: string;
+            batchesCount: number;
+            totalQty: number;
+            totalVal: number;
+            minQty: number;
+          }
+        >();
+
+        let expiredBatchesCount = 0;
+        let expiredBatchesValue = 0;
+        let expiring60dBatchesCount = 0;
+        let expiring60dBatchesValue = 0;
+        let currentStockUnits = 0;
+        const todayZero = new Date();
+        todayZero.setHours(0, 0, 0, 0);
+
+        filteredItems.forEach(it => {
+          const cleanName = (it.name || '').trim();
+          const normName = cleanName.toUpperCase();
+          if (!normName) return;
+          const qty = Math.max(0, Number(it.quantity) || 0);
+          const price = Number(it.unit_price) || 0;
+          const minQ = Number(it.min_quantity) || 0;
+          const cat = (it.category || 'Outros').trim();
+          currentStockUnits += qty;
+
+          const ex = consolidatedFilteredMap.get(normName) || {
+            normName,
+            name: cleanName,
+            category: cat,
+            batchesCount: 0,
+            totalQty: 0,
+            totalVal: 0,
+            minQty: minQ
+          };
+          ex.batchesCount += 1;
+          ex.totalQty += qty;
+          ex.totalVal += qty * price;
+          if (minQ > ex.minQty) ex.minQty = minQ;
+          consolidatedFilteredMap.set(normName, ex);
+
+          if (qty > 0 && it.expiry_date && !['N/A', 'INDETERMINADA', '-'].includes(it.expiry_date.toUpperCase())) {
+            const expD = new Date(it.expiry_date.length === 10 ? `${it.expiry_date}T00:00:00` : it.expiry_date);
+            if (!isNaN(expD.getTime())) {
+              const diffD = Math.ceil((expD.getTime() - todayZero.getTime()) / (1000 * 60 * 60 * 24));
+              if (diffD < 0) {
+                expiredBatchesCount += 1;
+                expiredBatchesValue += qty * price;
+              } else if (diffD <= 60) {
+                expiring60dBatchesCount += 1;
+                expiring60dBatchesValue += qty * price;
+              }
+            }
+          }
+        });
+
+        let regularCount = 0;
+        let lowWithBalanceCount = 0;
+        let zeroBalanceCount = 0;
+        let lowTotalCount = 0;
+
+        const consolidatedMaterialsList: Array<{
+          name: string;
+          category: string;
+          batchesCount: number;
+          totalQty: number;
+          minQty: number;
+          totalVal: number;
+          status: 'Regular' | 'Estoque Baixo' | 'Zerado / Ruptura';
+        }> = [];
+
+        consolidatedFilteredMap.forEach(m => {
+          const normKey = normalizeString(m.name);
+          const dynamicRate = monthlyExitRates[normKey] || monthlyExitRates[m.name] || 0;
+          const effectiveMin = dynamicRate > 0 ? Math.ceil(dynamicRate) : m.minQty;
+
+          let status: 'Regular' | 'Estoque Baixo' | 'Zerado / Ruptura' = 'Regular';
+          if (m.totalQty === 0) {
+            zeroBalanceCount += 1;
+            status = 'Zerado / Ruptura';
+            if (effectiveMin > 0) lowTotalCount += 1;
+          } else if (effectiveMin > 0 && m.totalQty <= effectiveMin) {
+            lowWithBalanceCount += 1;
+            lowTotalCount += 1;
+            status = 'Estoque Baixo';
+          } else {
+            regularCount += 1;
+          }
+
+          consolidatedMaterialsList.push({
+            name: m.name,
+            category: m.category,
+            batchesCount: m.batchesCount,
+            totalQty: m.totalQty,
+            minQty: effectiveMin,
+            totalVal: m.totalVal,
+            status
+          });
+        });
+
+        consolidatedMaterialsList.sort((a, b) => a.totalQty - b.totalQty);
+
+        return {
+          consolidatedMaterialsCount: consolidatedFilteredMap.size,
+          totalBatchesCount: filteredItems.length,
+          currentStockUnits,
+          expiredBatchesCount,
+          expiredBatchesValue,
+          expiring60dBatchesCount,
+          expiring60dBatchesValue,
+          regularStockConsolidatedCount: regularCount,
+          lowStockWithBalanceCount: lowWithBalanceCount,
+          zeroStockConsolidatedCount: zeroBalanceCount,
+          lowStockConsolidatedCount: lowTotalCount,
+          totalMovementsCount: filteredTrans.length,
+          consolidatedMaterialsOptions: Array.from(consolidatedOptionsMap.values()).sort((a, b) =>
+            a.name.localeCompare(b.name, 'pt-BR')
+          ),
+          consolidatedMaterialsList,
+          stockStatusChartData: [
+            { name: 'Estoque Regular', value: regularCount, color: '#10b981' },
+            { name: 'Estoque Baixo (<= Mín.)', value: lowWithBalanceCount, color: '#f59e0b' },
+            { name: 'Saldo Zerado (Ruptura)', value: zeroBalanceCount, color: '#e11d48' },
+            { name: 'Lotes Vencendo (60d)', value: expiring60dBatchesCount, color: '#3b82f6' },
+            { name: 'Lotes Vencidos', value: expiredBatchesCount, color: '#991b1b' }
+          ]
+        };
+      })()
     };
-  }, [transactions, items, reportRange, reportSectorFilter, allRequestItems, requests, userProfile, isAdmin, selectedSector]);
+  }, [
+    transactions,
+    items,
+    reportRange,
+    reportSectorFilter,
+    reportCategoryFilter,
+    reportMaterialFilter,
+    allRequestItems,
+    requests,
+    userProfile,
+    isAdmin,
+    selectedSector,
+    monthlyExitRates
+  ]);
+
+  const handleExportOverviewCompletePDF = () => {
+    try {
+      setIsExportingOverviewPDF(true);
+      const periodFormatted = `${new Date(reportRange.start + 'T00:00:00').toLocaleDateString('pt-BR')} a ${new Date(reportRange.end + 'T00:00:00').toLocaleDateString('pt-BR')}`;
+      const selectedMatName =
+        reportMaterialFilter === 'all'
+          ? 'Todos os Materiais (Consolidados)'
+          : reportData.consolidatedMaterialsOptions.find(m => m.normName === reportMaterialFilter)?.name ||
+            reportMaterialFilter;
+
+      const avgStockVal = Math.max(1, reportData.totalValue);
+      const turnoverVal = reportData.exitsValue > 0 ? reportData.exitsValue / avgStockVal : 0;
+
+      generateCompletePDFReport({
+        title: `Relatório Gerencial de Indicadores e Movimentações • ${inventoryLocation}`,
+        subtitle:
+          'Panorama consolidado de entradas, saídas, consumo por setor, materiais mais requisitados, categorias e situação do estoque',
+        letterheadImage,
+        isAdmin,
+        filters: {
+          periodLabel: periodFormatted,
+          location: inventoryLocation,
+          sectorFilter:
+            reportSectorFilter === 'all'
+              ? isAdmin
+                ? 'Todos os Setores'
+                : selectedSector || 'Setor'
+              : reportSectorFilter,
+          categoryFilter: reportCategoryFilter === 'all' ? 'Todas as Categorias' : reportCategoryFilter,
+          materialFilter: selectedMatName
+        },
+        kpis: {
+          consolidatedMaterialsCount: reportData.consolidatedMaterialsCount,
+          activeBatchesCount: reportData.totalBatchesCount,
+          lowStockMaterialsCount: reportData.lowStockConsolidatedCount,
+          stockoutMaterialsCount: reportData.zeroStockConsolidatedCount,
+          totalMovementsCount: reportData.totalMovementsCount,
+          entriesCount: Math.round(reportData.totalMovementsCount / 2),
+          entriesUnits: reportData.entries,
+          entriesValue: reportData.entriesValue,
+          exitsCount: Math.round(reportData.totalMovementsCount / 2),
+          exitsUnits: reportData.exits,
+          exitsValue: reportData.exitsValue,
+          returnsCount: 0,
+          returnsUnits: 0,
+          returnsValue: 0,
+          netConsumptionUnits: reportData.exits,
+          netConsumptionValue: reportData.exitsValue,
+          currentStockUnits: reportData.currentStockUnits,
+          currentStockValue: reportData.totalValue,
+          stockTurnover: turnoverVal,
+          annualizedTurnover: turnoverVal * 2,
+          stockCoverageDays: null,
+          serviceLevelPct: 100,
+          itemsFulfilledPct: 100,
+          avgLeadTimeHours: null,
+          expiredBatchesCount: reportData.expiredBatchesCount,
+          expiredBatchesValue: reportData.expiredBatchesValue,
+          expiring60dBatchesCount: reportData.expiring60dBatchesCount,
+          expiring60dBatchesValue: reportData.expiring60dBatchesValue,
+          lossAndExpiredExitsUnits: 0,
+          lossAndExpiredExitsValue: 0
+        },
+        timelineData: reportData.daily.map(d => ({
+          label: d.date,
+          entries: Math.max(0, d.entries),
+          exits: Math.max(0, d.exits)
+        })),
+        sectorData: reportData.consumptionBySector.slice(0, 12).map(s => ({
+          sector: s.sector,
+          units: Object.values(s.items).reduce((acc: number, it: any) => acc + (Number(it.quantity) || 0), 0),
+          value: s.totalValue,
+          movementsCount: Object.keys(s.items).length
+        })),
+        topMaterialsData: reportData.topConsumed.map(tc => {
+          const reqMatch = reportData.topRequested.find(
+            tr => tr.name.trim().toUpperCase() === tc.name.trim().toUpperCase()
+          );
+          const detailMatch = reportData.consumptionReport.find(
+            cr => cr.name.trim().toUpperCase() === tc.name.trim().toUpperCase()
+          );
+          return {
+            name: tc.name,
+            category: detailMatch?.category || 'Geral',
+            consumedUnits: tc.value,
+            requestedUnits: reqMatch ? reqMatch.value : tc.value,
+            value: detailMatch?.totalValue || 0,
+            abcClass: 'A'
+          };
+        }),
+        categoryData: reportData.categories.map((c, idx) => ({
+          category: c.name,
+          consumedUnits: c.value,
+          consumedValue: reportData.categoryValues.find(cv => cv.name === c.name)?.value || 0,
+          stockUnits: c.value,
+          stockValue: reportData.categoryValues.find(cv => cv.name === c.name)?.value || 0,
+          materialsCount: reportData.consolidatedMaterialsList.filter(m => m.category === c.name).length || 1,
+          color: getCategoryColor(c.name) || ['#2563eb', '#4f46e5', '#10b981', '#f59e0b', '#e11d48'][idx % 5]
+        })),
+        stockStatusSummary: {
+          regularCount: reportData.regularStockConsolidatedCount,
+          lowStockCount: reportData.lowStockWithBalanceCount,
+          zeroStockCount: reportData.zeroStockConsolidatedCount,
+          expiredBatchesCount: reportData.expiredBatchesCount,
+          expiring60dBatchesCount: reportData.expiring60dBatchesCount
+        },
+        consolidatedMaterialsTable: reportData.consolidatedMaterialsList.map(m => ({
+          name: m.name,
+          category: m.category,
+          batchesCount: m.batchesCount,
+          totalUnits: m.totalQty,
+          minQuantity: m.minQty,
+          consumed90d: m.minQty * 3,
+          totalValue: m.totalVal,
+          status: m.status
+        })),
+        fileName: `Relatorio_Geral_${inventoryLocation}_${reportRange.start}_a_${reportRange.end}.pdf`
+      });
+
+      showToast('Relatório completo em PDF gerado com sucesso!', 'success');
+    } catch (error) {
+      console.error('Erro ao exportar PDF geral:', error);
+      showToast('Erro ao gerar relatório em PDF.', 'error');
+    } finally {
+      setIsExportingOverviewPDF(false);
+    }
+  };
 
   const categoryDistribution = useMemo(() => {
     const map: Record<string, { productNames: Set<string>; totalQty: number; value: number }> = {};
@@ -10495,35 +10798,200 @@ export default function App() {
                     </p>
                   </div>
 
-                  {/* Minimalist Summary Badges */}
-                  <div className="flex items-center gap-3 sm:gap-4 bg-slate-50 p-2.5 sm:p-3 rounded-2xl border border-slate-200/80 shrink-0">
-                    <div className="px-3 py-1 text-center">
-                      <p className="text-[10px] uppercase font-extrabold text-emerald-600 tracking-wider">Entradas</p>
-                      <p className="text-lg font-black text-slate-900 mt-0.5">{reportData.entries}</p>
+                  {/* Minimalist Summary Badges & PDF Export Action */}
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div className="flex items-center gap-3 sm:gap-4 bg-slate-50 p-2.5 sm:p-3 rounded-2xl border border-slate-200/80 shrink-0">
+                      <div className="px-3 py-1 text-center">
+                        <p className="text-[10px] uppercase font-extrabold text-emerald-600 tracking-wider">Entradas</p>
+                        <p className="text-lg font-black text-slate-900 mt-0.5">{reportData.entries.toLocaleString('pt-BR')}</p>
+                      </div>
+                      <div className="h-8 w-px bg-slate-200" />
+                      <div className="px-3 py-1 text-center">
+                        <p className="text-[10px] uppercase font-extrabold text-rose-600 tracking-wider">Saídas</p>
+                        <p className="text-lg font-black text-slate-900 mt-0.5">{reportData.exits.toLocaleString('pt-BR')}</p>
+                      </div>
+                      <div className="h-8 w-px bg-slate-200" />
+                      <div className="px-3 py-1 text-center">
+                        <p className="text-[10px] uppercase font-extrabold text-amber-600 tracking-wider">Estoque Baixo</p>
+                        <p className="text-lg font-black text-slate-900 mt-0.5">{reportData.lowStockConsolidatedCount}</p>
+                      </div>
+                      <div className="h-8 w-px bg-slate-200" />
+                      <div className="px-3 py-1 text-center">
+                        <p className="text-[10px] uppercase font-extrabold text-slate-500 tracking-wider">Período</p>
+                        <p className="text-xs font-bold text-slate-700 mt-1">
+                          {new Date(reportRange.start + 'T00:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })} - {new Date(reportRange.end + 'T00:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}
+                        </p>
+                      </div>
                     </div>
-                    <div className="h-8 w-px bg-slate-200" />
-                    <div className="px-3 py-1 text-center">
-                      <p className="text-[10px] uppercase font-extrabold text-rose-600 tracking-wider">Saídas</p>
-                      <p className="text-lg font-black text-slate-900 mt-0.5">{reportData.exits}</p>
-                    </div>
-                    <div className="h-8 w-px bg-slate-200" />
-                    <div className="px-3 py-1 text-center">
-                      <p className="text-[10px] uppercase font-extrabold text-amber-600 tracking-wider">Devoluções</p>
-                      <p className="text-lg font-black text-slate-900 mt-0.5">{reportData.totalReturnsCount}</p>
-                    </div>
-                    <div className="h-8 w-px bg-slate-200" />
-                    <div className="px-3 py-1 text-center">
-                      <p className="text-[10px] uppercase font-extrabold text-slate-500 tracking-wider">Período</p>
-                      <p className="text-xs font-bold text-slate-700 mt-1">
-                        {new Date(reportRange.start + 'T00:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })} - {new Date(reportRange.end + 'T00:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}
-                      </p>
-                    </div>
+
+                    <button
+                      onClick={handleExportOverviewCompletePDF}
+                      disabled={isExportingOverviewPDF}
+                      className="bg-gradient-to-r from-rose-600 via-rose-700 to-red-800 hover:from-rose-700 hover:to-red-900 disabled:opacity-60 text-white px-4 py-3 rounded-2xl font-extrabold text-xs flex items-center gap-2 shadow-md shadow-rose-600/20 transition-all cursor-pointer shrink-0"
+                    >
+                      <FileText size={16} />
+                      {isExportingOverviewPDF ? 'Gerando PDF...' : 'Exportar relatório em PDF'}
+                    </button>
                   </div>
                 </div>
               </div>
 
               {reportsTab === 'overview' && (
                 <div className="space-y-8">
+                  {/* Global Filter Bar for Reports Overview: Período, Setor, Categoria e Material Consolidado */}
+                  <div className="bg-white p-5 sm:p-6 rounded-3xl border border-blue-100/90 shadow-xs space-y-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100">
+                      <div className="flex items-center gap-2">
+                        <div className="p-2 rounded-xl bg-blue-50 text-blue-700">
+                          <Filter size={16} />
+                        </div>
+                        <div>
+                          <h3 className="text-sm font-black text-slate-900">
+                            Filtros Dinâmicos de Indicadores e Gráficos
+                          </h3>
+                          <p className="text-xs text-slate-500 font-medium">
+                            Filtre por período, setor, categoria e material consolidado para atualizar todos os indicadores, gráficos e o PDF exportado
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <button
+                          onClick={() =>
+                            setReportRange({
+                              start: format(subDays(new Date(), 30), 'yyyy-MM-dd'),
+                              end: format(new Date(), 'yyyy-MM-dd')
+                            })
+                          }
+                          className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-700 text-[11px] font-bold transition-colors cursor-pointer"
+                        >
+                          Últimos 30d
+                        </button>
+                        <button
+                          onClick={() =>
+                            setReportRange({
+                              start: format(subDays(new Date(), 90), 'yyyy-MM-dd'),
+                              end: format(new Date(), 'yyyy-MM-dd')
+                            })
+                          }
+                          className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-700 text-[11px] font-bold transition-colors cursor-pointer"
+                        >
+                          Últimos 90d
+                        </button>
+                        <button
+                          onClick={() => {
+                            const yr = new Date().getFullYear();
+                            setReportRange({
+                              start: `${yr}-01-01`,
+                              end: format(new Date(), 'yyyy-MM-dd')
+                            });
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-700 text-[11px] font-bold transition-colors cursor-pointer"
+                        >
+                          Ano Atual
+                        </button>
+                        {(reportSectorFilter !== 'all' ||
+                          reportCategoryFilter !== 'all' ||
+                          reportMaterialFilter !== 'all') && (
+                          <button
+                            onClick={() => {
+                              setReportSectorFilter('all');
+                              setReportCategoryFilter('all');
+                              setReportMaterialFilter('all');
+                            }}
+                            className="px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 text-[11px] font-extrabold flex items-center gap-1 transition-colors cursor-pointer"
+                          >
+                            <RotateCcw size={11} /> Limpar Filtros
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 items-end">
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 ml-1">
+                          Data Inicial
+                        </label>
+                        <input
+                          type="date"
+                          value={reportRange.start}
+                          onChange={e => setReportRange({ ...reportRange, start: e.target.value })}
+                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs text-slate-800 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 ml-1">
+                          Data Final
+                        </label>
+                        <input
+                          type="date"
+                          value={reportRange.end}
+                          onChange={e => setReportRange({ ...reportRange, end: e.target.value })}
+                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs text-slate-800 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 ml-1">
+                          Setor
+                        </label>
+                        <select
+                          value={reportSectorFilter}
+                          onChange={e => setReportSectorFilter(e.target.value)}
+                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs text-slate-800 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 cursor-pointer"
+                        >
+                          <option value="all">Todos os Setores</option>
+                          {SECTORS.map(sec => (
+                            <option key={sec} value={sec}>
+                              {sec}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 ml-1">
+                          Categoria
+                        </label>
+                        <select
+                          value={reportCategoryFilter}
+                          onChange={e => {
+                            setReportCategoryFilter(e.target.value);
+                            setReportMaterialFilter('all');
+                          }}
+                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs text-slate-800 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 cursor-pointer"
+                        >
+                          <option value="all">Todas as Categorias</option>
+                          {categories.map(cat => (
+                            <option key={cat} value={cat}>
+                              {cat}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 ml-1">
+                          Material Consolidado
+                        </label>
+                        <select
+                          value={reportMaterialFilter}
+                          onChange={e => setReportMaterialFilter(e.target.value)}
+                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs text-slate-800 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 cursor-pointer truncate"
+                        >
+                          <option value="all">
+                            Todos os Materiais ({reportData.consolidatedMaterialsOptions.length})
+                          </option>
+                          {reportData.consolidatedMaterialsOptions.map(mat => (
+                            <option key={mat.normName} value={mat.normName}>
+                              {mat.name} ({mat.totalQty.toLocaleString('pt-BR')} un • {mat.batchesCount}{' '}
+                              {mat.batchesCount === 1 ? 'lote' : 'lotes'})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                  </div>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 items-stretch">
                 {/* Purchase Planning Card - Standard Single Grid Card */}
                 <div className="bg-white p-6 rounded-3xl border border-indigo-100/90 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group flex flex-col justify-between h-full bg-gradient-to-b from-white via-white to-indigo-50/20">
@@ -10907,22 +11375,88 @@ export default function App() {
               </div>
 
               {/* KPI Stats Grid */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
                 {isAdmin ? (
                   <>
-                    {/* Card 1: Entradas */}
-                    <div className="bg-white rounded-2xl border border-emerald-100/80 shadow-sm hover:shadow-md hover:border-emerald-200 transition-all duration-300 overflow-hidden group relative">
-                      <div className="h-1.5 w-full bg-gradient-to-r from-emerald-500 to-teal-600" />
-                      <div className="p-6">
-                        <div className="flex items-center justify-between mb-3">
-                          <span className="text-xs font-black text-slate-500 uppercase tracking-widest">Entradas no Período</span>
-                          <div className="bg-gradient-to-br from-emerald-600 to-teal-700 text-white p-3 rounded-2xl shadow-md shadow-emerald-500/20 group-hover:scale-105 transition-transform">
-                            <TrendingUp size={20} />
+                    {/* Card 1: Materiais Cadastrados Consolidados */}
+                    <div className="bg-white rounded-2xl border border-blue-100/80 shadow-sm hover:shadow-md hover:border-blue-200 transition-all duration-300 overflow-hidden group relative">
+                      <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 to-cyan-500" />
+                      <div className="p-5">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Materiais Cadastrados</span>
+                          <div className="bg-gradient-to-br from-blue-600 to-cyan-700 text-white p-2.5 rounded-xl shadow-sm">
+                            <Package size={18} />
                           </div>
                         </div>
-                        <h3 className="text-3xl font-black text-slate-900 tracking-tight">{reportData.entries.toLocaleString('pt-BR')}</h3>
-                        <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
-                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Valor Financeiro</span>
+                        <h3 className="text-2xl font-black text-slate-900 tracking-tight">
+                          {reportData.consolidatedMaterialsCount.toLocaleString('pt-BR')}
+                        </h3>
+                        <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase">Lotes somados</span>
+                          <span className="text-xs font-black text-blue-700">
+                            {reportData.totalBatchesCount.toLocaleString('pt-BR')} lotes
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Card 2: Itens com Estoque Baixo */}
+                    <div className="bg-white rounded-2xl border border-amber-100/80 shadow-sm hover:shadow-md hover:border-amber-200 transition-all duration-300 overflow-hidden group relative">
+                      <div className="h-1.5 w-full bg-gradient-to-r from-amber-500 to-rose-500" />
+                      <div className="p-5">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Estoque Baixo</span>
+                          <div className="bg-gradient-to-br from-amber-500 to-rose-600 text-white p-2.5 rounded-xl shadow-sm">
+                            <AlertTriangle size={18} />
+                          </div>
+                        </div>
+                        <h3 className="text-2xl font-black text-slate-900 tracking-tight">
+                          {reportData.lowStockConsolidatedCount.toLocaleString('pt-BR')}
+                        </h3>
+                        <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase">Ruptura / Zero</span>
+                          <span className="text-xs font-black text-amber-700">
+                            {reportData.zeroStockConsolidatedCount} zerados
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Card 3: Movimentações Realizadas */}
+                    <div className="bg-white rounded-2xl border border-indigo-100/80 shadow-sm hover:shadow-md hover:border-indigo-200 transition-all duration-300 overflow-hidden group relative">
+                      <div className="h-1.5 w-full bg-gradient-to-r from-indigo-600 to-blue-700" />
+                      <div className="p-5">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Movimentações</span>
+                          <div className="bg-gradient-to-br from-indigo-600 to-blue-700 text-white p-2.5 rounded-xl shadow-sm">
+                            <Activity size={18} />
+                          </div>
+                        </div>
+                        <h3 className="text-2xl font-black text-slate-900 tracking-tight">
+                          {reportData.totalMovementsCount.toLocaleString('pt-BR')}
+                        </h3>
+                        <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase">Devoluções</span>
+                          <span className="text-xs font-black text-indigo-700">
+                            {reportData.totalReturnsCount.toLocaleString('pt-BR')} un
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Card 4: Entradas */}
+                    <div className="bg-white rounded-2xl border border-emerald-100/80 shadow-sm hover:shadow-md hover:border-emerald-200 transition-all duration-300 overflow-hidden group relative">
+                      <div className="h-1.5 w-full bg-gradient-to-r from-emerald-500 to-teal-600" />
+                      <div className="p-5">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Entradas</span>
+                          <div className="bg-gradient-to-br from-emerald-600 to-teal-700 text-white p-2.5 rounded-xl shadow-sm">
+                            <TrendingUp size={18} />
+                          </div>
+                        </div>
+                        <h3 className="text-2xl font-black text-slate-900 tracking-tight">{reportData.entries.toLocaleString('pt-BR')}</h3>
+                        <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase">Valor</span>
                           <span className="text-xs font-black text-emerald-600">
                             {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.entriesValue)}
                           </span>
@@ -10930,19 +11464,19 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* Card 2: Saídas */}
+                    {/* Card 5: Saídas */}
                     <div className="bg-white rounded-2xl border border-rose-100/80 shadow-sm hover:shadow-md hover:border-rose-200 transition-all duration-300 overflow-hidden group relative">
                       <div className="h-1.5 w-full bg-gradient-to-r from-rose-500 to-pink-600" />
-                      <div className="p-6">
-                        <div className="flex items-center justify-between mb-3">
-                          <span className="text-xs font-black text-slate-500 uppercase tracking-widest">Saídas / Consumo</span>
-                          <div className="bg-gradient-to-br from-rose-600 to-pink-700 text-white p-3 rounded-2xl shadow-md shadow-rose-500/20 group-hover:scale-105 transition-transform">
-                            <TrendingDown size={20} />
+                      <div className="p-5">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Saídas / Consumo</span>
+                          <div className="bg-gradient-to-br from-rose-600 to-pink-700 text-white p-2.5 rounded-xl shadow-sm">
+                            <TrendingDown size={18} />
                           </div>
                         </div>
-                        <h3 className="text-3xl font-black text-slate-900 tracking-tight">{reportData.exits.toLocaleString('pt-BR')}</h3>
-                        <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
-                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Valor Baixado</span>
+                        <h3 className="text-2xl font-black text-slate-900 tracking-tight">{reportData.exits.toLocaleString('pt-BR')}</h3>
+                        <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase">Baixado</span>
                           <span className="text-xs font-black text-rose-600">
                             {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.exitsValue)}
                           </span>
@@ -10950,43 +11484,23 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* Card 3: Valor em Estoque */}
+                    {/* Card 6: Valor em Estoque */}
                     <div className="bg-white rounded-2xl border border-indigo-100/80 shadow-sm hover:shadow-md hover:border-indigo-200 transition-all duration-300 overflow-hidden group relative">
                       <div className="h-1.5 w-full bg-gradient-to-r from-indigo-600 to-blue-600" />
-                      <div className="p-6">
-                        <div className="flex items-center justify-between mb-3">
-                          <span className="text-xs font-black text-slate-500 uppercase tracking-widest">Patrimônio em Saldo</span>
-                          <div className="bg-gradient-to-br from-indigo-600 to-blue-700 text-white p-3 rounded-2xl shadow-md shadow-indigo-500/20 group-hover:scale-105 transition-transform">
-                            <DollarSign size={20} />
+                      <div className="p-5">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Patrimônio</span>
+                          <div className="bg-gradient-to-br from-indigo-600 to-blue-700 text-white p-2.5 rounded-xl shadow-sm">
+                            <DollarSign size={18} />
                           </div>
                         </div>
-                        <h3 className="text-2xl font-black text-slate-900 tracking-tight">
+                        <h3 className="text-xl font-black text-slate-900 tracking-tight">
                           {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.totalValue)}
                         </h3>
-                        <div className="mt-4 pt-3 border-t border-slate-100 flex items-center gap-1.5">
-                          <span className="w-1.5 h-1.5 rounded-full bg-indigo-600" />
-                          <span className="text-[10px] font-bold text-indigo-700 uppercase tracking-wider">
-                            Valor total ativo
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Card 4: Itens Ativos */}
-                    <div className="bg-white rounded-2xl border border-blue-100/80 shadow-sm hover:shadow-md hover:border-blue-200 transition-all duration-300 overflow-hidden group relative">
-                      <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 to-cyan-500" />
-                      <div className="p-6">
-                        <div className="flex items-center justify-between mb-3">
-                          <span className="text-xs font-black text-slate-500 uppercase tracking-widest">Insumos Cadastrados</span>
-                          <div className="bg-gradient-to-br from-blue-600 to-cyan-700 text-white p-3 rounded-2xl shadow-md shadow-blue-500/20 group-hover:scale-105 transition-transform">
-                            <Package size={20} />
-                          </div>
-                        </div>
-                        <h3 className="text-3xl font-black text-slate-900 tracking-tight">{items.length}</h3>
-                        <div className="mt-4 pt-3 border-t border-slate-100 flex items-center gap-1.5">
-                          <span className="w-1.5 h-1.5 rounded-full bg-blue-600" />
-                          <span className="text-[10px] font-bold text-blue-700 uppercase tracking-wider">
-                            Itens no catálogo
+                        <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase">Regulares</span>
+                          <span className="text-xs font-black text-indigo-700">
+                            {reportData.regularStockConsolidatedCount} itens
                           </span>
                         </div>
                       </div>
@@ -11077,6 +11591,50 @@ export default function App() {
                     </ResponsiveContainer>
                   </div>
                 </div>
+
+                {/* Situação do Estoque Consolidado */}
+                {isAdmin && (
+                  <div className="bg-white p-6 sm:p-8 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all">
+                    <div className="flex items-center justify-between mb-6">
+                      <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
+                        <Boxes size={18} className="text-emerald-600" /> Situação do Estoque Consolidado
+                      </h4>
+                      <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-lg uppercase tracking-wider">
+                        Soma de Lotes
+                      </span>
+                    </div>
+                    <div className="h-[300px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={reportData.stockStatusChartData} layout="vertical" margin={{ left: 10, right: 20 }}>
+                          <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
+                          <XAxis type="number" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#64748b' }} />
+                          <YAxis
+                            dataKey="name"
+                            type="category"
+                            axisLine={false}
+                            tickLine={false}
+                            tick={{ fontSize: 11, fill: '#1e293b', fontWeight: 'bold' }}
+                            width={145}
+                          />
+                          <Tooltip
+                            cursor={{ fill: '#f8fafc' }}
+                            contentStyle={{
+                              borderRadius: '16px',
+                              border: '1px solid #e2e8f0',
+                              boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.08)',
+                              fontWeight: 'bold'
+                            }}
+                          />
+                          <Bar dataKey="value" name="Quantidade" radius={[0, 8, 8, 0]} barSize={22} isAnimationActive={false}>
+                            {reportData.stockStatusChartData.map((entry, idx) => (
+                              <Cell key={`stock-status-cell-${idx}`} fill={entry.color} />
+                            ))}
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                )}
 
                 {/* Category Breakdown */}
                 <div className="bg-white p-6 sm:p-8 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all">
@@ -11553,6 +12111,10 @@ export default function App() {
                   getCategoryColor={getCategoryColor}
                   showToast={showToast}
                   onBack={() => setReportsTab('overview')}
+                  letterheadImage={letterheadImage}
+                  isAdmin={isAdmin}
+                  userProfile={userProfile}
+                  selectedSector={selectedSector}
                   onOpenRoomMap={(roomName) => {
                     setSelectedRoom(roomName);
                     setCustomRoomName(roomName);
