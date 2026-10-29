@@ -93,6 +93,7 @@ import { Item, Transaction, UserProfile, MaterialRequest, RequestItem, Notificat
 import { ApuraSUSProducaoReport } from './components/ApuraSUSProducaoReport';
 import { ApuraSUSCustosReport } from './components/ApuraSUSCustosReport';
 import { BalancoReport } from './components/BalancoReport';
+import { IndicadoresReport } from './components/IndicadoresReport';
 import { UserManagementTab } from './components/UserManagementTab';
 import { BulkEntryModal } from './components/BulkEntryModal';
 import { RequestsTab } from './components/RequestsTab';
@@ -485,7 +486,7 @@ export default function App() {
   const [donationUnitCNPJ, setDonationUnitCNPJ] = useState('');
   const [donationRevisionDate, setDonationRevisionDate] = useState('');
   const [letterheadImage, setLetterheadImage] = useState<string | null>(null);
-  const [reportsTab, setReportsTab] = useState<'overview' | 'balanco' | 'apurasus_producao' | 'apurasus_custos' | 'quantitativo' | 'letterhead'>('overview');
+  const [reportsTab, setReportsTab] = useState<'overview' | 'balanco' | 'apurasus_producao' | 'apurasus_custos' | 'quantitativo' | 'letterhead' | 'indicadores'>('overview');
   const [openDivergencesDocOnMount, setOpenDivergencesDocOnMount] = useState(false);
   const [quantitativoSource, setQuantitativoSource] = useState<'sample' | 'system'>('system');
   const [quantitativoPeriodPreset, setQuantitativoPeriodPreset] = useState<'1_semestre_2026' | '2_semestre_2026' | 'ano_2026' | 'custom'>('1_semestre_2026');
@@ -10870,6 +10871,39 @@ export default function App() {
                     </button>
                   </div>
                 </div>
+
+                {/* Indicadores do Almoxarifado Card */}
+                <div className="bg-white p-6 rounded-3xl border border-blue-100/90 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group flex flex-col justify-between h-full">
+                  <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-800 absolute top-0 left-0" />
+                  <div className="flex items-start gap-4 pt-2">
+                    <div className="bg-gradient-to-br from-blue-600 to-indigo-800 text-white p-3 rounded-2xl shadow-md shadow-blue-600/20 group-hover:scale-105 transition-transform shrink-0">
+                      <Activity size={20} />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-blue-50 text-blue-700 border border-blue-200">
+                          Painel Estratégico
+                        </span>
+                        <span className="text-[10px] font-bold text-slate-400">
+                          Salas, Tipos & Doações
+                        </span>
+                      </div>
+                      <h3 className="text-base font-black text-slate-900 leading-tight">Indicadores do Almoxarifado</h3>
+                      <p className="text-slate-500 text-xs font-medium mt-1 leading-snug">
+                        Visão geral semestral e anual, situação de estoque por sala, dispensação por tipo de material e controle de doações
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 pt-4 border-t border-slate-100 flex flex-col sm:flex-row gap-2">
+                    <button 
+                      onClick={() => setReportsTab('indicadores')}
+                      className="w-full bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white px-3.5 py-2.5 rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 hover:from-blue-800 hover:to-indigo-950 transition-all shadow-md shadow-blue-600/20 whitespace-nowrap cursor-pointer"
+                    >
+                      <BarChart3 size={14} /> Abrir Indicadores
+                    </button>
+                  </div>
+                </div>
               </div>
 
               {/* KPI Stats Grid */}
@@ -11506,6 +11540,25 @@ export default function App() {
                   transactions={transactions}
                   checkStockAndNotify={checkStockAndNotify}
                   initialOpenDivergencesDoc={openDivergencesDocOnMount}
+                />
+              )}
+
+              {reportsTab === 'indicadores' && (
+                <IndicadoresReport
+                  items={items}
+                  transactions={transactions}
+                  requests={requests}
+                  allRequestItems={allRequestItems}
+                  inventoryLocation={inventoryLocation}
+                  getCategoryColor={getCategoryColor}
+                  showToast={showToast}
+                  onBack={() => setReportsTab('overview')}
+                  onOpenRoomMap={(roomName) => {
+                    setSelectedRoom(roomName);
+                    setCustomRoomName(roomName);
+                    setSelectedRoomCategories([...categories]);
+                    setShowRoomInventoryModal(true);
+                  }}
                 />
               )}
 
