@@ -94,7 +94,12 @@ import { ApuraSUSProducaoReport } from './components/ApuraSUSProducaoReport';
 import { ApuraSUSCustosReport } from './components/ApuraSUSCustosReport';
 import { BalancoReport } from './components/BalancoReport';
 import { IndicadoresReport } from './components/IndicadoresReport';
-import { generateCompletePDFReport } from './utils/pdfReportGenerator';
+import {
+  generateCompletePDFReport,
+  exportSingleIndicatorPDF,
+  printSingleIndicator,
+  SingleIndicatorExportParams
+} from './utils/pdfReportGenerator';
 import { UserManagementTab } from './components/UserManagementTab';
 import { BulkEntryModal } from './components/BulkEntryModal';
 import { RequestsTab } from './components/RequestsTab';
@@ -7765,9 +7770,28 @@ export default function App() {
       originStats[origin].current += (Number(item.quantity) || 0);
     });
 
-    // Group by date for line chart
+    const isEtiquetaChartItem = (name?: string | null, category?: string | null): boolean => {
+      const normName = String(name || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase();
+      const normCat = String(category || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase();
+      return normName.includes('ETIQUETA') || normCat.includes('ETIQUETA');
+    };
+
+    const ignoreEtiquetasInCharts =
+      reportMaterialFilter === 'all' || !isEtiquetaChartItem(reportMaterialFilter, '');
+
+    // Group by date for line chart (desconsiderando etiquetas para não distorcer escala unitária)
     const dailyData: Record<string, { date: string, entries: number, exits: number, sortKey: string }> = {};
     filteredTrans.forEach(t => {
+      const matchedItem = items.find(i => i.id === t.item_id);
+      if (ignoreEtiquetasInCharts && isEtiquetaChartItem(matchedItem?.name || t.item_name, matchedItem?.category)) {
+        return;
+      }
       const dateObj = new Date(t.date);
       const dateKey = format(dateObj, 'dd/MM');
       const sortKey = format(dateObj, 'yyyy-MM-dd');
@@ -7794,7 +7818,9 @@ export default function App() {
       const cat = item.category || 'Outros';
       const qty = Number(item.quantity) || 0;
       const price = Number(item.unit_price) || 0;
-      categoryData[cat] = (categoryData[cat] || 0) + qty;
+      if (!ignoreEtiquetasInCharts || !isEtiquetaChartItem(item.name, cat)) {
+        categoryData[cat] = (categoryData[cat] || 0) + qty;
+      }
       categoryValueData[cat] = (categoryValueData[cat] || 0) + (qty * price);
     });
 
@@ -7805,6 +7831,7 @@ export default function App() {
     filteredTrans.filter(t => t.type === 'exit' && t.sector && (t.exitReason === 'consumo' || !t.exitReason)).forEach(t => {
       const item = items.find(i => i.id === t.item_id);
       const category = item?.category || 'Outros';
+      if (ignoreEtiquetasInCharts && isEtiquetaChartItem(item?.name || t.item_name, category)) return;
       categoriesInSector.add(category);
       
       const sectorKey = (t.sector === 'Farmácia (Consumo Interno)') ? 'Farmácia' : t.sector!;
@@ -7818,6 +7845,7 @@ export default function App() {
     filteredTrans.filter(t => t.type === 'entry' && t.isReturn && t.sector).forEach(t => {
       const item = items.find(i => i.id === t.item_id);
       const category = item?.category || 'Outros';
+      if (ignoreEtiquetasInCharts && isEtiquetaChartItem(item?.name || t.item_name, category)) return;
       categoriesInSector.add(category);
       
       const sectorKey = (t.sector === 'Farmácia (Consumo Interno)') ? 'Farmácia' : t.sector!;
@@ -7963,6 +7991,11 @@ export default function App() {
       // If admin and sector filter is active, filter by that sector
       if (isAdmin && reportSectorFilter !== 'all' && request.sector !== reportSectorFilter) return;
 
+      const matchedItem = items.find(i => i.id === ri.product_id);
+      if (ignoreEtiquetasInCharts && isEtiquetaChartItem(matchedItem?.name || ri.product_name, matchedItem?.category)) {
+        return;
+      }
+
       mostRequested[ri.product_name] = (mostRequested[ri.product_name] || 0) + ri.quantity_requested;
     });
     const topRequested = Object.entries(mostRequested)
@@ -7978,6 +8011,10 @@ export default function App() {
       'perda': 0
     };
     filteredTrans.filter(t => t.type === 'exit').forEach(t => {
+      const matchedItem = items.find(i => i.id === t.item_id);
+      if (ignoreEtiquetasInCharts && isEtiquetaChartItem(matchedItem?.name || t.item_name, matchedItem?.category)) {
+        return;
+      }
       const reason = t.exitReason || 'consumo';
       if (exitsByReason[reason] !== undefined) {
         exitsByReason[reason] += t.quantity;
@@ -8031,6 +8068,7 @@ export default function App() {
           filteredTrans.forEach(t => {
             const item = items.find(i => i.id === t.item_id);
             const cat = item?.category || 'Outros';
+            if (ignoreEtiquetasInCharts && isEtiquetaChartItem(item?.name || t.item_name, cat)) return;
             if (t.type === 'exit') {
               acc[cat] = (acc[cat] || 0) + t.quantity;
             } else if (t.type === 'entry' && t.isReturn) {
@@ -8056,7 +8094,9 @@ export default function App() {
       originStats,
       topRequested,
       topConsumed: Object.values(consumptionReport)
+        .filter(i => !ignoreEtiquetasInCharts || !isEtiquetaChartItem(i.name, i.category))
         .map(i => ({ name: i.name, value: i.totalQuantity }))
+        .filter(i => i.value > 0)
         .sort((a, b) => b.value - a.value)
         .slice(0, 10),
       exitsByReason,
@@ -8305,12 +8345,23 @@ export default function App() {
           entries: Math.max(0, d.entries),
           exits: Math.max(0, d.exits)
         })),
-        sectorData: reportData.consumptionBySector.slice(0, 12).map(s => ({
-          sector: s.sector,
-          units: Object.values(s.items).reduce((acc: number, it: any) => acc + (Number(it.quantity) || 0), 0),
-          value: s.totalValue,
-          movementsCount: Object.keys(s.items).length
-        })),
+        sectorData: reportData.consumptionBySector
+          .map(s => {
+            const validItems = Object.values(s.items).filter((it: any) => {
+              const n = String(it?.name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+              const c = String(it?.category || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+              return !(reportMaterialFilter === 'all' && (n.includes('ETIQUETA') || c.includes('ETIQUETA')));
+            });
+            return {
+              sector: s.sector,
+              units: validItems.reduce((acc: number, it: any) => acc + (Number(it.quantity) || 0), 0),
+              value: s.totalValue,
+              movementsCount: validItems.length
+            };
+          })
+          .filter(s => s.units > 0)
+          .sort((a, b) => b.units - a.units)
+          .slice(0, 12),
         topMaterialsData: reportData.topConsumed.map(tc => {
           const reqMatch = reportData.topRequested.find(
             tr => tr.name.trim().toUpperCase() === tc.name.trim().toUpperCase()
@@ -8364,6 +8415,81 @@ export default function App() {
       setIsExportingOverviewPDF(false);
     }
   };
+
+  const handleOverviewSingleIndicator = (
+    mode: 'pdf' | 'print',
+    payload: Omit<SingleIndicatorExportParams, 'filters'>
+  ) => {
+    try {
+      const periodFormatted = `${new Date(reportRange.start + 'T00:00:00').toLocaleDateString('pt-BR')} a ${new Date(reportRange.end + 'T00:00:00').toLocaleDateString('pt-BR')}`;
+      const selectedMatName =
+        reportMaterialFilter === 'all'
+          ? 'Todos os Materiais (Consolidados)'
+          : reportData.consolidatedMaterialsOptions.find(m => m.normName === reportMaterialFilter)?.name ||
+            reportMaterialFilter;
+
+      const fullParams: SingleIndicatorExportParams = {
+        ...payload,
+        letterheadImage,
+        filters: {
+          periodLabel: periodFormatted,
+          location: inventoryLocation,
+          sectorFilter:
+            reportSectorFilter === 'all'
+              ? isAdmin
+                ? 'Todos os Setores'
+                : selectedSector || 'Setor'
+              : reportSectorFilter,
+          categoryFilter: reportCategoryFilter === 'all' ? 'Todas as Categorias' : reportCategoryFilter,
+          materialFilter: selectedMatName
+        }
+      };
+
+      if (mode === 'pdf') {
+        exportSingleIndicatorPDF(fullParams);
+        showToast(`PDF do indicador "${payload.indicatorTitle}" gerado com sucesso!`, 'success');
+      } else {
+        printSingleIndicator(fullParams);
+        showToast(`Preparando impressão de "${payload.indicatorTitle}"...`, 'info');
+      }
+    } catch (error) {
+      console.error('Erro ao processar indicador:', error);
+      showToast('Erro ao gerar documento do indicador.', 'error');
+    }
+  };
+
+  const renderOverviewIndicatorActions = (
+    payload: Omit<SingleIndicatorExportParams, 'filters'>,
+    compact = false
+  ) => (
+    <div
+      className="flex items-center gap-1.5 shrink-0"
+      onClick={e => e.stopPropagation()}
+    >
+      <button
+        type="button"
+        onClick={() => handleOverviewSingleIndicator('print', payload)}
+        title={`Imprimir apenas "${payload.indicatorTitle}"`}
+        className={`inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-extrabold transition-all shadow-2xs cursor-pointer ${
+          compact ? 'px-2 py-1 text-[10px]' : 'px-2.5 py-1.5 text-[11px]'
+        }`}
+      >
+        <Printer size={compact ? 11 : 12} className="text-slate-600 shrink-0" />
+        <span>Imprimir</span>
+      </button>
+      <button
+        type="button"
+        onClick={() => handleOverviewSingleIndicator('pdf', payload)}
+        title={`Exportar PDF apenas de "${payload.indicatorTitle}"`}
+        className={`inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50/80 hover:bg-rose-100 text-rose-700 font-extrabold transition-all shadow-2xs cursor-pointer ${
+          compact ? 'px-2 py-1 text-[10px]' : 'px-2.5 py-1.5 text-[11px]'
+        }`}
+      >
+        <FileText size={compact ? 11 : 12} className="text-rose-600 shrink-0" />
+        <span>Exportar PDF</span>
+      </button>
+    </div>
+  );
 
   const categoryDistribution = useMemo(() => {
     const map: Record<string, { productNames: Set<string>; totalQty: number; value: number }> = {};
@@ -11375,142 +11501,507 @@ export default function App() {
               </div>
 
               {/* KPI Stats Grid */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 {isAdmin ? (
                   <>
                     {/* Card 1: Materiais Cadastrados Consolidados */}
-                    <div className="bg-white rounded-2xl border border-blue-100/80 shadow-sm hover:shadow-md hover:border-blue-200 transition-all duration-300 overflow-hidden group relative">
+                    <div className="bg-white rounded-2xl border border-blue-100/80 shadow-sm hover:shadow-md hover:border-blue-200 transition-all duration-300 overflow-hidden group relative flex flex-col justify-between">
                       <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 to-cyan-500" />
-                      <div className="p-5">
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Materiais Cadastrados</span>
-                          <div className="bg-gradient-to-br from-blue-600 to-cyan-700 text-white p-2.5 rounded-xl shadow-sm">
-                            <Package size={18} />
+                      <div className="p-5 flex-1 flex flex-col justify-between">
+                        <div>
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Materiais Cadastrados</span>
+                            <div className="bg-gradient-to-br from-blue-600 to-cyan-700 text-white p-2.5 rounded-xl shadow-sm">
+                              <Package size={18} />
+                            </div>
+                          </div>
+                          <h3 className="text-2xl font-black text-slate-900 tracking-tight">
+                            {reportData.consolidatedMaterialsCount.toLocaleString('pt-BR')}
+                          </h3>
+                          <div className="mt-2 pt-2 border-t border-slate-100 flex items-center justify-between">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase">Lotes somados</span>
+                            <span className="text-xs font-black text-blue-700">
+                              {reportData.totalBatchesCount.toLocaleString('pt-BR')} lotes
+                            </span>
                           </div>
                         </div>
-                        <h3 className="text-2xl font-black text-slate-900 tracking-tight">
-                          {reportData.consolidatedMaterialsCount.toLocaleString('pt-BR')}
-                        </h3>
-                        <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between">
-                          <span className="text-[10px] font-bold text-slate-400 uppercase">Lotes somados</span>
-                          <span className="text-xs font-black text-blue-700">
-                            {reportData.totalBatchesCount.toLocaleString('pt-BR')} lotes
-                          </span>
+
+                        <div className="mt-3 pt-2 border-t border-slate-100">
+                          <p className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-1">
+                            Materiais Consolidados vs. Lotes
+                          </p>
+                          <div className="h-24 w-full">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <BarChart
+                                data={[
+                                  { name: 'Materiais', valor: reportData.consolidatedMaterialsCount, fill: '#2563eb' },
+                                  { name: 'Lotes', valor: reportData.totalBatchesCount, fill: '#0891b2' }
+                                ]}
+                                layout="vertical"
+                                margin={{ top: 2, right: 16, left: 0, bottom: 2 }}
+                              >
+                                <XAxis type="number" hide />
+                                <YAxis dataKey="name" type="category" width={68} axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 700, fill: '#475569' }} />
+                                <Tooltip formatter={(v: any) => [Number(v).toLocaleString('pt-BR'), 'Quantidade']} />
+                                <Bar dataKey="valor" radius={[0, 6, 6, 0]} barSize={14} isAnimationActive={false}>
+                                  <Cell fill="#2563eb" />
+                                  <Cell fill="#0891b2" />
+                                </Bar>
+                              </BarChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-end">
+                          {renderOverviewIndicatorActions(
+                            {
+                              indicatorTitle: 'Materiais Cadastrados Consolidados',
+                              indicatorSubtitle: 'Soma consolidada de diferentes lotes do mesmo material sem duplicidade',
+                              groupName: 'Visão Geral de Relatórios • KPIs',
+                              accentColor: [37, 99, 235],
+                              kpis: [
+                                { label: 'Materiais Consolidados', value: String(reportData.consolidatedMaterialsCount), helper: 'Produtos únicos' },
+                                { label: 'Total de Lotes', value: String(reportData.totalBatchesCount), helper: 'Lotes ativos' },
+                                { label: 'Unidades em Estoque', value: reportData.currentStockUnits.toLocaleString('pt-BR'), helper: 'Saldo físico' }
+                              ],
+                              chart: {
+                                type: 'horizontalBar',
+                                title: 'Comparativo: Materiais Consolidados vs. Total de Lotes',
+                                subtitle: 'Consolidação de lotes por material no estoque atual',
+                                data: [
+                                  { label: 'Materiais Únicos', value: reportData.consolidatedMaterialsCount, color: '#2563eb' },
+                                  { label: 'Lotes Ativos', value: reportData.totalBatchesCount, color: '#0891b2' }
+                                ]
+                              }
+                            },
+                            true
+                          )}
                         </div>
                       </div>
                     </div>
 
                     {/* Card 2: Itens com Estoque Baixo */}
-                    <div className="bg-white rounded-2xl border border-amber-100/80 shadow-sm hover:shadow-md hover:border-amber-200 transition-all duration-300 overflow-hidden group relative">
+                    <div className="bg-white rounded-2xl border border-amber-100/80 shadow-sm hover:shadow-md hover:border-amber-200 transition-all duration-300 overflow-hidden group relative flex flex-col justify-between">
                       <div className="h-1.5 w-full bg-gradient-to-r from-amber-500 to-rose-500" />
-                      <div className="p-5">
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Estoque Baixo</span>
-                          <div className="bg-gradient-to-br from-amber-500 to-rose-600 text-white p-2.5 rounded-xl shadow-sm">
-                            <AlertTriangle size={18} />
+                      <div className="p-5 flex-1 flex flex-col justify-between">
+                        <div>
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Estoque Baixo</span>
+                            <div className="bg-gradient-to-br from-amber-500 to-rose-600 text-white p-2.5 rounded-xl shadow-sm">
+                              <AlertTriangle size={18} />
+                            </div>
+                          </div>
+                          <h3 className="text-2xl font-black text-slate-900 tracking-tight">
+                            {reportData.lowStockConsolidatedCount.toLocaleString('pt-BR')}
+                          </h3>
+                          <div className="mt-2 pt-2 border-t border-slate-100 flex items-center justify-between">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase">Ruptura / Zero</span>
+                            <span className="text-xs font-black text-amber-700">
+                              {reportData.zeroStockConsolidatedCount} zerados
+                            </span>
                           </div>
                         </div>
-                        <h3 className="text-2xl font-black text-slate-900 tracking-tight">
-                          {reportData.lowStockConsolidatedCount.toLocaleString('pt-BR')}
-                        </h3>
-                        <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between">
-                          <span className="text-[10px] font-bold text-slate-400 uppercase">Ruptura / Zero</span>
-                          <span className="text-xs font-black text-amber-700">
-                            {reportData.zeroStockConsolidatedCount} zerados
-                          </span>
+
+                        <div className="mt-3 pt-2 border-t border-slate-100">
+                          <p className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-1">
+                            Regular vs. Baixo vs. Zerado
+                          </p>
+                          <div className="h-24 w-full">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <BarChart
+                                data={[
+                                  { name: 'Regular', valor: reportData.regularStockConsolidatedCount, fill: '#10b981' },
+                                  { name: 'Baixo', valor: reportData.lowStockWithBalanceCount, fill: '#f59e0b' },
+                                  { name: 'Zerado', valor: reportData.zeroStockConsolidatedCount, fill: '#e11d48' }
+                                ]}
+                                layout="vertical"
+                                margin={{ top: 2, right: 16, left: 0, bottom: 2 }}
+                              >
+                                <XAxis type="number" hide />
+                                <YAxis dataKey="name" type="category" width={58} axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 700, fill: '#475569' }} />
+                                <Tooltip formatter={(v: any) => [Number(v).toLocaleString('pt-BR'), 'Materiais']} />
+                                <Bar dataKey="valor" radius={[0, 6, 6, 0]} barSize={12} isAnimationActive={false}>
+                                  <Cell fill="#10b981" />
+                                  <Cell fill="#f59e0b" />
+                                  <Cell fill="#e11d48" />
+                                </Bar>
+                              </BarChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-end">
+                          {renderOverviewIndicatorActions(
+                            {
+                              indicatorTitle: 'Itens com Estoque Baixo e Ruptura',
+                              indicatorSubtitle: 'Materiais consolidados com saldo igual ou inferior ao estoque mínimo e zerados',
+                              groupName: 'Visão Geral de Relatórios • KPIs',
+                              accentColor: [245, 158, 11],
+                              kpis: [
+                                { label: 'Total Estoque Baixo', value: String(reportData.lowStockConsolidatedCount), helper: 'Abaixo ou igual ao mínimo' },
+                                { label: 'Baixo com Saldo', value: String(reportData.lowStockWithBalanceCount), helper: 'Em alerta de reposição' },
+                                { label: 'Zerados (Ruptura)', value: String(reportData.zeroStockConsolidatedCount), helper: 'Saldo consolidado zero' },
+                                { label: 'Estoque Regular', value: String(reportData.regularStockConsolidatedCount), helper: 'Acima do mínimo' }
+                              ],
+                              chart: {
+                                type: 'donut',
+                                title: 'Distribuição Consolidada de Níveis de Estoque',
+                                subtitle: 'Proporção de materiais regulares, em estoque baixo e zerados',
+                                data: [
+                                  { label: 'Estoque Regular', value: reportData.regularStockConsolidatedCount, color: '#10b981' },
+                                  { label: 'Estoque Baixo (c/ saldo)', value: reportData.lowStockWithBalanceCount, color: '#f59e0b' },
+                                  { label: 'Zerado (Ruptura)', value: reportData.zeroStockConsolidatedCount, color: '#e11d48' }
+                                ]
+                              }
+                            },
+                            true
+                          )}
                         </div>
                       </div>
                     </div>
 
                     {/* Card 3: Movimentações Realizadas */}
-                    <div className="bg-white rounded-2xl border border-indigo-100/80 shadow-sm hover:shadow-md hover:border-indigo-200 transition-all duration-300 overflow-hidden group relative">
+                    <div className="bg-white rounded-2xl border border-indigo-100/80 shadow-sm hover:shadow-md hover:border-indigo-200 transition-all duration-300 overflow-hidden group relative flex flex-col justify-between">
                       <div className="h-1.5 w-full bg-gradient-to-r from-indigo-600 to-blue-700" />
-                      <div className="p-5">
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Movimentações</span>
-                          <div className="bg-gradient-to-br from-indigo-600 to-blue-700 text-white p-2.5 rounded-xl shadow-sm">
-                            <Activity size={18} />
+                      <div className="p-5 flex-1 flex flex-col justify-between">
+                        <div>
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Movimentações</span>
+                            <div className="bg-gradient-to-br from-indigo-600 to-blue-700 text-white p-2.5 rounded-xl shadow-sm">
+                              <Activity size={18} />
+                            </div>
+                          </div>
+                          <h3 className="text-2xl font-black text-slate-900 tracking-tight">
+                            {reportData.totalMovementsCount.toLocaleString('pt-BR')}
+                          </h3>
+                          <div className="mt-2 pt-2 border-t border-slate-100 flex items-center justify-between">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase">Devoluções</span>
+                            <span className="text-xs font-black text-indigo-700">
+                              {reportData.totalReturnsCount.toLocaleString('pt-BR')} un
+                            </span>
                           </div>
                         </div>
-                        <h3 className="text-2xl font-black text-slate-900 tracking-tight">
-                          {reportData.totalMovementsCount.toLocaleString('pt-BR')}
-                        </h3>
-                        <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between">
-                          <span className="text-[10px] font-bold text-slate-400 uppercase">Devoluções</span>
-                          <span className="text-xs font-black text-indigo-700">
-                            {reportData.totalReturnsCount.toLocaleString('pt-BR')} un
-                          </span>
+
+                        <div className="mt-3 pt-2 border-t border-slate-100">
+                          <p className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-1">
+                            Unidades Movimentadas por Tipo
+                          </p>
+                          <div className="h-24 w-full">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <BarChart
+                                data={[
+                                  { name: 'Entradas', valor: reportData.entries, fill: '#10b981' },
+                                  { name: 'Saídas', valor: reportData.exits, fill: '#f43f5e' },
+                                  { name: 'Devol.', valor: reportData.totalReturnsCount, fill: '#6366f1' }
+                                ]}
+                                layout="vertical"
+                                margin={{ top: 2, right: 16, left: 0, bottom: 2 }}
+                              >
+                                <XAxis type="number" hide />
+                                <YAxis dataKey="name" type="category" width={58} axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 700, fill: '#475569' }} />
+                                <Tooltip formatter={(v: any) => [Number(v).toLocaleString('pt-BR'), 'Unidades']} />
+                                <Bar dataKey="valor" radius={[0, 6, 6, 0]} barSize={12} isAnimationActive={false}>
+                                  <Cell fill="#10b981" />
+                                  <Cell fill="#f43f5e" />
+                                  <Cell fill="#6366f1" />
+                                </Bar>
+                              </BarChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-end">
+                          {renderOverviewIndicatorActions(
+                            {
+                              indicatorTitle: 'Movimentações Realizadas no Período',
+                              indicatorSubtitle: 'Volume total de registros e unidades movimentadas em entradas, saídas e devoluções',
+                              groupName: 'Visão Geral de Relatórios • KPIs',
+                              accentColor: [79, 70, 229],
+                              kpis: [
+                                { label: 'Total de Lançamentos', value: String(reportData.totalMovementsCount), helper: 'Registros no período' },
+                                { label: 'Unidades de Entrada', value: reportData.entries.toLocaleString('pt-BR'), helper: 'Abastecimento' },
+                                { label: 'Unidades de Saída', value: reportData.exits.toLocaleString('pt-BR'), helper: 'Dispensação e baixas' },
+                                { label: 'Unidades Devolvidas', value: reportData.totalReturnsCount.toLocaleString('pt-BR'), helper: 'Estornos setoriais' }
+                              ],
+                              chart: {
+                                type: 'verticalBar',
+                                title: 'Comparativo de Volume por Tipo de Movimentação (Unidades)',
+                                subtitle: 'Unidades registradas em entradas, saídas e devoluções no período',
+                                data: [
+                                  { label: 'Entradas', value: reportData.entries, color: '#10b981' },
+                                  { label: 'Saídas', value: reportData.exits, color: '#f43f5e' },
+                                  { label: 'Devoluções', value: reportData.totalReturnsCount, color: '#6366f1' }
+                                ]
+                              }
+                            },
+                            true
+                          )}
                         </div>
                       </div>
                     </div>
 
                     {/* Card 4: Entradas */}
-                    <div className="bg-white rounded-2xl border border-emerald-100/80 shadow-sm hover:shadow-md hover:border-emerald-200 transition-all duration-300 overflow-hidden group relative">
+                    <div className="bg-white rounded-2xl border border-emerald-100/80 shadow-sm hover:shadow-md hover:border-emerald-200 transition-all duration-300 overflow-hidden group relative flex flex-col justify-between">
                       <div className="h-1.5 w-full bg-gradient-to-r from-emerald-500 to-teal-600" />
-                      <div className="p-5">
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Entradas</span>
-                          <div className="bg-gradient-to-br from-emerald-600 to-teal-700 text-white p-2.5 rounded-xl shadow-sm">
-                            <TrendingUp size={18} />
+                      <div className="p-5 flex-1 flex flex-col justify-between">
+                        <div>
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Entradas</span>
+                            <div className="bg-gradient-to-br from-emerald-600 to-teal-700 text-white p-2.5 rounded-xl shadow-sm">
+                              <TrendingUp size={18} />
+                            </div>
+                          </div>
+                          <h3 className="text-2xl font-black text-slate-900 tracking-tight">{reportData.entries.toLocaleString('pt-BR')}</h3>
+                          <div className="mt-2 pt-2 border-t border-slate-100 flex items-center justify-between">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase">Valor</span>
+                            <span className="text-xs font-black text-emerald-600">
+                              {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.entriesValue)}
+                            </span>
                           </div>
                         </div>
-                        <h3 className="text-2xl font-black text-slate-900 tracking-tight">{reportData.entries.toLocaleString('pt-BR')}</h3>
-                        <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between">
-                          <span className="text-[10px] font-bold text-slate-400 uppercase">Valor</span>
-                          <span className="text-xs font-black text-emerald-600">
-                            {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.entriesValue)}
-                          </span>
+
+                        <div className="mt-3 pt-2 border-t border-slate-100">
+                          <p className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-1">
+                            Entradas por Origem
+                          </p>
+                          <div className="h-24 w-full">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <BarChart
+                                data={[
+                                  { name: 'Contrato', valor: reportData.originStats.contract.entries, fill: '#059669' },
+                                  { name: 'Extra', valor: reportData.originStats.extra.entries, fill: '#0d9488' },
+                                  { name: 'Doação', valor: reportData.originStats.donation.entries, fill: '#34d399' }
+                                ]}
+                                layout="vertical"
+                                margin={{ top: 2, right: 16, left: 0, bottom: 2 }}
+                              >
+                                <XAxis type="number" hide />
+                                <YAxis dataKey="name" type="category" width={58} axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 700, fill: '#475569' }} />
+                                <Tooltip formatter={(v: any) => [Number(v).toLocaleString('pt-BR'), 'Unidades']} />
+                                <Bar dataKey="valor" radius={[0, 6, 6, 0]} barSize={12} isAnimationActive={false}>
+                                  <Cell fill="#059669" />
+                                  <Cell fill="#0d9488" />
+                                  <Cell fill="#34d399" />
+                                </Bar>
+                              </BarChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-end">
+                          {renderOverviewIndicatorActions(
+                            {
+                              indicatorTitle: 'Entradas no Período',
+                              indicatorSubtitle: 'Volume físico e valor financeiro de entradas por modalidade de aquisição',
+                              groupName: 'Visão Geral de Relatórios • KPIs',
+                              accentColor: [16, 185, 129],
+                              kpis: [
+                                { label: 'Unidades Recebidas', value: reportData.entries.toLocaleString('pt-BR'), helper: 'Total no período' },
+                                { label: 'Valor Financeiro', value: new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.entriesValue), helper: 'Custo de entrada' },
+                                { label: 'Via Contrato', value: reportData.originStats.contract.entries.toLocaleString('pt-BR'), helper: 'Unidades' },
+                                { label: 'Extra / Doação', value: (reportData.originStats.extra.entries + reportData.originStats.donation.entries).toLocaleString('pt-BR'), helper: 'Unidades' }
+                              ],
+                              chart: {
+                                type: 'verticalBar',
+                                title: 'Entradas por Origem do Recurso (Unidades)',
+                                subtitle: 'Distribuição das entradas entre Contrato, Extra e Doação',
+                                data: [
+                                  { label: 'Contrato', value: reportData.originStats.contract.entries, color: '#059669' },
+                                  { label: 'Extra', value: reportData.originStats.extra.entries, color: '#0d9488' },
+                                  { label: 'Doação', value: reportData.originStats.donation.entries, color: '#34d399' }
+                                ]
+                              }
+                            },
+                            true
+                          )}
                         </div>
                       </div>
                     </div>
 
                     {/* Card 5: Saídas */}
-                    <div className="bg-white rounded-2xl border border-rose-100/80 shadow-sm hover:shadow-md hover:border-rose-200 transition-all duration-300 overflow-hidden group relative">
+                    <div className="bg-white rounded-2xl border border-rose-100/80 shadow-sm hover:shadow-md hover:border-rose-200 transition-all duration-300 overflow-hidden group relative flex flex-col justify-between">
                       <div className="h-1.5 w-full bg-gradient-to-r from-rose-500 to-pink-600" />
-                      <div className="p-5">
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Saídas / Consumo</span>
-                          <div className="bg-gradient-to-br from-rose-600 to-pink-700 text-white p-2.5 rounded-xl shadow-sm">
-                            <TrendingDown size={18} />
+                      <div className="p-5 flex-1 flex flex-col justify-between">
+                        <div>
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Saídas / Consumo</span>
+                            <div className="bg-gradient-to-br from-rose-600 to-pink-700 text-white p-2.5 rounded-xl shadow-sm">
+                              <TrendingDown size={18} />
+                            </div>
+                          </div>
+                          <h3 className="text-2xl font-black text-slate-900 tracking-tight">{reportData.exits.toLocaleString('pt-BR')}</h3>
+                          <div className="mt-2 pt-2 border-t border-slate-100 flex items-center justify-between">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase">Baixado</span>
+                            <span className="text-xs font-black text-rose-600">
+                              {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.exitsValue)}
+                            </span>
                           </div>
                         </div>
-                        <h3 className="text-2xl font-black text-slate-900 tracking-tight">{reportData.exits.toLocaleString('pt-BR')}</h3>
-                        <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between">
-                          <span className="text-[10px] font-bold text-slate-400 uppercase">Baixado</span>
-                          <span className="text-xs font-black text-rose-600">
-                            {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.exitsValue)}
-                          </span>
+
+                        <div className="mt-3 pt-2 border-t border-slate-100">
+                          <p className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-1">
+                            Saídas por Motivo
+                          </p>
+                          <div className="h-24 w-full">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <BarChart
+                                data={[
+                                  { name: 'Consumo', valor: reportData.exitsByReason.consumo || 0, fill: '#e11d48' },
+                                  { name: 'Doação', valor: reportData.exitsByReason.doacao || 0, fill: '#f59e0b' },
+                                  { name: 'Venc./Perda', valor: (reportData.exitsByReason.vencido || 0) + (reportData.exitsByReason.perda || 0), fill: '#64748b' }
+                                ]}
+                                layout="vertical"
+                                margin={{ top: 2, right: 16, left: 0, bottom: 2 }}
+                              >
+                                <XAxis type="number" hide />
+                                <YAxis dataKey="name" type="category" width={66} axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 700, fill: '#475569' }} />
+                                <Tooltip formatter={(v: any) => [Number(v).toLocaleString('pt-BR'), 'Unidades']} />
+                                <Bar dataKey="valor" radius={[0, 6, 6, 0]} barSize={12} isAnimationActive={false}>
+                                  <Cell fill="#e11d48" />
+                                  <Cell fill="#f59e0b" />
+                                  <Cell fill="#64748b" />
+                                </Bar>
+                              </BarChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-end">
+                          {renderOverviewIndicatorActions(
+                            {
+                              indicatorTitle: 'Saídas e Consumo no Período',
+                              indicatorSubtitle: 'Volume físico e valor financeiro de saídas por motivo de baixa',
+                              groupName: 'Visão Geral de Relatórios • KPIs',
+                              accentColor: [225, 29, 72],
+                              kpis: [
+                                { label: 'Unidades Saídas', value: reportData.exits.toLocaleString('pt-BR'), helper: 'Total no período' },
+                                { label: 'Valor Financeiro', value: new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.exitsValue), helper: 'Custo baixado' },
+                                { label: 'Consumo Setorial', value: (reportData.exitsByReason.consumo || 0).toLocaleString('pt-BR'), helper: 'Unidades' },
+                                { label: 'Doação / Vencimento', value: ((reportData.exitsByReason.doacao || 0) + (reportData.exitsByReason.vencido || 0) + (reportData.exitsByReason.perda || 0)).toLocaleString('pt-BR'), helper: 'Unidades' }
+                              ],
+                              chart: {
+                                type: 'verticalBar',
+                                title: 'Saídas por Motivo de Baixa (Unidades)',
+                                subtitle: 'Composição das saídas entre consumo regular, doação e perdas/vencimento',
+                                data: [
+                                  { label: 'Consumo Regular', value: reportData.exitsByReason.consumo || 0, color: '#e11d48' },
+                                  { label: 'Doação', value: reportData.exitsByReason.doacao || 0, color: '#f59e0b' },
+                                  { label: 'Vencimento', value: reportData.exitsByReason.vencido || 0, color: '#991b1b' },
+                                  { label: 'Perda / Avaria', value: reportData.exitsByReason.perda || 0, color: '#64748b' }
+                                ]
+                              }
+                            },
+                            true
+                          )}
                         </div>
                       </div>
                     </div>
 
                     {/* Card 6: Valor em Estoque */}
-                    <div className="bg-white rounded-2xl border border-indigo-100/80 shadow-sm hover:shadow-md hover:border-indigo-200 transition-all duration-300 overflow-hidden group relative">
+                    <div className="bg-white rounded-2xl border border-indigo-100/80 shadow-sm hover:shadow-md hover:border-indigo-200 transition-all duration-300 overflow-hidden group relative flex flex-col justify-between">
                       <div className="h-1.5 w-full bg-gradient-to-r from-indigo-600 to-blue-600" />
-                      <div className="p-5">
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Patrimônio</span>
-                          <div className="bg-gradient-to-br from-indigo-600 to-blue-700 text-white p-2.5 rounded-xl shadow-sm">
-                            <DollarSign size={18} />
+                      <div className="p-5 flex-1 flex flex-col justify-between">
+                        <div>
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Patrimônio</span>
+                            <div className="bg-gradient-to-br from-indigo-600 to-blue-700 text-white p-2.5 rounded-xl shadow-sm">
+                              <DollarSign size={18} />
+                            </div>
+                          </div>
+                          <h3 className="text-xl font-black text-slate-900 tracking-tight">
+                            {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.totalValue)}
+                          </h3>
+                          <div className="mt-2 pt-2 border-t border-slate-100 flex items-center justify-between">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase">Regulares</span>
+                            <span className="text-xs font-black text-indigo-700">
+                              {reportData.regularStockConsolidatedCount} itens
+                            </span>
                           </div>
                         </div>
-                        <h3 className="text-xl font-black text-slate-900 tracking-tight">
-                          {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.totalValue)}
-                        </h3>
-                        <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between">
-                          <span className="text-[10px] font-bold text-slate-400 uppercase">Regulares</span>
-                          <span className="text-xs font-black text-indigo-700">
-                            {reportData.regularStockConsolidatedCount} itens
-                          </span>
+
+                        <div className="mt-3 pt-2 border-t border-slate-100">
+                          <p className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-1">
+                            Top Categorias em Valor (R$)
+                          </p>
+                          <div className="h-24 w-full">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <BarChart
+                                data={reportData.categoryValues.slice(0, 3).map(c => ({
+                                  name: c.name.length > 10 ? c.name.slice(0, 10) + '…' : c.name,
+                                  valor: Number(c.value.toFixed(2)),
+                                  fill: getCategoryColor(c.name)
+                                }))}
+                                layout="vertical"
+                                margin={{ top: 2, right: 16, left: 0, bottom: 2 }}
+                              >
+                                <XAxis type="number" hide />
+                                <YAxis dataKey="name" type="category" width={68} axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 700, fill: '#475569' }} />
+                                <Tooltip formatter={(v: any) => [new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(Number(v)), 'Valor']} />
+                                <Bar dataKey="valor" radius={[0, 6, 6, 0]} barSize={12} isAnimationActive={false}>
+                                  {reportData.categoryValues.slice(0, 3).map((entry, idx) => (
+                                    <Cell key={idx} fill={getCategoryColor(entry.name)} />
+                                  ))}
+                                </Bar>
+                              </BarChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-end">
+                          {renderOverviewIndicatorActions(
+                            {
+                              indicatorTitle: 'Patrimônio • Valor Total em Estoque',
+                              indicatorSubtitle: 'Soma financeira de todos os lotes ativos multiplicados pelo respectivo preço unitário',
+                              groupName: 'Visão Geral de Relatórios • KPIs',
+                              accentColor: [79, 70, 229],
+                              kpis: [
+                                { label: 'Valor em Estoque', value: new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.totalValue), helper: 'Patrimônio atual' },
+                                { label: 'Unidades Físicas', value: reportData.currentStockUnits.toLocaleString('pt-BR'), helper: 'Soma dos lotes' },
+                                { label: 'Materiais Regulares', value: String(reportData.regularStockConsolidatedCount), helper: 'Acima do mínimo' }
+                              ],
+                              chart: {
+                                type: 'horizontalBar',
+                                title: 'Valor em Estoque por Categoria (R$)',
+                                subtitle: 'Distribuição financeira do estoque atual por categoria',
+                                valuePrefix: 'R$ ',
+                                data: reportData.categoryValues.slice(0, 10).map(c => ({
+                                  label: c.name,
+                                  value: Number(c.value.toFixed(2)),
+                                  color: getCategoryColor(c.name)
+                                }))
+                              }
+                            },
+                            true
+                          )}
                         </div>
                       </div>
                     </div>
                   </>
                 ) : (
                   <>
-                    <div className="bg-white p-6 rounded-2xl border border-rose-100 shadow-sm hover:shadow-md transition-all lg:col-span-2 overflow-hidden relative group">
+                    <div className="bg-white p-6 rounded-2xl border border-rose-100 shadow-sm hover:shadow-md transition-all lg:col-span-2 overflow-hidden relative group flex flex-col justify-between">
                       <div className="h-1.5 w-full bg-gradient-to-r from-rose-500 to-pink-600 absolute top-0 left-0" />
-                      <p className="text-slate-500 text-xs font-black uppercase tracking-wider mb-3">Consumo do Setor no Período</p>
+                      <div className="flex items-center justify-between gap-2 mb-3">
+                        <p className="text-slate-500 text-xs font-black uppercase tracking-wider">Consumo do Setor no Período</p>
+                        {renderOverviewIndicatorActions(
+                          {
+                            indicatorTitle: `Consumo do Setor (${selectedSector})`,
+                            indicatorSubtitle: 'Volume de unidades recebidas pelo setor no período filtrado',
+                            groupName: 'Visão Setorial',
+                            accentColor: [225, 29, 72],
+                            kpis: [
+                              { label: 'Unidades Recebidas', value: reportData.exits.toLocaleString('pt-BR'), helper: selectedSector || 'Setor' }
+                            ],
+                            chart: {
+                              type: 'line',
+                              title: 'Evolução Diária de Consumo do Setor',
+                              subtitle: 'Unidades retiradas por dia no período',
+                              data: reportData.daily.map(d => ({ label: d.date, value: d.exits, color: '#e11d48' }))
+                            }
+                          },
+                          true
+                        )}
+                      </div>
                       <div className="flex items-center gap-5">
                         <div className="bg-rose-50 p-4 rounded-2xl text-rose-600 border border-rose-100 group-hover:scale-105 transition-transform">
                           <ArrowDownLeft size={32} />
@@ -11520,10 +12011,49 @@ export default function App() {
                           <p className="text-xs font-extrabold text-slate-400 uppercase tracking-widest mt-0.5">Unidades Recebidas</p>
                         </div>
                       </div>
+                      <div className="h-24 w-full mt-3 pt-2 border-t border-slate-100">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <AreaChart data={reportData.daily}>
+                            <XAxis dataKey="date" hide />
+                            <YAxis hide />
+                            <Tooltip />
+                            <Area type="monotone" dataKey="exits" name="Consumo" stroke="#e11d48" fill="#ffe4e6" strokeWidth={2} />
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      </div>
                     </div>
-                    <div className="bg-white p-6 rounded-2xl border border-blue-100 shadow-sm hover:shadow-md transition-all lg:col-span-2 overflow-hidden relative group">
+                    <div className="bg-white p-6 rounded-2xl border border-blue-100 shadow-sm hover:shadow-md transition-all lg:col-span-1 overflow-hidden relative group flex flex-col justify-between">
                       <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 to-indigo-600 absolute top-0 left-0" />
-                      <p className="text-slate-500 text-xs font-black uppercase tracking-wider mb-3">Solicitações no Período</p>
+                      <div className="flex items-center justify-between gap-2 mb-3">
+                        <p className="text-slate-500 text-xs font-black uppercase tracking-wider">Solicitações no Período</p>
+                        {renderOverviewIndicatorActions(
+                          {
+                            indicatorTitle: `Solicitações do Setor (${selectedSector})`,
+                            indicatorSubtitle: 'Pedidos realizados pelo setor no período selecionado',
+                            groupName: 'Visão Setorial',
+                            accentColor: [37, 99, 235],
+                            kpis: [
+                              {
+                                label: 'Pedidos Realizados',
+                                value: String(
+                                  requests.filter(r => {
+                                    const d = new Date(r.date);
+                                    return r.sector === selectedSector && !r.deletedAt && d >= startOfDay(parseISO(reportRange.start)) && d <= endOfDay(parseISO(reportRange.end));
+                                  }).length
+                                ),
+                                helper: selectedSector || 'Setor'
+                              }
+                            ],
+                            chart: {
+                              type: 'horizontalBar',
+                              title: 'Top Materiais Solicitados pelo Setor',
+                              subtitle: 'Itens mais requisitados no período',
+                              data: reportData.topRequested.map(tr => ({ label: tr.name, value: tr.value, color: '#2563eb' }))
+                            }
+                          },
+                          true
+                        )}
+                      </div>
                       <div className="flex items-center gap-5">
                         <div className="bg-blue-50 p-4 rounded-2xl text-blue-600 border border-blue-100 group-hover:scale-105 transition-transform">
                           <FileText size={32} />
@@ -11537,6 +12067,16 @@ export default function App() {
                           </h3>
                           <p className="text-xs font-extrabold text-slate-400 uppercase tracking-widest mt-0.5">Pedidos Realizados</p>
                         </div>
+                      </div>
+                      <div className="h-24 w-full mt-3 pt-2 border-t border-slate-100">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={reportData.topRequested.slice(0, 4)} layout="vertical">
+                            <XAxis type="number" hide />
+                            <YAxis dataKey="name" type="category" width={70} axisLine={false} tickLine={false} tick={{ fontSize: 9, fontWeight: 700, fill: '#475569' }} />
+                            <Tooltip />
+                            <Bar dataKey="value" name="Qtd" fill="#2563eb" radius={[0, 4, 4, 0]} barSize={10} />
+                          </BarChart>
+                        </ResponsiveContainer>
                       </div>
                     </div>
                   </>
@@ -11560,11 +12100,40 @@ export default function App() {
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {/* Movement Chart */}
                 <div className="bg-white p-6 sm:p-8 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all">
-                  <div className="flex items-center justify-between mb-6">
-                    <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
-                      <Activity size={18} className="text-blue-600" /> Movimentação {isAdmin ? 'Geral' : 'do Setor'}
-                    </h4>
-                    <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2.5 py-1 rounded-lg uppercase tracking-wider">Fluxo Diário</span>
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-6">
+                    <div>
+                      <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
+                        <Activity size={18} className="text-blue-600" /> Movimentação {isAdmin ? 'Geral' : 'do Setor'}
+                      </h4>
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Fluxo Diário de Entradas e Saídas</span>
+                    </div>
+                    {renderOverviewIndicatorActions(
+                      {
+                        indicatorTitle: `Movimentação ${isAdmin ? 'Geral' : 'do Setor'} (Fluxo Diário)`,
+                        indicatorSubtitle: 'Evolução diária de entradas e saídas de materiais no período filtrado',
+                        groupName: 'Panorama Visual de Consumo & Movimentação',
+                        accentColor: [37, 99, 235],
+                        kpis: [
+                          { label: 'Total de Entradas', value: `${reportData.entries.toLocaleString('pt-BR')} un`, helper: new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.entriesValue) },
+                          { label: 'Total de Saídas', value: `${reportData.exits.toLocaleString('pt-BR')} un`, helper: new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.exitsValue) }
+                        ],
+                        chart: {
+                          type: 'groupedBar',
+                          title: 'Evolução Diária de Entradas vs. Saídas',
+                          subtitle: 'Unidades movimentadas por data no período selecionado',
+                          seriesAName: 'Entradas (un)',
+                          seriesAColor: '#10b981',
+                          seriesBName: 'Saídas (un)',
+                          seriesBColor: '#f43f5e',
+                          data: reportData.daily.map(d => ({
+                            label: d.date,
+                            value: Math.max(0, d.entries),
+                            secondaryValue: Math.max(0, d.exits)
+                          }))
+                        }
+                      },
+                      true
+                    )}
                   </div>
                   <div className="h-[300px] w-full">
                     <ResponsiveContainer width="100%" height="100%">
@@ -11595,13 +12164,39 @@ export default function App() {
                 {/* Situação do Estoque Consolidado */}
                 {isAdmin && (
                   <div className="bg-white p-6 sm:p-8 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all">
-                    <div className="flex items-center justify-between mb-6">
-                      <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
-                        <Boxes size={18} className="text-emerald-600" /> Situação do Estoque Consolidado
-                      </h4>
-                      <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-lg uppercase tracking-wider">
-                        Soma de Lotes
-                      </span>
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-6">
+                      <div>
+                        <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
+                          <Boxes size={18} className="text-emerald-600" /> Situação do Estoque Consolidado
+                        </h4>
+                        <span className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider">
+                          Soma de Lotes e Validades
+                        </span>
+                      </div>
+                      {renderOverviewIndicatorActions(
+                        {
+                          indicatorTitle: 'Situação do Estoque Consolidado',
+                          indicatorSubtitle: 'Panorama de materiais regulares, estoque baixo, zerados e lotes críticos de validade',
+                          groupName: 'Panorama Visual de Consumo & Movimentação',
+                          accentColor: [16, 185, 129],
+                          kpis: reportData.stockStatusChartData.map(s => ({
+                            label: s.name,
+                            value: String(s.value),
+                            helper: 'Itens / Lotes'
+                          })),
+                          chart: {
+                            type: 'horizontalBar',
+                            title: 'Situação do Estoque Consolidado',
+                            subtitle: 'Quantidade de materiais/lotes em cada faixa operacional',
+                            data: reportData.stockStatusChartData.map(s => ({
+                              label: s.name,
+                              value: s.value,
+                              color: s.color
+                            }))
+                          }
+                        },
+                        true
+                      )}
                     </div>
                     <div className="h-[300px] w-full">
                       <ResponsiveContainer width="100%" height="100%">
@@ -11638,11 +12233,37 @@ export default function App() {
 
                 {/* Category Breakdown */}
                 <div className="bg-white p-6 sm:p-8 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all">
-                  <div className="flex items-center justify-between mb-6">
-                    <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
-                      <PieChartIcon size={18} className="text-amber-500" /> Distribuição de Consumo por Categoria
-                    </h4>
-                    <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2.5 py-1 rounded-lg uppercase tracking-wider">Proporção</span>
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-6">
+                    <div>
+                      <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
+                        <PieChartIcon size={18} className="text-amber-500" /> Distribuição de Consumo por Categoria
+                      </h4>
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Proporção de Unidades Consumidas</span>
+                    </div>
+                    {renderOverviewIndicatorActions(
+                      {
+                        indicatorTitle: 'Distribuição de Consumo por Categoria',
+                        indicatorSubtitle: 'Participação percentual de cada categoria no consumo do período',
+                        groupName: 'Panorama Visual de Consumo & Movimentação',
+                        accentColor: [245, 158, 11],
+                        kpis: reportData.consumptionCategories.slice(0, 4).map(c => ({
+                          label: c.name,
+                          value: `${c.value.toLocaleString('pt-BR')} un`,
+                          helper: 'Consumo líquido'
+                        })),
+                        chart: {
+                          type: 'donut',
+                          title: 'Distribuição de Consumo por Categoria (Unidades)',
+                          subtitle: 'Proporção consumida por categoria no período selecionado',
+                          data: reportData.consumptionCategories.map(c => ({
+                            label: c.name,
+                            value: c.value,
+                            color: getCategoryColor(c.name)
+                          }))
+                        }
+                      },
+                      true
+                    )}
                   </div>
                   <div className="h-[300px] w-full">
                     <ResponsiveContainer width="100%" height="100%">
@@ -11673,11 +12294,37 @@ export default function App() {
                 {/* Top Consumed Items - Only for Admin */}
                 {isAdmin && (
                   <div className="bg-white p-6 sm:p-8 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all lg:col-span-2">
-                    <div className="flex items-center justify-between mb-6">
-                      <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
-                        <ArrowDownLeft size={18} className="text-rose-600" /> Ranking: Itens Mais Consumidos
-                      </h4>
-                      <span className="text-[10px] font-bold text-rose-600 bg-rose-50 px-2.5 py-1 rounded-lg uppercase tracking-wider">Top Demandas</span>
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-6">
+                      <div>
+                        <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
+                          <ArrowDownLeft size={18} className="text-rose-600" /> Ranking: Itens Mais Consumidos
+                        </h4>
+                        <span className="text-[10px] font-bold text-rose-600 uppercase tracking-wider">Top 10 Demandas Físicas</span>
+                      </div>
+                      {renderOverviewIndicatorActions(
+                        {
+                          indicatorTitle: 'Ranking: Itens Mais Consumidos (Top 10)',
+                          indicatorSubtitle: 'Materiais com maior volume líquido de saída para consumo no período',
+                          groupName: 'Panorama Visual de Consumo & Movimentação',
+                          accentColor: [225, 29, 72],
+                          kpis: reportData.topConsumed.slice(0, 4).map((tc, idx) => ({
+                            label: `${idx + 1}º • ${tc.name}`,
+                            value: `${tc.value.toLocaleString('pt-BR')} un`,
+                            helper: 'Qtd consumida'
+                          })),
+                          chart: {
+                            type: 'horizontalBar',
+                            title: 'Top 10 Materiais Mais Consumidos (Unidades)',
+                            subtitle: 'Ranking ordenado por quantidade líquida dispensada',
+                            data: reportData.topConsumed.map(tc => ({
+                              label: tc.name,
+                              value: tc.value,
+                              color: '#f43f5e'
+                            }))
+                          }
+                        },
+                        true
+                      )}
                     </div>
                     <div className="h-[320px] w-full">
                       <ResponsiveContainer width="100%" height="100%">
@@ -11701,11 +12348,41 @@ export default function App() {
                   <>
                     {/* Stock Value by Category */}
                     <div className="bg-white p-6 sm:p-8 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all">
-                      <div className="flex items-center justify-between mb-6">
-                        <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
-                          <DollarSign size={18} className="text-emerald-600" /> Valor em Estoque por Categoria
-                        </h4>
-                        <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-lg uppercase tracking-wider">Financeiro</span>
+                      <div className="flex flex-wrap items-center justify-between gap-2 mb-6">
+                        <div>
+                          <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
+                            <DollarSign size={18} className="text-emerald-600" /> Valor em Estoque por Categoria
+                          </h4>
+                          <span className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider">Patrimônio Financeiro por Grupo</span>
+                        </div>
+                        {renderOverviewIndicatorActions(
+                          {
+                            indicatorTitle: 'Valor em Estoque por Categoria',
+                            indicatorSubtitle: 'Distribuição financeira do saldo atual por categoria de material',
+                            groupName: 'Panorama Visual de Consumo & Movimentação',
+                            accentColor: [16, 185, 129],
+                            kpis: [
+                              { label: 'Valor Total em Estoque', value: new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.totalValue), helper: 'Soma geral' },
+                              ...reportData.categoryValues.slice(0, 3).map(cv => ({
+                                label: cv.name,
+                                value: new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(cv.value),
+                                helper: 'Patrimônio na categoria'
+                              }))
+                            ],
+                            chart: {
+                              type: 'horizontalBar',
+                              title: 'Valor em Estoque por Categoria (R$)',
+                              subtitle: 'Comparativo financeiro entre categorias cadastradas',
+                              valuePrefix: 'R$ ',
+                              data: reportData.categoryValues.map(cv => ({
+                                label: cv.name,
+                                value: Number(cv.value.toFixed(2)),
+                                color: getCategoryColor(cv.name)
+                              }))
+                            }
+                          },
+                          true
+                        )}
                       </div>
                       <div className="h-[300px] w-full">
                         <ResponsiveContainer width="100%" height="100%">
@@ -11731,11 +12408,39 @@ export default function App() {
 
                     {/* Exits by Reason */}
                     <div className="bg-white p-6 sm:p-8 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all">
-                      <div className="flex items-center justify-between mb-6">
-                        <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
-                          <TrendingDown size={18} className="text-rose-600" /> Saídas por Motivo
-                        </h4>
-                        <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2.5 py-1 rounded-lg uppercase tracking-wider">Destinação</span>
+                      <div className="flex flex-wrap items-center justify-between gap-2 mb-6">
+                        <div>
+                          <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
+                            <TrendingDown size={18} className="text-rose-600" /> Saídas por Motivo
+                          </h4>
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Destinação das Baixas</span>
+                        </div>
+                        {renderOverviewIndicatorActions(
+                          {
+                            indicatorTitle: 'Saídas por Motivo',
+                            indicatorSubtitle: 'Proporção de baixas por Consumo, Doação, Vencimento e Perda/Avaria',
+                            groupName: 'Panorama Visual de Consumo & Movimentação',
+                            accentColor: [225, 29, 72],
+                            kpis: [
+                              { label: 'Consumo', value: `${(reportData.exitsByReason.consumo || 0).toLocaleString('pt-BR')} un`, helper: 'Dispensação regular' },
+                              { label: 'Doação', value: `${(reportData.exitsByReason.doacao || 0).toLocaleString('pt-BR')} un`, helper: 'Saídas por doação' },
+                              { label: 'Vencimento', value: `${(reportData.exitsByReason.vencido || 0).toLocaleString('pt-BR')} un`, helper: 'Baixa por validade' },
+                              { label: 'Perda / Avaria', value: `${(reportData.exitsByReason.perda || 0).toLocaleString('pt-BR')} un`, helper: 'Sinistro ou dano' }
+                            ],
+                            chart: {
+                              type: 'donut',
+                              title: 'Saídas por Motivo (Unidades)',
+                              subtitle: 'Distribuição das saídas registradas no período',
+                              data: [
+                                { label: 'Consumo', value: reportData.exitsByReason.consumo || 0, color: '#2563eb' },
+                                { label: 'Doação', value: reportData.exitsByReason.doacao || 0, color: '#f59e0b' },
+                                { label: 'Vencimento', value: reportData.exitsByReason.vencido || 0, color: '#ef4444' },
+                                { label: 'Perda/Avaria', value: reportData.exitsByReason.perda || 0, color: '#64748b' }
+                              ]
+                            }
+                          },
+                          true
+                        )}
                       </div>
                       <div className="h-[300px] w-full">
                         <ResponsiveContainer width="100%" height="100%">
@@ -11774,11 +12479,42 @@ export default function App() {
                 {/* Exits by Sector - Only for Admin */}
                 {isAdmin && (
                   <div className="bg-white p-6 sm:p-8 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all">
-                    <div className="flex items-center justify-between mb-6">
-                      <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
-                        <ArrowUpRight size={18} className="text-rose-600" /> Saídas por Setor (Quantidade por Tipo)
-                      </h4>
-                      <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2.5 py-1 rounded-lg uppercase tracking-wider">Setorial</span>
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-6">
+                      <div>
+                        <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
+                          <ArrowUpRight size={18} className="text-rose-600" /> Saídas por Setor (Quantidade por Tipo)
+                        </h4>
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Consumo Setorial</span>
+                      </div>
+                      {renderOverviewIndicatorActions(
+                        {
+                          indicatorTitle: 'Saídas por Setor',
+                          indicatorSubtitle: 'Volume total de unidades dispensadas para cada setor requisitante',
+                          groupName: 'Panorama Visual de Consumo & Movimentação',
+                          accentColor: [225, 29, 72],
+                          kpis: reportData.consumptionBySector.slice(0, 4).map(s => ({
+                            label: s.sector,
+                            value: new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(s.totalValue),
+                            helper: `${Object.values(s.items).reduce((acc, i) => acc + i.quantity, 0).toLocaleString('pt-BR')} un`
+                          })),
+                          chart: {
+                            type: 'horizontalBar',
+                            title: 'Saídas por Setor Requisitante (Unidades)',
+                            subtitle: 'Total de unidades consumidas por setor no período',
+                            data: reportData.sectors
+                              .map((sec: any) => {
+                                const totalUnits = reportData.categoriesInSector.reduce(
+                                  (acc: number, cat: string) => acc + (Number(sec[cat]) || 0),
+                                  0
+                                );
+                                return { label: sec.name, value: Math.max(0, totalUnits), color: '#e11d48' };
+                              })
+                              .filter(s => s.value > 0)
+                              .sort((a, b) => b.value - a.value)
+                          }
+                        },
+                        true
+                      )}
                     </div>
                     <div className="h-[300px] w-full">
                       <ResponsiveContainer width="100%" height="100%">
@@ -11817,7 +12553,7 @@ export default function App() {
                       </h4>
                       <p className="text-xs text-slate-500 font-medium">Materiais devolvidos ao almoxarifado pelos setores</p>
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
                       <span className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200/80 px-2.5 py-1 rounded-lg uppercase tracking-wider">
                         {reportData.totalReturnsCount} {reportData.totalReturnsCount === 1 ? 'Item Devolvido' : 'Itens Devolvidos'}
                       </span>
@@ -11825,6 +12561,29 @@ export default function App() {
                         <span className="text-[10px] font-black text-emerald-700 bg-emerald-50 border border-emerald-200/80 px-2.5 py-1 rounded-lg uppercase tracking-wider">
                           {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.totalReturnsValue)}
                         </span>
+                      )}
+                      {renderOverviewIndicatorActions(
+                        {
+                          indicatorTitle: 'Devoluções por Setor',
+                          indicatorSubtitle: 'Materiais devolvidos ao almoxarifado pelos setores no período',
+                          groupName: 'Panorama Visual de Consumo & Movimentação',
+                          accentColor: [217, 119, 6],
+                          kpis: [
+                            { label: 'Unidades Devolvidas', value: `${reportData.totalReturnsCount.toLocaleString('pt-BR')} un`, helper: 'Total estornado' },
+                            { label: 'Valor Financeiro', value: new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.totalReturnsValue), helper: 'Valor reintegrado' }
+                          ],
+                          chart: {
+                            type: 'horizontalBar',
+                            title: 'Devoluções por Setor (Unidades)',
+                            subtitle: 'Quantidade devolvida por setor no período filtrado',
+                            data: reportData.returnsBySector.map(r => ({
+                              label: r.name,
+                              value: r.quantity,
+                              color: '#d97706'
+                            }))
+                          }
+                        },
+                        true
                       )}
                     </div>
                   </div>
@@ -11863,11 +12622,38 @@ export default function App() {
                 {/* Value by Supplier */}
                 {isAdmin && (
                   <div className="bg-white p-6 sm:p-8 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all">
-                    <div className="flex items-center justify-between mb-6">
-                      <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
-                        <DollarSign size={18} className="text-amber-500" /> Valor por Fornecedor
-                      </h4>
-                      <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2.5 py-1 rounded-lg uppercase tracking-wider">Fornecedores</span>
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-6">
+                      <div>
+                        <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
+                          <DollarSign size={18} className="text-amber-500" /> Valor por Fornecedor
+                        </h4>
+                        <span className="text-[10px] font-bold text-amber-600 uppercase tracking-wider">Representatividade de Fornecedores</span>
+                      </div>
+                      {renderOverviewIndicatorActions(
+                        {
+                          indicatorTitle: 'Valor em Estoque por Fornecedor',
+                          indicatorSubtitle: 'Distribuição financeira do estoque ativo por fornecedor cadastrado',
+                          groupName: 'Panorama Visual de Consumo & Movimentação',
+                          accentColor: [245, 158, 11],
+                          kpis: reportData.suppliers.slice(0, 4).map(s => ({
+                            label: s.name,
+                            value: new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(s.value),
+                            helper: 'Valor em estoque'
+                          })),
+                          chart: {
+                            type: 'horizontalBar',
+                            title: 'Valor em Estoque por Fornecedor (R$)',
+                            subtitle: 'Ranking financeiro por fornecedor',
+                            valuePrefix: 'R$ ',
+                            data: reportData.suppliers.slice(0, 12).map(s => ({
+                              label: s.name,
+                              value: Number(s.value.toFixed(2)),
+                              color: '#f59e0b'
+                            }))
+                          }
+                        },
+                        true
+                      )}
                     </div>
                     <div className="h-[300px] w-full">
                       <ResponsiveContainer width="100%" height="100%">
@@ -11898,11 +12684,37 @@ export default function App() {
                 {/* Top Requested Items - Only for Admin */}
                 {isAdmin && (
                   <div className="bg-white p-6 sm:p-8 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all lg:col-span-2">
-                    <div className="flex items-center justify-between mb-6">
-                      <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
-                        <Plus size={18} className="text-blue-600" /> Itens Mais Solicitados (Top 10)
-                      </h4>
-                      <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-lg uppercase tracking-wider">Pedidos</span>
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-6">
+                      <div>
+                        <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
+                          <Plus size={18} className="text-blue-600" /> Itens Mais Solicitados (Top 10)
+                        </h4>
+                        <span className="text-[10px] font-bold text-blue-600 uppercase tracking-wider">Demanda de Pedidos Setoriais</span>
+                      </div>
+                      {renderOverviewIndicatorActions(
+                        {
+                          indicatorTitle: 'Itens Mais Solicitados (Top 10)',
+                          indicatorSubtitle: 'Materiais com maior quantidade requisitada nos pedidos dos setores',
+                          groupName: 'Panorama Visual de Consumo & Movimentação',
+                          accentColor: [37, 99, 235],
+                          kpis: reportData.topRequested.slice(0, 4).map((tr, idx) => ({
+                            label: `${idx + 1}º • ${tr.name}`,
+                            value: `${tr.value.toLocaleString('pt-BR')} un`,
+                            helper: 'Qtd solicitada'
+                          })),
+                          chart: {
+                            type: 'verticalBar',
+                            title: 'Top 10 Materiais Mais Solicitados (Unidades)',
+                            subtitle: 'Ranking de demanda nas solicitações registradas',
+                            data: reportData.topRequested.map(tr => ({
+                              label: tr.name,
+                              value: tr.value,
+                              color: '#2563eb'
+                            }))
+                          }
+                        },
+                        true
+                      )}
                     </div>
                     <div className="h-[320px] w-full">
                       <ResponsiveContainer width="100%" height="100%">
@@ -11925,11 +12737,43 @@ export default function App() {
                 {/* Extra vs Contract Comparison */}
                 {isAdmin && (
                   <div className="bg-white p-6 sm:p-8 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all lg:col-span-2">
-                    <div className="flex items-center justify-between mb-6">
-                      <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
-                        <BarChart3 size={18} className="text-indigo-600" /> Comparativo: Contrato vs Extra vs Doação
-                      </h4>
-                      <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-lg uppercase tracking-wider">Origem</span>
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-6">
+                      <div>
+                        <h4 className="text-base font-black text-slate-900 flex items-center gap-2">
+                          <BarChart3 size={18} className="text-indigo-600" /> Comparativo: Contrato vs Extra vs Doação
+                        </h4>
+                        <span className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider">Movimentação e Saldo por Origem</span>
+                      </div>
+                      {renderOverviewIndicatorActions(
+                        {
+                          indicatorTitle: 'Comparativo: Contrato vs Extra vs Doação',
+                          indicatorSubtitle: 'Volume de entradas, saídas e estoque atual segundo a origem do recurso',
+                          groupName: 'Panorama Visual de Consumo & Movimentação',
+                          accentColor: [79, 70, 229],
+                          kpis: [
+                            { label: 'Estoque Contrato', value: `${reportData.originStats.contract.current.toLocaleString('pt-BR')} un`, helper: `Ent: ${reportData.originStats.contract.entries} | Saí: ${reportData.originStats.contract.exits}` },
+                            { label: 'Estoque Extra', value: `${reportData.originStats.extra.current.toLocaleString('pt-BR')} un`, helper: `Ent: ${reportData.originStats.extra.entries} | Saí: ${reportData.originStats.extra.exits}` },
+                            { label: 'Estoque Doação', value: `${reportData.originStats.donation.current.toLocaleString('pt-BR')} un`, helper: `Ent: ${reportData.originStats.donation.entries} | Saí: ${reportData.originStats.donation.exits}` }
+                          ],
+                          chart: {
+                            type: 'verticalBar',
+                            title: 'Comparativo por Origem: Contrato, Extra e Doação (Unidades)',
+                            subtitle: 'Volume consolidado de Entradas, Saídas e Estoque Atual por modalidade',
+                            data: [
+                              { label: 'Entradas (Contrato)', value: reportData.originStats.contract.entries, color: '#1e293b' },
+                              { label: 'Entradas (Extra)', value: reportData.originStats.extra.entries, color: '#6366f1' },
+                              { label: 'Entradas (Doação)', value: reportData.originStats.donation.entries, color: '#10b981' },
+                              { label: 'Saídas (Contrato)', value: reportData.originStats.contract.exits, color: '#334155' },
+                              { label: 'Saídas (Extra)', value: reportData.originStats.extra.exits, color: '#818cf8' },
+                              { label: 'Saídas (Doação)', value: reportData.originStats.donation.exits, color: '#34d399' },
+                              { label: 'Estoque (Contrato)', value: reportData.originStats.contract.current, color: '#0f172a' },
+                              { label: 'Estoque (Extra)', value: reportData.originStats.extra.current, color: '#4f46e5' },
+                              { label: 'Estoque (Doação)', value: reportData.originStats.donation.current, color: '#059669' }
+                            ]
+                          }
+                        },
+                        true
+                      )}
                     </div>
                     <div className="h-[300px] w-full">
                       <ResponsiveContainer width="100%" height="100%">

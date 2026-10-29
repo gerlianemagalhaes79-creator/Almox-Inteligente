@@ -1277,3 +1277,812 @@ export async function generateCompletePDFReport(params: GenerateCompletePDFRepor
   const defaultFileName = `Relatorio_Indicadores_${filters.location}_${new Date().toISOString().slice(0, 10)}.pdf`;
   doc.save(fileName || defaultFileName);
 }
+
+// ============================================================================
+// SINGLE INDICATOR EXPORT & PRINT UTILITIES (PER-INDICATOR PDF & PRINT)
+// ============================================================================
+
+export interface SingleIndicatorKPI {
+  label: string;
+  value: string;
+  subValue?: string;
+  subvalue?: string;
+  helper?: string;
+  tone?: string;
+  accent?: [number, number, number];
+}
+
+export interface SingleIndicatorChartPoint {
+  label: string;
+  value: number;
+  secondaryValue?: number;
+  color?: string;
+  cumPct?: number;
+}
+
+export interface SingleIndicatorChartConfig {
+  title: string;
+  subtitle?: string;
+  type: 'verticalBar' | 'horizontalBar' | 'groupedBar' | 'donut' | 'line' | 'pareto';
+  unit?: string;
+  isCurrency?: boolean;
+  valuePrefix?: string;
+  valueFormatter?:
+    | 'currency'
+    | 'number'
+    | 'integer'
+    | 'decimal'
+    | 'percent'
+    | 'days'
+    | 'hours'
+    | ((val: number) => string);
+  secondaryFormatter?: string;
+  seriesLabels?: [string, string];
+  seriesALabel?: string;
+  seriesBLabel?: string;
+  seriesAName?: string;
+  seriesAColor?: string;
+  seriesBName?: string;
+  seriesBColor?: string;
+  data: SingleIndicatorChartPoint[];
+}
+
+export interface SingleIndicatorTableConfig {
+  title: string;
+  headers: string[];
+  rows: string[][];
+}
+
+export interface SingleIndicatorExportParams {
+  title?: string;
+  indicatorTitle?: string;
+  subtitle?: string;
+  indicatorSubtitle?: string;
+  explanation?: string;
+  groupName?: string;
+  accentColor?: [number, number, number];
+  letterheadImage?: string | null;
+  filters: PDFReportFilterSummary;
+  kpis: SingleIndicatorKPI[];
+  chart: SingleIndicatorChartConfig;
+  table?: SingleIndicatorTableConfig;
+  fileName?: string;
+}
+
+const DEFAULT_CHART_COLORS = [
+  '#2563eb',
+  '#4f46e5',
+  '#10b981',
+  '#f59e0b',
+  '#e11d48',
+  '#0891b2',
+  '#7c3aed',
+  '#0d9488',
+  '#ea580c',
+  '#475569'
+];
+
+function formatChartMetric(
+  val: number,
+  isCurrency?: boolean,
+  unit?: string,
+  valueFormatter?: SingleIndicatorChartConfig['valueFormatter'],
+  valuePrefix?: string
+): string {
+  if (typeof valueFormatter === 'function') return valueFormatter(val);
+  if (isCurrency || valueFormatter === 'currency' || valuePrefix === 'R$ ') return formatBRL(val);
+  if (valueFormatter === 'percent') return `${formatDec(val, 1)}%`;
+  if (valueFormatter === 'days') return `${formatInt(val)} d`;
+  if (valueFormatter === 'hours') return `${formatDec(val, 1)} h`;
+  if (valueFormatter === 'integer') return unit ? `${formatInt(val)} ${unit}` : formatInt(val);
+  const formatted = Number.isInteger(val) ? formatInt(val) : formatDec(val, 2);
+  if (valuePrefix) return `${valuePrefix}${formatted}${unit ? ` ${unit}` : ''}`;
+  return unit ? `${formatted} ${unit}` : formatted;
+}
+
+/**
+ * Renders any single-indicator chart to a high-DPI PNG data URL for PDF and Print
+ */
+export function renderSingleIndicatorChartCanvas(chart: SingleIndicatorChartConfig): {
+  dataUrl: string;
+  width: number;
+  height: number;
+} {
+  const W = 820;
+  const items = chart.data || [];
+  const H =
+    chart.type === 'horizontalBar'
+      ? Math.max(250, 90 + Math.min(12, Math.max(1, items.length)) * 34)
+      : 340;
+
+  const { canvas, ctx } = createHiDPICanvas(W, H);
+  drawRoundRect(ctx, 2, 2, W - 4, H - 4, 12, '#ffffff', '#cbd5e1');
+
+  // Top accent bar
+  ctx.fillStyle = '#2563eb';
+  ctx.fillRect(2, 2, W - 4, 4);
+
+  // Title
+  ctx.fillStyle = '#0f172a';
+  ctx.font = 'bold 14px Helvetica, Arial, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(truncateText(chart.title, 78), 22, 30);
+
+  if (!items || items.length === 0 || items.every(d => (d.value || 0) === 0 && (d.secondaryValue || 0) === 0)) {
+    drawRoundRect(ctx, 22, 48, W - 44, H - 68, 8, '#f8fafc', '#e2e8f0');
+    ctx.fillStyle = '#64748b';
+    ctx.font = 'bold 12px Helvetica, Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(
+      'Dados insuficientes no período ou filtros selecionados para exibição gráfica.',
+      W / 2,
+      H / 2 + 8
+    );
+    return { dataUrl: canvas.toDataURL('image/png', 1.0), width: W, height: H };
+  }
+
+  if (chart.type === 'horizontalBar') {
+    const topItems = items.slice(0, 12);
+    const totalSum = items.reduce((acc, it) => acc + Math.max(0, it.value || 0), 0);
+    const maxVal = Math.max(1, ...topItems.map(i => Math.max(i.value || 0, i.secondaryValue || 0)));
+    const barLeft = 235;
+    const barMaxW = W - barLeft - 195;
+    const startY = 54;
+    const rowH = 31;
+
+    topItems.forEach((it, idx) => {
+      const y = startY + idx * rowH;
+      const color = it.color || DEFAULT_CHART_COLORS[idx % DEFAULT_CHART_COLORS.length];
+      const pct = totalSum > 0 ? ((it.value / totalSum) * 100).toFixed(1) : '0.0';
+
+      drawRoundRect(ctx, 22, y + 4, 10, 10, 3, color);
+      ctx.fillStyle = '#1e293b';
+      ctx.font = 'bold 10.5px Helvetica, Arial, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(truncateText(it.label, 30), 38, y + 13);
+
+      drawRoundRect(ctx, barLeft, y + 1, barMaxW, 16, 4, '#f1f5f9');
+      const fillW = Math.max(it.value > 0 ? 6 : 0, (it.value / maxVal) * barMaxW);
+      if (fillW > 0) {
+        drawRoundRect(ctx, barLeft, y + 1, fillW, 16, 4, color);
+      }
+
+      ctx.fillStyle = '#0f172a';
+      ctx.font = 'bold 10px Helvetica, Arial, sans-serif';
+      ctx.textAlign = 'left';
+      const valText = `${formatChartMetric(it.value, chart.isCurrency, chart.unit, chart.valueFormatter, chart.valuePrefix)} (${pct}%)`;
+      ctx.fillText(truncateText(valText, 30), barLeft + barMaxW + 10, y + 13);
+    });
+
+    return { dataUrl: canvas.toDataURL('image/png', 1.0), width: W, height: H };
+  }
+
+  if (chart.type === 'donut') {
+    const validSlices = items.filter(i => i.value > 0);
+    const total = validSlices.reduce((acc, i) => acc + i.value, 0) || 1;
+    const centerX = 185;
+    const centerY = H / 2 + 12;
+    const outerR = 96;
+    const innerR = 54;
+
+    let startAngle = -Math.PI / 2;
+    validSlices.forEach((slice, idx) => {
+      const sliceAngle = (slice.value / total) * Math.PI * 2;
+      const color = slice.color || DEFAULT_CHART_COLORS[idx % DEFAULT_CHART_COLORS.length];
+      ctx.beginPath();
+      ctx.moveTo(centerX, centerY);
+      ctx.arc(centerX, centerY, outerR, startAngle, startAngle + sliceAngle);
+      ctx.closePath();
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      startAngle += sliceAngle;
+    });
+
+    // Inner hole for Donut
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, innerR, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+
+    // Center total label
+    ctx.fillStyle = '#64748b';
+    ctx.font = 'bold 9.5px Helvetica, Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('TOTAL', centerX, centerY - 4);
+    ctx.fillStyle = '#0f172a';
+    ctx.font = 'bold 12px Helvetica, Arial, sans-serif';
+    ctx.fillText(
+      truncateText(formatChartMetric(total, chart.isCurrency, chart.unit, chart.valueFormatter, chart.valuePrefix), 14),
+      centerX,
+      centerY + 12
+    );
+
+    // Legend table on right
+    const legLeft = 330;
+    const startY = 62;
+    const rowH = 32;
+    items.slice(0, 8).forEach((slice, idx) => {
+      const y = startY + idx * rowH;
+      const color = slice.color || DEFAULT_CHART_COLORS[idx % DEFAULT_CHART_COLORS.length];
+      const pct = total > 0 ? ((slice.value / total) * 100).toFixed(1) : '0.0';
+
+      drawRoundRect(ctx, legLeft, y, W - legLeft - 24, 25, 6, '#f8fafc', '#e2e8f0');
+      drawRoundRect(ctx, legLeft + 8, y + 6, 12, 12, 3, color);
+
+      ctx.fillStyle = '#1e293b';
+      ctx.font = 'bold 10.5px Helvetica, Arial, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(truncateText(slice.label, 30), legLeft + 26, y + 16);
+
+      ctx.fillStyle = '#0f172a';
+      ctx.font = 'bold 10.5px Helvetica, Arial, sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText(
+        `${formatChartMetric(slice.value, chart.isCurrency, chart.unit, chart.valueFormatter, chart.valuePrefix)} (${pct}%)`,
+        W - 34,
+        y + 16
+      );
+    });
+
+    return { dataUrl: canvas.toDataURL('image/png', 1.0), width: W, height: H };
+  }
+
+  // Vertical Bar, Grouped Bar, Line, or Pareto
+  const displayData = items.slice(0, 14);
+  const chartLeft = 68;
+  const chartRight = chart.type === 'pareto' ? W - 56 : W - 26;
+  const chartTop = 58;
+  const chartBottom = H - 52;
+  const chartW = chartRight - chartLeft;
+  const chartH = chartBottom - chartTop;
+
+  const maxVal = Math.max(
+    1,
+    ...displayData.map(d => Math.max(d.value || 0, d.secondaryValue || 0))
+  );
+
+  const resolvedSeriesLabels: [string, string] | undefined =
+    chart.seriesLabels ||
+    (chart.seriesAName && chart.seriesBName ? [chart.seriesAName, chart.seriesBName] : undefined);
+
+  // Legend for groupedBar or pareto
+  if (chart.type === 'groupedBar' && resolvedSeriesLabels) {
+    drawRoundRect(ctx, W - 260, 16, 11, 11, 3, chart.seriesAColor || '#2563eb');
+    ctx.fillStyle = '#334155';
+    ctx.font = 'bold 10px Helvetica, Arial, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(resolvedSeriesLabels[0], W - 244, 25);
+
+    drawRoundRect(ctx, W - 135, 16, 11, 11, 3, chart.seriesBColor || '#10b981');
+    ctx.fillText(resolvedSeriesLabels[1], W - 119, 25);
+  } else if (chart.type === 'pareto') {
+    drawRoundRect(ctx, W - 270, 16, 11, 11, 3, '#2563eb');
+    ctx.fillStyle = '#334155';
+    ctx.font = 'bold 10px Helvetica, Arial, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('Valor Consumido', W - 254, 25);
+
+    drawRoundRect(ctx, W - 140, 16, 11, 11, 3, '#e11d48');
+    ctx.fillText('% Acumulado ABC', W - 124, 25);
+  }
+
+  // Grid lines
+  const isCurr = chart.isCurrency || chart.valueFormatter === 'currency' || chart.valuePrefix === 'R$ ';
+  const steps = 4;
+  ctx.font = '9.5px Helvetica, Arial, sans-serif';
+  for (let i = 0; i <= steps; i++) {
+    const val = (maxVal / steps) * (steps - i);
+    const y = chartTop + (chartH / steps) * i;
+    ctx.strokeStyle = i === steps ? '#cbd5e1' : '#f1f5f9';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(chartLeft, y);
+    ctx.lineTo(chartRight, y);
+    ctx.stroke();
+
+    ctx.fillStyle = '#64748b';
+    ctx.textAlign = 'right';
+    ctx.fillText(
+      isCurr ? `R$ ${formatInt(val)}` : formatInt(val),
+      chartLeft - 8,
+      y + 3
+    );
+
+    if (chart.type === 'pareto') {
+      const pctVal = Math.round((100 / steps) * (steps - i));
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#e11d48';
+      ctx.fillText(`${pctVal}%`, chartRight + 6, y + 3);
+    }
+  }
+
+  const groupW = chartW / displayData.length;
+
+  if (chart.type === 'line') {
+    // Draw shaded area & line
+    const points = displayData.map((pt, idx) => ({
+      x: chartLeft + groupW * idx + groupW / 2,
+      y: chartBottom - ((pt.value || 0) / maxVal) * chartH,
+      pt
+    }));
+
+    if (points.length > 1) {
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, chartBottom);
+      points.forEach(p => ctx.lineTo(p.x, p.y));
+      ctx.lineTo(points[points.length - 1].x, chartBottom);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(37, 99, 235, 0.12)';
+      ctx.fill();
+
+      ctx.beginPath();
+      points.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+      ctx.strokeStyle = '#2563eb';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+    }
+
+    points.forEach(p => {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+      ctx.fillStyle = '#1d4ed8';
+      ctx.fill();
+
+      ctx.fillStyle = '#0f172a';
+      ctx.font = 'bold 9px Helvetica, Arial, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(
+        formatChartMetric(p.pt.value, chart.isCurrency, chart.unit, chart.valueFormatter, chart.valuePrefix),
+        p.x,
+        Math.max(chartTop - 4, p.y - 8)
+      );
+
+      ctx.fillStyle = '#334155';
+      ctx.font = 'bold 9.5px Helvetica, Arial, sans-serif';
+      ctx.fillText(truncateText(p.pt.label, 12), p.x, chartBottom + 16);
+    });
+  } else {
+    // verticalBar, groupedBar, or pareto
+    const isGrouped = chart.type === 'groupedBar';
+    const barW = isGrouped
+      ? Math.min(24, Math.max(8, (groupW - 14) / 2))
+      : Math.min(42, Math.max(12, groupW * 0.55));
+
+    displayData.forEach((pt, idx) => {
+      const centerX = chartLeft + groupW * idx + groupW / 2;
+      const color = pt.color || DEFAULT_CHART_COLORS[idx % DEFAULT_CHART_COLORS.length];
+
+      if (isGrouped) {
+        const h1 = maxVal > 0 ? ((pt.value || 0) / maxVal) * chartH : 0;
+        const x1 = centerX - barW - 2;
+        const y1 = chartBottom - h1;
+        if (h1 > 0) {
+          drawRoundRect(ctx, x1, y1, barW, Math.max(2, h1), 3, pt.color || chart.seriesAColor || '#2563eb');
+          ctx.fillStyle = '#1e3a8a';
+          ctx.font = 'bold 8.5px Helvetica, Arial, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(formatInt(pt.value), x1 + barW / 2, Math.max(chartTop - 4, y1 - 4));
+        }
+
+        const h2 = maxVal > 0 ? ((pt.secondaryValue || 0) / maxVal) * chartH : 0;
+        const x2 = centerX + 2;
+        const y2 = chartBottom - h2;
+        if (h2 > 0) {
+          drawRoundRect(ctx, x2, y2, barW, Math.max(2, h2), 3, chart.seriesBColor || '#10b981');
+          ctx.fillStyle = '#065f46';
+          ctx.font = 'bold 8.5px Helvetica, Arial, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(formatInt(pt.secondaryValue || 0), x2 + barW / 2, Math.max(chartTop - 4, y2 - 4));
+        }
+      } else {
+        const h = maxVal > 0 ? ((pt.value || 0) / maxVal) * chartH : 0;
+        const x = centerX - barW / 2;
+        const y = chartBottom - h;
+        if (h > 0) {
+          drawRoundRect(ctx, x, y, barW, Math.max(3, h), 4, color);
+        }
+        ctx.fillStyle = '#0f172a';
+        ctx.font = 'bold 9px Helvetica, Arial, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(
+          truncateText(formatChartMetric(pt.value, chart.isCurrency, chart.unit, chart.valueFormatter, chart.valuePrefix), 14),
+          centerX,
+          Math.max(chartTop - 4, y - 5)
+        );
+      }
+
+      ctx.fillStyle = '#334155';
+      ctx.font = 'bold 9.5px Helvetica, Arial, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(truncateText(pt.label, 13), centerX, chartBottom + 16);
+    });
+
+    // Overlay cumulative curve for Pareto
+    if (chart.type === 'pareto') {
+      const linePts = displayData.map((pt, idx) => ({
+        x: chartLeft + groupW * idx + groupW / 2,
+        y: chartBottom - (Math.min(100, Math.max(0, pt.cumPct || 0)) / 100) * chartH,
+        cumPct: pt.cumPct || 0
+      }));
+
+      if (linePts.length > 1) {
+        ctx.beginPath();
+        linePts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+        ctx.strokeStyle = '#e11d48';
+        ctx.lineWidth = 2.2;
+        ctx.stroke();
+      }
+
+      linePts.forEach(p => {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = '#e11d48';
+        ctx.fill();
+
+        ctx.fillStyle = '#be123c';
+        ctx.font = 'bold 8.5px Helvetica, Arial, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(`${p.cumPct.toFixed(0)}%`, p.x, Math.max(chartTop + 6, p.y - 6));
+      });
+    }
+  }
+
+  return { dataUrl: canvas.toDataURL('image/png', 1.0), width: W, height: H };
+}
+
+/**
+ * Exports a PDF containing ONLY the selected indicator, its chart, title, KPIs, period, and applied filters
+ */
+export function exportSingleIndicatorPDF(params: SingleIndicatorExportParams): void {
+  const { groupName, letterheadImage, filters, kpis, chart, table, fileName } = params;
+  const title = params.title || params.indicatorTitle || chart.title || 'Indicador';
+  const subtitle = params.subtitle || params.indicatorSubtitle || chart.subtitle;
+
+  const doc = new jsPDF({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: 'a4'
+  });
+
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const margin = 14;
+  const contentWidth = pageWidth - margin * 2;
+  const nowStr = new Date().toLocaleString('pt-BR');
+
+  const drawHeader = (isFirstPage: boolean): number => {
+    let y = 10;
+    if (isFirstPage && letterheadImage) {
+      try {
+        const imgFormat = letterheadImage.includes('image/png') ? 'PNG' : 'JPEG';
+        doc.addImage(letterheadImage, imgFormat, margin, 8, contentWidth, 24, undefined, 'FAST');
+        y = 35;
+      } catch {
+        y = 12;
+      }
+    }
+
+    doc.setFillColor(15, 23, 42);
+    doc.roundedRect(margin, y, contentWidth, isFirstPage ? 19 : 12, 2, 2, 'F');
+
+    doc.setTextColor(255, 255, 255);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(isFirstPage ? 11 : 9);
+    doc.text(truncateText(title.toUpperCase(), 75), margin + 4, y + 7);
+
+    if (isFirstPage) {
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8);
+      doc.setTextColor(191, 219, 254);
+      const subHeader = groupName
+        ? `${groupName} • Unidade: ${filters.location} • Emitido em: ${nowStr}`
+        : `Unidade: ${filters.location} • Emitido em: ${nowStr}`;
+      doc.text(truncateText(subHeader, 105), margin + 4, y + 13.5);
+    }
+
+    return y + (isFirstPage ? 23 : 16);
+  };
+
+  let currentY = drawHeader(true);
+
+  // Filters box
+  doc.setFillColor(248, 250, 252);
+  doc.setDrawColor(203, 213, 225);
+  doc.roundedRect(margin, currentY, contentWidth, 18, 2, 2, 'FD');
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7.5);
+  doc.setTextColor(30, 58, 138);
+  doc.text('PERÍODO ANALISADO E FILTROS APLICADOS AO INDICADOR', margin + 4, currentY + 5);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8);
+  doc.setTextColor(30, 41, 59);
+  doc.text(
+    truncateText(
+      `Período: ${filters.periodLabel}  |  Unidade: ${filters.location}  |  Setor: ${filters.sectorFilter}`,
+      115
+    ),
+    margin + 4,
+    currentY + 10.5
+  );
+  doc.text(
+    truncateText(
+      `Categoria: ${filters.categoryFilter}  |  Material: ${filters.materialFilter}`,
+      115
+    ),
+    margin + 4,
+    currentY + 15.2
+  );
+  currentY += 22;
+
+  if (subtitle) {
+    doc.setFont('helvetica', 'italic');
+    doc.setFontSize(8.5);
+    doc.setTextColor(71, 85, 105);
+    doc.text(truncateText(`Metodologia / Detalhamento: ${subtitle}`, 115), margin, currentY);
+    currentY += 6;
+  }
+
+  // KPIs Grid
+  if (kpis && kpis.length > 0) {
+    const cols = Math.min(4, Math.max(1, kpis.length));
+    const cardW = (contentWidth - (cols - 1) * 3) / cols;
+    const cardH = 20;
+
+    kpis.forEach((kpi, idx) => {
+      const col = idx % cols;
+      const row = Math.floor(idx / cols);
+      const x = margin + col * (cardW + 3);
+      const y = currentY + row * (cardH + 3);
+
+      doc.setFillColor(255, 255, 255);
+      doc.setDrawColor(226, 232, 240);
+      doc.roundedRect(x, y, cardW, cardH, 1.8, 1.8, 'FD');
+
+      const accent = kpi.accent || params.accentColor || [37, 99, 235];
+      doc.setFillColor(accent[0], accent[1], accent[2]);
+      doc.rect(x, y, cardW, 1.5, 'F');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(6.5);
+      doc.setTextColor(100, 116, 139);
+      doc.text(truncateText(kpi.label.toUpperCase(), 32), x + 3, y + 6);
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10.5);
+      doc.setTextColor(15, 23, 42);
+      doc.text(truncateText(kpi.value, 28), x + 3, y + 12.5);
+
+      const subText = kpi.subValue || kpi.subvalue || kpi.helper;
+      if (subText) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(6.8);
+        doc.setTextColor(71, 85, 105);
+        doc.text(truncateText(subText, 38), x + 3, y + 17.2);
+      }
+    });
+
+    const totalRows = Math.ceil(kpis.length / cols);
+    currentY += totalRows * (cardH + 3) + 4;
+  }
+
+  // Chart Canvas
+  const rendered = renderSingleIndicatorChartCanvas(chart);
+  const imgH = (contentWidth * rendered.height) / rendered.width;
+  if (currentY + imgH > pageHeight - 18) {
+    doc.addPage();
+    currentY = drawHeader(false);
+  }
+  doc.addImage(rendered.dataUrl, 'PNG', margin, currentY, contentWidth, imgH, undefined, 'FAST');
+  currentY += imgH + 7;
+
+  // Optional Table
+  if (table && table.rows.length > 0) {
+    if (currentY + 25 > pageHeight - 18) {
+      doc.addPage();
+      currentY = drawHeader(false);
+    }
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9.5);
+    doc.setTextColor(15, 23, 42);
+    doc.text(truncateText(table.title.toUpperCase(), 90), margin, currentY);
+    currentY += 3;
+
+    autoTable(doc, {
+      startY: currentY,
+      head: [table.headers],
+      body: table.rows,
+      theme: 'striped',
+      showHead: 'everyPage',
+      margin: { left: margin, right: margin, top: 28, bottom: 16 },
+      headStyles: {
+        fillColor: [30, 58, 138],
+        textColor: [255, 255, 255],
+        fontSize: 7.5,
+        fontStyle: 'bold'
+      },
+      styles: {
+        fontSize: 7.2,
+        cellPadding: 2,
+        textColor: [30, 41, 59],
+        overflow: 'linebreak'
+      }
+    });
+  }
+
+  const totalPages = (doc as any).internal.getNumberOfPages();
+  for (let p = 1; p <= totalPages; p++) {
+    doc.setPage(p);
+    doc.setDrawColor(226, 232, 240);
+    doc.setLineWidth(0.3);
+    doc.line(margin, pageHeight - 12, pageWidth - margin, pageHeight - 12);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.setTextColor(100, 116, 139);
+    doc.text(
+      `Indicador Individual: ${truncateText(title, 50)} • ${filters.location} • ${nowStr}`,
+      margin,
+      pageHeight - 7.5
+    );
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(30, 41, 59);
+    doc.text(`Página ${p} de ${totalPages}`, pageWidth - margin, pageHeight - 7.5, {
+      align: 'right'
+    });
+  }
+
+  const safeSlug = title
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 40);
+  doc.save(fileName || `Indicador_${safeSlug}_${new Date().toISOString().slice(0, 10)}.pdf`);
+}
+
+/**
+ * Prints ONLY the selected indicator (title, KPIs, rendered chart, period, filters, and optional table)
+ * using a hidden iframe so it works seamlessly inside AI Studio and Vercel without window.open
+ */
+export function printSingleIndicator(params: SingleIndicatorExportParams): void {
+  const { groupName, letterheadImage, filters, kpis, chart, table } = params;
+  const title = params.title || params.indicatorTitle || chart.title || 'Indicador';
+  const subtitle = params.subtitle || params.indicatorSubtitle || chart.subtitle;
+  const rendered = renderSingleIndicatorChartCanvas(chart);
+  const nowStr = new Date().toLocaleString('pt-BR');
+
+  const existingFrame = document.getElementById('single-indicator-print-frame');
+  if (existingFrame && existingFrame.parentNode) {
+    existingFrame.parentNode.removeChild(existingFrame);
+  }
+
+  const iframe = document.createElement('iframe');
+  iframe.id = 'single-indicator-print-frame';
+  iframe.style.position = 'fixed';
+  iframe.style.right = '0';
+  iframe.style.bottom = '0';
+  iframe.style.width = '0';
+  iframe.style.height = '0';
+  iframe.style.border = '0';
+  document.body.appendChild(iframe);
+
+  const kpisHtml = (kpis || [])
+    .map(k => {
+      const subText = k.subValue || k.subvalue || k.helper;
+      return `
+      <div style="border:1px solid #cbd5e1;border-top:3px solid #2563eb;border-radius:8px;padding:10px 12px;background:#fff;">
+        <div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;">${k.label}</div>
+        <div style="font-size:16px;font-weight:900;color:#0f172a;margin-top:4px;">${k.value}</div>
+        ${subText ? `<div style="font-size:10px;color:#475569;margin-top:3px;">${subText}</div>` : ''}
+      </div>
+    `;
+    })
+    .join('');
+
+  const tableHtml =
+    table && table.rows.length > 0
+      ? `
+      <div style="margin-top:18px;">
+        <h3 style="font-size:12px;font-weight:800;color:#0f172a;text-transform:uppercase;margin-bottom:8px;">${table.title}</h3>
+        <table style="width:100%;border-collapse:collapse;font-size:11px;">
+          <thead>
+            <tr style="background:#1e3a8a;color:#fff;">
+              ${table.headers.map(h => `<th style="padding:6px 8px;text-align:left;border:1px solid #cbd5e1;">${h}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${table.rows
+              .slice(0, 60)
+              .map(
+                (r, idx) => `
+                <tr style="background:${idx % 2 === 0 ? '#ffffff' : '#f8fafc'};">
+                  ${r.map(c => `<td style="padding:5px 8px;border:1px solid #e2e8f0;color:#1e293b;">${c}</td>`).join('')}
+                </tr>
+              `
+              )
+              .join('')}
+          </tbody>
+        </table>
+      </div>
+    `
+      : '';
+
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+      <head>
+        <meta charset="utf-8" />
+        <title>${title}</title>
+        <style>
+          @page { size: A4 portrait; margin: 12mm; }
+          body { font-family: Helvetica, Arial, sans-serif; color: #0f172a; margin: 0; padding: 0; background: #fff; }
+        </style>
+      </head>
+      <body>
+        ${
+          letterheadImage
+            ? `<div style="text-align:center;margin-bottom:10px;"><img src="${letterheadImage}" style="max-height:75px;max-width:100%;object-fit:contain;" /></div>`
+            : ''
+        }
+        <div style="background:#0f172a;color:#fff;padding:12px 16px;border-radius:8px;margin-bottom:12px;">
+          <div style="font-size:15px;font-weight:900;text-transform:uppercase;">${title}</div>
+          <div style="font-size:11px;color:#bfdbfe;margin-top:3px;">
+            ${groupName ? `${groupName} • ` : ''}Unidade: ${filters.location} • Emitido em: ${nowStr}
+          </div>
+        </div>
+
+        <div style="background:#f8fafc;border:1px solid #cbd5e1;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:11px;">
+          <div style="font-weight:800;color:#1e3a8a;margin-bottom:4px;text-transform:uppercase;">Período e Filtros Aplicados</div>
+          <div><strong>Período:</strong> ${filters.periodLabel} &nbsp;|&nbsp; <strong>Unidade:</strong> ${filters.location} &nbsp;|&nbsp; <strong>Setor:</strong> ${filters.sectorFilter}</div>
+          <div style="margin-top:2px;"><strong>Categoria:</strong> ${filters.categoryFilter} &nbsp;|&nbsp; <strong>Material:</strong> ${filters.materialFilter}</div>
+        </div>
+
+        ${
+          subtitle
+            ? `<div style="font-size:11px;color:#475569;font-style:italic;margin-bottom:12px;"><strong>Metodologia:</strong> ${subtitle}</div>`
+            : ''
+        }
+
+        <div style="display:grid;grid-template-columns:repeat(${Math.min(4, Math.max(1, (kpis || []).length))}, 1fr);gap:10px;margin-bottom:14px;">
+          ${kpisHtml}
+        </div>
+
+        <div style="text-align:center;margin-top:8px;">
+          <img id="chart-img" src="${rendered.dataUrl}" style="width:100%;max-width:760px;height:auto;border-radius:8px;" />
+        </div>
+
+        ${tableHtml}
+      </body>
+    </html>
+  `;
+
+  const doc = iframe.contentWindow?.document;
+  if (doc) {
+    doc.open();
+    doc.write(htmlContent);
+    doc.close();
+
+    const triggerPrint = () => {
+      try {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+      } catch (e) {
+        console.error('Erro ao acionar impressão:', e);
+      }
+    };
+
+    const img = doc.getElementById('chart-img') as HTMLImageElement | null;
+    if (img && !img.complete) {
+      img.onload = () => setTimeout(triggerPrint, 120);
+      img.onerror = () => setTimeout(triggerPrint, 120);
+    } else {
+      setTimeout(triggerPrint, 180);
+    }
+  }
+}
+

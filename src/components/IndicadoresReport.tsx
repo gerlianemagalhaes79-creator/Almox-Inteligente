@@ -30,6 +30,7 @@ import {
   ChevronRight,
   FileText,
   Filter,
+  Printer,
   PieChart as PieChartIcon
 } from 'lucide-react';
 import {
@@ -37,6 +38,8 @@ import {
   Bar,
   AreaChart,
   Area,
+  ComposedChart,
+  Line,
   PieChart,
   Pie,
   Cell,
@@ -49,7 +52,12 @@ import {
 } from 'recharts';
 import * as XLSX from 'xlsx';
 import { Item, Transaction, MaterialRequest, RequestItem, UserProfile } from '../types';
-import { generateCompletePDFReport } from '../utils/pdfReportGenerator';
+import {
+  generateCompletePDFReport,
+  exportSingleIndicatorPDF,
+  printSingleIndicator,
+  SingleIndicatorExportParams
+} from '../utils/pdfReportGenerator';
 
 export interface IndicadoresReportProps {
   items: Item[];
@@ -134,6 +142,18 @@ const formatDateBR = (dateStr?: string | null) => {
   const d = parseRecordDate(dateStr);
   if (!d) return dateStr || '—';
   return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+};
+
+const isEtiquetaMaterial = (name?: string | null, category?: string | null): boolean => {
+  const normName = String(name || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase();
+  const normCat = String(category || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase();
+  return normName.includes('ETIQUETA') || normCat.includes('ETIQUETA');
 };
 
 const ORIGIN_LABELS: Record<string, string> = {
@@ -914,6 +934,7 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
     const classCValue = classCItems.reduce((acc, i) => acc + i.netValue, 0);
 
     const top5ClassA = classAItems.slice(0, 5);
+    const top10AbcItems = abcClassified.slice(0, 10);
 
     return {
       periodDays,
@@ -940,6 +961,7 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
       disponibilidade: {
         totalConsolidatedMaterials: consolidatedMaterials.size,
         materialsWithCons180Count,
+        regularDemandMaterialsCount: Math.max(0, materialsWithCons180Count - stockoutMaterialsCount),
         stockoutMaterialsCount,
         stockoutRatePct,
         belowOrEqualMinMaterialsCount,
@@ -1000,7 +1022,8 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
           pctValue: totalAbcValue > 0 ? (classCValue / totalAbcValue) * 100 : 0,
           pctItems: abcClassified.length > 0 ? (classCItems.length / abcClassified.length) * 100 : 0
         },
-        top5ClassA
+        top5ClassA,
+        top10AbcItems
       }
     };
   }, [
@@ -1192,6 +1215,10 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
       return topMatMap.get(norm)!;
     };
 
+    // Desconsiderar etiquetas nos gráficos de quantidade (exceto se o usuário filtrou especificamente uma etiqueta)
+    const ignoreEtiquetasInCharts =
+      selectedMaterialFilter === 'todos' || !isEtiquetaMaterial(selectedMaterialFilter, '');
+
     // 5. Category Distribution Map
     const categoryMap = new Map<
       string,
@@ -1200,6 +1227,7 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
 
     locationItems.forEach(item => {
       const cat = (item.category || 'Outros').trim();
+      if (ignoreEtiquetasInCharts && isEtiquetaMaterial(item.name, cat)) return;
       const qty = Math.max(0, Number(item.quantity) || 0);
       const val = qty * (Number(item.unit_price) || 0);
       const entry = categoryMap.get(cat) || {
@@ -1217,6 +1245,8 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
     let totalEntriesMovements = 0;
     let totalExitsMovements = 0;
     let totalReturnsMovements = 0;
+    let chartTimelineEntriesUnits = 0;
+    let chartTimelineExitsUnits = 0;
 
     periodTransactions.forEach(tx => {
       const d = parseRecordDate(tx.date);
@@ -1227,6 +1257,7 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
       const matched = resolveItemForTx(tx);
       const matName = matched?.name || tx.item_name || 'Material não identificado';
       const matCat = (matched?.category || 'Outros').trim();
+      const skipInChart = ignoreEtiquetasInCharts && isEtiquetaMaterial(matName, matCat);
 
       // Bucket key for timeline
       let bucketKey: string;
@@ -1247,7 +1278,7 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
         bucketSort = d.getTime();
       }
 
-      if (!timelineMap.has(bucketKey)) {
+      if (!skipInChart && !timelineMap.has(bucketKey)) {
         timelineMap.set(bucketKey, {
           sortKey: bucketSort,
           label: bucketLabel,
@@ -1257,23 +1288,29 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
           saidaValor: 0
         });
       }
-      const tBucket = timelineMap.get(bucketKey)!;
+      const tBucket = !skipInChart ? timelineMap.get(bucketKey) : undefined;
 
       if (tx.type === 'entry') {
         if (tx.isReturn) {
           totalReturnsMovements += 1;
         } else {
           totalEntriesMovements += 1;
-          tBucket.entradas += qty;
-          tBucket.entradaValor += val;
+          if (tBucket) {
+            tBucket.entradas += qty;
+            tBucket.entradaValor += val;
+            chartTimelineEntriesUnits += qty;
+          }
         }
       } else if (tx.type === 'exit') {
         totalExitsMovements += 1;
-        tBucket.saidas += qty;
-        tBucket.saidaValor += val;
+        if (tBucket) {
+          tBucket.saidas += qty;
+          tBucket.saidaValor += val;
+          chartTimelineExitsUnits += qty;
+        }
 
         const isConsumption = !tx.exitReason || tx.exitReason === 'consumo';
-        if (isConsumption) {
+        if (isConsumption && !skipInChart) {
           const secName = (tx.sector || 'Geral / Não Informado').trim();
           const secEntry = sectorMap.get(secName) || { sector: secName, units: 0, value: 0, count: 0 };
           secEntry.units += qty;
@@ -1326,6 +1363,7 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
         if (selectedCategoryFilter !== 'todas' && cat !== selectedCategoryFilter) return;
         if (selectedMaterialFilter !== 'todos' && normName !== selectedMaterialFilter) return;
         if (!matched && inventoryLocation !== 'Almoxarifado') return;
+        if (ignoreEtiquetasInCharts && isEtiquetaMaterial(name, cat)) return;
 
         const qReq = Math.max(0, Number(ri.quantity_requested) || 0);
         if (qReq > 0) {
@@ -1400,6 +1438,8 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
       totalEntriesMovements,
       totalExitsMovements,
       totalReturnsMovements,
+      chartTimelineEntriesUnits,
+      chartTimelineExitsUnits,
       timelineData,
       sectorData,
       topMaterialsData,
@@ -2235,6 +2275,82 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
     selectedCategoryFilter !== 'todas' ||
     selectedMaterialFilter !== 'todos';
 
+  const activeFilterSummary = useMemo(
+    () => ({
+      periodLabel: dateInterval.label,
+      location: inventoryLocation,
+      sectorFilter: selectedSectorFilter === 'todos' ? 'Todos os Setores' : selectedSectorFilter,
+      categoryFilter:
+        selectedCategoryFilter === 'todas' ? 'Todas as Categorias' : selectedCategoryFilter,
+      materialFilter: selectedMaterialObj
+        ? selectedMaterialObj.name
+        : 'Todos os Materiais (Consolidados)'
+    }),
+    [
+      dateInterval.label,
+      inventoryLocation,
+      selectedSectorFilter,
+      selectedCategoryFilter,
+      selectedMaterialObj
+    ]
+  );
+
+  const handleSingleIndicator = (
+    mode: 'print' | 'pdf',
+    payload: Omit<SingleIndicatorExportParams, 'filters' | 'letterheadImage'>
+  ) => {
+    try {
+      const fullParams: SingleIndicatorExportParams = {
+        ...payload,
+        letterheadImage,
+        filters: activeFilterSummary
+      };
+      if (mode === 'print') {
+        printSingleIndicator(fullParams);
+        showToast(`Preparando impressão de "${payload.title}"...`, 'success');
+      } else {
+        exportSingleIndicatorPDF(fullParams);
+        showToast(`PDF de "${payload.title}" exportado com sucesso!`, 'success');
+      }
+    } catch (err) {
+      console.error('Erro ao processar indicador individual:', err);
+      showToast('Não foi possível exportar/imprimir o indicador selecionado.', 'error');
+    }
+  };
+
+  const renderIndicatorActions = (
+    payload: Omit<SingleIndicatorExportParams, 'filters' | 'letterheadImage'>,
+    compact = false
+  ) => (
+    <div
+      className="flex items-center gap-1.5 shrink-0"
+      onClick={e => e.stopPropagation()}
+    >
+      <button
+        type="button"
+        onClick={() => handleSingleIndicator('print', payload)}
+        title={`Imprimir apenas o indicador: ${payload.title}`}
+        className={`inline-flex items-center gap-1 rounded-lg bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-700 border border-slate-200/90 hover:border-blue-300 font-extrabold transition-all cursor-pointer ${
+          compact ? 'px-2 py-1 text-[10px]' : 'px-2.5 py-1.5 text-[11px]'
+        }`}
+      >
+        <Printer size={compact ? 11 : 12} />
+        <span>Imprimir</span>
+      </button>
+      <button
+        type="button"
+        onClick={() => handleSingleIndicator('pdf', payload)}
+        title={`Exportar PDF apenas do indicador: ${payload.title}`}
+        className={`inline-flex items-center gap-1 rounded-lg bg-rose-50 hover:bg-rose-600 text-rose-700 hover:text-white border border-rose-200 hover:border-rose-600 font-extrabold transition-all cursor-pointer ${
+          compact ? 'px-2 py-1 text-[10px]' : 'px-2.5 py-1.5 text-[11px]'
+        }`}
+      >
+        <FileText size={compact ? 11 : 12} />
+        <span>Exportar PDF</span>
+      </button>
+    </div>
+  );
+
   return (
     <div className="space-y-6">
       {/* Top Header & Period Filter Card */}
@@ -2460,77 +2576,410 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
             </div>
           </div>
 
-          {/* Top Executive Strip: Materiais Cadastrados (Consolidados), Estoque Baixo e Movimentações */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-            <div className="p-4 rounded-2xl bg-gradient-to-br from-blue-50/90 via-white to-blue-50/40 border border-blue-200/80 flex items-center justify-between gap-3">
-              <div>
-                <span className="text-[10px] font-black text-blue-700 uppercase tracking-widest block">
-                  Materiais Cadastrados
-                </span>
-                <p className="text-2xl font-black text-slate-900 tracking-tight mt-0.5">
-                  {visualChartsAndKpis.consolidatedMaterialsCount.toLocaleString('pt-BR')}{' '}
-                  <span className="text-xs font-bold text-slate-500">materiais</span>
-                </p>
-                <p className="text-[11px] font-bold text-slate-500 mt-0.5">
-                  Soma de {visualChartsAndKpis.totalBatchesCount.toLocaleString('pt-BR')} lotes (sem duplicar itens)
-                </p>
+          {/* Top Executive Strip: Materiais Cadastrados (Consolidados), Estoque Baixo, Movimentações e Situação do Estoque */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* Executive KPI 1: Materiais Cadastrados vs Lotes */}
+            <div className="p-4 rounded-2xl bg-gradient-to-br from-blue-50/90 via-white to-blue-50/40 border border-blue-200/80 flex flex-col justify-between gap-3">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <span className="text-[10px] font-black text-blue-700 uppercase tracking-widest block">
+                    Materiais Cadastrados
+                  </span>
+                  <p className="text-2xl font-black text-slate-900 tracking-tight mt-0.5">
+                    {visualChartsAndKpis.consolidatedMaterialsCount.toLocaleString('pt-BR')}{' '}
+                    <span className="text-xs font-bold text-slate-500">materiais</span>
+                  </p>
+                  <p className="text-[11px] font-bold text-slate-500 mt-0.5">
+                    Soma de {visualChartsAndKpis.totalBatchesCount.toLocaleString('pt-BR')} lotes (sem duplicar itens)
+                  </p>
+                </div>
+                <div className="p-2.5 rounded-xl bg-blue-600 text-white shadow-xs shrink-0">
+                  <Package size={18} />
+                </div>
               </div>
-              <div className="p-3 rounded-2xl bg-blue-600 text-white shadow-xs shrink-0">
-                <Package size={20} />
+              <div className="h-24 w-full bg-white/90 rounded-xl border border-blue-100 p-1.5">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={[
+                      { name: 'Materiais', qtd: visualChartsAndKpis.consolidatedMaterialsCount, fill: '#2563eb' },
+                      { name: 'Lotes', qtd: visualChartsAndKpis.totalBatchesCount, fill: '#4f46e5' }
+                    ]}
+                    layout="vertical"
+                    margin={{ top: 2, right: 16, left: 4, bottom: 2 }}
+                  >
+                    <XAxis type="number" hide />
+                    <YAxis
+                      type="category"
+                      dataKey="name"
+                      width={58}
+                      tick={{ fontSize: 10, fontWeight: 700, fill: '#334155' }}
+                      axisLine={false}
+                      tickLine={false}
+                    />
+                    <Tooltip
+                      formatter={(v: any) => [`${Number(v).toLocaleString('pt-BR')}`, 'Registros']}
+                      contentStyle={{ fontSize: '11px', borderRadius: '10px', fontWeight: 700 }}
+                    />
+                    <Bar dataKey="qtd" radius={[0, 4, 4, 0]} barSize={12} isAnimationActive={false}>
+                      <Cell fill="#2563eb" />
+                      <Cell fill="#4f46e5" />
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="pt-1 border-t border-blue-100/80 flex items-center justify-between">
+                <span className="text-[10px] font-bold text-slate-400">Consolidado por nome</span>
+                {renderIndicatorActions(
+                  {
+                    title: 'Materiais Cadastrados Consolidados vs. Lotes',
+                    groupName: 'Resumo Executivo do Estoque',
+                    subtitle: 'Consolidação de todos os lotes de mesmo nome sem duplicar materiais.',
+                    kpis: [
+                      {
+                        label: 'Materiais Consolidados',
+                        value: `${visualChartsAndKpis.consolidatedMaterialsCount} materiais`,
+                        subValue: 'Produtos únicos no catálogo'
+                      },
+                      {
+                        label: 'Total de Lotes',
+                        value: `${visualChartsAndKpis.totalBatchesCount} lotes`,
+                        subValue: 'Lotes somados por material'
+                      }
+                    ],
+                    chart: {
+                      title: 'Comparativo: Materiais Únicos vs. Lotes Registrados',
+                      type: 'horizontalBar',
+                      unit: 'registros',
+                      data: [
+                        {
+                          label: 'Materiais Consolidados (Únicos)',
+                          value: visualChartsAndKpis.consolidatedMaterialsCount,
+                          color: '#2563eb'
+                        },
+                        {
+                          label: 'Total de Lotes Cadastrados',
+                          value: visualChartsAndKpis.totalBatchesCount,
+                          color: '#4f46e5'
+                        }
+                      ]
+                    }
+                  },
+                  true
+                )}
               </div>
             </div>
 
-            <div className="p-4 rounded-2xl bg-gradient-to-br from-amber-50/90 via-white to-amber-50/40 border border-amber-200/80 flex items-center justify-between gap-3">
-              <div>
-                <span className="text-[10px] font-black text-amber-800 uppercase tracking-widest block">
-                  Itens com Estoque Baixo
-                </span>
-                <p className="text-2xl font-black text-slate-900 tracking-tight mt-0.5">
-                  {visualChartsAndKpis.lowStockTotalCount.toLocaleString('pt-BR')}{' '}
-                  <span className="text-xs font-bold text-slate-500">materiais</span>
-                </p>
-                <p className="text-[11px] font-bold text-amber-700 mt-0.5">
-                  {visualChartsAndKpis.lowStockWithBalanceCount} abaixo do mín. • {visualChartsAndKpis.zeroStockMaterialsCount} zerados
-                </p>
+            {/* Executive KPI 2: Itens com Estoque Baixo */}
+            <div className="p-4 rounded-2xl bg-gradient-to-br from-amber-50/90 via-white to-amber-50/40 border border-amber-200/80 flex flex-col justify-between gap-3">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <span className="text-[10px] font-black text-amber-800 uppercase tracking-widest block">
+                    Itens com Estoque Baixo
+                  </span>
+                  <p className="text-2xl font-black text-slate-900 tracking-tight mt-0.5">
+                    {visualChartsAndKpis.lowStockTotalCount.toLocaleString('pt-BR')}{' '}
+                    <span className="text-xs font-bold text-slate-500">materiais</span>
+                  </p>
+                  <p className="text-[11px] font-bold text-amber-700 mt-0.5">
+                    {visualChartsAndKpis.lowStockWithBalanceCount} abaixo do mín. • {visualChartsAndKpis.zeroStockMaterialsCount} zerados
+                  </p>
+                </div>
+                <div className="p-2.5 rounded-xl bg-amber-500 text-white shadow-xs shrink-0">
+                  <AlertTriangle size={18} />
+                </div>
               </div>
-              <div className="p-3 rounded-2xl bg-amber-500 text-white shadow-xs shrink-0">
-                <AlertTriangle size={20} />
+              <div className="h-24 w-full bg-white/90 rounded-xl border border-amber-100 p-1.5">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={[
+                      { name: 'Regulares', qtd: visualChartsAndKpis.regularMaterialsCount },
+                      { name: 'Baixo c/ Saldo', qtd: visualChartsAndKpis.lowStockWithBalanceCount },
+                      { name: 'Zerados', qtd: visualChartsAndKpis.zeroStockMaterialsCount }
+                    ]}
+                    layout="vertical"
+                    margin={{ top: 2, right: 14, left: 4, bottom: 2 }}
+                  >
+                    <XAxis type="number" hide />
+                    <YAxis
+                      type="category"
+                      dataKey="name"
+                      width={74}
+                      tick={{ fontSize: 9.5, fontWeight: 700, fill: '#334155' }}
+                      axisLine={false}
+                      tickLine={false}
+                    />
+                    <Tooltip
+                      formatter={(v: any) => [`${Number(v).toLocaleString('pt-BR')} materiais`, 'Qtd']}
+                      contentStyle={{ fontSize: '11px', borderRadius: '10px', fontWeight: 700 }}
+                    />
+                    <Bar dataKey="qtd" radius={[0, 4, 4, 0]} barSize={10} isAnimationActive={false}>
+                      <Cell fill="#10b981" />
+                      <Cell fill="#f59e0b" />
+                      <Cell fill="#e11d48" />
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="pt-1 border-t border-amber-100/80 flex items-center justify-between">
+                <span className="text-[10px] font-bold text-slate-400">Soma dos lotes &le; mín.</span>
+                {renderIndicatorActions(
+                  {
+                    title: 'Itens com Estoque Baixo e Zerados (Consolidado)',
+                    groupName: 'Resumo Executivo do Estoque',
+                    subtitle: 'Avaliação pelo saldo consolidado de todos os lotes de cada material frente ao estoque mínimo.',
+                    kpis: [
+                      {
+                        label: 'Estoque Baixo Total',
+                        value: `${visualChartsAndKpis.lowStockTotalCount} materiais`,
+                        subValue: 'Com saldo <= estoque mínimo'
+                      },
+                      {
+                        label: 'Baixo (Com Saldo > 0)',
+                        value: `${visualChartsAndKpis.lowStockWithBalanceCount} materiais`,
+                        subValue: 'Atenção para reposição'
+                      },
+                      {
+                        label: 'Saldo Zerado',
+                        value: `${visualChartsAndKpis.zeroStockMaterialsCount} materiais`,
+                        subValue: 'Em ruptura (saldo = 0)'
+                      }
+                    ],
+                    chart: {
+                      title: 'Distribuição dos Materiais Consolidados por Nível de Estoque',
+                      type: 'donut',
+                      unit: 'materiais',
+                      data: [
+                        {
+                          label: 'Estoque Regular (> Mínimo)',
+                          value: visualChartsAndKpis.regularMaterialsCount,
+                          color: '#10b981'
+                        },
+                        {
+                          label: 'Estoque Baixo (Com Saldo)',
+                          value: visualChartsAndKpis.lowStockWithBalanceCount,
+                          color: '#f59e0b'
+                        },
+                        {
+                          label: 'Saldo Zerado (Ruptura)',
+                          value: visualChartsAndKpis.zeroStockMaterialsCount,
+                          color: '#e11d48'
+                        }
+                      ]
+                    }
+                  },
+                  true
+                )}
               </div>
             </div>
 
-            <div className="p-4 rounded-2xl bg-gradient-to-br from-indigo-50/90 via-white to-indigo-50/40 border border-indigo-200/80 flex items-center justify-between gap-3">
-              <div>
-                <span className="text-[10px] font-black text-indigo-700 uppercase tracking-widest block">
-                  Movimentações Realizadas
-                </span>
-                <p className="text-2xl font-black text-slate-900 tracking-tight mt-0.5">
-                  {visualChartsAndKpis.totalMovementsCount.toLocaleString('pt-BR')}{' '}
-                  <span className="text-xs font-bold text-slate-500">registros</span>
-                </p>
-                <p className="text-[11px] font-bold text-indigo-700 mt-0.5">
-                  {visualChartsAndKpis.totalEntriesMovements} entr. • {visualChartsAndKpis.totalExitsMovements} saídas • {visualChartsAndKpis.totalReturnsMovements} dev.
-                </p>
+            {/* Executive KPI 3: Movimentações Realizadas */}
+            <div className="p-4 rounded-2xl bg-gradient-to-br from-indigo-50/90 via-white to-indigo-50/40 border border-indigo-200/80 flex flex-col justify-between gap-3">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <span className="text-[10px] font-black text-indigo-700 uppercase tracking-widest block">
+                    Movimentações Realizadas
+                  </span>
+                  <p className="text-2xl font-black text-slate-900 tracking-tight mt-0.5">
+                    {visualChartsAndKpis.totalMovementsCount.toLocaleString('pt-BR')}{' '}
+                    <span className="text-xs font-bold text-slate-500">registros</span>
+                  </p>
+                  <p className="text-[11px] font-bold text-indigo-700 mt-0.5">
+                    {visualChartsAndKpis.totalEntriesMovements} entr. • {visualChartsAndKpis.totalExitsMovements} saídas • {visualChartsAndKpis.totalReturnsMovements} dev.
+                  </p>
+                </div>
+                <div className="p-2.5 rounded-xl bg-indigo-600 text-white shadow-xs shrink-0">
+                  <Activity size={18} />
+                </div>
               </div>
-              <div className="p-3 rounded-2xl bg-indigo-600 text-white shadow-xs shrink-0">
-                <Activity size={20} />
+              <div className="h-24 w-full bg-white/90 rounded-xl border border-indigo-100 p-1.5">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={[
+                      { name: 'Entradas', qtd: visualChartsAndKpis.totalEntriesMovements },
+                      { name: 'Saídas', qtd: visualChartsAndKpis.totalExitsMovements },
+                      { name: 'Devoluções', qtd: visualChartsAndKpis.totalReturnsMovements }
+                    ]}
+                    layout="vertical"
+                    margin={{ top: 2, right: 14, left: 4, bottom: 2 }}
+                  >
+                    <XAxis type="number" hide />
+                    <YAxis
+                      type="category"
+                      dataKey="name"
+                      width={66}
+                      tick={{ fontSize: 9.5, fontWeight: 700, fill: '#334155' }}
+                      axisLine={false}
+                      tickLine={false}
+                    />
+                    <Tooltip
+                      formatter={(v: any) => [`${Number(v).toLocaleString('pt-BR')} lançamentos`, 'Movimentações']}
+                      contentStyle={{ fontSize: '11px', borderRadius: '10px', fontWeight: 700 }}
+                    />
+                    <Bar dataKey="qtd" radius={[0, 4, 4, 0]} barSize={10} isAnimationActive={false}>
+                      <Cell fill="#10b981" />
+                      <Cell fill="#2563eb" />
+                      <Cell fill="#f59e0b" />
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="pt-1 border-t border-indigo-100/80 flex items-center justify-between">
+                <span className="text-[10px] font-bold text-slate-400">No período filtrado</span>
+                {renderIndicatorActions(
+                  {
+                    title: 'Movimentações Realizadas no Período',
+                    groupName: 'Resumo Executivo do Estoque',
+                    subtitle: 'Total de registros de entradas de abastecimento, saídas e devoluções no período.',
+                    kpis: [
+                      {
+                        label: 'Total de Movimentações',
+                        value: `${visualChartsAndKpis.totalMovementsCount} registros`,
+                        subValue: dateInterval.label
+                      },
+                      {
+                        label: 'Entradas',
+                        value: `${visualChartsAndKpis.totalEntriesMovements} registros`,
+                        subValue: `${estoqueGiro.regularEntriesUnits.toLocaleString('pt-BR')} un`
+                      },
+                      {
+                        label: 'Saídas',
+                        value: `${visualChartsAndKpis.totalExitsMovements} registros`,
+                        subValue: `${estoqueGiro.netConsumptionUnits.toLocaleString('pt-BR')} un líquidas`
+                      },
+                      {
+                        label: 'Devoluções',
+                        value: `${visualChartsAndKpis.totalReturnsMovements} registros`,
+                        subValue: `${estoqueGiro.returnsInPeriodUnits.toLocaleString('pt-BR')} un`
+                      }
+                    ],
+                    chart: {
+                      title: 'Comparativo de Lançamentos por Tipo de Movimentação',
+                      type: 'verticalBar',
+                      unit: 'registros',
+                      data: [
+                        {
+                          label: 'Entradas Regulares',
+                          value: visualChartsAndKpis.totalEntriesMovements,
+                          color: '#10b981'
+                        },
+                        {
+                          label: 'Saídas / Dispensações',
+                          value: visualChartsAndKpis.totalExitsMovements,
+                          color: '#2563eb'
+                        },
+                        {
+                          label: 'Devoluções de Setores',
+                          value: visualChartsAndKpis.totalReturnsMovements,
+                          color: '#f59e0b'
+                        }
+                      ]
+                    }
+                  },
+                  true
+                )}
               </div>
             </div>
 
-            <div className="p-4 rounded-2xl bg-gradient-to-br from-emerald-50/90 via-white to-emerald-50/40 border border-emerald-200/80 flex items-center justify-between gap-3">
-              <div>
-                <span className="text-[10px] font-black text-emerald-800 uppercase tracking-widest block">
-                  Situação do Estoque
-                </span>
-                <p className="text-2xl font-black text-slate-900 tracking-tight mt-0.5">
-                  {visualChartsAndKpis.regularMaterialsCount.toLocaleString('pt-BR')}{' '}
-                  <span className="text-xs font-bold text-slate-500">regulares</span>
-                </p>
-                <p className="text-[11px] font-bold text-emerald-700 mt-0.5">
-                  {perdasValidade.expiring60dBatchesCount} lotes (60d) • {perdasValidade.expiredStockBatchesCount} vencidos
-                </p>
+            {/* Executive KPI 4: Situação do Estoque e Validades */}
+            <div className="p-4 rounded-2xl bg-gradient-to-br from-emerald-50/90 via-white to-emerald-50/40 border border-emerald-200/80 flex flex-col justify-between gap-3">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <span className="text-[10px] font-black text-emerald-800 uppercase tracking-widest block">
+                    Situação do Estoque
+                  </span>
+                  <p className="text-2xl font-black text-slate-900 tracking-tight mt-0.5">
+                    {visualChartsAndKpis.regularMaterialsCount.toLocaleString('pt-BR')}{' '}
+                    <span className="text-xs font-bold text-slate-500">regulares</span>
+                  </p>
+                  <p className="text-[11px] font-bold text-emerald-700 mt-0.5">
+                    {perdasValidade.expiring60dBatchesCount} lotes (60d) • {perdasValidade.expiredStockBatchesCount} vencidos
+                  </p>
+                </div>
+                <div className="p-2.5 rounded-xl bg-emerald-600 text-white shadow-xs shrink-0">
+                  <CheckCircle size={18} />
+                </div>
               </div>
-              <div className="p-3 rounded-2xl bg-emerald-600 text-white shadow-xs shrink-0">
-                <CheckCircle size={20} />
+              <div className="h-24 w-full bg-white/90 rounded-xl border border-emerald-100 p-1.5">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={[
+                      { name: 'Regulares', qtd: visualChartsAndKpis.regularMaterialsCount },
+                      { name: 'Vencem 60d', qtd: perdasValidade.expiring60dBatchesCount },
+                      { name: 'Vencidos', qtd: perdasValidade.expiredStockBatchesCount }
+                    ]}
+                    layout="vertical"
+                    margin={{ top: 2, right: 14, left: 4, bottom: 2 }}
+                  >
+                    <XAxis type="number" hide />
+                    <YAxis
+                      type="category"
+                      dataKey="name"
+                      width={68}
+                      tick={{ fontSize: 9.5, fontWeight: 700, fill: '#334155' }}
+                      axisLine={false}
+                      tickLine={false}
+                    />
+                    <Tooltip
+                      formatter={(v: any) => [`${Number(v).toLocaleString('pt-BR')}`, 'Quantidade']}
+                      contentStyle={{ fontSize: '11px', borderRadius: '10px', fontWeight: 700 }}
+                    />
+                    <Bar dataKey="qtd" radius={[0, 4, 4, 0]} barSize={10} isAnimationActive={false}>
+                      <Cell fill="#10b981" />
+                      <Cell fill="#f59e0b" />
+                      <Cell fill="#e11d48" />
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="pt-1 border-t border-emerald-100/80 flex items-center justify-between">
+                <span className="text-[10px] font-bold text-slate-400">Saúde e validade</span>
+                {renderIndicatorActions(
+                  {
+                    title: 'Situação Geral do Estoque e Validades Críticas',
+                    groupName: 'Resumo Executivo do Estoque',
+                    subtitle: 'Materiais regulares versus lotes com vencimento próximo (60 dias) ou vencidos.',
+                    kpis: [
+                      {
+                        label: 'Materiais Regulares',
+                        value: `${visualChartsAndKpis.regularMaterialsCount} materiais`,
+                        subValue: 'Saldo acima do estoque mínimo'
+                      },
+                      {
+                        label: 'Vencendo em 60 Dias',
+                        value: `${perdasValidade.expiring60dBatchesCount} lotes`,
+                        subValue: formatCurrency(perdasValidade.expiring60dValue)
+                      },
+                      {
+                        label: 'Lotes Vencidos Hoje',
+                        value: `${perdasValidade.expiredStockBatchesCount} lotes`,
+                        subValue: formatCurrency(perdasValidade.expiredStockValue)
+                      }
+                    ],
+                    chart: {
+                      title: 'Comparativo: Materiais Regulares e Lotes com Alerta de Validade',
+                      type: 'verticalBar',
+                      unit: 'registros',
+                      data: [
+                        {
+                          label: 'Materiais Regulares',
+                          value: visualChartsAndKpis.regularMaterialsCount,
+                          color: '#10b981'
+                        },
+                        {
+                          label: 'Lotes Vencendo (60d)',
+                          value: perdasValidade.expiring60dBatchesCount,
+                          color: '#f59e0b'
+                        },
+                        {
+                          label: 'Lotes Vencidos',
+                          value: perdasValidade.expiredStockBatchesCount,
+                          color: '#e11d48'
+                        }
+                      ]
+                    }
+                  },
+                  true
+                )}
               </div>
             </div>
           </div>
@@ -2631,7 +3080,7 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                 </div>
               </div>
               <span className="text-[11px] font-extrabold text-blue-700 bg-blue-50 px-3 py-1 rounded-full border border-blue-200 self-start sm:self-auto">
-                Lotes somados por material • Dados 100% reais
+                Lotes somados por material • Etiquetas desconsideradas nos gráficos
               </span>
             </div>
 
@@ -2641,24 +3090,67 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
               <div className="lg:col-span-7 bg-white rounded-3xl border border-blue-100/90 shadow-sm overflow-hidden flex flex-col">
                 <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-800" />
                 <div className="p-5 sm:p-6 flex-1 flex flex-col justify-between space-y-4">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
                     <div>
                       <h4 className="text-sm font-black text-slate-900">
                         Entradas e Saídas por Período
                       </h4>
                       <p className="text-xs text-slate-500 font-medium">
-                        Evolução física de unidades abastecidas versus unidades dispensadas/baixadas
+                        Evolução física de unidades abastecidas versus unidades dispensadas/baixadas (sem etiquetas)
                       </p>
                     </div>
-                    <div className="flex items-center gap-3 text-xs font-extrabold">
-                      <span className="flex items-center gap-1.5 text-blue-700">
-                        <span className="w-2.5 h-2.5 rounded-xs bg-blue-600 inline-block" />
-                        Entradas: {estoqueGiro.regularEntriesUnits.toLocaleString('pt-BR')} un
-                      </span>
-                      <span className="flex items-center gap-1.5 text-rose-600">
-                        <span className="w-2.5 h-2.5 rounded-xs bg-rose-600 inline-block" />
-                        Saídas: {(estoqueGiro.netConsumptionUnits + perdasValidade.lossAndExpiredExitsUnits).toLocaleString('pt-BR')} un
-                      </span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="flex items-center gap-2.5 text-xs font-extrabold mr-1">
+                        <span className="flex items-center gap-1.5 text-blue-700">
+                          <span className="w-2.5 h-2.5 rounded-xs bg-blue-600 inline-block" />
+                          Entradas: {visualChartsAndKpis.chartTimelineEntriesUnits.toLocaleString('pt-BR')} un
+                        </span>
+                        <span className="flex items-center gap-1.5 text-rose-600">
+                          <span className="w-2.5 h-2.5 rounded-xs bg-rose-600 inline-block" />
+                          Saídas: {visualChartsAndKpis.chartTimelineExitsUnits.toLocaleString('pt-BR')} un
+                        </span>
+                      </div>
+                      {renderIndicatorActions({
+                        title: 'Entradas e Saídas por Período',
+                        groupName: 'Painel Gráfico Principal',
+                        subtitle:
+                          'Evolução temporal comparativa de unidades recebidas (entradas) e dispensadas/baixadas (saídas), desconsiderando etiquetas.',
+                        kpis: [
+                          {
+                            label: 'Unidades em Entradas',
+                            value: `${visualChartsAndKpis.chartTimelineEntriesUnits.toLocaleString('pt-BR')} un`,
+                            subValue: formatCurrency(estoqueGiro.regularEntriesValue)
+                          },
+                          {
+                            label: 'Unidades em Saídas',
+                            value: `${visualChartsAndKpis.chartTimelineExitsUnits.toLocaleString('pt-BR')} un`,
+                            subValue: formatCurrency(perdasValidade.totalExitsInPeriodValue)
+                          }
+                        ],
+                        chart: {
+                          title: 'Evolução Comparativa de Entradas e Saídas no Período (un)',
+                          type: 'groupedBar',
+                          unit: 'un',
+                          seriesLabels: ['Entradas (un)', 'Saídas (un)'],
+                          data: visualChartsAndKpis.timelineData.map(t => ({
+                            label: t.label,
+                            value: t.entradas,
+                            secondaryValue: t.saidas,
+                            color: '#2563eb'
+                          }))
+                        },
+                        table: {
+                          title: 'Detalhamento Temporal de Entradas e Saídas',
+                          headers: ['Período / Data', 'Entradas (un)', 'Valor Entradas (R$)', 'Saídas (un)', 'Valor Saídas (R$)'],
+                          rows: visualChartsAndKpis.timelineData.map(t => [
+                            t.label,
+                            `${t.entradas.toLocaleString('pt-BR')} un`,
+                            formatCurrency(t.entradaValor),
+                            `${t.saidas.toLocaleString('pt-BR')} un`,
+                            formatCurrency(t.saidaValor)
+                          ])
+                        }
+                      })}
                     </div>
                   </div>
 
@@ -2725,13 +3217,36 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
               <div className="lg:col-span-5 bg-white rounded-3xl border border-blue-100/90 shadow-sm overflow-hidden flex flex-col">
                 <div className="h-1.5 w-full bg-gradient-to-r from-emerald-600 via-amber-500 to-rose-600" />
                 <div className="p-5 sm:p-6 flex-1 flex flex-col justify-between space-y-4">
-                  <div>
-                    <h4 className="text-sm font-black text-slate-900">
-                      Situação do Estoque Consolidado
-                    </h4>
-                    <p className="text-xs text-slate-500 font-medium">
-                      Diagnóstico de cobertura por material único e alerta de validade por lote
-                    </p>
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <h4 className="text-sm font-black text-slate-900">
+                        Situação do Estoque Consolidado
+                      </h4>
+                      <p className="text-xs text-slate-500 font-medium">
+                        Diagnóstico de cobertura por material único e alerta de validade por lote
+                      </p>
+                    </div>
+                    {renderIndicatorActions({
+                      title: 'Situação do Estoque Consolidado',
+                      groupName: 'Painel Gráfico Principal',
+                      subtitle:
+                        'Diagnóstico de cobertura dos materiais consolidados (soma de lotes) e validade dos lotes ativos.',
+                      kpis: visualChartsAndKpis.stockStatusData.map(s => ({
+                        label: s.status,
+                        value: `${s.materiais} registros`,
+                        subValue: s.desc
+                      })),
+                      chart: {
+                        title: 'Situação Consolidada do Estoque e Validades',
+                        type: 'horizontalBar',
+                        unit: 'registros',
+                        data: visualChartsAndKpis.stockStatusData.map(s => ({
+                          label: s.status,
+                          value: s.materiais,
+                          color: s.color
+                        }))
+                      }
+                    })}
                   </div>
 
                   <div className="h-64 w-full">
@@ -2789,7 +3304,7 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
               <div className="bg-white rounded-3xl border border-blue-100/90 shadow-sm overflow-hidden flex flex-col">
                 <div className="h-1.5 w-full bg-gradient-to-r from-indigo-600 via-blue-700 to-cyan-600" />
                 <div className="p-5 sm:p-6 flex-1 flex flex-col justify-between space-y-4">
-                  <div className="flex items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
                     <div>
                       <h4 className="text-sm font-black text-slate-900">
                         Consumo por Setor Requisitante
@@ -2798,9 +3313,51 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                         Unidades dispensadas por setor de destino no período selecionado
                       </p>
                     </div>
-                    <span className="px-2.5 py-1 rounded-lg bg-indigo-50 text-indigo-700 text-[11px] font-black">
-                      Top {visualChartsAndKpis.sectorData.length} setores
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="px-2.5 py-1 rounded-lg bg-indigo-50 text-indigo-700 text-[11px] font-black">
+                        Top {visualChartsAndKpis.sectorData.length} setores
+                      </span>
+                      {renderIndicatorActions({
+                        title: 'Consumo por Setor Requisitante',
+                        groupName: 'Painel Gráfico Principal',
+                        subtitle: 'Ranking dos setores com maior volume físico e financeiro de consumo no período.',
+                        kpis: [
+                          {
+                            label: 'Setores Atendidos',
+                            value: `${visualChartsAndKpis.sectorData.length} setores`,
+                            subValue: 'Ranking Top 10'
+                          },
+                          {
+                            label: 'Maior Consumidor',
+                            value: visualChartsAndKpis.sectorData[0]?.sector || 'Sem consumo',
+                            subValue: visualChartsAndKpis.sectorData[0]
+                              ? `${visualChartsAndKpis.sectorData[0].units.toLocaleString('pt-BR')} un`
+                              : '—'
+                          }
+                        ],
+                        chart: {
+                          title: 'Ranking de Consumo por Setor Requisitante (Unidades)',
+                          type: 'horizontalBar',
+                          unit: 'un',
+                          data: visualChartsAndKpis.sectorData.map((s, idx) => ({
+                            label: s.sector,
+                            value: s.units,
+                            color: CHART_PALETTE[idx % CHART_PALETTE.length]
+                          }))
+                        },
+                        table: {
+                          title: 'Tabela de Consumo por Setor',
+                          headers: ['Posição', 'Setor', 'Movimentações', 'Unidades Consumidas', 'Valor Consumido (R$)'],
+                          rows: visualChartsAndKpis.sectorData.map((s, idx) => [
+                            `${idx + 1}º`,
+                            s.sector,
+                            String(s.count),
+                            `${s.units.toLocaleString('pt-BR')} un`,
+                            formatCurrency(s.value)
+                          ])
+                        }
+                      })}
+                    </div>
                   </div>
 
                   {visualChartsAndKpis.sectorData.length > 0 ? (
@@ -2868,7 +3425,7 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
               <div className="bg-white rounded-3xl border border-blue-100/90 shadow-sm overflow-hidden flex flex-col">
                 <div className="h-1.5 w-full bg-gradient-to-r from-blue-700 via-indigo-700 to-blue-900" />
                 <div className="p-5 sm:p-6 flex-1 flex flex-col justify-between space-y-4">
-                  <div className="flex items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
                     <div>
                       <h4 className="text-sm font-black text-slate-900">
                         Materiais Mais Requisitados e Consumidos
@@ -2877,9 +3434,54 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                         Top 10 materiais consolidados (soma de todos os lotes de mesmo nome)
                       </p>
                     </div>
-                    <span className="px-2.5 py-1 rounded-lg bg-blue-50 text-blue-700 text-[11px] font-black">
-                      Top {visualChartsAndKpis.topMaterialsData.length} materiais
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="px-2.5 py-1 rounded-lg bg-blue-50 text-blue-700 text-[11px] font-black">
+                        Top {visualChartsAndKpis.topMaterialsData.length} materiais
+                      </span>
+                      {renderIndicatorActions({
+                        title: 'Materiais Mais Requisitados e Consumidos (Consolidado)',
+                        groupName: 'Painel Gráfico Principal',
+                        subtitle:
+                          'Ranking comparativo de unidades requisitadas em pedidos e unidades efetivamente consumidas (lotes somados).',
+                        kpis: [
+                          {
+                            label: 'Materiais no Ranking',
+                            value: `${visualChartsAndKpis.topMaterialsData.length} materiais`,
+                            subValue: 'Lotes consolidados pelo nome'
+                          },
+                          {
+                            label: '1º Material Mais Demandado',
+                            value: visualChartsAndKpis.topMaterialsData[0]?.name || 'Sem dados',
+                            subValue: visualChartsAndKpis.topMaterialsData[0]
+                              ? `Consumo: ${visualChartsAndKpis.topMaterialsData[0].consumido.toLocaleString('pt-BR')} un`
+                              : '—'
+                          }
+                        ],
+                        chart: {
+                          title: 'Ranking de Materiais Mais Consumidos e Requisitados (un)',
+                          type: 'horizontalBar',
+                          unit: 'un',
+                          data: visualChartsAndKpis.topMaterialsData.map((m, idx) => ({
+                            label: m.name,
+                            value: m.consumido || m.requisitado,
+                            secondaryValue: m.requisitado,
+                            color: CHART_PALETTE[idx % CHART_PALETTE.length]
+                          }))
+                        },
+                        table: {
+                          title: 'Detalhamento dos Top Materiais Requisitados e Consumidos',
+                          headers: ['#', 'Material Consolidado', 'Categoria', 'Qtd. Requisitada', 'Qtd. Consumida', 'Valor Consumido (R$)'],
+                          rows: visualChartsAndKpis.topMaterialsData.map((m, idx) => [
+                            `${idx + 1}º`,
+                            m.name,
+                            m.category,
+                            `${m.requisitado.toLocaleString('pt-BR')} un`,
+                            `${m.consumido.toLocaleString('pt-BR')} un`,
+                            formatCurrency(m.valor)
+                          ])
+                        }
+                      })}
+                    </div>
                   </div>
 
                   {visualChartsAndKpis.topMaterialsData.length > 0 ? (
@@ -2966,9 +3568,52 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                       </p>
                     </div>
                   </div>
-                  <span className="text-xs font-extrabold text-slate-600 bg-slate-100 px-3 py-1 rounded-full">
-                    {visualChartsAndKpis.categoryData.length} categorias ativas
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-extrabold text-slate-600 bg-slate-100 px-3 py-1 rounded-full">
+                      {visualChartsAndKpis.categoryData.length} categorias ativas
+                    </span>
+                    {renderIndicatorActions({
+                      title: 'Distribuição por Categoria (Estoque Atual e Consumo)',
+                      groupName: 'Painel Gráfico Principal',
+                      subtitle:
+                        'Proporção percentual e financeira de cada categoria de material no estoque e no consumo.',
+                      kpis: [
+                        {
+                          label: 'Categorias Ativas',
+                          value: `${visualChartsAndKpis.categoryData.length} categorias`,
+                          subValue: 'Com saldo ou movimentação'
+                        },
+                        {
+                          label: 'Categoria Principal',
+                          value: visualChartsAndKpis.categoryData[0]?.category || '—',
+                          subValue: visualChartsAndKpis.categoryData[0]
+                            ? `${visualChartsAndKpis.categoryData[0].stockUnits.toLocaleString('pt-BR')} un em estoque`
+                            : '—'
+                        }
+                      ],
+                      chart: {
+                        title: 'Distribuição Percentual por Categoria de Material (Estoque em un)',
+                        type: 'donut',
+                        unit: 'un',
+                        data: visualChartsAndKpis.categoryData.map(c => ({
+                          label: c.category,
+                          value: c.stockUnits || c.consumedUnits,
+                          color: c.color
+                        }))
+                      },
+                      table: {
+                        title: 'Tabela Comparativa por Categoria',
+                        headers: ['Categoria', 'Saldo em Estoque', 'Valor Estoque', 'Consumo no Período', 'Valor Consumido'],
+                        rows: visualChartsAndKpis.categoryData.map(c => [
+                          c.category,
+                          `${c.stockUnits.toLocaleString('pt-BR')} un`,
+                          formatCurrency(c.stockValue),
+                          `${c.consumedUnits.toLocaleString('pt-BR')} un`,
+                          formatCurrency(c.consumedValue)
+                        ])
+                      }
+                    })}
+                  </div>
                 </div>
 
                 {visualChartsAndKpis.categoryData.length > 0 ? (
@@ -3059,18 +3704,46 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
 
           {/* GRUPO 1: ESTOQUE E GIRO */}
           <div className="space-y-4">
-            <div className="flex items-center gap-2.5 px-1">
-              <div className="p-2 rounded-xl bg-blue-600 text-white shadow-xs">
-                <Boxes size={16} />
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 px-1">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-blue-600 text-white shadow-xs">
+                  <Boxes size={16} />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-slate-900 tracking-tight">
+                    Grupo 1 • Estoque e Giro
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium">
+                    Patrimônio em saldo, velocidade de renovação do estoque, cobertura física e fluxo do período
+                  </p>
+                </div>
               </div>
-              <div>
-                <h3 className="text-base font-black text-slate-900 tracking-tight">
-                  Grupo 1 • Estoque e Giro
-                </h3>
-                <p className="text-xs text-slate-500 font-medium">
-                  Patrimônio em saldo, velocidade de renovação do estoque, cobertura física e fluxo do período
-                </p>
-              </div>
+              {renderIndicatorActions({
+                indicatorTitle: 'Grupo 1 • Estoque e Giro (Síntese Financeira)',
+                indicatorSubtitle: 'Patrimônio em saldo, reconstrução retrospectiva (início/médio/fim), entradas e consumo líquido',
+                groupName: 'Grupo 1 • Estoque e Giro',
+                explanation:
+                  'Compara os saldos patrimoniais reconstruídos no início e fim do período com o estoque médio, entradas de abastecimento e consumo líquido.',
+                kpis: [
+                  { label: 'Valor em Estoque Atual', value: formatCurrency(estoqueGiro.currentStockValue), subvalue: `${estoqueGiro.currentStockUnits.toLocaleString('pt-BR')} un ativas`, tone: 'blue' },
+                  { label: 'Giro no Período', value: `${formatDecimal(estoqueGiro.stockTurnover, 2)}x`, subvalue: `${formatDecimal(estoqueGiro.annualizedTurnover, 2)}x / ano`, tone: 'indigo' },
+                  { label: 'Cobertura em Dias', value: estoqueGiro.stockCoverageDays !== null ? `${Math.round(estoqueGiro.stockCoverageDays)} dias` : 'Sem consumo', subvalue: `Média: ${formatCurrency(estoqueGiro.dailyAverageConsumptionValue)}/dia`, tone: 'emerald' },
+                  { label: 'Consumo Líquido', value: formatCurrency(estoqueGiro.netConsumptionValue), subvalue: `${estoqueGiro.netConsumptionUnits.toLocaleString('pt-BR')} un`, tone: 'amber' }
+                ],
+                chart: {
+                  type: 'verticalBar',
+                  title: 'Comparativo Financeiro de Estoque, Entradas e Consumo (R$)',
+                  subtitle: 'Reconstrução patrimonial e movimentação financeira do período filtrado',
+                  valueFormatter: 'currency',
+                  data: [
+                    { label: 'Saldo Inicial', value: estoqueGiro.stockAtStartValue, color: '#64748b' },
+                    { label: 'Estoque Médio', value: estoqueGiro.averageStockValue, color: '#3b82f6' },
+                    { label: 'Saldo Final', value: estoqueGiro.stockAtEndValue, color: '#1d4ed8' },
+                    { label: 'Entradas', value: estoqueGiro.regularEntriesValue, color: '#10b981' },
+                    { label: 'Consumo Líquido', value: estoqueGiro.netConsumptionValue, color: '#4f46e5' }
+                  ]
+                }
+              })}
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
@@ -3079,13 +3752,33 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                 <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-800" />
                 <div className="p-5 space-y-3 flex-1 flex flex-col justify-between">
                   <div>
-                    <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="flex items-start justify-between gap-1.5 mb-2">
                       <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
                         Valor Total em Estoque
                       </span>
-                      <div className="p-2 rounded-xl bg-blue-50 text-blue-700">
-                        <DollarSign size={16} />
-                      </div>
+                      {renderIndicatorActions(
+                        {
+                          indicatorTitle: 'Valor Total em Estoque',
+                          indicatorSubtitle: 'Composição financeira por categoria dos lotes ativos',
+                          groupName: 'Grupo 1 • Estoque e Giro',
+                          explanation: 'Calculado pela soma da quantidade vezes o preço unitário de todos os lotes ativos do setor.',
+                          kpis: [
+                            { label: 'Valor Total em Estoque', value: formatCurrency(estoqueGiro.currentStockValue), tone: 'blue' },
+                            { label: 'Unidades em Saldo', value: `${estoqueGiro.currentStockUnits.toLocaleString('pt-BR')} un`, tone: 'indigo' }
+                          ],
+                          chart: {
+                            type: 'horizontalBar',
+                            title: 'Valor em Estoque por Categoria (R$)',
+                            valueFormatter: 'currency',
+                            data: visualChartsAndKpis.categoryData
+                              .filter(c => c.stockValue > 0)
+                              .sort((a, b) => b.stockValue - a.stockValue)
+                              .slice(0, 8)
+                              .map(c => ({ label: c.category, value: c.stockValue, color: c.color }))
+                          }
+                        },
+                        true
+                      )}
                     </div>
                     <p className="text-2xl font-black text-slate-900 tracking-tight">
                       {formatCurrency(estoqueGiro.currentStockValue)}
@@ -3093,8 +3786,29 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                     <p className="text-xs font-extrabold text-blue-700 mt-1">
                       {estoqueGiro.currentStockUnits.toLocaleString('pt-BR')} un ativas
                     </p>
+
+                    <div className="h-24 w-full mt-2 pt-2 border-t border-slate-100">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart
+                          data={visualChartsAndKpis.categoryData
+                            .filter(c => c.stockValue > 0)
+                            .sort((a, b) => b.stockValue - a.stockValue)
+                            .slice(0, 4)
+                            .map(c => ({
+                              name: c.category.length > 10 ? `${c.category.slice(0, 10)}…` : c.category,
+                              valor: Number(c.stockValue.toFixed(2))
+                            }))}
+                          margin={{ top: 4, right: 4, left: -24, bottom: 0 }}
+                        >
+                          <XAxis dataKey="name" tick={{ fontSize: 8, fontWeight: 700, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                          <YAxis tick={{ fontSize: 8, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                          <Tooltip formatter={(val: any) => [formatCurrency(Number(val) || 0), 'Estoque']} contentStyle={{ borderRadius: '10px', fontSize: '10px', fontWeight: 700 }} />
+                          <Bar dataKey="valor" fill="#2563eb" radius={[4, 4, 0, 0]} maxBarSize={22} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-3 border-t border-slate-100">
+                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-2 border-t border-slate-100">
                     Calculado pela soma da quantidade vezes o preço unitário de todos os lotes ativos do setor.
                   </p>
                 </div>
@@ -3105,15 +3819,38 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                 <div className="h-1.5 w-full bg-gradient-to-r from-blue-700 via-indigo-700 to-indigo-900" />
                 <div className="p-5 space-y-3 flex-1 flex flex-col justify-between">
                   <div>
-                    <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="flex items-start justify-between gap-1.5 mb-2">
                       <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
                         Giro do Estoque
                       </span>
-                      <div className="p-2 rounded-xl bg-indigo-50 text-indigo-700">
-                        <Activity size={16} />
-                      </div>
+                      {renderIndicatorActions(
+                        {
+                          indicatorTitle: 'Giro do Estoque e Projeção Anualizada',
+                          indicatorSubtitle: 'Relação entre consumo líquido e estoque médio reconstruído no período',
+                          groupName: 'Grupo 1 • Estoque e Giro',
+                          explanation: 'Valor consumido no período dividido pelo estoque médio (média entre saldo inicial e final reconstruídos).',
+                          kpis: [
+                            { label: 'Giro no Período', value: `${formatDecimal(estoqueGiro.stockTurnover, 2)}x`, tone: 'indigo' },
+                            { label: 'Giro Anualizado', value: `${formatDecimal(estoqueGiro.annualizedTurnover, 2)}x/ano`, tone: 'blue' },
+                            { label: 'Estoque Médio', value: formatCurrency(estoqueGiro.averageStockValue), tone: 'slate' },
+                            { label: 'Consumo Líquido', value: formatCurrency(estoqueGiro.netConsumptionValue), tone: 'emerald' }
+                          ],
+                          chart: {
+                            type: 'verticalBar',
+                            title: 'Saldos Reconstruídos vs. Consumo para Cálculo de Giro (R$)',
+                            valueFormatter: 'currency',
+                            data: [
+                              { label: 'Saldo Inicial', value: estoqueGiro.stockAtStartValue, color: '#64748b' },
+                              { label: 'Estoque Médio', value: estoqueGiro.averageStockValue, color: '#3b82f6' },
+                              { label: 'Saldo Final', value: estoqueGiro.stockAtEndValue, color: '#1d4ed8' },
+                              { label: 'Consumo Período', value: estoqueGiro.netConsumptionValue, color: '#4f46e5' }
+                            ]
+                          }
+                        },
+                        true
+                      )}
                     </div>
-                    <div className="flex items-baseline gap-2">
+                    <div className="flex items-baseline gap-2 flex-wrap">
                       <p className="text-2xl font-black text-slate-900 tracking-tight">
                         {formatDecimal(estoqueGiro.stockTurnover, 2)}x
                       </p>
@@ -3124,12 +3861,36 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                     <p className="text-[11px] font-bold text-slate-600 mt-1">
                       Estoque médio: {formatCurrency(estoqueGiro.averageStockValue)}
                     </p>
-                    <p className="text-[10px] font-semibold text-slate-400">
-                      Início: {formatCurrency(estoqueGiro.stockAtStartValue)} • Fim:{' '}
-                      {formatCurrency(estoqueGiro.stockAtEndValue)}
-                    </p>
+
+                    <div className="h-24 w-full mt-2 pt-2 border-t border-slate-100">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart
+                          data={[
+                            { name: 'Início', valor: Number(estoqueGiro.stockAtStartValue.toFixed(2)), fill: '#64748b' },
+                            { name: 'Médio', valor: Number(estoqueGiro.averageStockValue.toFixed(2)), fill: '#3b82f6' },
+                            { name: 'Fim', valor: Number(estoqueGiro.stockAtEndValue.toFixed(2)), fill: '#1d4ed8' },
+                            { name: 'Cons.', valor: Number(estoqueGiro.netConsumptionValue.toFixed(2)), fill: '#4f46e5' }
+                          ]}
+                          margin={{ top: 4, right: 4, left: -24, bottom: 0 }}
+                        >
+                          <XAxis dataKey="name" tick={{ fontSize: 8, fontWeight: 700, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                          <YAxis tick={{ fontSize: 8, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                          <Tooltip formatter={(val: any) => [formatCurrency(Number(val) || 0), 'Valor']} contentStyle={{ borderRadius: '10px', fontSize: '10px', fontWeight: 700 }} />
+                          <Bar dataKey="valor" radius={[4, 4, 0, 0]} maxBarSize={22}>
+                            {[
+                              { fill: '#64748b' },
+                              { fill: '#3b82f6' },
+                              { fill: '#1d4ed8' },
+                              { fill: '#4f46e5' }
+                            ].map((c, idx) => (
+                              <Cell key={idx} fill={c.fill} />
+                            ))}
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-3 border-t border-slate-100">
+                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-2 border-t border-slate-100">
                     Valor consumido no período dividido pelo estoque médio (média entre saldo inicial e final reconstruídos).
                   </p>
                 </div>
@@ -3140,13 +3901,35 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                 <div className="h-1.5 w-full bg-gradient-to-r from-blue-500 via-blue-700 to-indigo-800" />
                 <div className="p-5 space-y-3 flex-1 flex flex-col justify-between">
                   <div>
-                    <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="flex items-start justify-between gap-1.5 mb-2">
                       <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
                         Cobertura em Dias
                       </span>
-                      <div className="p-2 rounded-xl bg-blue-50 text-blue-700">
-                        <Calendar size={16} />
-                      </div>
+                      {renderIndicatorActions(
+                        {
+                          indicatorTitle: 'Cobertura de Estoque em Dias',
+                          indicatorSubtitle: `Autonomia estimada com base no consumo médio diário (${overviewGroups.periodDays} dias analisados)`,
+                          groupName: 'Grupo 1 • Estoque e Giro',
+                          explanation: `Valor atual em estoque dividido pelo consumo médio diário do período (${overviewGroups.periodDays} dias).`,
+                          kpis: [
+                            { label: 'Cobertura Estimada', value: estoqueGiro.stockCoverageDays !== null ? `${Math.round(estoqueGiro.stockCoverageDays)} dias` : 'Sem consumo', tone: 'blue' },
+                            { label: 'Consumo Médio Diário', value: `${formatCurrency(estoqueGiro.dailyAverageConsumptionValue)}/dia`, tone: 'indigo' },
+                            { label: 'Valor em Estoque', value: formatCurrency(estoqueGiro.currentStockValue), tone: 'emerald' }
+                          ],
+                          chart: {
+                            type: 'horizontalBar',
+                            title: 'Cobertura Atual vs. Parâmetros de Referência (Dias)',
+                            valueFormatter: 'days',
+                            data: [
+                              { label: 'Cobertura Atual', value: Math.round(estoqueGiro.stockCoverageDays || 0), color: '#2563eb' },
+                              { label: 'Meta Trimestral (90d)', value: 90, color: '#10b981' },
+                              { label: 'Meta Mensal (30d)', value: 30, color: '#64748b' },
+                              { label: 'Período Analisado', value: overviewGroups.periodDays, color: '#4f46e5' }
+                            ]
+                          }
+                        },
+                        true
+                      )}
                     </div>
                     <p className="text-2xl font-black text-slate-900 tracking-tight">
                       {estoqueGiro.stockCoverageDays !== null
@@ -3156,8 +3939,36 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                     <p className="text-xs font-extrabold text-blue-700 mt-1">
                       Média: {formatCurrency(estoqueGiro.dailyAverageConsumptionValue)}/dia
                     </p>
+
+                    <div className="h-24 w-full mt-2 pt-2 border-t border-slate-100">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart
+                          data={[
+                            { name: 'Atual', dias: Math.round(estoqueGiro.stockCoverageDays || 0), fill: '#2563eb' },
+                            { name: '30d', dias: 30, fill: '#94a3b8' },
+                            { name: '90d', dias: 90, fill: '#10b981' },
+                            { name: 'Período', dias: overviewGroups.periodDays, fill: '#4f46e5' }
+                          ]}
+                          margin={{ top: 4, right: 4, left: -24, bottom: 0 }}
+                        >
+                          <XAxis dataKey="name" tick={{ fontSize: 8, fontWeight: 700, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                          <YAxis tick={{ fontSize: 8, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                          <Tooltip formatter={(val: any) => [`${Number(val || 0).toLocaleString('pt-BR')} dias`, 'Referência']} contentStyle={{ borderRadius: '10px', fontSize: '10px', fontWeight: 700 }} />
+                          <Bar dataKey="dias" radius={[4, 4, 0, 0]} maxBarSize={22}>
+                            {[
+                              { fill: '#2563eb' },
+                              { fill: '#94a3b8' },
+                              { fill: '#10b981' },
+                              { fill: '#4f46e5' }
+                            ].map((c, idx) => (
+                              <Cell key={idx} fill={c.fill} />
+                            ))}
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-3 border-t border-slate-100">
+                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-2 border-t border-slate-100">
                     Valor atual em estoque dividido pelo consumo médio diário do período ({overviewGroups.periodDays} dias).
                   </p>
                 </div>
@@ -3168,13 +3979,34 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                 <div className="h-1.5 w-full bg-gradient-to-r from-indigo-600 via-blue-700 to-blue-900" />
                 <div className="p-5 space-y-3 flex-1 flex flex-col justify-between">
                   <div>
-                    <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="flex items-start justify-between gap-1.5 mb-2">
                       <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
                         Consumo do Período
                       </span>
-                      <div className="p-2 rounded-xl bg-indigo-50 text-indigo-700">
-                        <ArrowUpRight size={16} />
-                      </div>
+                      {renderIndicatorActions(
+                        {
+                          indicatorTitle: 'Consumo Líquido do Período',
+                          indicatorSubtitle: 'Saídas de consumo descontando entradas de devolução',
+                          groupName: 'Grupo 1 • Estoque e Giro',
+                          explanation: 'Saídas de consumo (ou sem motivo especificado) no período, descontando as entradas de devolução.',
+                          kpis: [
+                            { label: 'Consumo Líquido (R$)', value: formatCurrency(estoqueGiro.netConsumptionValue), tone: 'indigo' },
+                            { label: 'Consumo Líquido (Un)', value: `${estoqueGiro.netConsumptionUnits.toLocaleString('pt-BR')} un`, tone: 'blue' },
+                            { label: 'Devoluções Descontadas', value: `${estoqueGiro.returnsInPeriodUnits.toLocaleString('pt-BR')} un`, subvalue: formatCurrency(estoqueGiro.returnsInPeriodValue), tone: 'emerald' }
+                          ],
+                          chart: {
+                            type: 'line',
+                            title: 'Evolução Mensal do Consumo Financeiro (R$)',
+                            valueFormatter: 'currency',
+                            data: visualChartsAndKpis.timelineData.map(p => ({
+                              label: p.label,
+                              value: p.saidaValor,
+                              color: '#4f46e5'
+                            }))
+                          }
+                        },
+                        true
+                      )}
                     </div>
                     <p className="text-2xl font-black text-slate-900 tracking-tight">
                       {formatCurrency(estoqueGiro.netConsumptionValue)}
@@ -3182,13 +4014,25 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                     <p className="text-xs font-extrabold text-indigo-700 mt-1">
                       {estoqueGiro.netConsumptionUnits.toLocaleString('pt-BR')} un líquidas
                     </p>
-                    {estoqueGiro.returnsInPeriodUnits > 0 && (
-                      <p className="text-[10px] font-semibold text-slate-400">
-                        Descontadas {estoqueGiro.returnsInPeriodUnits.toLocaleString('pt-BR')} un devolvidas
-                      </p>
-                    )}
+
+                    <div className="h-24 w-full mt-2 pt-2 border-t border-slate-100">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart
+                          data={visualChartsAndKpis.timelineData.map(p => ({
+                            name: p.label,
+                            valor: Number(p.saidaValor.toFixed(2))
+                          }))}
+                          margin={{ top: 4, right: 4, left: -24, bottom: 0 }}
+                        >
+                          <XAxis dataKey="name" tick={{ fontSize: 8, fontWeight: 700, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                          <YAxis tick={{ fontSize: 8, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                          <Tooltip formatter={(val: any) => [formatCurrency(Number(val) || 0), 'Saídas (R$)']} contentStyle={{ borderRadius: '10px', fontSize: '10px', fontWeight: 700 }} />
+                          <Area type="monotone" dataKey="valor" stroke="#4f46e5" fill="#e0e7ff" strokeWidth={2} />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-3 border-t border-slate-100">
+                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-2 border-t border-slate-100">
                     Saídas de consumo (ou sem motivo especificado) no período, descontando as entradas de devolução.
                   </p>
                 </div>
@@ -3199,13 +4043,34 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                 <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 to-cyan-600" />
                 <div className="p-5 space-y-3 flex-1 flex flex-col justify-between">
                   <div>
-                    <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="flex items-start justify-between gap-1.5 mb-2">
                       <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
                         Entradas do Período
                       </span>
-                      <div className="p-2 rounded-xl bg-blue-50 text-blue-700">
-                        <ArrowDownLeft size={16} />
-                      </div>
+                      {renderIndicatorActions(
+                        {
+                          indicatorTitle: 'Entradas de Abastecimento do Período',
+                          indicatorSubtitle: 'Soma das quantidades e valores das entradas no período (excluindo devoluções)',
+                          groupName: 'Grupo 1 • Estoque e Giro',
+                          explanation: 'Soma das quantidades e valores das entradas de abastecimento no período (excluindo devoluções).',
+                          kpis: [
+                            { label: 'Valor de Entradas', value: formatCurrency(estoqueGiro.regularEntriesValue), tone: 'blue' },
+                            { label: 'Volume de Entradas', value: `${estoqueGiro.regularEntriesUnits.toLocaleString('pt-BR')} un`, tone: 'emerald' },
+                            { label: 'Registros de Entrada', value: `${estoqueGiro.regularEntriesCount} entradas`, tone: 'slate' }
+                          ],
+                          chart: {
+                            type: 'verticalBar',
+                            title: 'Evolução Mensal das Entradas Financeiras (R$)',
+                            valueFormatter: 'currency',
+                            data: visualChartsAndKpis.timelineData.map(p => ({
+                              label: p.label,
+                              value: p.entradaValor,
+                              color: '#2563eb'
+                            }))
+                          }
+                        },
+                        true
+                      )}
                     </div>
                     <p className="text-2xl font-black text-slate-900 tracking-tight">
                       {formatCurrency(estoqueGiro.regularEntriesValue)}
@@ -3214,8 +4079,25 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                       {estoqueGiro.regularEntriesUnits.toLocaleString('pt-BR')} un ({estoqueGiro.regularEntriesCount}{' '}
                       registros)
                     </p>
+
+                    <div className="h-24 w-full mt-2 pt-2 border-t border-slate-100">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart
+                          data={visualChartsAndKpis.timelineData.map(p => ({
+                            name: p.label,
+                            valor: Number(p.entradaValor.toFixed(2))
+                          }))}
+                          margin={{ top: 4, right: 4, left: -24, bottom: 0 }}
+                        >
+                          <XAxis dataKey="name" tick={{ fontSize: 8, fontWeight: 700, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                          <YAxis tick={{ fontSize: 8, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                          <Tooltip formatter={(val: any) => [formatCurrency(Number(val) || 0), 'Entradas (R$)']} contentStyle={{ borderRadius: '10px', fontSize: '10px', fontWeight: 700 }} />
+                          <Bar dataKey="valor" fill="#0284c7" radius={[4, 4, 0, 0]} maxBarSize={20} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-3 border-t border-slate-100">
+                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-2 border-t border-slate-100">
                     Soma das quantidades e valores das entradas de abastecimento no período (excluindo devoluções).
                   </p>
                 </div>
@@ -3225,18 +4107,44 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
 
           {/* GRUPO 2: DISPONIBILIDADE */}
           <div className="space-y-4">
-            <div className="flex items-center gap-2.5 px-1">
-              <div className="p-2 rounded-xl bg-blue-700 text-white shadow-xs">
-                <Package size={16} />
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 px-1">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-blue-700 text-white shadow-xs">
+                  <Package size={16} />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-slate-900 tracking-tight">
+                    Grupo 2 • Disponibilidade
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium">
+                    Análise consolidada por material (soma dos lotes de mesmo nome), ruptura, estoque mínimo e itens sem giro
+                  </p>
+                </div>
               </div>
-              <div>
-                <h3 className="text-base font-black text-slate-900 tracking-tight">
-                  Grupo 2 • Disponibilidade
-                </h3>
-                <p className="text-xs text-slate-500 font-medium">
-                  Análise consolidada por material (soma dos lotes de mesmo nome), ruptura, estoque mínimo e itens sem giro
-                </p>
-              </div>
+              {renderIndicatorActions({
+                indicatorTitle: 'Grupo 2 • Disponibilidade Consolidada de Materiais',
+                indicatorSubtitle: 'Panorama de ruptura (180d), estoque mínimo de segurança e materiais sem giro',
+                groupName: 'Grupo 2 • Disponibilidade',
+                explanation:
+                  'Avalia a disponibilidade física dos materiais consolidados pela soma de todos os lotes de mesmo nome.',
+                kpis: [
+                  { label: 'Taxa de Ruptura (180d)', value: `${formatDecimal(disponibilidade.stockoutRatePct, 1)}%`, subvalue: `${disponibilidade.stockoutMaterialsCount} de ${disponibilidade.materialsWithCons180Count} zerados`, tone: 'rose' },
+                  { label: 'Saldo ≤ Estoque Mínimo', value: `${disponibilidade.belowOrEqualMinMaterialsCount} materiais`, subvalue: `De ${disponibilidade.totalConsolidatedMaterials} cadastrados`, tone: 'amber' },
+                  { label: 'Sem Giro há 180 Dias', value: `${disponibilidade.noConsumptionWithStockCount} materiais`, subvalue: formatCurrency(disponibilidade.noConsumptionWithStockValue), tone: 'slate' }
+                ],
+                chart: {
+                  type: 'verticalBar',
+                  title: 'Comparativo de Indicadores de Disponibilidade (Qtd. de Materiais)',
+                  valueFormatter: 'integer',
+                  data: [
+                    { label: 'Total Consolidado', value: disponibilidade.totalConsolidatedMaterials, color: '#2563eb' },
+                    { label: 'Com Consumo (180d)', value: disponibilidade.materialsWithCons180Count, color: '#10b981' },
+                    { label: 'Em Ruptura Hoje', value: disponibilidade.stockoutMaterialsCount, color: '#ef4444' },
+                    { label: 'Saldo ≤ Mínimo', value: disponibilidade.belowOrEqualMinMaterialsCount, color: '#f59e0b' },
+                    { label: 'Sem Giro (180d)', value: disponibilidade.noConsumptionWithStockCount, color: '#64748b' }
+                  ]
+                }
+              })}
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
@@ -3245,13 +4153,33 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                 <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-800" />
                 <div className="p-6 space-y-3 flex-1 flex flex-col justify-between">
                   <div>
-                    <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="flex items-start justify-between gap-2 mb-2">
                       <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">
                         Taxa de Ruptura
                       </span>
-                      <div className="p-2.5 rounded-2xl bg-blue-50 text-blue-700">
-                        <AlertTriangle size={18} />
-                      </div>
+                      {renderIndicatorActions(
+                        {
+                          indicatorTitle: 'Taxa de Ruptura de Estoque (Últimos 180 Dias)',
+                          indicatorSubtitle: 'Proporção de materiais com demanda recente que estão com saldo zero hoje',
+                          groupName: 'Grupo 2 • Disponibilidade',
+                          explanation: 'Proporção de materiais consolidados pelo nome que tiveram consumo nos últimos 180 dias e hoje estão com saldo zero.',
+                          kpis: [
+                            { label: 'Taxa de Ruptura', value: `${formatDecimal(disponibilidade.stockoutRatePct, 1)}%`, tone: 'rose' },
+                            { label: 'Zerados com Demanda', value: `${disponibilidade.stockoutMaterialsCount} materiais`, tone: 'amber' },
+                            { label: 'Abastecidos com Demanda', value: `${Math.max(0, disponibilidade.materialsWithCons180Count - disponibilidade.stockoutMaterialsCount)} materiais`, tone: 'emerald' }
+                          ],
+                          chart: {
+                            type: 'donut',
+                            title: 'Materiais com Consumo nos Últimos 180 Dias',
+                            valueFormatter: 'integer',
+                            data: [
+                              { label: 'Com Saldo Disponível', value: Math.max(0, disponibilidade.materialsWithCons180Count - disponibilidade.stockoutMaterialsCount), color: '#10b981' },
+                              { label: 'Em Ruptura (Saldo Zero)', value: disponibilidade.stockoutMaterialsCount, color: '#ef4444' }
+                            ]
+                          }
+                        },
+                        true
+                      )}
                     </div>
                     <p className="text-3xl font-black text-slate-900 tracking-tight">
                       {formatDecimal(disponibilidade.stockoutRatePct, 1)}%
@@ -3260,8 +4188,32 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                       {disponibilidade.stockoutMaterialsCount} zerados hoje de{' '}
                       {disponibilidade.materialsWithCons180Count} materiais com consumo (180d)
                     </p>
+
+                    <div className="h-28 w-full mt-3 pt-2 border-t border-slate-100">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie
+                            data={[
+                              { name: 'Disponíveis (180d)', value: Math.max(0, disponibilidade.materialsWithCons180Count - disponibilidade.stockoutMaterialsCount), color: '#10b981' },
+                              { name: 'Em Ruptura (Zerados)', value: disponibilidade.stockoutMaterialsCount, color: '#ef4444' }
+                            ]}
+                            dataKey="value"
+                            nameKey="name"
+                            cx="50%"
+                            cy="50%"
+                            innerRadius={24}
+                            outerRadius={42}
+                            paddingAngle={3}
+                          >
+                            <Cell fill="#10b981" />
+                            <Cell fill="#ef4444" />
+                          </Pie>
+                          <Tooltip formatter={(val: any) => [`${Number(val || 0)} materiais`, 'Quantidade']} contentStyle={{ borderRadius: '10px', fontSize: '10px', fontWeight: 700 }} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-3 border-t border-slate-100">
+                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-2 border-t border-slate-100">
                     Proporção de materiais consolidados pelo nome que tiveram consumo nos últimos 180 dias e hoje estão com saldo zero.
                   </p>
                 </div>
@@ -3272,13 +4224,33 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                 <div className="h-1.5 w-full bg-gradient-to-r from-indigo-600 via-blue-700 to-indigo-900" />
                 <div className="p-6 space-y-3 flex-1 flex flex-col justify-between">
                   <div>
-                    <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="flex items-start justify-between gap-2 mb-2">
                       <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">
                         Saldo &le; Estoque Mínimo
                       </span>
-                      <div className="p-2.5 rounded-2xl bg-indigo-50 text-indigo-700">
-                        <TrendingDown size={18} />
-                      </div>
+                      {renderIndicatorActions(
+                        {
+                          indicatorTitle: 'Materiais com Saldo Igual ou Abaixo do Estoque Mínimo',
+                          indicatorSubtitle: 'Comparação do saldo consolidado frente ao estoque mínimo de segurança',
+                          groupName: 'Grupo 2 • Disponibilidade',
+                          explanation: 'Quantidade de materiais cuja soma dos saldos de todos os lotes está igual ou abaixo do estoque mínimo de segurança.',
+                          kpis: [
+                            { label: 'Saldo ≤ Estoque Mínimo', value: `${disponibilidade.belowOrEqualMinMaterialsCount} materiais`, tone: 'amber' },
+                            { label: 'Acima do Mínimo', value: `${Math.max(0, disponibilidade.totalConsolidatedMaterials - disponibilidade.belowOrEqualMinMaterialsCount)} materiais`, tone: 'emerald' },
+                            { label: 'Total Consolidado', value: `${disponibilidade.totalConsolidatedMaterials} materiais`, tone: 'blue' }
+                          ],
+                          chart: {
+                            type: 'donut',
+                            title: 'Posição em Relação ao Estoque Mínimo',
+                            valueFormatter: 'integer',
+                            data: [
+                              { label: 'Acima do Estoque Mínimo', value: Math.max(0, disponibilidade.totalConsolidatedMaterials - disponibilidade.belowOrEqualMinMaterialsCount), color: '#10b981' },
+                              { label: 'Saldo ≤ Estoque Mínimo', value: disponibilidade.belowOrEqualMinMaterialsCount, color: '#f59e0b' }
+                            ]
+                          }
+                        },
+                        true
+                      )}
                     </div>
                     <p className="text-3xl font-black text-slate-900 tracking-tight">
                       {disponibilidade.belowOrEqualMinMaterialsCount}{' '}
@@ -3287,8 +4259,29 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                     <p className="text-xs font-extrabold text-indigo-700 mt-1">
                       De {disponibilidade.totalConsolidatedMaterials} materiais cadastrados no setor
                     </p>
+
+                    <div className="h-28 w-full mt-3 pt-2 border-t border-slate-100">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart
+                          data={[
+                            { name: 'Acima Mín.', qtd: Math.max(0, disponibilidade.totalConsolidatedMaterials - disponibilidade.belowOrEqualMinMaterialsCount), fill: '#10b981' },
+                            { name: '≤ Mínimo', qtd: disponibilidade.belowOrEqualMinMaterialsCount, fill: '#f59e0b' }
+                          ]}
+                          layout="vertical"
+                          margin={{ top: 4, right: 12, left: 8, bottom: 0 }}
+                        >
+                          <XAxis type="number" hide />
+                          <YAxis type="category" dataKey="name" width={68} tick={{ fontSize: 9, fontWeight: 700, fill: '#475569' }} axisLine={false} tickLine={false} />
+                          <Tooltip formatter={(val: any) => [`${Number(val || 0)} materiais`, 'Total']} contentStyle={{ borderRadius: '10px', fontSize: '10px', fontWeight: 700 }} />
+                          <Bar dataKey="qtd" radius={[0, 6, 6, 0]} maxBarSize={20}>
+                            <Cell fill="#10b981" />
+                            <Cell fill="#f59e0b" />
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-3 border-t border-slate-100">
+                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-2 border-t border-slate-100">
                     Quantidade de materiais cuja soma dos saldos de todos os lotes está igual ou abaixo do estoque mínimo de segurança.
                   </p>
                 </div>
@@ -3299,13 +4292,33 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                 <div className="h-1.5 w-full bg-gradient-to-r from-blue-500 to-slate-700" />
                 <div className="p-6 space-y-3 flex-1 flex flex-col justify-between">
                   <div>
-                    <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="flex items-start justify-between gap-2 mb-2">
                       <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">
                         Sem Giro há 180 Dias
                       </span>
-                      <div className="p-2.5 rounded-2xl bg-slate-100 text-slate-700">
-                        <Clock size={18} />
-                      </div>
+                      {renderIndicatorActions(
+                        {
+                          indicatorTitle: 'Materiais com Saldo Positivo Sem Giro há 180 Dias',
+                          indicatorSubtitle: 'Imobilização física e financeira em materiais sem saída recente',
+                          groupName: 'Grupo 2 • Disponibilidade',
+                          explanation: 'Quantidade e valor financeiro dos materiais com saldo positivo que não tiveram nenhuma saída de consumo nos últimos 180 dias.',
+                          kpis: [
+                            { label: 'Materiais Sem Giro (180d)', value: `${disponibilidade.noConsumptionWithStockCount} materiais`, tone: 'slate' },
+                            { label: 'Valor Parado', value: formatCurrency(disponibilidade.noConsumptionWithStockValue), tone: 'amber' },
+                            { label: 'Unidades Paradas', value: `${disponibilidade.noConsumptionWithStockUnits.toLocaleString('pt-BR')} un`, tone: 'blue' }
+                          ],
+                          chart: {
+                            type: 'donut',
+                            title: 'Proporção do Valor em Estoque: Com Giro vs. Sem Giro (180d)',
+                            valueFormatter: 'currency',
+                            data: [
+                              { label: 'Estoque com Giro Ativo (R$)', value: Math.max(0, estoqueGiro.currentStockValue - disponibilidade.noConsumptionWithStockValue), color: '#2563eb' },
+                              { label: 'Estoque Sem Giro 180d (R$)', value: disponibilidade.noConsumptionWithStockValue, color: '#64748b' }
+                            ]
+                          }
+                        },
+                        true
+                      )}
                     </div>
                     <div className="flex items-baseline gap-2 flex-wrap">
                       <p className="text-3xl font-black text-slate-900 tracking-tight">
@@ -3317,8 +4330,32 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                       {formatCurrency(disponibilidade.noConsumptionWithStockValue)} (
                       {disponibilidade.noConsumptionWithStockUnits.toLocaleString('pt-BR')} un paradas)
                     </p>
+
+                    <div className="h-28 w-full mt-3 pt-2 border-t border-slate-100">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie
+                            data={[
+                              { name: 'Com Giro Ativo (R$)', value: Number(Math.max(0, estoqueGiro.currentStockValue - disponibilidade.noConsumptionWithStockValue).toFixed(2)), color: '#2563eb' },
+                              { name: 'Sem Giro 180d (R$)', value: Number(disponibilidade.noConsumptionWithStockValue.toFixed(2)), color: '#64748b' }
+                            ]}
+                            dataKey="value"
+                            nameKey="name"
+                            cx="50%"
+                            cy="50%"
+                            innerRadius={24}
+                            outerRadius={42}
+                            paddingAngle={3}
+                          >
+                            <Cell fill="#2563eb" />
+                            <Cell fill="#64748b" />
+                          </Pie>
+                          <Tooltip formatter={(val: any) => [formatCurrency(Number(val) || 0), 'Valor']} contentStyle={{ borderRadius: '10px', fontSize: '10px', fontWeight: 700 }} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-3 border-t border-slate-100">
+                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-2 border-t border-slate-100">
                     Quantidade e valor financeiro dos materiais com saldo positivo que não tiveram nenhuma saída de consumo nos últimos 180 dias.
                   </p>
                 </div>
@@ -3328,18 +4365,44 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
 
           {/* GRUPO 3: ATENDIMENTO */}
           <div className="space-y-4">
-            <div className="flex items-center gap-2.5 px-1">
-              <div className="p-2 rounded-xl bg-indigo-700 text-white shadow-xs">
-                <CheckCircle size={16} />
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 px-1">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-indigo-700 text-white shadow-xs">
+                  <CheckCircle size={16} />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-slate-900 tracking-tight">
+                    Grupo 3 • Atendimento de Solicitações
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium">
+                    Eficiência operacional sobre pedidos (excluindo devoluções e registros excluídos) e taxa de retorno
+                  </p>
+                </div>
               </div>
-              <div>
-                <h3 className="text-base font-black text-slate-900 tracking-tight">
-                  Grupo 3 • Atendimento de Solicitações
-                </h3>
-                <p className="text-xs text-slate-500 font-medium">
-                  Eficiência operacional sobre pedidos (excluindo devoluções e registros excluídos) e taxa de retorno
-                </p>
-              </div>
+              {renderIndicatorActions({
+                indicatorTitle: 'Grupo 3 • Atendimento de Solicitações (Desempenho Operacional)',
+                indicatorSubtitle: 'Nível de serviço, atendimento físico de itens, lead time e status de requisições',
+                groupName: 'Grupo 3 • Atendimento de Solicitações',
+                explanation:
+                  'Avalia o índice de atendimento integral das solicitações dos setores, a proporção de quantidades entregues, o tempo de resposta (SLA 48h) e a taxa de devolução.',
+                kpis: [
+                  { label: 'Nível de Serviço', value: `${formatDecimal(atendimento.serviceLevelPct, 1)}%`, subvalue: `${atendimento.deliveredFullRequestsCount} integrais`, tone: 'blue' },
+                  { label: '% Itens Atendidos', value: `${formatDecimal(atendimento.itemsFulfilledPct, 1)}%`, subvalue: `${atendimento.totalDeliveredItemsQty.toLocaleString('pt-BR')} / ${atendimento.totalRequestedItemsQty.toLocaleString('pt-BR')} un`, tone: 'indigo' },
+                  { label: 'Lead Time Médio', value: atendimento.avgLeadTimeHours !== null ? `${formatDecimal(atendimento.avgLeadTimeHours, 1)}h` : 'Sem dados', subvalue: `${formatDecimal(atendimento.within48hPct, 1)}% em até 48h`, tone: 'emerald' },
+                  { label: 'Total de Pedidos', value: `${atendimento.totalValidRequests} pedidos`, subvalue: `${atendimento.deliveredRequestsCount} entregues`, tone: 'slate' }
+                ],
+                chart: {
+                  type: 'verticalBar',
+                  title: 'Indicadores Percentuais de Qualidade de Atendimento (%)',
+                  valueFormatter: 'percent',
+                  data: [
+                    { label: 'Nível de Serviço', value: Number(atendimento.serviceLevelPct.toFixed(1)), color: '#2563eb' },
+                    { label: '% Itens Entregues', value: Number(atendimento.itemsFulfilledPct.toFixed(1)), color: '#4f46e5' },
+                    { label: 'Entregas ≤ 48h', value: Number(atendimento.within48hPct.toFixed(1)), color: '#10b981' },
+                    { label: 'Taxa Devolução', value: Number(atendimento.returnRateUnitsPct.toFixed(2)), color: '#f59e0b' }
+                  ]
+                }
+              })}
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
@@ -3348,13 +4411,34 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                 <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-800" />
                 <div className="p-5 space-y-3 flex-1 flex flex-col justify-between">
                   <div>
-                    <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="flex items-start justify-between gap-1.5 mb-2">
                       <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
                         Nível de Serviço
                       </span>
-                      <div className="p-2 rounded-xl bg-blue-50 text-blue-700">
-                        <CheckCircle size={16} />
-                      </div>
+                      {renderIndicatorActions(
+                        {
+                          indicatorTitle: 'Nível de Serviço de Atendimento',
+                          indicatorSubtitle: 'Proporção de solicitações entregues integralmente sobre finalizadas',
+                          groupName: 'Grupo 3 • Atendimento de Solicitações',
+                          explanation: 'Proporção de solicitações entregues com todos os itens atendidos integralmente sobre o total de entregues e recusadas.',
+                          kpis: [
+                            { label: 'Nível de Serviço', value: `${formatDecimal(atendimento.serviceLevelPct, 1)}%`, tone: 'blue' },
+                            { label: 'Atendidas Integralmente', value: `${atendimento.deliveredFullRequestsCount} pedidos`, tone: 'emerald' },
+                            { label: 'Parciais ou Recusadas', value: `${Math.max(0, atendimento.deliveredRequestsCount + atendimento.rejectedRequestsCount - atendimento.deliveredFullRequestsCount)} pedidos`, tone: 'amber' }
+                          ],
+                          chart: {
+                            type: 'donut',
+                            title: 'Qualidade das Solicitações Finalizadas',
+                            valueFormatter: 'integer',
+                            data: [
+                              { label: 'Entregues Integralmente', value: atendimento.deliveredFullRequestsCount, color: '#2563eb' },
+                              { label: 'Atendimento Parcial', value: Math.max(0, atendimento.deliveredRequestsCount - atendimento.deliveredFullRequestsCount), color: '#f59e0b' },
+                              { label: 'Recusadas', value: atendimento.rejectedRequestsCount, color: '#ef4444' }
+                            ]
+                          }
+                        },
+                        true
+                      )}
                     </div>
                     <p className="text-2xl font-black text-slate-900 tracking-tight">
                       {formatDecimal(atendimento.serviceLevelPct, 1)}%
@@ -3363,8 +4447,32 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                       {atendimento.deliveredFullRequestsCount} integrais de{' '}
                       {atendimento.deliveredRequestsCount + atendimento.rejectedRequestsCount} finalizadas
                     </p>
+
+                    <div className="h-24 w-full mt-2 pt-2 border-t border-slate-100">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie
+                            data={[
+                              { name: 'Integrais', value: Math.max(0, atendimento.deliveredFullRequestsCount), color: '#2563eb' },
+                              { name: 'Parciais/Recusadas', value: Math.max(0, atendimento.deliveredRequestsCount + atendimento.rejectedRequestsCount - atendimento.deliveredFullRequestsCount), color: '#cbd5e1' }
+                            ]}
+                            dataKey="value"
+                            nameKey="name"
+                            cx="50%"
+                            cy="50%"
+                            innerRadius={20}
+                            outerRadius={36}
+                            paddingAngle={2}
+                          >
+                            <Cell fill="#2563eb" />
+                            <Cell fill="#cbd5e1" />
+                          </Pie>
+                          <Tooltip formatter={(val: any) => [`${Number(val || 0)} pedidos`, 'Total']} contentStyle={{ borderRadius: '10px', fontSize: '10px', fontWeight: 700 }} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-3 border-t border-slate-100">
+                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-2 border-t border-slate-100">
                     Proporção de solicitações entregues com todos os itens atendidos integralmente sobre o total de entregues e recusadas.
                   </p>
                 </div>
@@ -3375,13 +4483,34 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                 <div className="h-1.5 w-full bg-gradient-to-r from-indigo-600 to-blue-800" />
                 <div className="p-5 space-y-3 flex-1 flex flex-col justify-between">
                   <div>
-                    <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="flex items-start justify-between gap-1.5 mb-2">
                       <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
                         % de Itens Atendidos
                       </span>
-                      <div className="p-2 rounded-xl bg-indigo-50 text-indigo-700">
-                        <Percent size={16} />
-                      </div>
+                      {renderIndicatorActions(
+                        {
+                          indicatorTitle: 'Percentual Físico de Itens Atendidos',
+                          indicatorSubtitle: 'Comparação entre volume solicitado e volume efetivamente entregue',
+                          groupName: 'Grupo 3 • Atendimento de Solicitações',
+                          explanation: 'Quantidade física total entregue dividida pela quantidade total solicitada nos pedidos do período.',
+                          kpis: [
+                            { label: '% Itens Atendidos', value: `${formatDecimal(atendimento.itemsFulfilledPct, 1)}%`, tone: 'indigo' },
+                            { label: 'Qtd. Solicitada', value: `${atendimento.totalRequestedItemsQty.toLocaleString('pt-BR')} un`, tone: 'slate' },
+                            { label: 'Qtd. Entregue', value: `${atendimento.totalDeliveredItemsQty.toLocaleString('pt-BR')} un`, tone: 'emerald' }
+                          ],
+                          chart: {
+                            type: 'verticalBar',
+                            title: 'Volume Solicitado vs. Volume Entregue (Unidades)',
+                            valueFormatter: 'integer',
+                            data: [
+                              { label: 'Qtd. Solicitada', value: atendimento.totalRequestedItemsQty, color: '#64748b' },
+                              { label: 'Qtd. Entregue', value: atendimento.totalDeliveredItemsQty, color: '#4f46e5' },
+                              { label: 'Déficit Não Atendido', value: Math.max(0, atendimento.totalRequestedItemsQty - atendimento.totalDeliveredItemsQty), color: '#f59e0b' }
+                            ]
+                          }
+                        },
+                        true
+                      )}
                     </div>
                     <p className="text-2xl font-black text-slate-900 tracking-tight">
                       {formatDecimal(atendimento.itemsFulfilledPct, 1)}%
@@ -3390,8 +4519,28 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                       {atendimento.totalDeliveredItemsQty.toLocaleString('pt-BR')} /{' '}
                       {atendimento.totalRequestedItemsQty.toLocaleString('pt-BR')} un
                     </p>
+
+                    <div className="h-24 w-full mt-2 pt-2 border-t border-slate-100">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart
+                          data={[
+                            { name: 'Pedido', un: atendimento.totalRequestedItemsQty, fill: '#94a3b8' },
+                            { name: 'Entregue', un: atendimento.totalDeliveredItemsQty, fill: '#4f46e5' }
+                          ]}
+                          margin={{ top: 4, right: 4, left: -24, bottom: 0 }}
+                        >
+                          <XAxis dataKey="name" tick={{ fontSize: 8, fontWeight: 700, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                          <YAxis tick={{ fontSize: 8, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                          <Tooltip formatter={(val: any) => [`${Number(val || 0).toLocaleString('pt-BR')} un`, 'Volume']} contentStyle={{ borderRadius: '10px', fontSize: '10px', fontWeight: 700 }} />
+                          <Bar dataKey="un" radius={[4, 4, 0, 0]} maxBarSize={24}>
+                            <Cell fill="#94a3b8" />
+                            <Cell fill="#4f46e5" />
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-3 border-t border-slate-100">
+                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-2 border-t border-slate-100">
                     Quantidade física total entregue dividida pela quantidade total solicitada nos pedidos do período.
                   </p>
                 </div>
@@ -3402,13 +4551,32 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                 <div className="h-1.5 w-full bg-gradient-to-r from-blue-500 to-indigo-700" />
                 <div className="p-5 space-y-3 flex-1 flex flex-col justify-between">
                   <div>
-                    <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="flex items-start justify-between gap-1.5 mb-2">
                       <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
                         Lead Time Médio
                       </span>
-                      <div className="p-2 rounded-xl bg-blue-50 text-blue-700">
-                        <Timer size={16} />
-                      </div>
+                      {renderIndicatorActions(
+                        {
+                          indicatorTitle: 'Lead Time Médio de Entrega e SLA de 48h',
+                          indicatorSubtitle: 'Tempo médio entre solicitação e entrega confirmada',
+                          groupName: 'Grupo 3 • Atendimento de Solicitações',
+                          explanation: 'Tempo médio decorrido entre a data da solicitação e a confirmação de entrega (deliveredAt).',
+                          kpis: [
+                            { label: 'Lead Time Médio', value: atendimento.avgLeadTimeHours !== null ? `${formatDecimal(atendimento.avgLeadTimeHours, 1)}h` : 'Sem dados', tone: 'blue' },
+                            { label: 'Entregues em até 48h', value: `${formatDecimal(atendimento.within48hPct, 1)}%`, tone: 'emerald' }
+                          ],
+                          chart: {
+                            type: 'donut',
+                            title: 'Cumprimento do Prazo de 48 Horas (%)',
+                            valueFormatter: 'percent',
+                            data: [
+                              { label: 'Entregues em até 48h (%)', value: Number(atendimento.within48hPct.toFixed(1)), color: '#10b981' },
+                              { label: 'Acima de 48h (%)', value: Number(Math.max(0, 100 - atendimento.within48hPct).toFixed(1)), color: '#f59e0b' }
+                            ]
+                          }
+                        },
+                        true
+                      )}
                     </div>
                     <p className="text-2xl font-black text-slate-900 tracking-tight">
                       {atendimento.avgLeadTimeHours !== null
@@ -3418,8 +4586,32 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                     <p className="text-xs font-extrabold text-blue-700 mt-1">
                       {formatDecimal(atendimento.within48hPct, 1)}% entregues em até 48h
                     </p>
+
+                    <div className="h-24 w-full mt-2 pt-2 border-t border-slate-100">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie
+                            data={[
+                              { name: 'Até 48h (%)', value: Number(atendimento.within48hPct.toFixed(1)), color: '#10b981' },
+                              { name: '> 48h (%)', value: Number(Math.max(0, 100 - atendimento.within48hPct).toFixed(1)), color: '#f59e0b' }
+                            ]}
+                            dataKey="value"
+                            nameKey="name"
+                            cx="50%"
+                            cy="50%"
+                            innerRadius={20}
+                            outerRadius={36}
+                            paddingAngle={2}
+                          >
+                            <Cell fill="#10b981" />
+                            <Cell fill="#f59e0b" />
+                          </Pie>
+                          <Tooltip formatter={(val: any) => [`${formatDecimal(Number(val) || 0, 1)}%`, 'Proporção']} contentStyle={{ borderRadius: '10px', fontSize: '10px', fontWeight: 700 }} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-3 border-t border-slate-100">
+                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-2 border-t border-slate-100">
                     Tempo médio decorrido entre a data da solicitação e a confirmação de entrega (deliveredAt).
                   </p>
                 </div>
@@ -3430,13 +4622,35 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                 <div className="h-1.5 w-full bg-gradient-to-r from-blue-700 to-cyan-600" />
                 <div className="p-5 space-y-3 flex-1 flex flex-col justify-between">
                   <div>
-                    <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="flex items-start justify-between gap-1.5 mb-2">
                       <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
                         Total de Solicitações
                       </span>
-                      <div className="p-2 rounded-xl bg-blue-50 text-blue-700">
-                        <Layers size={16} />
-                      </div>
+                      {renderIndicatorActions(
+                        {
+                          indicatorTitle: 'Total de Solicitações por Status',
+                          indicatorSubtitle: 'Divisão das requisições do período entre entregues, em aberto e recusadas',
+                          groupName: 'Grupo 3 • Atendimento de Solicitações',
+                          explanation: 'Contagem de requisições ativas no período dividida entre entregues, em aberto e recusadas.',
+                          kpis: [
+                            { label: 'Total de Solicitações', value: `${atendimento.totalValidRequests} pedidos`, tone: 'blue' },
+                            { label: 'Entregues', value: `${atendimento.deliveredRequestsCount} pedidos`, tone: 'emerald' },
+                            { label: 'Em Aberto', value: `${atendimento.openRequestsCount} pedidos`, tone: 'amber' },
+                            { label: 'Recusadas', value: `${atendimento.rejectedRequestsCount} pedidos`, tone: 'rose' }
+                          ],
+                          chart: {
+                            type: 'verticalBar',
+                            title: 'Distribuição das Solicitações por Status',
+                            valueFormatter: 'integer',
+                            data: [
+                              { label: 'Entregues', value: atendimento.deliveredRequestsCount, color: '#10b981' },
+                              { label: 'Em Aberto', value: atendimento.openRequestsCount, color: '#3b82f6' },
+                              { label: 'Recusadas', value: atendimento.rejectedRequestsCount, color: '#ef4444' }
+                            ]
+                          }
+                        },
+                        true
+                      )}
                     </div>
                     <p className="text-2xl font-black text-slate-900 tracking-tight">
                       {atendimento.totalValidRequests}{' '}
@@ -3453,8 +4667,30 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                         Recusadas: {atendimento.rejectedRequestsCount}
                       </span>
                     </div>
+
+                    <div className="h-24 w-full mt-2 pt-2 border-t border-slate-100">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart
+                          data={[
+                            { name: 'Entreg.', qtd: atendimento.deliveredRequestsCount, fill: '#10b981' },
+                            { name: 'Abertas', qtd: atendimento.openRequestsCount, fill: '#3b82f6' },
+                            { name: 'Recus.', qtd: atendimento.rejectedRequestsCount, fill: '#ef4444' }
+                          ]}
+                          margin={{ top: 4, right: 4, left: -24, bottom: 0 }}
+                        >
+                          <XAxis dataKey="name" tick={{ fontSize: 8, fontWeight: 700, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                          <YAxis tick={{ fontSize: 8, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                          <Tooltip formatter={(val: any) => [`${Number(val || 0)} pedidos`, 'Status']} contentStyle={{ borderRadius: '10px', fontSize: '10px', fontWeight: 700 }} />
+                          <Bar dataKey="qtd" radius={[4, 4, 0, 0]} maxBarSize={22}>
+                            <Cell fill="#10b981" />
+                            <Cell fill="#3b82f6" />
+                            <Cell fill="#ef4444" />
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-3 border-t border-slate-100">
+                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-2 border-t border-slate-100">
                     Contagem de requisições ativas no período dividida entre entregues, em aberto e recusadas.
                   </p>
                 </div>
@@ -3465,13 +4701,33 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                 <div className="h-1.5 w-full bg-gradient-to-r from-indigo-600 to-slate-700" />
                 <div className="p-5 space-y-3 flex-1 flex flex-col justify-between">
                   <div>
-                    <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="flex items-start justify-between gap-1.5 mb-2">
                       <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
                         Taxa de Devolução
                       </span>
-                      <div className="p-2 rounded-xl bg-slate-100 text-slate-700">
-                        <RotateCcw size={16} />
-                      </div>
+                      {renderIndicatorActions(
+                        {
+                          indicatorTitle: 'Taxa de Devolução ao Almoxarifado',
+                          indicatorSubtitle: 'Proporção de unidades devolvidas frente às saídas de consumo',
+                          groupName: 'Grupo 3 • Atendimento de Solicitações',
+                          explanation: 'Total de unidades devolvidas ao estoque dividido pelo total de saídas de consumo do período.',
+                          kpis: [
+                            { label: 'Taxa de Devolução (Un)', value: `${formatDecimal(atendimento.returnRateUnitsPct, 2)}%`, tone: 'indigo' },
+                            { label: 'Taxa de Devolução (R$)', value: `${formatDecimal(atendimento.returnRateValuePct, 2)}%`, tone: 'blue' },
+                            { label: 'Unidades Devolvidas', value: `${atendimento.returnsInPeriodUnits.toLocaleString('pt-BR')} un`, tone: 'emerald' }
+                          ],
+                          chart: {
+                            type: 'verticalBar',
+                            title: 'Consumo Líquido vs. Devoluções no Período (Unidades)',
+                            valueFormatter: 'integer',
+                            data: [
+                              { label: 'Consumo Líquido', value: estoqueGiro.netConsumptionUnits, color: '#2563eb' },
+                              { label: 'Devoluções', value: atendimento.returnsInPeriodUnits, color: '#10b981' }
+                            ]
+                          }
+                        },
+                        true
+                      )}
                     </div>
                     <p className="text-2xl font-black text-slate-900 tracking-tight">
                       {formatDecimal(atendimento.returnRateUnitsPct, 2)}%
@@ -3480,8 +4736,28 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                       {atendimento.returnsInPeriodUnits.toLocaleString('pt-BR')} un devolvidas (
                       {formatDecimal(atendimento.returnRateValuePct, 2)}% em R$)
                     </p>
+
+                    <div className="h-24 w-full mt-2 pt-2 border-t border-slate-100">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart
+                          data={[
+                            { name: 'Consumo', un: estoqueGiro.netConsumptionUnits, fill: '#2563eb' },
+                            { name: 'Devolvido', un: atendimento.returnsInPeriodUnits, fill: '#10b981' }
+                          ]}
+                          margin={{ top: 4, right: 4, left: -24, bottom: 0 }}
+                        >
+                          <XAxis dataKey="name" tick={{ fontSize: 8, fontWeight: 700, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                          <YAxis tick={{ fontSize: 8, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                          <Tooltip formatter={(val: any) => [`${Number(val || 0).toLocaleString('pt-BR')} un`, 'Volume']} contentStyle={{ borderRadius: '10px', fontSize: '10px', fontWeight: 700 }} />
+                          <Bar dataKey="un" radius={[4, 4, 0, 0]} maxBarSize={24}>
+                            <Cell fill="#2563eb" />
+                            <Cell fill="#10b981" />
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-3 border-t border-slate-100">
+                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-2 border-t border-slate-100">
                     Total de unidades devolvidas ao estoque dividido pelo total de saídas de consumo do período.
                   </p>
                 </div>
@@ -3491,18 +4767,42 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
 
           {/* GRUPO 4: PERDAS E VALIDADE */}
           <div className="space-y-4">
-            <div className="flex items-center gap-2.5 px-1">
-              <div className="p-2 rounded-xl bg-slate-800 text-white shadow-xs">
-                <ShieldAlert size={16} />
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 px-1">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-slate-800 text-white shadow-xs">
+                  <ShieldAlert size={16} />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-slate-900 tracking-tight">
+                    Grupo 4 • Perdas e Validade
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium">
+                    Baixas por perda ou vencimento no período e exposição financeira de lotes vencidos ou próximos ao vencimento
+                  </p>
+                </div>
               </div>
-              <div>
-                <h3 className="text-base font-black text-slate-900 tracking-tight">
-                  Grupo 4 • Perdas e Validade
-                </h3>
-                <p className="text-xs text-slate-500 font-medium">
-                  Baixas por perda ou vencimento no período e exposição financeira de lotes vencidos ou próximos ao vencimento
-                </p>
-              </div>
+              {renderIndicatorActions({
+                indicatorTitle: 'Grupo 4 • Perdas e Exposição de Validade',
+                indicatorSubtitle: 'Baixas efetivas por vencimento/perda e risco financeiro em lotes vencidos ou a vencer (60d)',
+                groupName: 'Grupo 4 • Perdas e Validade',
+                explanation:
+                  'Compara o impacto financeiro das baixas realizadas no período por vencimento/perda com o saldo atual em lotes vencidos ou com vencimento nos próximos 60 dias.',
+                kpis: [
+                  { label: 'Baixas no Período', value: formatCurrency(perdasValidade.lossAndExpiredExitsValue), subvalue: `${perdasValidade.lossAndExpiredExitsUnits.toLocaleString('pt-BR')} un (${formatDecimal(perdasValidade.lossAndExpiredShareOfExitsPct, 2)}%)`, tone: 'rose' },
+                  { label: 'Lotes Vencidos Hoje', value: `${perdasValidade.expiredStockBatchesCount} lotes`, subvalue: formatCurrency(perdasValidade.expiredStockValue), tone: 'amber' },
+                  { label: 'Vencendo em 60 Dias', value: `${perdasValidade.expiring60dBatchesCount} lotes`, subvalue: formatCurrency(perdasValidade.expiring60dValue), tone: 'blue' }
+                ],
+                chart: {
+                  type: 'verticalBar',
+                  title: 'Exposição Financeira de Perdas e Validade (R$)',
+                  valueFormatter: 'currency',
+                  data: [
+                    { label: 'Baixas Realizadas', value: perdasValidade.lossAndExpiredExitsValue, color: '#ef4444' },
+                    { label: 'Saldo Vencido Hoje', value: perdasValidade.expiredStockValue, color: '#be123c' },
+                    { label: 'Vencendo em 60d', value: perdasValidade.expiring60dValue, color: '#f59e0b' }
+                  ]
+                }
+              })}
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
@@ -3511,13 +4811,33 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                 <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-800" />
                 <div className="p-6 space-y-3 flex-1 flex flex-col justify-between">
                   <div>
-                    <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="flex items-start justify-between gap-2 mb-2">
                       <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">
                         Baixas por Vencimento ou Perda
                       </span>
-                      <div className="p-2.5 rounded-2xl bg-blue-50 text-blue-700">
-                        <TrendingDown size={18} />
-                      </div>
+                      {renderIndicatorActions(
+                        {
+                          indicatorTitle: 'Baixas por Vencimento ou Perda no Período',
+                          indicatorSubtitle: 'Valor e proporção sobre o total financeiro das saídas',
+                          groupName: 'Grupo 4 • Perdas e Validade',
+                          explanation: 'Soma do valor e quantidade das saídas com motivo vencido ou perda e sua proporção sobre o valor total das saídas.',
+                          kpis: [
+                            { label: 'Valor Baixado', value: formatCurrency(perdasValidade.lossAndExpiredExitsValue), tone: 'rose' },
+                            { label: '% sobre Saídas Totais', value: `${formatDecimal(perdasValidade.lossAndExpiredShareOfExitsPct, 2)}%`, tone: 'amber' },
+                            { label: 'Quantidade Baixada', value: `${perdasValidade.lossAndExpiredExitsUnits.toLocaleString('pt-BR')} un`, subvalue: `${perdasValidade.lossAndExpiredExitsCount} registros`, tone: 'slate' }
+                          ],
+                          chart: {
+                            type: 'donut',
+                            title: 'Participação de Perdas/Vencidos sobre Saídas Totais (R$)',
+                            valueFormatter: 'currency',
+                            data: [
+                              { label: 'Saídas Regulares / Consumo (R$)', value: Math.max(0, estoqueGiro.netConsumptionValue), color: '#2563eb' },
+                              { label: 'Baixas Vencido/Perda (R$)', value: perdasValidade.lossAndExpiredExitsValue, color: '#ef4444' }
+                            ]
+                          }
+                        },
+                        true
+                      )}
                     </div>
                     <div className="flex items-baseline gap-2 flex-wrap">
                       <p className="text-3xl font-black text-slate-900 tracking-tight">
@@ -3531,8 +4851,32 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                       {perdasValidade.lossAndExpiredExitsUnits.toLocaleString('pt-BR')} un (
                       {perdasValidade.lossAndExpiredExitsCount} registros de baixa)
                     </p>
+
+                    <div className="h-28 w-full mt-3 pt-2 border-t border-slate-100">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie
+                            data={[
+                              { name: 'Saídas Regulares (R$)', value: Number(Math.max(0.01, estoqueGiro.netConsumptionValue).toFixed(2)), color: '#2563eb' },
+                              { name: 'Baixas Perda/Venc. (R$)', value: Number(perdasValidade.lossAndExpiredExitsValue.toFixed(2)), color: '#ef4444' }
+                            ]}
+                            dataKey="value"
+                            nameKey="name"
+                            cx="50%"
+                            cy="50%"
+                            innerRadius={24}
+                            outerRadius={42}
+                            paddingAngle={3}
+                          >
+                            <Cell fill="#2563eb" />
+                            <Cell fill="#ef4444" />
+                          </Pie>
+                          <Tooltip formatter={(val: any) => [formatCurrency(Number(val) || 0), 'Valor']} contentStyle={{ borderRadius: '10px', fontSize: '10px', fontWeight: 700 }} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-3 border-t border-slate-100">
+                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-2 border-t border-slate-100">
                     Soma do valor e quantidade das saídas com motivo vencido ou perda e sua proporção sobre o valor total das saídas.
                   </p>
                 </div>
@@ -3543,13 +4887,34 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                 <div className="h-1.5 w-full bg-gradient-to-r from-indigo-600 via-blue-700 to-indigo-900" />
                 <div className="p-6 space-y-3 flex-1 flex flex-col justify-between">
                   <div>
-                    <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="flex items-start justify-between gap-2 mb-2">
                       <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">
                         Lotes com Saldo Vencido Hoje
                       </span>
-                      <div className="p-2.5 rounded-2xl bg-indigo-50 text-indigo-700">
-                        <AlertTriangle size={18} />
-                      </div>
+                      {renderIndicatorActions(
+                        {
+                          indicatorTitle: 'Lotes com Saldo Vencido Hoje',
+                          indicatorSubtitle: 'Quantidade e valor financeiro de lotes com saldo > 0 e validade expirada',
+                          groupName: 'Grupo 4 • Perdas e Validade',
+                          explanation: 'Quantidade e valor financeiro dos lotes com saldo maior que zero e data de validade anterior a hoje (ignorando Indeterminada).',
+                          kpis: [
+                            { label: 'Lotes Vencidos', value: `${perdasValidade.expiredStockBatchesCount} lotes`, tone: 'rose' },
+                            { label: 'Valor Vencido em Saldo', value: formatCurrency(perdasValidade.expiredStockValue), tone: 'amber' },
+                            { label: 'Unidades Vencidas', value: `${perdasValidade.expiredStockUnits.toLocaleString('pt-BR')} un`, tone: 'slate' }
+                          ],
+                          chart: {
+                            type: 'verticalBar',
+                            title: 'Comparativo de Lotes por Situação de Validade (R$)',
+                            valueFormatter: 'currency',
+                            data: [
+                              { label: 'Saldo Regular', value: Math.max(0, estoqueGiro.currentStockValue - perdasValidade.expiredStockValue - perdasValidade.expiring60dValue), color: '#10b981' },
+                              { label: 'Vencendo 60d', value: perdasValidade.expiring60dValue, color: '#f59e0b' },
+                              { label: 'Vencido Hoje', value: perdasValidade.expiredStockValue, color: '#ef4444' }
+                            ]
+                          }
+                        },
+                        true
+                      )}
                     </div>
                     <div className="flex items-baseline gap-2 flex-wrap">
                       <p className="text-3xl font-black text-slate-900 tracking-tight">
@@ -3563,8 +4928,29 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                     <p className="text-xs font-extrabold text-slate-600 mt-1">
                       {perdasValidade.expiredStockUnits.toLocaleString('pt-BR')} un em lotes vencidos com saldo
                     </p>
+
+                    <div className="h-28 w-full mt-3 pt-2 border-t border-slate-100">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart
+                          data={[
+                            { name: 'Vencidos', lotes: perdasValidade.expiredStockBatchesCount, fill: '#ef4444' },
+                            { name: 'Venc. 60d', lotes: perdasValidade.expiring60dBatchesCount, fill: '#f59e0b' }
+                          ]}
+                          layout="vertical"
+                          margin={{ top: 4, right: 12, left: 8, bottom: 0 }}
+                        >
+                          <XAxis type="number" hide />
+                          <YAxis type="category" dataKey="name" width={62} tick={{ fontSize: 9, fontWeight: 700, fill: '#475569' }} axisLine={false} tickLine={false} />
+                          <Tooltip formatter={(val: any) => [`${Number(val || 0)} lotes`, 'Lotes']} contentStyle={{ borderRadius: '10px', fontSize: '10px', fontWeight: 700 }} />
+                          <Bar dataKey="lotes" radius={[0, 6, 6, 0]} maxBarSize={20}>
+                            <Cell fill="#ef4444" />
+                            <Cell fill="#f59e0b" />
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-3 border-t border-slate-100">
+                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-2 border-t border-slate-100">
                     Quantidade e valor financeiro dos lotes com saldo maior que zero e data de validade anterior a hoje (ignorando Indeterminada).
                   </p>
                 </div>
@@ -3575,13 +4961,34 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                 <div className="h-1.5 w-full bg-gradient-to-r from-blue-500 to-cyan-600" />
                 <div className="p-6 space-y-3 flex-1 flex flex-col justify-between">
                   <div>
-                    <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="flex items-start justify-between gap-2 mb-2">
                       <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">
                         Vencendo nos Próximos 60 Dias
                       </span>
-                      <div className="p-2.5 rounded-2xl bg-blue-50 text-blue-700">
-                        <Clock size={18} />
-                      </div>
+                      {renderIndicatorActions(
+                        {
+                          indicatorTitle: 'Lotes Vencendo nos Próximos 60 Dias',
+                          indicatorSubtitle: 'Monitoramento preventivo de lotes com vencimento próximo',
+                          groupName: 'Grupo 4 • Perdas e Validade',
+                          explanation: 'Quantidade e valor dos lotes com saldo positivo que vencem nos próximos 60 dias corridos (ignorando validade Indeterminada).',
+                          kpis: [
+                            { label: 'Lotes Vencendo (60d)', value: `${perdasValidade.expiring60dBatchesCount} lotes`, tone: 'amber' },
+                            { label: 'Valor Exposto (60d)', value: formatCurrency(perdasValidade.expiring60dValue), tone: 'blue' },
+                            { label: 'Unidades Expostas (60d)', value: `${perdasValidade.expiring60dUnits.toLocaleString('pt-BR')} un`, tone: 'indigo' }
+                          ],
+                          chart: {
+                            type: 'verticalBar',
+                            title: 'Unidades Expostas por Faixa de Criticidade de Validade',
+                            valueFormatter: 'integer',
+                            data: [
+                              { label: 'Vencendo em 60d (Un)', value: perdasValidade.expiring60dUnits, color: '#f59e0b' },
+                              { label: 'Vencidos Hoje (Un)', value: perdasValidade.expiredStockUnits, color: '#ef4444' },
+                              { label: 'Baixados no Período (Un)', value: perdasValidade.lossAndExpiredExitsUnits, color: '#6366f1' }
+                            ]
+                          }
+                        },
+                        true
+                      )}
                     </div>
                     <div className="flex items-baseline gap-2 flex-wrap">
                       <p className="text-3xl font-black text-slate-900 tracking-tight">
@@ -3595,8 +5002,30 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                     <p className="text-xs font-extrabold text-slate-600 mt-1">
                       {perdasValidade.expiring60dUnits.toLocaleString('pt-BR')} un com vencimento em até 60 dias
                     </p>
+
+                    <div className="h-28 w-full mt-3 pt-2 border-t border-slate-100">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart
+                          data={[
+                            { name: 'Venc. 60d', valor: Number(perdasValidade.expiring60dValue.toFixed(2)), fill: '#f59e0b' },
+                            { name: 'Vencidos', valor: Number(perdasValidade.expiredStockValue.toFixed(2)), fill: '#ef4444' },
+                            { name: 'Baixados', valor: Number(perdasValidade.lossAndExpiredExitsValue.toFixed(2)), fill: '#6366f1' }
+                          ]}
+                          margin={{ top: 4, right: 4, left: -24, bottom: 0 }}
+                        >
+                          <XAxis dataKey="name" tick={{ fontSize: 8, fontWeight: 700, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                          <YAxis tick={{ fontSize: 8, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                          <Tooltip formatter={(val: any) => [formatCurrency(Number(val) || 0), 'Valor (R$)']} contentStyle={{ borderRadius: '10px', fontSize: '10px', fontWeight: 700 }} />
+                          <Bar dataKey="valor" radius={[4, 4, 0, 0]} maxBarSize={22}>
+                            <Cell fill="#f59e0b" />
+                            <Cell fill="#ef4444" />
+                            <Cell fill="#6366f1" />
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
                   </div>
-                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-3 border-t border-slate-100">
+                  <p className="text-[11px] text-slate-500 font-medium leading-snug pt-2 border-t border-slate-100">
                     Quantidade e valor dos lotes com saldo positivo que vencem nos próximos 60 dias corridos (ignorando validade Indeterminada).
                   </p>
                 </div>
@@ -3618,10 +5047,48 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                       Itens efetivamente baixados do estoque por validade vencida ou avaria no período selecionado
                     </p>
                   </div>
-                  <span className="px-3 py-1 rounded-full text-xs font-extrabold bg-rose-50 text-rose-700 border border-rose-200 self-start sm:self-auto">
-                    Total Baixado: {donationsMetrics.totalExpiredExitUnits.toLocaleString('pt-BR')} un (
-                    {formatCurrency(donationsMetrics.totalExpiredExitValue)})
-                  </span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="px-3 py-1 rounded-full text-xs font-extrabold bg-rose-50 text-rose-700 border border-rose-200">
+                      Total Baixado: {donationsMetrics.totalExpiredExitUnits.toLocaleString('pt-BR')} un (
+                      {formatCurrency(donationsMetrics.totalExpiredExitValue)})
+                    </span>
+                    {renderIndicatorActions({
+                      indicatorTitle: 'Relação de Baixas por Vencimento e Perda no Período',
+                      indicatorSubtitle: 'Itens efetivamente baixados do estoque por validade vencida ou avaria',
+                      groupName: 'Grupo 4 • Perdas e Validade',
+                      explanation: 'Lista detalhada das saídas registradas com motivo vencido ou perda e gráfico dos maiores valores baixados.',
+                      kpis: [
+                        { label: 'Total de Registros', value: `${donationsMetrics.expiryWriteOffExits.length} baixas`, tone: 'rose' },
+                        { label: 'Unidades Baixadas', value: `${donationsMetrics.totalExpiredExitUnits.toLocaleString('pt-BR')} un`, tone: 'amber' },
+                        { label: 'Valor Total Baixado', value: formatCurrency(donationsMetrics.totalExpiredExitValue), tone: 'slate' }
+                      ],
+                      chart: {
+                        type: 'horizontalBar',
+                        title: 'Principais Materiais Baixados por Vencimento ou Perda (R$)',
+                        valueFormatter: 'currency',
+                        data: donationsMetrics.expiryWriteOffExits
+                          .slice(0, 10)
+                          .map(r => ({
+                            label: r.tx.item_name,
+                            value: r.finValue,
+                            color: r.tx.exitReason === 'perda' ? '#f59e0b' : '#ef4444'
+                          }))
+                      },
+                      table: {
+                        title: 'Detalhamento das Baixas no Período',
+                        headers: ['Data', 'Tipo', 'Material', 'Categoria', 'Lote', 'Qtd.', 'Valor'],
+                        rows: donationsMetrics.expiryWriteOffExits.map(r => [
+                          formatDateBR(r.tx.date),
+                          r.reasonType,
+                          r.tx.item_name,
+                          r.category,
+                          r.tx.batch_number || 'S/L',
+                          `-${r.qty.toLocaleString('pt-BR')} un`,
+                          formatCurrency(r.finValue)
+                        ])
+                      }
+                    })}
+                  </div>
                 </div>
 
                 {donationsMetrics.expiryWriteOffExits.length > 0 ? (
@@ -3714,22 +5181,216 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                     </p>
                   </div>
                 </div>
-                <span className="px-3 py-1 rounded-full text-xs font-extrabold bg-blue-50 text-blue-700 border border-blue-200 self-start sm:self-auto">
-                  Total Consumido: {formatCurrency(curvaABC.totalAbcValue)}
-                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="px-3 py-1 rounded-full text-xs font-extrabold bg-blue-50 text-blue-700 border border-blue-200">
+                    Total Consumido: {formatCurrency(curvaABC.totalAbcValue)}
+                  </span>
+                  {renderIndicatorActions({
+                    indicatorTitle: 'Painel de Curva ABC por Valor Consumido no Período',
+                    indicatorSubtitle: 'Classificação de Pareto: Classe A (80%), Classe B (15%) e Classe C (5%)',
+                    groupName: 'Curva ABC de Consumo',
+                    explanation:
+                      'Classifica os materiais consumidos por impacto financeiro decrescente, destacando a concentração de Pareto e os principais itens da Classe A.',
+                    kpis: [
+                      { label: 'Total Consumido (ABC)', value: formatCurrency(curvaABC.totalAbcValue), tone: 'blue' },
+                      { label: 'Classe A (80%)', value: formatCurrency(curvaABC.classA.value), subvalue: `${curvaABC.classA.count} itens (${formatDecimal(curvaABC.classA.pctValue, 1)}%)`, tone: 'indigo' },
+                      { label: 'Classe B (15%)', value: formatCurrency(curvaABC.classB.value), subvalue: `${curvaABC.classB.count} itens (${formatDecimal(curvaABC.classB.pctValue, 1)}%)`, tone: 'emerald' },
+                      { label: 'Classe C (5%)', value: formatCurrency(curvaABC.classC.value), subvalue: `${curvaABC.classC.count} itens (${formatDecimal(curvaABC.classC.pctValue, 1)}%)`, tone: 'slate' }
+                    ],
+                    chart: {
+                      type: 'pareto',
+                      title: 'Curva de Pareto ABC — Principais Materiais Consumidos (R$ e % Acumulado)',
+                      subtitle: 'Barras indicam o valor consumido e a linha âmbar indica o percentual acumulado de Pareto',
+                      valueFormatter: 'currency',
+                      secondaryFormatter: 'percent',
+                      seriesALabel: 'Valor Consumido (R$)',
+                      seriesBLabel: '% Acumulado',
+                      data: curvaABC.top10AbcItems.map(item => ({
+                        label: item.name,
+                        value: item.netValue,
+                        secondaryValue: Number(item.cumPct.toFixed(1)),
+                        color: item.abcClass === 'A' ? '#1d4ed8' : item.abcClass === 'B' ? '#4f46e5' : '#64748b'
+                      }))
+                    },
+                    table: {
+                      title: 'Maiores Materiais da Classe A no Período',
+                      headers: ['Posição', 'Material', 'Categoria', 'Qtd. Consumida', 'Valor Consumido', '% do Total'],
+                      rows: curvaABC.top5ClassA.map((it, idx) => [
+                        `${idx + 1}º`,
+                        it.name,
+                        it.category,
+                        `${it.netUnits.toLocaleString('pt-BR')} un`,
+                        formatCurrency(it.netValue),
+                        `${formatDecimal(it.sharePct, 2)}%`
+                      ])
+                    }
+                  })}
+                </div>
               </div>
+
+              {/* ABC Visual Charts: Pareto Curve + Class Distribution */}
+              {curvaABC.top10AbcItems.length > 0 ? (
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+                  <div className="lg:col-span-2 p-4 rounded-2xl bg-slate-50/70 border border-slate-200/80">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-black text-slate-800 uppercase tracking-wider">
+                        Gráfico de Pareto (Top Materiais • R$ e % Acumulado)
+                      </span>
+                      <span className="text-[11px] font-bold text-blue-700">
+                        Barras: Valor (R$) • Linha: % Acumulado
+                      </span>
+                    </div>
+                    <div className="h-64 w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <ComposedChart
+                          data={curvaABC.top10AbcItems.map(it => ({
+                            name: it.name.length > 14 ? `${it.name.slice(0, 14)}…` : it.name,
+                            fullName: it.name,
+                            valor: Number(it.netValue.toFixed(2)),
+                            acumulado: Number(it.cumPct.toFixed(1)),
+                            classe: it.abcClass
+                          }))}
+                          margin={{ top: 10, right: 12, left: 0, bottom: 20 }}
+                        >
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                          <XAxis
+                            dataKey="name"
+                            tick={{ fontSize: 10, fontWeight: 700, fill: '#475569' }}
+                            angle={-18}
+                            textAnchor="end"
+                            height={48}
+                          />
+                          <YAxis
+                            yAxisId="left"
+                            tick={{ fontSize: 10, fontWeight: 700, fill: '#64748b' }}
+                            tickFormatter={v => `R$${Number(v).toLocaleString('pt-BR')}`}
+                          />
+                          <YAxis
+                            yAxisId="right"
+                            orientation="right"
+                            domain={[0, 100]}
+                            tick={{ fontSize: 10, fontWeight: 700, fill: '#d97706' }}
+                            tickFormatter={v => `${v}%`}
+                          />
+                          <Tooltip
+                            formatter={(val: any, name: string) => {
+                              if (name === 'acumulado') return [`${formatDecimal(Number(val) || 0, 1)}%`, '% Acumulado'];
+                              return [formatCurrency(Number(val) || 0), 'Valor Consumido'];
+                            }}
+                            labelFormatter={(_, payload) => payload?.[0]?.payload?.fullName || ''}
+                            contentStyle={{ borderRadius: '12px', fontSize: '11px', fontWeight: 700 }}
+                          />
+                          <Legend
+                            formatter={val =>
+                              val === 'acumulado' ? '% Acumulado (Pareto)' : 'Valor Consumido (R$)'
+                            }
+                            wrapperStyle={{ fontSize: '11px', fontWeight: 700 }}
+                          />
+                          <Bar yAxisId="left" dataKey="valor" fill="#2563eb" radius={[6, 6, 0, 0]} maxBarSize={34} />
+                          <Line
+                            yAxisId="right"
+                            type="monotone"
+                            dataKey="acumulado"
+                            stroke="#f59e0b"
+                            strokeWidth={2.5}
+                            dot={{ r: 4, fill: '#f59e0b' }}
+                          />
+                        </ComposedChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+
+                  <div className="p-4 rounded-2xl bg-slate-50/70 border border-slate-200/80 flex flex-col justify-between">
+                    <div>
+                      <span className="text-xs font-black text-slate-800 uppercase tracking-wider block mb-1">
+                        Comparativo Classes A, B e C
+                      </span>
+                      <p className="text-[11px] text-slate-500 font-medium mb-2">
+                        Proporção do Valor Financeiro vs. Quantidade de Itens
+                      </p>
+                    </div>
+                    <div className="h-56 w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart
+                          data={[
+                            {
+                              classe: 'Classe A',
+                              pctValor: Number(curvaABC.classA.pctValue.toFixed(1)),
+                              pctItens: Number(curvaABC.classA.pctItems.toFixed(1))
+                            },
+                            {
+                              classe: 'Classe B',
+                              pctValor: Number(curvaABC.classB.pctValue.toFixed(1)),
+                              pctItens: Number(curvaABC.classB.pctItems.toFixed(1))
+                            },
+                            {
+                              classe: 'Classe C',
+                              pctValor: Number(curvaABC.classC.pctValue.toFixed(1)),
+                              pctItens: Number(curvaABC.classC.pctItems.toFixed(1))
+                            }
+                          ]}
+                          margin={{ top: 8, right: 8, left: -16, bottom: 0 }}
+                        >
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                          <XAxis dataKey="classe" tick={{ fontSize: 10, fontWeight: 800, fill: '#334155' }} />
+                          <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: '#64748b' }} tickFormatter={v => `${v}%`} />
+                          <Tooltip
+                            formatter={(val: any, name: string) => [
+                              `${formatDecimal(Number(val) || 0, 1)}%`,
+                              name === 'pctValor' ? '% do Valor Total' : '% dos Itens'
+                            ]}
+                            contentStyle={{ borderRadius: '12px', fontSize: '11px', fontWeight: 700 }}
+                          />
+                          <Legend
+                            formatter={val => (val === 'pctValor' ? '% do Valor (R$)' : '% dos Materiais')}
+                            wrapperStyle={{ fontSize: '10px', fontWeight: 700 }}
+                          />
+                          <Bar dataKey="pctValor" fill="#1d4ed8" radius={[4, 4, 0, 0]} maxBarSize={24} />
+                          <Bar dataKey="pctItens" fill="#94a3b8" radius={[4, 4, 0, 0]} maxBarSize={24} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
 
               {/* ABC Class Summary Cards */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 {/* Classe A */}
                 <div className="p-5 rounded-2xl bg-gradient-to-b from-blue-50/60 to-white border border-blue-200/80 relative overflow-hidden">
-                  <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center justify-between gap-2 mb-2">
                     <span className="px-2.5 py-1 rounded-lg bg-blue-700 text-white text-xs font-black uppercase tracking-wider">
                       Classe A • 80% do Valor
                     </span>
-                    <span className="text-xs font-black text-blue-700">
-                      {formatDecimal(curvaABC.classA.pctValue, 1)}% efetivo
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs font-black text-blue-700">
+                        {formatDecimal(curvaABC.classA.pctValue, 1)}% efetivo
+                      </span>
+                      {renderIndicatorActions(
+                        {
+                          indicatorTitle: 'Curva ABC — Classe A (80% do Valor)',
+                          indicatorSubtitle: 'Materiais de maior impacto financeiro no período',
+                          groupName: 'Curva ABC de Consumo',
+                          explanation: 'Reúne os materiais de maior impacto financeiro que somam os primeiros 80% do valor consumido.',
+                          kpis: [
+                            { label: 'Valor Consumido (Classe A)', value: formatCurrency(curvaABC.classA.value), tone: 'blue' },
+                            { label: '% do Valor Total', value: `${formatDecimal(curvaABC.classA.pctValue, 1)}%`, tone: 'indigo' },
+                            { label: 'Qtd. de Materiais', value: `${curvaABC.classA.count} itens (${formatDecimal(curvaABC.classA.pctItems, 1)}%)`, tone: 'slate' }
+                          ],
+                          chart: {
+                            type: 'horizontalBar',
+                            title: 'Principais Materiais da Classe A (R$)',
+                            valueFormatter: 'currency',
+                            data: curvaABC.top5ClassA.map(it => ({
+                              label: it.name,
+                              value: it.netValue,
+                              color: '#1d4ed8'
+                            }))
+                          }
+                        },
+                        true
+                      )}
+                    </div>
                   </div>
                   <p className="text-2xl font-black text-slate-900 mt-2">
                     {formatCurrency(curvaABC.classA.value)}
@@ -3744,13 +5405,38 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
 
                 {/* Classe B */}
                 <div className="p-5 rounded-2xl bg-slate-50/70 border border-slate-200/90 relative overflow-hidden">
-                  <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center justify-between gap-2 mb-2">
                     <span className="px-2.5 py-1 rounded-lg bg-indigo-600 text-white text-xs font-black uppercase tracking-wider">
                       Classe B • 15% Seguintes
                     </span>
-                    <span className="text-xs font-black text-indigo-700">
-                      {formatDecimal(curvaABC.classB.pctValue, 1)}% efetivo
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs font-black text-indigo-700">
+                        {formatDecimal(curvaABC.classB.pctValue, 1)}% efetivo
+                      </span>
+                      {renderIndicatorActions(
+                        {
+                          indicatorTitle: 'Curva ABC — Classe B (15% Seguintes)',
+                          indicatorSubtitle: 'Materiais de impacto financeiro intermediário (80% a 95%)',
+                          groupName: 'Curva ABC de Consumo',
+                          explanation: 'Reúne os materiais de importância intermediária que compõem os 15% seguintes do consumo (80% a 95%).',
+                          kpis: [
+                            { label: 'Valor Consumido (Classe B)', value: formatCurrency(curvaABC.classB.value), tone: 'indigo' },
+                            { label: '% do Valor Total', value: `${formatDecimal(curvaABC.classB.pctValue, 1)}%`, tone: 'blue' },
+                            { label: 'Qtd. de Materiais', value: `${curvaABC.classB.count} itens (${formatDecimal(curvaABC.classB.pctItems, 1)}%)`, tone: 'slate' }
+                          ],
+                          chart: {
+                            type: 'donut',
+                            title: 'Participação da Classe B no Valor Total Consumido',
+                            valueFormatter: 'currency',
+                            data: [
+                              { label: 'Classe B (R$)', value: curvaABC.classB.value, color: '#4f46e5' },
+                              { label: 'Demais Classes A + C (R$)', value: Math.max(0, curvaABC.totalAbcValue - curvaABC.classB.value), color: '#cbd5e1' }
+                            ]
+                          }
+                        },
+                        true
+                      )}
+                    </div>
                   </div>
                   <p className="text-2xl font-black text-slate-900 mt-2">
                     {formatCurrency(curvaABC.classB.value)}
@@ -3765,13 +5451,38 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
 
                 {/* Classe C */}
                 <div className="p-5 rounded-2xl bg-slate-50/70 border border-slate-200/90 relative overflow-hidden">
-                  <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center justify-between gap-2 mb-2">
                     <span className="px-2.5 py-1 rounded-lg bg-slate-700 text-white text-xs font-black uppercase tracking-wider">
                       Classe C • 5% Finais
                     </span>
-                    <span className="text-xs font-black text-slate-700">
-                      {formatDecimal(curvaABC.classC.pctValue, 1)}% efetivo
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs font-black text-slate-700">
+                        {formatDecimal(curvaABC.classC.pctValue, 1)}% efetivo
+                      </span>
+                      {renderIndicatorActions(
+                        {
+                          indicatorTitle: 'Curva ABC — Classe C (5% Finais)',
+                          indicatorSubtitle: 'Materiais de baixo custo individual acumulado (95% a 100%)',
+                          groupName: 'Curva ABC de Consumo',
+                          explanation: 'Reúne a grande variedade de materiais de baixo custo individual que somam os 5% finais do valor.',
+                          kpis: [
+                            { label: 'Valor Consumido (Classe C)', value: formatCurrency(curvaABC.classC.value), tone: 'slate' },
+                            { label: '% do Valor Total', value: `${formatDecimal(curvaABC.classC.pctValue, 1)}%`, tone: 'blue' },
+                            { label: 'Qtd. de Materiais', value: `${curvaABC.classC.count} itens (${formatDecimal(curvaABC.classC.pctItems, 1)}%)`, tone: 'indigo' }
+                          ],
+                          chart: {
+                            type: 'donut',
+                            title: 'Participação da Classe C em Quantidade de Itens',
+                            valueFormatter: 'integer',
+                            data: [
+                              { label: 'Itens Classe C', value: curvaABC.classC.count, color: '#334155' },
+                              { label: 'Itens Classes A + B', value: curvaABC.classA.count + curvaABC.classB.count, color: '#3b82f6' }
+                            ]
+                          }
+                        },
+                        true
+                      )}
+                    </div>
                   </div>
                   <p className="text-2xl font-black text-slate-900 mt-2">
                     {formatCurrency(curvaABC.classC.value)}
@@ -3860,6 +5571,153 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
          =================================================================== */}
       {activeTab === 'situacao_sala' && (
         <div className="space-y-6">
+          {/* Room Analytical Charts */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Chart 1: Valor e Unidades por Sala */}
+            <div className="bg-white rounded-3xl border border-blue-100/90 shadow-sm overflow-hidden relative">
+              <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-800" />
+              <div className="p-6 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100">
+                  <div>
+                    <h3 className="text-base font-black text-slate-900">
+                      Valor em Estoque por Sala ({inventoryLocation})
+                    </h3>
+                    <p className="text-xs text-slate-500 font-medium">
+                      Comparativo financeiro e físico dos lotes ativos alocados em cada sala
+                    </p>
+                  </div>
+                  {renderIndicatorActions({
+                    indicatorTitle: `Valor em Estoque por Sala (${inventoryLocation})`,
+                    indicatorSubtitle: 'Distribuição patrimonial e física entre as salas de armazenamento',
+                    groupName: 'Situação de Sala',
+                    explanation: 'Soma do valor financeiro e das unidades em estoque agrupadas pelo campo sala dos lotes com saldo maior que zero.',
+                    kpis: [
+                      { label: 'Salas Ativas', value: `${roomMetrics.roomSummaries.length} salas`, tone: 'blue' },
+                      { label: 'Valor Total Alocado', value: formatCurrency(roomMetrics.roomSummaries.reduce((a, b) => a + b.stockValue, 0)), tone: 'indigo' },
+                      { label: 'Total de Unidades', value: `${roomMetrics.roomSummaries.reduce((a, b) => a + b.stockUnits, 0).toLocaleString('pt-BR')} un`, tone: 'emerald' }
+                    ],
+                    chart: {
+                      type: 'horizontalBar',
+                      title: 'Ranking de Valor Financeiro por Sala (R$)',
+                      valueFormatter: 'currency',
+                      data: roomMetrics.roomSummaries.map(r => ({
+                        label: r.room,
+                        value: r.stockValue,
+                        color: r.status === 'Crítico' ? '#ef4444' : r.status === 'Atenção' ? '#f59e0b' : '#2563eb'
+                      }))
+                    }
+                  })}
+                </div>
+
+                {roomMetrics.roomSummaries.length > 0 ? (
+                  <div className="h-64 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart
+                        data={roomMetrics.roomSummaries.map(r => ({
+                          name: r.room.length > 18 ? `${r.room.slice(0, 18)}…` : r.room,
+                          fullName: r.room,
+                          valor: Number(r.stockValue.toFixed(2)),
+                          unidades: r.stockUnits
+                        }))}
+                        layout="vertical"
+                        margin={{ top: 5, right: 24, left: 10, bottom: 5 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} stroke="#e2e8f0" />
+                        <XAxis type="number" tick={{ fontSize: 10, fill: '#64748b' }} tickFormatter={v => `R$${Number(v).toLocaleString('pt-BR')}`} />
+                        <YAxis type="category" dataKey="name" width={125} tick={{ fontSize: 10, fontWeight: 700, fill: '#334155' }} />
+                        <Tooltip
+                          formatter={(val: any) => [formatCurrency(Number(val) || 0), 'Valor em Estoque']}
+                          labelFormatter={(_, payload) => payload?.[0]?.payload?.fullName || ''}
+                          contentStyle={{ borderRadius: '12px', fontSize: '11px', fontWeight: 700 }}
+                        />
+                        <Bar dataKey="valor" fill="#2563eb" radius={[0, 6, 6, 0]} maxBarSize={24} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : (
+                  <div className="py-12 text-center text-xs font-bold text-slate-400">
+                    Nenhuma sala com saldo positivo encontrada.
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Chart 2: Lotes e Criticidade de Validade por Sala */}
+            <div className="bg-white rounded-3xl border border-blue-100/90 shadow-sm overflow-hidden relative">
+              <div className="h-1.5 w-full bg-gradient-to-r from-indigo-600 via-blue-700 to-emerald-600" />
+              <div className="p-6 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100">
+                  <div>
+                    <h3 className="text-base font-black text-slate-900">
+                      Lotes e Validade Crítica por Sala
+                    </h3>
+                    <p className="text-xs text-slate-500 font-medium">
+                      Total de lotes ativos comparados aos lotes vencidos e vencendo em 60 dias
+                    </p>
+                  </div>
+                  {renderIndicatorActions({
+                    indicatorTitle: `Lotes e Validade Crítica por Sala (${inventoryLocation})`,
+                    indicatorSubtitle: 'Monitoramento de lotes regulares, vencendo em 60 dias e vencidos por sala',
+                    groupName: 'Situação de Sala',
+                    explanation: 'Compara a quantidade total de lotes de cada sala com os lotes vencidos (Crítico) e que vencem em até 60 dias (Atenção).',
+                    kpis: [
+                      { label: 'Total de Lotes', value: `${roomMetrics.roomSummaries.reduce((a, b) => a + b.batchesCount, 0)} lotes`, tone: 'blue' },
+                      { label: 'Lotes Vencidos', value: `${roomMetrics.roomSummaries.reduce((a, b) => a + b.expiredBatches, 0)} lotes`, tone: 'rose' },
+                      { label: 'Vencem em 60 Dias', value: `${roomMetrics.roomSummaries.reduce((a, b) => a + b.expiring60dBatches, 0)} lotes`, tone: 'amber' }
+                    ],
+                    chart: {
+                      type: 'groupedBar',
+                      title: 'Lotes Totais vs. Lotes Críticos (Vencidos + 60d) por Sala',
+                      valueFormatter: 'integer',
+                      seriesALabel: 'Total de Lotes',
+                      seriesBLabel: 'Lotes Críticos (Venc. + 60d)',
+                      data: roomMetrics.roomSummaries.map(r => ({
+                        label: r.room,
+                        value: r.batchesCount,
+                        secondaryValue: r.expiredBatches + r.expiring60dBatches,
+                        color: '#2563eb',
+                        secondaryColor: '#ef4444'
+                      }))
+                    }
+                  })}
+                </div>
+
+                {roomMetrics.roomSummaries.length > 0 ? (
+                  <div className="h-64 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart
+                        data={roomMetrics.roomSummaries.map(r => ({
+                          name: r.room.length > 14 ? `${r.room.slice(0, 14)}…` : r.room,
+                          fullName: r.room,
+                          lotes: r.batchesCount,
+                          vencidos: r.expiredBatches,
+                          vencendo60d: r.expiring60dBatches
+                        }))}
+                        margin={{ top: 10, right: 16, left: -12, bottom: 20 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                        <XAxis dataKey="name" tick={{ fontSize: 10, fontWeight: 700, fill: '#475569' }} angle={-15} textAnchor="end" height={45} />
+                        <YAxis tick={{ fontSize: 10, fill: '#64748b' }} />
+                        <Tooltip
+                          labelFormatter={(_, payload) => payload?.[0]?.payload?.fullName || ''}
+                          contentStyle={{ borderRadius: '12px', fontSize: '11px', fontWeight: 700 }}
+                        />
+                        <Legend wrapperStyle={{ fontSize: '11px', fontWeight: 700 }} />
+                        <Bar dataKey="lotes" name="Total de Lotes" fill="#3b82f6" radius={[4, 4, 0, 0]} maxBarSize={26} />
+                        <Bar dataKey="vencendo60d" name="Vencem em 60d" fill="#f59e0b" radius={[4, 4, 0, 0]} maxBarSize={26} />
+                        <Bar dataKey="vencidos" name="Vencidos" fill="#ef4444" radius={[4, 4, 0, 0]} maxBarSize={26} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : (
+                  <div className="py-12 text-center text-xs font-bold text-slate-400">
+                    Nenhum lote ativo encontrado.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
           <div className="bg-white rounded-3xl border border-blue-100/90 shadow-sm overflow-hidden relative">
             <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-800" />
             <div className="p-6 sm:p-7 space-y-5">
@@ -3869,7 +5727,7 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                     <Building2 size={20} />
                   </div>
                   <div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <h3 className="text-base sm:text-lg font-black text-slate-900 tracking-tight">
                         Situação Atual por Sala de Estoque ({inventoryLocation})
                       </h3>
@@ -3882,10 +5740,47 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                     </p>
                   </div>
                 </div>
-                <span className="text-xs font-extrabold text-slate-500 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200/80 self-start sm:self-auto">
-                  {roomMetrics.roomSummaries.length}{' '}
-                  {roomMetrics.roomSummaries.length === 1 ? 'sala ativa' : 'salas ativas'}
-                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-extrabold text-slate-500 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200/80">
+                    {roomMetrics.roomSummaries.length}{' '}
+                    {roomMetrics.roomSummaries.length === 1 ? 'sala ativa' : 'salas ativas'}
+                  </span>
+                  {renderIndicatorActions({
+                    indicatorTitle: `Relatório Geral de Situação por Sala (${inventoryLocation})`,
+                    indicatorSubtitle: 'Posição física, financeira e de validade por sala de armazenamento',
+                    groupName: 'Situação de Sala',
+                    explanation: 'Tabela consolidada por sala com status de validade (Regular, Atenção, Crítico), tipos de material, lotes, unidades e valor.',
+                    kpis: [
+                      { label: 'Salas Mapeadas', value: `${roomMetrics.roomSummaries.length} salas`, tone: 'blue' },
+                      { label: 'Salas Críticas', value: `${roomMetrics.roomSummaries.filter(r => r.status === 'Crítico').length} salas`, tone: 'rose' },
+                      { label: 'Salas em Atenção', value: `${roomMetrics.roomSummaries.filter(r => r.status === 'Atenção').length} salas`, tone: 'amber' }
+                    ],
+                    chart: {
+                      type: 'verticalBar',
+                      title: 'Valor em Estoque por Sala de Armazenamento (R$)',
+                      valueFormatter: 'currency',
+                      data: roomMetrics.roomSummaries.map(r => ({
+                        label: r.room,
+                        value: r.stockValue,
+                        color: r.status === 'Crítico' ? '#ef4444' : r.status === 'Atenção' ? '#f59e0b' : '#2563eb'
+                      }))
+                    },
+                    table: {
+                      title: 'Tabela de Situação por Sala',
+                      headers: ['Sala', 'Situação', 'Tipos', 'Lotes', 'Unidades', 'Valor (R$)', 'Vencidos', 'Venc. 60d'],
+                      rows: roomMetrics.roomSummaries.map(r => [
+                        r.room,
+                        r.status,
+                        r.distinctItemsCount.toLocaleString('pt-BR'),
+                        r.batchesCount.toLocaleString('pt-BR'),
+                        `${r.stockUnits.toLocaleString('pt-BR')} un`,
+                        formatCurrency(r.stockValue),
+                        String(r.expiredBatches),
+                        String(r.expiring60dBatches)
+                      ])
+                    }
+                  })}
+                </div>
               </div>
 
               <div className="overflow-x-auto rounded-2xl border border-slate-200/90">
@@ -4127,52 +6022,202 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
          =================================================================== */}
       {activeTab === 'dispensacao_tipo' && (
         <div className="space-y-6">
-          {/* Summary KPI Cards */}
+          {/* Summary KPI Cards with Embedded Charts and Print/PDF */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
             <div className="bg-white rounded-3xl border border-blue-100/90 shadow-sm overflow-hidden relative">
               <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 to-indigo-700" />
-              <div className="p-6">
-                <p className="text-[11px] font-black uppercase tracking-widest text-slate-400">
-                  Volume Total Dispensado
-                </p>
-                <h3 className="text-2xl sm:text-3xl font-black text-slate-900 mt-1">
-                  {dispensationByTypeMetrics.totalUnits.toLocaleString('pt-BR')}{' '}
-                  <span className="text-xs font-bold text-slate-400">un</span>
-                </h3>
-                <p className="text-xs font-bold text-blue-700 mt-2">
+              <div className="p-6 space-y-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="text-[11px] font-black uppercase tracking-widest text-slate-400">
+                      Volume Total Dispensado
+                    </p>
+                    <h3 className="text-2xl sm:text-3xl font-black text-slate-900 mt-1">
+                      {dispensationByTypeMetrics.totalUnits.toLocaleString('pt-BR')}{' '}
+                      <span className="text-xs font-bold text-slate-400">un</span>
+                    </h3>
+                  </div>
+                  {renderIndicatorActions(
+                    {
+                      indicatorTitle: 'Volume Total Dispensado por Categoria',
+                      indicatorSubtitle: 'Unidades físicas dispensadas no período por classificação de material',
+                      groupName: 'Dispensação por Tipo',
+                      explanation: 'Total de unidades saídas do estoque no período distribuídas entre as categorias movimentadas.',
+                      kpis: [
+                        { label: 'Volume Total Dispensado', value: `${dispensationByTypeMetrics.totalUnits.toLocaleString('pt-BR')} un`, tone: 'blue' },
+                        { label: 'Registros de Saída', value: `${dispensationByTypeMetrics.totalRecords} saídas`, tone: 'indigo' }
+                      ],
+                      chart: {
+                        type: 'horizontalBar',
+                        title: 'Unidades Dispensadas por Categoria',
+                        valueFormatter: 'integer',
+                        data: dispensationByTypeMetrics.categoriesList.map(c => ({
+                          label: c.category,
+                          value: c.units,
+                          color: getCategoryColor(c.category)
+                        }))
+                      }
+                    },
+                    true
+                  )}
+                </div>
+                <p className="text-xs font-bold text-blue-700">
                   {dispensationByTypeMetrics.totalRecords} registros de saída no período
                 </p>
+                <div className="h-24 w-full pt-2 border-t border-slate-100">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={dispensationByTypeMetrics.categoriesList.slice(0, 5).map(c => ({
+                        name: c.category.length > 10 ? `${c.category.slice(0, 10)}…` : c.category,
+                        un: c.units,
+                        color: getCategoryColor(c.category)
+                      }))}
+                      margin={{ top: 4, right: 4, left: -24, bottom: 0 }}
+                    >
+                      <XAxis dataKey="name" tick={{ fontSize: 8, fontWeight: 700, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fontSize: 8, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                      <Tooltip formatter={(val: any) => [`${Number(val || 0).toLocaleString('pt-BR')} un`, 'Dispensado']} contentStyle={{ borderRadius: '10px', fontSize: '10px', fontWeight: 700 }} />
+                      <Bar dataKey="un" radius={[4, 4, 0, 0]} maxBarSize={22}>
+                        {dispensationByTypeMetrics.categoriesList.slice(0, 5).map((c, i) => (
+                          <Cell key={i} fill={getCategoryColor(c.category)} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
               </div>
             </div>
 
             <div className="bg-white rounded-3xl border border-blue-100/90 shadow-sm overflow-hidden relative">
               <div className="h-1.5 w-full bg-gradient-to-r from-indigo-600 to-blue-800" />
-              <div className="p-6">
-                <p className="text-[11px] font-black uppercase tracking-widest text-slate-400">
-                  Custo Total de Dispensação
-                </p>
-                <h3 className="text-2xl sm:text-3xl font-black text-slate-900 mt-1">
-                  {formatCurrency(dispensationByTypeMetrics.totalValue)}
-                </h3>
-                <p className="text-xs font-bold text-slate-500 mt-2">
+              <div className="p-6 space-y-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="text-[11px] font-black uppercase tracking-widest text-slate-400">
+                      Custo Total de Dispensação
+                    </p>
+                    <h3 className="text-2xl sm:text-3xl font-black text-slate-900 mt-1">
+                      {formatCurrency(dispensationByTypeMetrics.totalValue)}
+                    </h3>
+                  </div>
+                  {renderIndicatorActions(
+                    {
+                      indicatorTitle: 'Custo Total de Dispensação por Categoria',
+                      indicatorSubtitle: 'Impacto financeiro das dispensações no período analisado',
+                      groupName: 'Dispensação por Tipo',
+                      explanation: 'Valor total calculado pelo custo unitário dos itens dispensados em cada categoria.',
+                      kpis: [
+                        { label: 'Custo Total Dispensado', value: formatCurrency(dispensationByTypeMetrics.totalValue), tone: 'indigo' },
+                        { label: 'Unidades Dispensadas', value: `${dispensationByTypeMetrics.totalUnits.toLocaleString('pt-BR')} un`, tone: 'blue' }
+                      ],
+                      chart: {
+                        type: 'horizontalBar',
+                        title: 'Valor Dispensado por Categoria (R$)',
+                        valueFormatter: 'currency',
+                        data: dispensationByTypeMetrics.categoriesList
+                          .slice()
+                          .sort((a, b) => b.value - a.value)
+                          .map(c => ({
+                            label: c.category,
+                            value: c.value,
+                            color: getCategoryColor(c.category)
+                          }))
+                      }
+                    },
+                    true
+                  )}
+                </div>
+                <p className="text-xs font-bold text-slate-500">
                   Valor calculado pelo custo unitário dos itens
                 </p>
+                <div className="h-24 w-full pt-2 border-t border-slate-100">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={dispensationByTypeMetrics.categoriesList
+                        .slice()
+                        .sort((a, b) => b.value - a.value)
+                        .slice(0, 5)
+                        .map(c => ({
+                          name: c.category.length > 10 ? `${c.category.slice(0, 10)}…` : c.category,
+                          valor: Number(c.value.toFixed(2))
+                        }))}
+                      margin={{ top: 4, right: 4, left: -24, bottom: 0 }}
+                    >
+                      <XAxis dataKey="name" tick={{ fontSize: 8, fontWeight: 700, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fontSize: 8, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                      <Tooltip formatter={(val: any) => [formatCurrency(Number(val) || 0), 'Custo (R$)']} contentStyle={{ borderRadius: '10px', fontSize: '10px', fontWeight: 700 }} />
+                      <Bar dataKey="valor" fill="#4f46e5" radius={[4, 4, 0, 0]} maxBarSize={22} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
               </div>
             </div>
 
             <div className="bg-white rounded-3xl border border-blue-100/90 shadow-sm overflow-hidden relative">
               <div className="h-1.5 w-full bg-gradient-to-r from-blue-500 to-cyan-600" />
-              <div className="p-6">
-                <p className="text-[11px] font-black uppercase tracking-widest text-slate-400">
-                  Categorias Movimentadas
-                </p>
-                <h3 className="text-2xl sm:text-3xl font-black text-slate-900 mt-1">
-                  {dispensationByTypeMetrics.categoriesList.length}{' '}
-                  <span className="text-xs font-bold text-slate-400">tipos</span>
-                </h3>
-                <p className="text-xs font-bold text-slate-500 mt-2">
+              <div className="p-6 space-y-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="text-[11px] font-black uppercase tracking-widest text-slate-400">
+                      Categorias Movimentadas
+                    </p>
+                    <h3 className="text-2xl sm:text-3xl font-black text-slate-900 mt-1">
+                      {dispensationByTypeMetrics.categoriesList.length}{' '}
+                      <span className="text-xs font-bold text-slate-400">tipos</span>
+                    </h3>
+                  </div>
+                  {renderIndicatorActions(
+                    {
+                      indicatorTitle: 'Participação Percentual das Categorias Movimentadas',
+                      indicatorSubtitle: 'Distribuição proporcional do volume dispensado entre categorias',
+                      groupName: 'Dispensação por Tipo',
+                      explanation: 'Classificações com saída ativa no período e sua participação percentual.',
+                      kpis: [
+                        { label: 'Categorias com Saída', value: `${dispensationByTypeMetrics.categoriesList.length} categorias`, tone: 'blue' },
+                        { label: 'Total Movimentado', value: `${dispensationByTypeMetrics.totalUnits.toLocaleString('pt-BR')} un`, tone: 'emerald' }
+                      ],
+                      chart: {
+                        type: 'donut',
+                        title: 'Participação por Categoria Movimentada (Unidades)',
+                        valueFormatter: 'integer',
+                        data: dispensationByTypeMetrics.categoriesList.map(c => ({
+                          label: c.category,
+                          value: c.units,
+                          color: getCategoryColor(c.category)
+                        }))
+                      }
+                    },
+                    true
+                  )}
+                </div>
+                <p className="text-xs font-bold text-slate-500">
                   Classificações com saída ativa no período
                 </p>
+                <div className="h-24 w-full pt-2 border-t border-slate-100">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={dispensationByTypeMetrics.categoriesList.map(c => ({
+                          name: c.category,
+                          value: c.units,
+                          color: getCategoryColor(c.category)
+                        }))}
+                        dataKey="value"
+                        nameKey="name"
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={18}
+                        outerRadius={36}
+                        paddingAngle={2}
+                      >
+                        {dispensationByTypeMetrics.categoriesList.map((c, idx) => (
+                          <Cell key={idx} fill={getCategoryColor(c.category)} />
+                        ))}
+                      </Pie>
+                      <Tooltip formatter={(val: any) => [`${Number(val || 0).toLocaleString('pt-BR')} un`, 'Volume']} contentStyle={{ borderRadius: '10px', fontSize: '10px', fontWeight: 700 }} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
               </div>
             </div>
           </div>
@@ -4183,7 +6228,7 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
             <div className="lg:col-span-2 bg-white rounded-3xl border border-slate-200/90 shadow-sm overflow-hidden relative">
               <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-800" />
               <div className="p-6 space-y-4">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                   <div>
                     <h3 className="text-base font-black text-slate-900">
                       Dispensação por Categoria / Tipo de Material
@@ -4192,58 +6237,122 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                       Participação percentual, volume físico e impacto financeiro por categoria
                     </p>
                   </div>
-                  <Layers size={18} className="text-blue-600" />
+                  {renderIndicatorActions({
+                    indicatorTitle: 'Dispensação por Categoria / Tipo de Material',
+                    indicatorSubtitle: 'Volume físico, participação percentual e impacto financeiro por categoria',
+                    groupName: 'Dispensação por Tipo',
+                    explanation: 'Consolida todas as saídas do período por categoria de material.',
+                    kpis: [
+                      { label: 'Categorias Movimentadas', value: `${dispensationByTypeMetrics.categoriesList.length}`, tone: 'blue' },
+                      { label: 'Total de Unidades', value: `${dispensationByTypeMetrics.totalUnits.toLocaleString('pt-BR')} un`, tone: 'indigo' },
+                      { label: 'Custo Total', value: formatCurrency(dispensationByTypeMetrics.totalValue), tone: 'emerald' }
+                    ],
+                    chart: {
+                      type: 'horizontalBar',
+                      title: 'Volume Dispensado por Categoria (Unidades)',
+                      valueFormatter: 'integer',
+                      data: dispensationByTypeMetrics.categoriesList.map(c => ({
+                        label: c.category,
+                        value: c.units,
+                        color: getCategoryColor(c.category)
+                      }))
+                    },
+                    table: {
+                      title: 'Resumo de Dispensação por Categoria',
+                      headers: ['Categoria', 'Itens Distintos', 'Saídas', 'Unidades', '% Volume', 'Valor (R$)'],
+                      rows: dispensationByTypeMetrics.categoriesList.map(c => [
+                        c.category,
+                        String(c.distinctItemsCount),
+                        String(c.count),
+                        `${c.units.toLocaleString('pt-BR')} un`,
+                        `${c.percentage}%`,
+                        formatCurrency(c.value)
+                      ])
+                    }
+                  })}
                 </div>
 
                 {dispensationByTypeMetrics.categoriesList.length > 0 ? (
-                  <div className="space-y-3">
-                    {dispensationByTypeMetrics.categoriesList.map(cat => (
-                      <div
-                        key={cat.category}
-                        onClick={() =>
-                          setTypeCategoryFilter(prev =>
-                            prev === cat.category ? 'todas' : cat.category
-                          )
-                        }
-                        className={`p-3.5 rounded-2xl border transition-all cursor-pointer ${
-                          typeCategoryFilter === cat.category
-                            ? 'bg-blue-50/70 border-blue-500'
-                            : 'bg-slate-50/70 border-slate-100 hover:border-blue-200'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-2 mb-1.5">
-                          <div className="flex items-center gap-2">
-                            <span
-                              className="w-3 h-3 rounded-full shrink-0"
-                              style={{ backgroundColor: getCategoryColor(cat.category) }}
-                            />
-                            <span className="text-xs font-black text-slate-900">{cat.category}</span>
-                            <span className="text-[10px] font-bold text-slate-400">
-                              ({cat.distinctItemsCount} itens • {cat.count} saídas)
-                            </span>
-                          </div>
-                          <div className="text-right">
-                            <span className="text-xs font-black text-blue-700">
-                              {cat.units.toLocaleString('pt-BR')} un
-                            </span>
-                            <span className="text-[10px] font-extrabold text-slate-500 ml-2">
-                              ({cat.percentage}%)
-                            </span>
-                          </div>
-                        </div>
-                        <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
-                          <div
-                            className="h-full bg-gradient-to-r from-blue-600 to-indigo-700 rounded-full"
-                            style={{ width: `${Math.min(100, Math.max(3, cat.percentage))}%` }}
+                  <>
+                    <div className="h-56 w-full p-3 rounded-2xl bg-slate-50/70 border border-slate-100">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart
+                          data={dispensationByTypeMetrics.categoriesList.map(c => ({
+                            name: c.category.length > 16 ? `${c.category.slice(0, 16)}…` : c.category,
+                            fullName: c.category,
+                            unidades: c.units,
+                            valor: Number(c.value.toFixed(2)),
+                            color: getCategoryColor(c.category)
+                          }))}
+                          layout="vertical"
+                          margin={{ top: 4, right: 20, left: 10, bottom: 4 }}
+                        >
+                          <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} stroke="#e2e8f0" />
+                          <XAxis type="number" tick={{ fontSize: 10, fill: '#64748b' }} />
+                          <YAxis type="category" dataKey="name" width={115} tick={{ fontSize: 10, fontWeight: 700, fill: '#334155' }} />
+                          <Tooltip
+                            formatter={(val: any) => [`${Number(val || 0).toLocaleString('pt-BR')} un`, 'Dispensado']}
+                            labelFormatter={(_, payload) => payload?.[0]?.payload?.fullName || ''}
+                            contentStyle={{ borderRadius: '12px', fontSize: '11px', fontWeight: 700 }}
                           />
+                          <Bar dataKey="unidades" radius={[0, 6, 6, 0]} maxBarSize={22}>
+                            {dispensationByTypeMetrics.categoriesList.map((c, idx) => (
+                              <Cell key={idx} fill={getCategoryColor(c.category)} />
+                            ))}
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+
+                    <div className="space-y-3">
+                      {dispensationByTypeMetrics.categoriesList.map(cat => (
+                        <div
+                          key={cat.category}
+                          onClick={() =>
+                            setTypeCategoryFilter(prev =>
+                              prev === cat.category ? 'todas' : cat.category
+                            )
+                          }
+                          className={`p-3.5 rounded-2xl border transition-all cursor-pointer ${
+                            typeCategoryFilter === cat.category
+                              ? 'bg-blue-50/70 border-blue-500'
+                              : 'bg-slate-50/70 border-slate-100 hover:border-blue-200'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2 mb-1.5">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className="w-3 h-3 rounded-full shrink-0"
+                                style={{ backgroundColor: getCategoryColor(cat.category) }}
+                              />
+                              <span className="text-xs font-black text-slate-900">{cat.category}</span>
+                              <span className="text-[10px] font-bold text-slate-400">
+                                ({cat.distinctItemsCount} itens • {cat.count} saídas)
+                              </span>
+                            </div>
+                            <div className="text-right">
+                              <span className="text-xs font-black text-blue-700">
+                                {cat.units.toLocaleString('pt-BR')} un
+                              </span>
+                              <span className="text-[10px] font-extrabold text-slate-500 ml-2">
+                                ({cat.percentage}%)
+                              </span>
+                            </div>
+                          </div>
+                          <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-gradient-to-r from-blue-600 to-indigo-700 rounded-full"
+                              style={{ width: `${Math.min(100, Math.max(3, cat.percentage))}%` }}
+                            />
+                          </div>
+                          <div className="flex items-center justify-between mt-1.5 text-[10px] font-bold text-slate-500">
+                            <span>Clique para filtrar a tabela abaixo</span>
+                            <span className="text-slate-700">{formatCurrency(cat.value)}</span>
+                          </div>
                         </div>
-                        <div className="flex items-center justify-between mt-1.5 text-[10px] font-bold text-slate-500">
-                          <span>Clique para filtrar a tabela abaixo</span>
-                          <span className="text-slate-700">{formatCurrency(cat.value)}</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+                      ))}
+                    </div>
+                  </>
                 ) : (
                   <p className="text-xs font-semibold text-slate-400 py-10 text-center">
                     Nenhuma dispensação registrada no período selecionado.
@@ -4258,31 +6367,86 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
               <div className="bg-white rounded-3xl border border-slate-200/90 shadow-sm overflow-hidden relative">
                 <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 to-indigo-700" />
                 <div className="p-6 space-y-3">
-                  <h3 className="text-sm font-black text-slate-900">
-                    Por Origem do Recurso
-                  </h3>
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-sm font-black text-slate-900">
+                      Por Origem do Recurso
+                    </h3>
+                    {renderIndicatorActions(
+                      {
+                        indicatorTitle: 'Dispensação por Origem do Recurso',
+                        indicatorSubtitle: 'Contrato/Licitado, Compra Extra ou Doação',
+                        groupName: 'Dispensação por Tipo',
+                        explanation: 'Classifica as saídas conforme a origem cadastral do lote (Contrato, Extra ou Doação).',
+                        kpis: dispensationByTypeMetrics.originsList.map(o => ({
+                          label: o.label,
+                          value: `${o.units.toLocaleString('pt-BR')} un`,
+                          subvalue: `${formatCurrency(o.value)} (${o.percentage}%)`,
+                          tone: 'blue'
+                        })),
+                        chart: {
+                          type: 'donut',
+                          title: 'Distribuição por Origem do Recurso (Unidades)',
+                          valueFormatter: 'integer',
+                          data: dispensationByTypeMetrics.originsList.map((o, idx) => ({
+                            label: o.label,
+                            value: o.units,
+                            color: ['#2563eb', '#4f46e5', '#10b981', '#f59e0b'][idx % 4]
+                          }))
+                        }
+                      },
+                      true
+                    )}
+                  </div>
+
                   {dispensationByTypeMetrics.originsList.length > 0 ? (
-                    dispensationByTypeMetrics.originsList.map(orig => (
-                      <div
-                        key={orig.originKey}
-                        className="p-3 rounded-2xl bg-slate-50 border border-slate-100 flex items-center justify-between"
-                      >
-                        <div>
-                          <p className="text-xs font-black text-slate-800">{orig.label}</p>
-                          <p className="text-[10px] font-bold text-slate-400">
-                            {orig.count} movimentações • {orig.percentage}%
-                          </p>
-                        </div>
-                        <div className="text-right">
-                          <p className="text-xs font-black text-blue-700">
-                            {orig.units.toLocaleString('pt-BR')} un
-                          </p>
-                          <p className="text-[10px] font-bold text-slate-500">
-                            {formatCurrency(orig.value)}
-                          </p>
-                        </div>
+                    <>
+                      <div className="h-36 w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <PieChart>
+                            <Pie
+                              data={dispensationByTypeMetrics.originsList.map((o, idx) => ({
+                                name: o.label,
+                                value: o.units,
+                                color: ['#2563eb', '#4f46e5', '#10b981', '#f59e0b'][idx % 4]
+                              }))}
+                              dataKey="value"
+                              nameKey="name"
+                              cx="50%"
+                              cy="50%"
+                              innerRadius={24}
+                              outerRadius={46}
+                              paddingAngle={3}
+                            >
+                              {dispensationByTypeMetrics.originsList.map((_, idx) => (
+                                <Cell key={idx} fill={['#2563eb', '#4f46e5', '#10b981', '#f59e0b'][idx % 4]} />
+                              ))}
+                            </Pie>
+                            <Tooltip formatter={(val: any) => [`${Number(val || 0).toLocaleString('pt-BR')} un`, 'Volume']} contentStyle={{ borderRadius: '10px', fontSize: '10px', fontWeight: 700 }} />
+                          </PieChart>
+                        </ResponsiveContainer>
                       </div>
-                    ))
+                      {dispensationByTypeMetrics.originsList.map(orig => (
+                        <div
+                          key={orig.originKey}
+                          className="p-3 rounded-2xl bg-slate-50 border border-slate-100 flex items-center justify-between"
+                        >
+                          <div>
+                            <p className="text-xs font-black text-slate-800">{orig.label}</p>
+                            <p className="text-[10px] font-bold text-slate-400">
+                              {orig.count} movimentações • {orig.percentage}%
+                            </p>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-xs font-black text-blue-700">
+                              {orig.units.toLocaleString('pt-BR')} un
+                            </p>
+                            <p className="text-[10px] font-bold text-slate-500">
+                              {formatCurrency(orig.value)}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </>
                   ) : (
                     <p className="text-xs text-slate-400 font-semibold">Sem registros.</p>
                   )}
@@ -4293,31 +6457,77 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
               <div className="bg-white rounded-3xl border border-slate-200/90 shadow-sm overflow-hidden relative">
                 <div className="h-1.5 w-full bg-gradient-to-r from-indigo-600 to-blue-800" />
                 <div className="p-6 space-y-3">
-                  <h3 className="text-sm font-black text-slate-900">
-                    Por Modalidade de Saída
-                  </h3>
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-sm font-black text-slate-900">
+                      Por Modalidade de Saída
+                    </h3>
+                    {renderIndicatorActions(
+                      {
+                        indicatorTitle: 'Saídas por Modalidade / Motivo',
+                        indicatorSubtitle: 'Consumo regular, doação externa, vencimento ou perda',
+                        groupName: 'Dispensação por Tipo',
+                        explanation: 'Agrupa as baixas do período de acordo com a modalidade registrada na movimentação.',
+                        kpis: dispensationByTypeMetrics.reasonsList.map(r => ({
+                          label: r.label,
+                          value: `${r.units.toLocaleString('pt-BR')} un`,
+                          subvalue: `${formatCurrency(r.value)} (${r.percentage}%)`,
+                          tone: 'indigo'
+                        })),
+                        chart: {
+                          type: 'verticalBar',
+                          title: 'Unidades por Modalidade de Saída',
+                          valueFormatter: 'integer',
+                          data: dispensationByTypeMetrics.reasonsList.map((r, idx) => ({
+                            label: r.label,
+                            value: r.units,
+                            color: ['#4f46e5', '#2563eb', '#ef4444', '#f59e0b'][idx % 4]
+                          }))
+                        }
+                      },
+                      true
+                    )}
+                  </div>
+
                   {dispensationByTypeMetrics.reasonsList.length > 0 ? (
-                    dispensationByTypeMetrics.reasonsList.map(rsn => (
-                      <div
-                        key={rsn.reasonKey}
-                        className="p-3 rounded-2xl bg-slate-50 border border-slate-100 flex items-center justify-between"
-                      >
-                        <div>
-                          <p className="text-xs font-black text-slate-800">{rsn.label}</p>
-                          <p className="text-[10px] font-bold text-slate-400">
-                            {rsn.count} baixas • {rsn.percentage}%
-                          </p>
-                        </div>
-                        <div className="text-right">
-                          <p className="text-xs font-black text-indigo-700">
-                            {rsn.units.toLocaleString('pt-BR')} un
-                          </p>
-                          <p className="text-[10px] font-bold text-slate-500">
-                            {formatCurrency(rsn.value)}
-                          </p>
-                        </div>
+                    <>
+                      <div className="h-36 w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart
+                            data={dispensationByTypeMetrics.reasonsList.map(r => ({
+                              name: r.label.length > 12 ? `${r.label.slice(0, 12)}…` : r.label,
+                              un: r.units
+                            }))}
+                            margin={{ top: 4, right: 4, left: -20, bottom: 0 }}
+                          >
+                            <XAxis dataKey="name" tick={{ fontSize: 8, fontWeight: 700, fill: '#475569' }} axisLine={false} tickLine={false} />
+                            <YAxis tick={{ fontSize: 8, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                            <Tooltip formatter={(val: any) => [`${Number(val || 0).toLocaleString('pt-BR')} un`, 'Saídas']} contentStyle={{ borderRadius: '10px', fontSize: '10px', fontWeight: 700 }} />
+                            <Bar dataKey="un" fill="#4f46e5" radius={[4, 4, 0, 0]} maxBarSize={24} />
+                          </BarChart>
+                        </ResponsiveContainer>
                       </div>
-                    ))
+                      {dispensationByTypeMetrics.reasonsList.map(rsn => (
+                        <div
+                          key={rsn.reasonKey}
+                          className="p-3 rounded-2xl bg-slate-50 border border-slate-100 flex items-center justify-between"
+                        >
+                          <div>
+                            <p className="text-xs font-black text-slate-800">{rsn.label}</p>
+                            <p className="text-[10px] font-bold text-slate-400">
+                              {rsn.count} baixas • {rsn.percentage}%
+                            </p>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-xs font-black text-indigo-700">
+                              {rsn.units.toLocaleString('pt-BR')} un
+                            </p>
+                            <p className="text-[10px] font-bold text-slate-500">
+                              {formatCurrency(rsn.value)}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </>
                   ) : (
                     <p className="text-xs text-slate-400 font-semibold">Sem registros.</p>
                   )}
@@ -4375,6 +6585,40 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                       className="pl-8 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800"
                     />
                   </div>
+
+                  {renderIndicatorActions({
+                    indicatorTitle: 'Relatório Analítico de Dispensação por Tipo',
+                    indicatorSubtitle: `Listagem filtrada (${dispensationByTypeMetrics.filteredExits.length} registros)`,
+                    groupName: 'Dispensação por Tipo',
+                    kpis: [
+                      { label: 'Registros Filtrados', value: `${dispensationByTypeMetrics.filteredExits.length}`, tone: 'blue' },
+                      { label: 'Volume Total', value: `${dispensationByTypeMetrics.filteredExits.reduce((a, b) => a + b.qty, 0).toLocaleString('pt-BR')} un`, tone: 'indigo' },
+                      { label: 'Valor Total', value: formatCurrency(dispensationByTypeMetrics.filteredExits.reduce((a, b) => a + b.finValue, 0)), tone: 'emerald' }
+                    ],
+                    chart: {
+                      type: 'horizontalBar',
+                      title: 'Volume Dispensado por Categoria (Unidades)',
+                      valueFormatter: 'integer',
+                      data: dispensationByTypeMetrics.categoriesList.map(c => ({
+                        label: c.category,
+                        value: c.units,
+                        color: getCategoryColor(c.category)
+                      }))
+                    },
+                    table: {
+                      title: 'Registros de Dispensação Filtrados',
+                      headers: ['Data', 'Material', 'Categoria', 'Origem / Modalidade', 'Setor / Destino', 'Qtd.', 'Valor'],
+                      rows: dispensationByTypeMetrics.filteredExits.slice(0, 80).map(r => [
+                        formatDateBR(r.tx.date),
+                        r.tx.item_name,
+                        r.category,
+                        `${r.originLabel} / ${r.reasonLabel}`,
+                        r.tx.sector || r.tx.donationUnitName || '—',
+                        `${r.qty.toLocaleString('pt-BR')} un`,
+                        formatCurrency(r.finValue)
+                      ])
+                    }
+                  })}
                 </div>
               </div>
 
@@ -4448,25 +6692,46 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
             </p>
           </div>
 
-          {/* Donation & Expiry KPI Cards */}
+          {/* Donation & Expiry KPI Cards with Embedded Charts and Print/PDF */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
             {/* 1. Recebido por Doação (Entradas) */}
             <div className="bg-white rounded-3xl border border-blue-100/90 shadow-sm overflow-hidden relative">
               <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-800" />
-              <div className="p-6">
-                <div className="flex items-center justify-between mb-3">
+              <div className="p-6 space-y-3">
+                <div className="flex items-start justify-between gap-2">
                   <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">
                     Recebido por Doação
                   </span>
-                  <div className="bg-gradient-to-br from-blue-600 to-indigo-700 text-white p-2.5 rounded-2xl">
-                    <ArrowDownLeft size={18} />
-                  </div>
+                  {renderIndicatorActions(
+                    {
+                      indicatorTitle: 'Materiais Recebidos por Doação (Entradas)',
+                      indicatorSubtitle: 'Entradas com origem de doação no período selecionado',
+                      groupName: 'Doações e Baixas',
+                      explanation: 'Contabiliza exclusivamente as entradas marcadas como doação no período.',
+                      kpis: [
+                        { label: 'Unidades Recebidas', value: `${donationsMetrics.totalReceivedUnits.toLocaleString('pt-BR')} un`, tone: 'blue' },
+                        { label: 'Valor Estimado', value: formatCurrency(donationsMetrics.totalReceivedValue), tone: 'indigo' },
+                        { label: 'Registros de Entrada', value: `${donationsMetrics.totalReceivedCount} entradas`, tone: 'emerald' }
+                      ],
+                      chart: {
+                        type: 'horizontalBar',
+                        title: 'Principais Itens Recebidos por Doação (Unidades)',
+                        valueFormatter: 'integer',
+                        data: donationsMetrics.filteredEntries.slice(0, 8).map(e => ({
+                          label: e.tx.item_name,
+                          value: e.qty,
+                          color: '#2563eb'
+                        }))
+                      }
+                    },
+                    true
+                  )}
                 </div>
                 <h3 className="text-2xl sm:text-3xl font-black text-slate-900">
                   {donationsMetrics.totalReceivedUnits.toLocaleString('pt-BR')}{' '}
                   <span className="text-xs font-bold text-slate-400">un</span>
                 </h3>
-                <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
+                <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs">
                   <span className="font-bold text-slate-500">
                     {donationsMetrics.totalReceivedCount} entradas de doação
                   </span>
@@ -4474,26 +6739,67 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                     {formatCurrency(donationsMetrics.totalReceivedValue)}
                   </span>
                 </div>
+                <div className="h-20 w-full pt-1">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={
+                        donationsMetrics.filteredEntries.length > 0
+                          ? donationsMetrics.filteredEntries.slice(0, 4).map(e => ({
+                              name: e.tx.item_name.slice(0, 8),
+                              un: e.qty
+                            }))
+                          : [{ name: 'Sem dados', un: 0 }]
+                      }
+                      margin={{ top: 2, right: 2, left: -26, bottom: 0 }}
+                    >
+                      <XAxis dataKey="name" tick={{ fontSize: 8, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fontSize: 8, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                      <Tooltip formatter={(val: any) => [`${Number(val || 0).toLocaleString('pt-BR')} un`, 'Recebido']} contentStyle={{ borderRadius: '8px', fontSize: '10px', fontWeight: 700 }} />
+                      <Bar dataKey="un" fill="#2563eb" radius={[4, 4, 0, 0]} maxBarSize={18} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
               </div>
             </div>
 
             {/* 2. Doado de Fato (Saídas Exclusivas por Doação) */}
             <div className="bg-white rounded-3xl border border-blue-100/90 shadow-sm overflow-hidden relative">
               <div className="h-1.5 w-full bg-gradient-to-r from-indigo-600 via-blue-700 to-indigo-900" />
-              <div className="p-6">
-                <div className="flex items-center justify-between mb-3">
+              <div className="p-6 space-y-3">
+                <div className="flex items-start justify-between gap-2">
                   <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">
                     Doado (Saídas por Doação)
                   </span>
-                  <div className="bg-gradient-to-br from-indigo-600 to-blue-800 text-white p-2.5 rounded-2xl">
-                    <HeartHandshake size={18} />
-                  </div>
+                  {renderIndicatorActions(
+                    {
+                      indicatorTitle: 'Materiais Doados para Outras Unidades (Saídas por Doação)',
+                      indicatorSubtitle: 'Saídas exclusivas com motivo doação (exclui dispensações internas)',
+                      groupName: 'Doações e Baixas',
+                      explanation: 'Contabiliza exclusivamente as saídas com termo de doação para unidades externas.',
+                      kpis: [
+                        { label: 'Unidades Doadas', value: `${donationsMetrics.totalDonatedOutUnits.toLocaleString('pt-BR')} un`, tone: 'indigo' },
+                        { label: 'Valor Estimado', value: formatCurrency(donationsMetrics.totalDonatedOutValue), tone: 'blue' },
+                        { label: 'Termos de Doação', value: `${donationsMetrics.totalDonatedOutCount} saídas`, tone: 'slate' }
+                      ],
+                      chart: {
+                        type: 'horizontalBar',
+                        title: 'Principais Itens Doados no Período (Unidades)',
+                        valueFormatter: 'integer',
+                        data: donationsMetrics.filteredExits.slice(0, 8).map(e => ({
+                          label: e.tx.item_name,
+                          value: e.qty,
+                          color: '#4f46e5'
+                        }))
+                      }
+                    },
+                    true
+                  )}
                 </div>
                 <h3 className="text-2xl sm:text-3xl font-black text-slate-900">
                   {donationsMetrics.totalDonatedOutUnits.toLocaleString('pt-BR')}{' '}
                   <span className="text-xs font-bold text-slate-400">un</span>
                 </h3>
-                <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
+                <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs">
                   <span className="font-bold text-slate-500">
                     {donationsMetrics.totalDonatedOutCount} doações externas
                   </span>
@@ -4501,26 +6807,67 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                     {formatCurrency(donationsMetrics.totalDonatedOutValue)}
                   </span>
                 </div>
+                <div className="h-20 w-full pt-1">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={
+                        donationsMetrics.filteredExits.length > 0
+                          ? donationsMetrics.filteredExits.slice(0, 4).map(e => ({
+                              name: e.tx.item_name.slice(0, 8),
+                              un: e.qty
+                            }))
+                          : [{ name: 'Sem dados', un: 0 }]
+                      }
+                      margin={{ top: 2, right: 2, left: -26, bottom: 0 }}
+                    >
+                      <XAxis dataKey="name" tick={{ fontSize: 8, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fontSize: 8, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                      <Tooltip formatter={(val: any) => [`${Number(val || 0).toLocaleString('pt-BR')} un`, 'Doado']} contentStyle={{ borderRadius: '8px', fontSize: '10px', fontWeight: 700 }} />
+                      <Bar dataKey="un" fill="#4f46e5" radius={[4, 4, 0, 0]} maxBarSize={18} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
               </div>
             </div>
 
             {/* 3. Baixas por Vencimento / Perda no Período */}
             <div className="bg-white rounded-3xl border border-rose-100/90 shadow-sm overflow-hidden relative">
               <div className="h-1.5 w-full bg-gradient-to-r from-rose-500 via-rose-600 to-amber-500" />
-              <div className="p-6">
-                <div className="flex items-center justify-between mb-3">
+              <div className="p-6 space-y-3">
+                <div className="flex items-start justify-between gap-2">
                   <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">
                     Baixas por Vencimento
                   </span>
-                  <div className="bg-gradient-to-br from-rose-600 to-amber-600 text-white p-2.5 rounded-2xl">
-                    <AlertTriangle size={18} />
-                  </div>
+                  {renderIndicatorActions(
+                    {
+                      indicatorTitle: 'Baixas por Vencimento e Perda no Período',
+                      indicatorSubtitle: 'Saídas definitivas por expiração de validade ou avaria',
+                      groupName: 'Doações e Baixas',
+                      explanation: 'Soma das unidades e valores baixados por vencimento ou perda no período.',
+                      kpis: [
+                        { label: 'Unidades Baixadas', value: `${donationsMetrics.totalExpiredExitUnits.toLocaleString('pt-BR')} un`, tone: 'rose' },
+                        { label: 'Valor Financeiro', value: formatCurrency(donationsMetrics.totalExpiredExitValue), tone: 'amber' },
+                        { label: 'Registros de Baixa', value: `${donationsMetrics.totalExpiredExitCount} baixas`, tone: 'slate' }
+                      ],
+                      chart: {
+                        type: 'horizontalBar',
+                        title: 'Principais Itens Baixados por Vencimento/Perda (R$)',
+                        valueFormatter: 'currency',
+                        data: donationsMetrics.filteredExpiryExits.slice(0, 8).map(e => ({
+                          label: e.tx.item_name,
+                          value: e.finValue,
+                          color: '#ef4444'
+                        }))
+                      }
+                    },
+                    true
+                  )}
                 </div>
                 <h3 className="text-2xl sm:text-3xl font-black text-slate-900">
                   {donationsMetrics.totalExpiredExitUnits.toLocaleString('pt-BR')}{' '}
                   <span className="text-xs font-bold text-slate-400">un</span>
                 </h3>
-                <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
+                <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs">
                   <span className="font-bold text-slate-500">
                     {donationsMetrics.totalExpiredExitCount} baixas no período
                   </span>
@@ -4528,32 +6875,191 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                     {formatCurrency(donationsMetrics.totalExpiredExitValue)}
                   </span>
                 </div>
+                <div className="h-20 w-full pt-1">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={
+                        donationsMetrics.filteredExpiryExits.length > 0
+                          ? donationsMetrics.filteredExpiryExits.slice(0, 4).map(e => ({
+                              name: e.tx.item_name.slice(0, 8),
+                              un: e.qty
+                            }))
+                          : [{ name: 'Sem baixas', un: 0 }]
+                      }
+                      margin={{ top: 2, right: 2, left: -26, bottom: 0 }}
+                    >
+                      <XAxis dataKey="name" tick={{ fontSize: 8, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fontSize: 8, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                      <Tooltip formatter={(val: any) => [`${Number(val || 0).toLocaleString('pt-BR')} un`, 'Baixado']} contentStyle={{ borderRadius: '8px', fontSize: '10px', fontWeight: 700 }} />
+                      <Bar dataKey="un" fill="#ef4444" radius={[4, 4, 0, 0]} maxBarSize={18} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
               </div>
             </div>
 
             {/* 4. Estoque Atual de Origem Doação */}
             <div className="bg-white rounded-3xl border border-blue-100/90 shadow-sm overflow-hidden relative">
               <div className="h-1.5 w-full bg-gradient-to-r from-blue-500 to-indigo-700" />
-              <div className="p-6">
-                <div className="flex items-center justify-between mb-3">
+              <div className="p-6 space-y-3">
+                <div className="flex items-start justify-between gap-2">
                   <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">
                     Saldo Atual de Doação
                   </span>
-                  <div className="bg-gradient-to-br from-blue-600 to-blue-800 text-white p-2.5 rounded-2xl">
-                    <Package size={18} />
-                  </div>
+                  {renderIndicatorActions(
+                    {
+                      indicatorTitle: 'Saldo Atual em Estoque de Origem Doação',
+                      indicatorSubtitle: 'Lotes ativos atualmente em estoque cadastrados como doação',
+                      groupName: 'Doações e Baixas',
+                      explanation: 'Soma física e financeira dos lotes ativos com origem de aquisição por doação.',
+                      kpis: [
+                        { label: 'Saldo em Unidades', value: `${donationsMetrics.currentDonationStockUnits.toLocaleString('pt-BR')} un`, tone: 'blue' },
+                        { label: 'Valor em Saldo', value: formatCurrency(donationsMetrics.currentDonationStockValue), tone: 'indigo' },
+                        { label: 'Lotes com Saldo', value: `${donationsMetrics.currentDonationStockCount} lotes`, tone: 'emerald' }
+                      ],
+                      chart: {
+                        type: 'horizontalBar',
+                        title: 'Maiores Lotes Ativos de Origem Doação (Unidades)',
+                        valueFormatter: 'integer',
+                        data: donationsMetrics.filteredStock.slice(0, 8).map(it => ({
+                          label: it.name,
+                          value: Number(it.quantity) || 0,
+                          color: '#0284c7'
+                        }))
+                      }
+                    },
+                    true
+                  )}
                 </div>
                 <h3 className="text-2xl sm:text-3xl font-black text-slate-900">
                   {donationsMetrics.currentDonationStockUnits.toLocaleString('pt-BR')}{' '}
                   <span className="text-xs font-bold text-slate-400">un</span>
                 </h3>
-                <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
+                <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs">
                   <span className="font-bold text-slate-500">
                     {donationsMetrics.currentDonationStockCount} lotes com saldo
                   </span>
                   <span className="font-black text-blue-700">
                     {formatCurrency(donationsMetrics.currentDonationStockValue)}
                   </span>
+                </div>
+                <div className="h-20 w-full pt-1">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={
+                        donationsMetrics.filteredStock.length > 0
+                          ? donationsMetrics.filteredStock.slice(0, 4).map(it => ({
+                              name: it.name.slice(0, 8),
+                              un: Number(it.quantity) || 0
+                            }))
+                          : [{ name: 'Sem saldo', un: 0 }]
+                      }
+                      margin={{ top: 2, right: 2, left: -26, bottom: 0 }}
+                    >
+                      <XAxis dataKey="name" tick={{ fontSize: 8, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fontSize: 8, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                      <Tooltip formatter={(val: any) => [`${Number(val || 0).toLocaleString('pt-BR')} un`, 'Saldo']} contentStyle={{ borderRadius: '8px', fontSize: '10px', fontWeight: 700 }} />
+                      <Bar dataKey="un" fill="#0284c7" radius={[4, 4, 0, 0]} maxBarSize={18} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Comparative Charts for Donations & Write-offs */}
+          <div className="bg-white rounded-3xl border border-blue-100/90 shadow-sm overflow-hidden relative">
+            <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 via-indigo-600 to-rose-600" />
+            <div className="p-6 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100">
+                <div>
+                  <h3 className="text-base font-black text-slate-900">
+                    Comparativo Gráfico: Doações Recebidas, Doações Realizadas, Baixas e Saldo
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium">
+                    Confronto direto de volume físico (unidades) e impacto financeiro (R$) no período
+                  </p>
+                </div>
+                {renderIndicatorActions({
+                  indicatorTitle: 'Comparativo de Doações e Baixas por Vencimento',
+                  indicatorSubtitle: 'Doações recebidas, doações realizadas, baixas por vencimento e saldo atual de doação',
+                  groupName: 'Doações e Baixas',
+                  explanation: 'Visão comparativa consolidada exclusivamente sobre movimentações de doação e descartes por vencimento/perda.',
+                  kpis: [
+                    { label: 'Recebido por Doação', value: formatCurrency(donationsMetrics.totalReceivedValue), subvalue: `${donationsMetrics.totalReceivedUnits.toLocaleString('pt-BR')} un`, tone: 'blue' },
+                    { label: 'Doado (Saídas)', value: formatCurrency(donationsMetrics.totalDonatedOutValue), subvalue: `${donationsMetrics.totalDonatedOutUnits.toLocaleString('pt-BR')} un`, tone: 'indigo' },
+                    { label: 'Baixas por Vencimento', value: formatCurrency(donationsMetrics.totalExpiredExitValue), subvalue: `${donationsMetrics.totalExpiredExitUnits.toLocaleString('pt-BR')} un`, tone: 'rose' },
+                    { label: 'Saldo Atual Doação', value: formatCurrency(donationsMetrics.currentDonationStockValue), subvalue: `${donationsMetrics.currentDonationStockUnits.toLocaleString('pt-BR')} un`, tone: 'emerald' }
+                  ],
+                  chart: {
+                    type: 'verticalBar',
+                    title: 'Comparativo Financeiro de Doações e Baixas por Vencimento (R$)',
+                    valueFormatter: 'currency',
+                    data: [
+                      { label: 'Recebido (Doação)', value: donationsMetrics.totalReceivedValue, color: '#2563eb' },
+                      { label: 'Doado (Saídas)', value: donationsMetrics.totalDonatedOutValue, color: '#4f46e5' },
+                      { label: 'Baixas Vencimento', value: donationsMetrics.totalExpiredExitValue, color: '#ef4444' },
+                      { label: 'Saldo em Estoque', value: donationsMetrics.currentDonationStockValue, color: '#0284c7' }
+                    ]
+                  }
+                })}
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div className="h-60 w-full p-3 rounded-2xl bg-slate-50/70 border border-slate-100">
+                  <p className="text-xs font-black text-slate-700 mb-2 uppercase tracking-wider">
+                    Comparativo em Valor Financeiro (R$)
+                  </p>
+                  <ResponsiveContainer width="100%" height="88%">
+                    <BarChart
+                      data={[
+                        { name: 'Recebido', valor: Number(donationsMetrics.totalReceivedValue.toFixed(2)), fill: '#2563eb' },
+                        { name: 'Doado', valor: Number(donationsMetrics.totalDonatedOutValue.toFixed(2)), fill: '#4f46e5' },
+                        { name: 'Baixas Venc.', valor: Number(donationsMetrics.totalExpiredExitValue.toFixed(2)), fill: '#ef4444' },
+                        { name: 'Saldo Atual', valor: Number(donationsMetrics.currentDonationStockValue.toFixed(2)), fill: '#0284c7' }
+                      ]}
+                      margin={{ top: 8, right: 12, left: 0, bottom: 4 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                      <XAxis dataKey="name" tick={{ fontSize: 10, fontWeight: 700, fill: '#334155' }} />
+                      <YAxis tick={{ fontSize: 10, fill: '#64748b' }} tickFormatter={v => `R$${Number(v).toLocaleString('pt-BR')}`} />
+                      <Tooltip formatter={(val: any) => [formatCurrency(Number(val) || 0), 'Valor (R$)']} contentStyle={{ borderRadius: '12px', fontSize: '11px', fontWeight: 700 }} />
+                      <Bar dataKey="valor" radius={[6, 6, 0, 0]} maxBarSize={38}>
+                        <Cell fill="#2563eb" />
+                        <Cell fill="#4f46e5" />
+                        <Cell fill="#ef4444" />
+                        <Cell fill="#0284c7" />
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+
+                <div className="h-60 w-full p-3 rounded-2xl bg-slate-50/70 border border-slate-100">
+                  <p className="text-xs font-black text-slate-700 mb-2 uppercase tracking-wider">
+                    Comparativo em Quantidade Física (Unidades)
+                  </p>
+                  <ResponsiveContainer width="100%" height="88%">
+                    <BarChart
+                      data={[
+                        { name: 'Recebido', un: donationsMetrics.totalReceivedUnits, fill: '#2563eb' },
+                        { name: 'Doado', un: donationsMetrics.totalDonatedOutUnits, fill: '#4f46e5' },
+                        { name: 'Baixas Venc.', un: donationsMetrics.totalExpiredExitUnits, fill: '#ef4444' },
+                        { name: 'Saldo Atual', un: donationsMetrics.currentDonationStockUnits, fill: '#0284c7' }
+                      ]}
+                      margin={{ top: 8, right: 12, left: 0, bottom: 4 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                      <XAxis dataKey="name" tick={{ fontSize: 10, fontWeight: 700, fill: '#334155' }} />
+                      <YAxis tick={{ fontSize: 10, fill: '#64748b' }} />
+                      <Tooltip formatter={(val: any) => [`${Number(val || 0).toLocaleString('pt-BR')} un`, 'Unidades']} contentStyle={{ borderRadius: '12px', fontSize: '11px', fontWeight: 700 }} />
+                      <Bar dataKey="un" radius={[6, 6, 0, 0]} maxBarSize={38}>
+                        <Cell fill="#2563eb" />
+                        <Cell fill="#4f46e5" />
+                        <Cell fill="#ef4444" />
+                        <Cell fill="#0284c7" />
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
                 </div>
               </div>
             </div>
@@ -4624,10 +7130,45 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                       O que foi Doado no Período • Saídas Exclusivas por Doação (
                       {donationsMetrics.filteredExits.length})
                     </h4>
-                    <span className="text-xs font-extrabold text-indigo-700">
-                      Total Doado: {donationsMetrics.totalDonatedOutUnits.toLocaleString('pt-BR')} un (
-                      {formatCurrency(donationsMetrics.totalDonatedOutValue)})
-                    </span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs font-extrabold text-indigo-700">
+                        Total Doado: {donationsMetrics.totalDonatedOutUnits.toLocaleString('pt-BR')} un (
+                        {formatCurrency(donationsMetrics.totalDonatedOutValue)})
+                      </span>
+                      {renderIndicatorActions({
+                        indicatorTitle: 'Relação de Doações Realizadas no Período (Saídas por Doação)',
+                        indicatorSubtitle: 'Termos de doação emitidos para unidades externas',
+                        groupName: 'Doações e Baixas',
+                        kpis: [
+                          { label: 'Termos / Saídas', value: `${donationsMetrics.filteredExits.length}`, tone: 'indigo' },
+                          { label: 'Total Doado (Un)', value: `${donationsMetrics.totalDonatedOutUnits.toLocaleString('pt-BR')} un`, tone: 'blue' },
+                          { label: 'Valor Doado', value: formatCurrency(donationsMetrics.totalDonatedOutValue), tone: 'emerald' }
+                        ],
+                        chart: {
+                          type: 'horizontalBar',
+                          title: 'Itens Doados por Quantidade (Unidades)',
+                          valueFormatter: 'integer',
+                          data: donationsMetrics.filteredExits.slice(0, 10).map(r => ({
+                            label: r.tx.item_name,
+                            value: r.qty,
+                            color: '#4f46e5'
+                          }))
+                        },
+                        table: {
+                          title: 'Saídas Exclusivas por Doação',
+                          headers: ['Data', 'Nº Termo', 'Unidade Recebedora', 'Material', 'Categoria', 'Qtd.', 'Valor'],
+                          rows: donationsMetrics.filteredExits.map(r => [
+                            formatDateBR(r.tx.date),
+                            r.docNumber,
+                            r.recipient,
+                            r.tx.item_name,
+                            r.category,
+                            `${r.qty.toLocaleString('pt-BR')} un`,
+                            formatCurrency(r.finValue)
+                          ])
+                        }
+                      })}
+                    </div>
                   </div>
                   <div className="overflow-x-auto rounded-2xl border border-slate-200/80">
                     <table className="w-full text-left border-collapse">
@@ -4706,10 +7247,45 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                       <ArrowDownLeft size={16} className="text-blue-600" />
                       O que foi Recebido por Doação no Período ({donationsMetrics.filteredEntries.length})
                     </h4>
-                    <span className="text-xs font-extrabold text-blue-700">
-                      Total Recebido: {donationsMetrics.totalReceivedUnits.toLocaleString('pt-BR')} un (
-                      {formatCurrency(donationsMetrics.totalReceivedValue)})
-                    </span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs font-extrabold text-blue-700">
+                        Total Recebido: {donationsMetrics.totalReceivedUnits.toLocaleString('pt-BR')} un (
+                        {formatCurrency(donationsMetrics.totalReceivedValue)})
+                      </span>
+                      {renderIndicatorActions({
+                        indicatorTitle: 'Relação de Doações Recebidas no Período (Entradas)',
+                        indicatorSubtitle: 'Materiais incorporados ao estoque por doação',
+                        groupName: 'Doações e Baixas',
+                        kpis: [
+                          { label: 'Entradas por Doação', value: `${donationsMetrics.filteredEntries.length}`, tone: 'blue' },
+                          { label: 'Total Recebido (Un)', value: `${donationsMetrics.totalReceivedUnits.toLocaleString('pt-BR')} un`, tone: 'indigo' },
+                          { label: 'Valor Estimado', value: formatCurrency(donationsMetrics.totalReceivedValue), tone: 'emerald' }
+                        ],
+                        chart: {
+                          type: 'horizontalBar',
+                          title: 'Itens Recebidos por Doação (Unidades)',
+                          valueFormatter: 'integer',
+                          data: donationsMetrics.filteredEntries.slice(0, 10).map(r => ({
+                            label: r.tx.item_name,
+                            value: r.qty,
+                            color: '#2563eb'
+                          }))
+                        },
+                        table: {
+                          title: 'Entradas Recebidas por Doação',
+                          headers: ['Data', 'Material', 'Categoria', 'Lote', 'Doador / Origem', 'Qtd.', 'Valor'],
+                          rows: donationsMetrics.filteredEntries.map(r => [
+                            formatDateBR(r.tx.date),
+                            r.tx.item_name,
+                            r.category,
+                            r.tx.batch_number || r.item?.batch_number || 'S/L',
+                            r.tx.supplier || 'Doação Institucional',
+                            `+${r.qty.toLocaleString('pt-BR')} un`,
+                            formatCurrency(r.finValue)
+                          ])
+                        }
+                      })}
+                    </div>
                   </div>
                   <div className="overflow-x-auto rounded-2xl border border-slate-200/80">
                     <table className="w-full text-left border-collapse">
@@ -4782,10 +7358,46 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                       Baixas por Vencimento / Descarte no Período (
                       {donationsMetrics.filteredExpiryExits.length})
                     </h4>
-                    <span className="text-xs font-extrabold text-rose-600">
-                      Total Baixado: {donationsMetrics.totalExpiredExitUnits.toLocaleString('pt-BR')} un (
-                      {formatCurrency(donationsMetrics.totalExpiredExitValue)})
-                    </span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs font-extrabold text-rose-600">
+                        Total Baixado: {donationsMetrics.totalExpiredExitUnits.toLocaleString('pt-BR')} un (
+                        {formatCurrency(donationsMetrics.totalExpiredExitValue)})
+                      </span>
+                      {renderIndicatorActions({
+                        indicatorTitle: 'Relação de Baixas por Vencimento / Descarte',
+                        indicatorSubtitle: 'Itens baixados do estoque por validade expirada ou perda',
+                        groupName: 'Doações e Baixas',
+                        kpis: [
+                          { label: 'Total de Baixas', value: `${donationsMetrics.filteredExpiryExits.length}`, tone: 'rose' },
+                          { label: 'Qtd. Baixada', value: `${donationsMetrics.totalExpiredExitUnits.toLocaleString('pt-BR')} un`, tone: 'amber' },
+                          { label: 'Valor Baixado', value: formatCurrency(donationsMetrics.totalExpiredExitValue), tone: 'slate' }
+                        ],
+                        chart: {
+                          type: 'horizontalBar',
+                          title: 'Maiores Baixas por Vencimento/Perda (R$)',
+                          valueFormatter: 'currency',
+                          data: donationsMetrics.filteredExpiryExits.slice(0, 10).map(r => ({
+                            label: r.tx.item_name,
+                            value: r.finValue,
+                            color: '#ef4444'
+                          }))
+                        },
+                        table: {
+                          title: 'Baixas por Vencimento e Perda no Período',
+                          headers: ['Data', 'Tipo', 'Material', 'Categoria', 'Lote', 'Justificativa', 'Qtd.', 'Valor'],
+                          rows: donationsMetrics.filteredExpiryExits.map(r => [
+                            formatDateBR(r.tx.date),
+                            r.reasonType,
+                            r.tx.item_name,
+                            r.category,
+                            r.tx.batch_number || 'S/L',
+                            r.justification,
+                            `-${r.qty.toLocaleString('pt-BR')} un`,
+                            formatCurrency(r.finValue)
+                          ])
+                        }
+                      })}
+                    </div>
                   </div>
                   <div className="overflow-x-auto rounded-2xl border border-slate-200/80">
                     <table className="w-full text-left border-collapse">
@@ -4862,10 +7474,48 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
               {/* Table 4: Estoque Atual de Origem Doação */}
               {(donationSubView === 'todas' || donationSubView === 'estoque') && (
                 <div className="space-y-3">
-                  <h4 className="text-sm font-black text-slate-900 flex items-center gap-2">
-                    <Package size={16} className="text-blue-700" />
-                    Lotes em Estoque Atual de Origem Doação ({donationsMetrics.filteredStock.length})
-                  </h4>
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <h4 className="text-sm font-black text-slate-900 flex items-center gap-2">
+                      <Package size={16} className="text-blue-700" />
+                      Lotes em Estoque Atual de Origem Doação ({donationsMetrics.filteredStock.length})
+                    </h4>
+                    {renderIndicatorActions({
+                      indicatorTitle: 'Lotes em Estoque Atual de Origem Doação',
+                      indicatorSubtitle: 'Posição atual dos lotes ativos recebidos por doação',
+                      groupName: 'Doações e Baixas',
+                      kpis: [
+                        { label: 'Lotes Ativos', value: `${donationsMetrics.filteredStock.length} lotes`, tone: 'blue' },
+                        { label: 'Saldo em Unidades', value: `${donationsMetrics.currentDonationStockUnits.toLocaleString('pt-BR')} un`, tone: 'indigo' },
+                        { label: 'Valor em Saldo', value: formatCurrency(donationsMetrics.currentDonationStockValue), tone: 'emerald' }
+                      ],
+                      chart: {
+                        type: 'horizontalBar',
+                        title: 'Lotes em Estoque de Origem Doação por Saldo (Unidades)',
+                        valueFormatter: 'integer',
+                        data: donationsMetrics.filteredStock.slice(0, 10).map(it => ({
+                          label: it.name,
+                          value: Number(it.quantity) || 0,
+                          color: '#0284c7'
+                        }))
+                      },
+                      table: {
+                        title: 'Lotes Ativos de Origem Doação',
+                        headers: ['Material', 'Categoria', 'Sala', 'Lote / Validade', 'Saldo Atual', 'Valor'],
+                        rows: donationsMetrics.filteredStock.map(it => {
+                          const q = Number(it.quantity) || 0;
+                          const v = q * (Number(it.unit_price) || 0);
+                          return [
+                            it.name,
+                            it.category || 'Outros',
+                            it.room || `${inventoryLocation} Principal`,
+                            `${it.batch_number || 'S/L'} • ${formatDateBR(it.expiry_date)}`,
+                            `${q.toLocaleString('pt-BR')} ${it.unit_measure || 'un'}`,
+                            formatCurrency(v)
+                          ];
+                        })
+                      }
+                    })}
+                  </div>
                   <div className="overflow-x-auto rounded-2xl border border-slate-200/80">
                     <table className="w-full text-left border-collapse">
                       <thead>
