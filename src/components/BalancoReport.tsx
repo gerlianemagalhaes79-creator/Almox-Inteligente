@@ -50,8 +50,9 @@ import { ptBR } from 'date-fns/locale';
 import { Item, UserProfile, Transaction, InventoryCompletion, InventoryCategoryStatus, InventoryDivergenceRecord } from '../types';
 import { doc, updateDoc, addDoc, collection, serverTimestamp, setDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 import { db, auth } from '../firebase';
+import { isMedicamentosCategory } from '../utils/medicamentosFilter';
 
-interface BalancoReportProps {
+export interface BalancoReportProps {
   items: Item[];
   categories: string[];
   CATEGORY_COLORS: Record<string, string>;
@@ -65,6 +66,8 @@ interface BalancoReportProps {
   transactions?: Transaction[];
   checkStockAndNotify?: (itemName: string) => Promise<void>;
   initialOpenDivergencesDoc?: boolean;
+  includeMedicamentos?: boolean;
+  onToggleIncludeMedicamentos?: (val: boolean) => void;
 }
 
 type StockFilter = 'all' | 'with_stock' | 'zero_stock' | 'critical_batches' | 'divergences_only';
@@ -176,8 +179,25 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
   userProfile,
   transactions = [],
   checkStockAndNotify,
-  initialOpenDivergencesDoc = false
+  initialOpenDivergencesDoc = false,
+  includeMedicamentos: propIncludeMedicamentos,
+  onToggleIncludeMedicamentos
 }) => {
+  const [localIncludeMedicamentos, setLocalIncludeMedicamentos] = useState<boolean>(false);
+  const includeMedicamentos =
+    propIncludeMedicamentos !== undefined ? propIncludeMedicamentos : localIncludeMedicamentos;
+
+  const handleToggleIncludeMedicamentos = (val: boolean) => {
+    setLocalIncludeMedicamentos(val);
+    if (onToggleIncludeMedicamentos) {
+      onToggleIncludeMedicamentos(val);
+    }
+  };
+
+  const medicamentosDesconsideradosCount = useMemo(() => {
+    return items.filter(i => !i.deletedAt && isMedicamentosCategory(i.category)).length;
+  }, [items]);
+
   // Filters
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [selectedLocation, setSelectedLocation] = useState<string>(inventoryLocation || 'all');
@@ -337,21 +357,31 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
     }
   }, []);
 
-  // Active items (excluding soft deleted)
+  // Active items (excluding soft deleted e medicamentos quando desligado)
   const activeItems = useMemo(() => {
-    return items.filter(i => !i.deletedAt);
-  }, [items]);
+    return items.filter(i => {
+      if (i.deletedAt) return false;
+      if (!includeMedicamentos && isMedicamentosCategory(i.category)) return false;
+      return true;
+    });
+  }, [items, includeMedicamentos]);
 
   // Dynamic available categories from both list and items
   const availableCategories = useMemo(() => {
     const set = new Set<string>();
-    Object.keys(CATEGORY_COLORS).forEach(c => set.add(c));
-    categories.forEach(c => set.add(c));
+    Object.keys(CATEGORY_COLORS).forEach(c => {
+      if (includeMedicamentos || !isMedicamentosCategory(c)) set.add(c);
+    });
+    categories.forEach(c => {
+      if (includeMedicamentos || !isMedicamentosCategory(c)) set.add(c);
+    });
     activeItems.forEach(i => {
-      if (i.category) set.add(i.category);
+      if (i.category && (includeMedicamentos || !isMedicamentosCategory(i.category))) {
+        set.add(i.category);
+      }
     });
     return Array.from(set).sort();
-  }, [activeItems, categories, CATEGORY_COLORS]);
+  }, [activeItems, categories, CATEGORY_COLORS, includeMedicamentos]);
 
   const markCategoryInProgress = (cat: string) => {
     setInProgressCategories(prev => {
@@ -862,7 +892,7 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
         batch_number: item.batch_number || '',
         expiry_date: item.expiry_date || '',
         observation: `[Ajuste de Balanço] Ajuste direto de contagem física: Saldo anterior: ${oldQty} un -> Novo saldo: ${newPhysicalQty} un (Dif: ${diff > 0 ? '+' : ''}${diff} un).`,
-        ...(diff < 0 ? { exitReason: 'perda' as const } : {})
+        ...(diff < 0 ? { exitReason: 'ajuste_balanco' as const } : {})
       });
 
       if (checkStockAndNotify) {
@@ -951,7 +981,7 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
           batch_number: newBatch || '',
           expiry_date: newExpiry || '',
           observation: `[Ajuste de Balanço / Inventário] ${diff > 0 ? 'Sobra física' : 'Falta / Quebra física'}. Saldo anterior: ${oldQty} un -> Novo saldo: ${newQty} un (Diferença: ${diff > 0 ? '+' : ''}${diff} un). Motivo: ${adjustModal.reason}${adjustModal.observation ? ` - Obs: ${adjustModal.observation}` : ''}`,
-          ...(diff < 0 ? { exitReason: 'perda' as const } : {})
+          ...(diff < 0 ? { exitReason: 'ajuste_balanco' as const } : {})
         });
       }
 
@@ -1045,7 +1075,7 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
           batch_number: item.batch_number || '',
           expiry_date: item.expiry_date || '',
           observation: `[Balanço em Lote] ${diff > 0 ? 'Sobra de contagem' : 'Falta de contagem'}. Saldo anterior: ${oldQty} un -> Novo saldo: ${newQty} un (Dif: ${diff > 0 ? '+' : ''}${diff} un). Motivo: ${batchAdjustModal.reason}${batchAdjustModal.observation ? ` - Obs: ${batchAdjustModal.observation}` : ''}`,
-          ...(diff < 0 ? { exitReason: 'perda' as const } : {})
+          ...(diff < 0 ? { exitReason: 'ajuste_balanco' as const } : {})
         });
 
         // 3. Stock notification check
@@ -2871,6 +2901,35 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
           </div>
         </div>
 
+        {/* Toggle de Medicamentos e Nota de Desconsiderados */}
+        <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
+          <label className="flex items-center gap-2.5 cursor-pointer bg-slate-50 hover:bg-slate-100 border border-slate-200 px-3.5 py-2 rounded-xl transition-colors shadow-2xs">
+            <input
+              type="checkbox"
+              checked={includeMedicamentos}
+              onChange={e => handleToggleIncludeMedicamentos(e.target.checked)}
+              className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer"
+            />
+            <span className="text-xs font-black text-slate-800">
+              Incluir medicamentos nos indicadores
+            </span>
+          </label>
+
+          <div>
+            {!includeMedicamentos ? (
+              <span className="text-xs font-extrabold text-amber-800 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-xl flex items-center gap-1.5 shadow-2xs">
+                <AlertTriangle size={14} className="text-amber-600 shrink-0" />
+                {medicamentosDesconsideradosCount} {medicamentosDesconsideradosCount === 1 ? 'item de medicamento desconsiderado' : 'itens de medicamentos desconsiderados'}
+              </span>
+            ) : (
+              <span className="text-xs font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-xl flex items-center gap-1.5 shadow-2xs">
+                <CheckCircle size={14} className="text-emerald-600 shrink-0" />
+                Medicamentos incluídos nos indicadores
+              </span>
+            )}
+          </div>
+        </div>
+
         {/* Mode Selector: View Mode vs Interactive Count Mode */}
         <div className="mt-4 pt-3.5 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2.5">
@@ -2935,9 +2994,16 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
               </p>
             </div>
           </div>
-          <span className="text-[11px] font-bold text-slate-500 bg-slate-50 border border-slate-200 px-3 py-1 rounded-full">
-            {inventorySummary.completed} de {inventorySummary.totalTypes} concluídos ({inventorySummary.totalTypes > 0 ? Math.round((inventorySummary.completed / inventorySummary.totalTypes) * 100) : 0}%)
-          </span>
+          <div className="flex flex-wrap items-center gap-2">
+            {!includeMedicamentos && (
+              <span className="text-[11px] font-extrabold text-amber-800 bg-amber-50 border border-amber-200 px-3 py-1 rounded-full">
+                {medicamentosDesconsideradosCount} itens de medicamentos desconsiderados
+              </span>
+            )}
+            <span className="text-[11px] font-bold text-slate-500 bg-slate-50 border border-slate-200 px-3 py-1 rounded-full">
+              {inventorySummary.completed} de {inventorySummary.totalTypes} concluídos ({inventorySummary.totalTypes > 0 ? Math.round((inventorySummary.completed / inventorySummary.totalTypes) * 100) : 0}%)
+            </span>
+          </div>
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">

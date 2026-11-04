@@ -94,12 +94,15 @@ import { ApuraSUSProducaoReport } from './components/ApuraSUSProducaoReport';
 import { ApuraSUSCustosReport } from './components/ApuraSUSCustosReport';
 import { BalancoReport } from './components/BalancoReport';
 import { IndicadoresReport } from './components/IndicadoresReport';
+import { MonthlySectorConsumptionReport } from './components/MonthlySectorConsumptionReport';
 import {
   generateCompletePDFReport,
   exportSingleIndicatorPDF,
   printSingleIndicator,
   SingleIndicatorExportParams
 } from './utils/pdfReportGenerator';
+import { isMedicamentosCategory } from './utils/medicamentosFilter';
+import { getCategorizedExitType, getExitReasonLabel, getExitReasonBadgeClasses } from './utils/exitReasonUtils';
 import { UserManagementTab } from './components/UserManagementTab';
 import { BulkEntryModal } from './components/BulkEntryModal';
 import { RequestsTab } from './components/RequestsTab';
@@ -492,7 +495,8 @@ export default function App() {
   const [donationUnitCNPJ, setDonationUnitCNPJ] = useState('');
   const [donationRevisionDate, setDonationRevisionDate] = useState('');
   const [letterheadImage, setLetterheadImage] = useState<string | null>(null);
-  const [reportsTab, setReportsTab] = useState<'overview' | 'balanco' | 'apurasus_producao' | 'apurasus_custos' | 'quantitativo' | 'letterhead' | 'indicadores'>('overview');
+  const [reportsTab, setReportsTab] = useState<'overview' | 'balanco' | 'apurasus_producao' | 'apurasus_custos' | 'quantitativo' | 'letterhead' | 'indicadores' | 'consumo_mensal_setor'>('overview');
+  const [includeMedicamentosInReports, setIncludeMedicamentosInReports] = useState<boolean>(false);
   const [openDivergencesDocOnMount, setOpenDivergencesDocOnMount] = useState(false);
   const [quantitativoSource, setQuantitativoSource] = useState<'sample' | 'system'>('system');
   const [quantitativoPeriodPreset, setQuantitativoPeriodPreset] = useState<'1_semestre_2026' | '2_semestre_2026' | 'ano_2026' | 'custom'>('1_semestre_2026');
@@ -948,6 +952,7 @@ export default function App() {
   
   const [modalSector, setModalSector] = useState<string>('');
   const [transactionQty, setTransactionQty] = useState(1);
+  const [transactionDate, setTransactionDate] = useState<string>(() => format(new Date(), 'yyyy-MM-dd'));
   const [exitReason, setExitReason] = useState<'consumo' | 'doacao' | 'vencido' | 'perda'>('consumo');
   const [expiryReason, setExpiryReason] = useState('');
   const [selectedItemId, setSelectedItemId] = useState<string>('');
@@ -967,6 +972,9 @@ export default function App() {
   const [reportSectorFilter, setReportSectorFilter] = useState<string>('all');
   const [reportCategoryFilter, setReportCategoryFilter] = useState<string>('all');
   const [reportMaterialFilter, setReportMaterialFilter] = useState<string>('all');
+  const [reportTxTypeFilter, setReportTxTypeFilter] = useState<'all' | 'entries' | 'donation_entries' | 'exits' | 'donation_exits' | 'retroactive_exits'>('all');
+  const [reportTxSearch, setReportTxSearch] = useState<string>('');
+  const [reportTxIgnoreDateRange, setReportTxIgnoreDateRange] = useState<boolean>(false);
   const [isExportingOverviewPDF, setIsExportingOverviewPDF] = useState<boolean>(false);
   const [pcaRange, setPcaRange] = useState({
     start: format(subDays(new Date(), 365), 'yyyy-MM-dd'),
@@ -1738,6 +1746,48 @@ export default function App() {
   const handleDeleteTransaction = async (id: string, reason: string) => {
     if (!id) return;
     try {
+      const targetTxInState = transactions.find(t => t.id === id);
+      const fallbackItem = targetTxInState
+        ? items.find(i => i.id === targetTxInState.item_id) ||
+          items.find(
+            i =>
+              !i.deletedAt &&
+              normalizeString(i.name) === normalizeString(targetTxInState.item_name) &&
+              (i.batch_number || '') === (targetTxInState.batch_number || '') &&
+              (i.location || 'Almoxarifado') === (targetTxInState.location || 'Almoxarifado')
+          )
+        : undefined;
+
+      // Check if there is a paired automatic transfer transaction (e.g. Almoxarifado -> Farmácia) to avoid orphan records
+      const pairedTransferTx = targetTxInState
+        ? transactions.find(t => {
+            if (t.id === id || t.deletedAt) return false;
+            const timeDiff = Math.abs(new Date(t.date).getTime() - new Date(targetTxInState.date).getTime());
+            if (timeDiff > 60000) return false;
+            if (normalizeString(t.item_name) !== normalizeString(targetTxInState.item_name)) return false;
+            if (Number(t.quantity) !== Number(targetTxInState.quantity)) return false;
+            if ((t.batch_number || '') !== (targetTxInState.batch_number || '')) return false;
+
+            const isTargetExitToPharm =
+              targetTxInState.type === 'exit' &&
+              targetTxInState.sector === 'Farmácia' &&
+              t.type === 'entry' &&
+              t.location === 'Farmácia' &&
+              (t.responsible || '').includes('Transferência');
+
+            const isTargetPharmAutoEntry =
+              targetTxInState.type === 'entry' &&
+              targetTxInState.location === 'Farmácia' &&
+              (targetTxInState.responsible || '').includes('Transferência') &&
+              t.type === 'exit' &&
+              t.sector === 'Farmácia';
+
+            return isTargetExitToPharm || isTargetPharmAutoEntry;
+          })
+        : undefined;
+
+      let wasRetroactiveNoStockImpact = false;
+
       await runTransaction(db, async (transaction) => {
         const transRef = doc(db, 'transactions', id);
         const transSnap = await transaction.get(transRef);
@@ -1752,43 +1802,100 @@ export default function App() {
           throw new Error("Esta movimentação já foi excluída.");
         }
 
-        if (transData.item_id) {
-          const itemRef = doc(db, 'items', transData.item_id);
-          const itemSnap = await transaction.get(itemRef);
-          
-          if (itemSnap.exists()) {
-            const itemData = itemSnap.data() as Item;
-            const qty = Number(transData.quantity) || 0;
-            let currentQty = Number(itemData.quantity) || 0;
-            
-            let newQty;
-            if (transData.type === 'entry') {
-              newQty = currentQty - qty;
-            } else {
-              newQty = currentQty + qty;
-            }
-            
-            transaction.update(itemRef, { 
-              quantity: Math.max(0, newQty),
-              updatedAt: serverTimestamp()
-            });
+        const didAffectStock = transData.stockAffected !== false && !transData.isRetroactive;
+        wasRetroactiveNoStockImpact = !didAffectStock;
+
+        const resolvedItemId = transData.item_id || fallbackItem?.id;
+        let itemSnap: any = null;
+        let itemRef: DocumentReference | null = null;
+
+        if (didAffectStock && resolvedItemId) {
+          itemRef = doc(db, 'items', resolvedItemId);
+          itemSnap = await transaction.get(itemRef);
+          if (!itemSnap.exists() && fallbackItem?.id && fallbackItem.id !== resolvedItemId) {
+            itemRef = doc(db, 'items', fallbackItem.id);
+            itemSnap = await transaction.get(itemRef);
           }
         }
 
+        // Read paired transfer transaction & item if present (all reads must precede writes in Firestore transactions)
+        let pairedTransRef: DocumentReference | null = null;
+        let pairedTransSnap: any = null;
+        let pairedItemRef: DocumentReference | null = null;
+        let pairedItemSnap: any = null;
+
+        if (pairedTransferTx?.id) {
+          pairedTransRef = doc(db, 'transactions', pairedTransferTx.id);
+          pairedTransSnap = await transaction.get(pairedTransRef);
+          if (pairedTransSnap.exists() && !pairedTransSnap.data().deletedAt) {
+            const pData = pairedTransSnap.data() as Transaction;
+            const pAffectStock = pData.stockAffected !== false && !pData.isRetroactive;
+            if (pAffectStock && pData.item_id) {
+              pairedItemRef = doc(db, 'items', pData.item_id);
+              pairedItemSnap = await transaction.get(pairedItemRef);
+            }
+          }
+        }
+
+        if (didAffectStock && itemRef && itemSnap && itemSnap.exists()) {
+          const itemData = itemSnap.data() as Item;
+          const qty = Number(transData.quantity) || 0;
+          const currentQty = Number(itemData.quantity) || 0;
+          
+          const newQty = transData.type === 'entry'
+            ? currentQty - qty
+            : currentQty + qty;
+          
+          transaction.update(itemRef, { 
+            quantity: Math.max(0, newQty),
+            updatedAt: serverTimestamp()
+          });
+        }
+
+        const deletionTimestamp = new Date().toISOString();
+        const finalReason = reason?.trim() || 'Exclusão realizada pelo usuário';
+
         transaction.update(transRef, {
-          deletedAt: new Date().toISOString(),
-          deletionReason: reason || 'Sem justificativa',
-          deletedByEmail: user?.email
+          deletedAt: deletionTimestamp,
+          deletionReason: finalReason,
+          deletedByEmail: user?.email || ''
         });
+
+        if (pairedTransRef && pairedTransSnap && pairedTransSnap.exists() && !pairedTransSnap.data().deletedAt) {
+          const pData = pairedTransSnap.data() as Transaction;
+          if (pairedItemRef && pairedItemSnap && pairedItemSnap.exists()) {
+            const pItemData = pairedItemSnap.data() as Item;
+            const pQty = Number(pData.quantity) || 0;
+            const pCurrentQty = Number(pItemData.quantity) || 0;
+            const pNewQty = pData.type === 'entry' ? pCurrentQty - pQty : pCurrentQty + pQty;
+            transaction.update(pairedItemRef, {
+              quantity: Math.max(0, pNewQty),
+              updatedAt: serverTimestamp()
+            });
+          }
+          transaction.update(pairedTransRef, {
+            deletedAt: deletionTimestamp,
+            deletionReason: `${finalReason} (Estorno automático de transferência vinculada)`,
+            deletedByEmail: user?.email || ''
+          });
+        }
       });
 
       setShowDeleteModal({ show: false });
-      const itemName = transactions.find(t => t.id === id)?.item_name;
+      const itemName = targetTxInState?.item_name;
       setDeletionReason('');
-      if (itemName) await checkStockAndNotify(itemName);
+      if (itemName && !wasRetroactiveNoStockImpact) {
+        await checkStockAndNotify(itemName);
+      }
+      showToast(
+        wasRetroactiveNoStockImpact
+          ? "Saída retroativa excluída com sucesso! Indicadores e relatórios atualizados (saldo atual mantido)."
+          : "Lançamento excluído com sucesso! Indicadores, relatórios e saldos atualizados.",
+        "success"
+      );
     } catch (error: any) {
       console.error("Error deleting transaction:", error);
-      alert(`Erro ao excluir movimentação: ${error.message}`);
+      showToast(`Erro ao excluir movimentação: ${error.message}`, "error");
     }
   };
 
@@ -1809,21 +1916,20 @@ export default function App() {
           throw new Error("Esta movimentação não está excluída.");
         }
 
-        if (transData.item_id) {
+        const didAffectStock = transData.stockAffected !== false && !transData.isRetroactive;
+
+        if (didAffectStock && transData.item_id) {
           const itemRef = doc(db, 'items', transData.item_id);
           const itemSnap = await transaction.get(itemRef);
           
           if (itemSnap.exists()) {
             const itemData = itemSnap.data() as Item;
             const qty = Number(transData.quantity) || 0;
-            let currentQty = Number(itemData.quantity) || 0;
+            const currentQty = Number(itemData.quantity) || 0;
             
-            let newQty;
-            if (transData.type === 'entry') {
-              newQty = currentQty + qty;
-            } else {
-              newQty = currentQty - qty;
-            }
+            const newQty = transData.type === 'entry'
+              ? currentQty + qty
+              : currentQty - qty;
             
             transaction.update(itemRef, { 
               quantity: Math.max(0, newQty),
@@ -1838,9 +1944,10 @@ export default function App() {
           deletedByEmail: null
         });
       });
+      showToast("Movimentação restaurada com sucesso!", "success");
     } catch (error: any) {
       console.error("Error recovering transaction:", error);
-      alert(`Erro ao recuperar movimentação: ${error.message}`);
+      showToast(`Erro ao recuperar movimentação: ${error.message}`, "error");
     }
   };
 
@@ -4455,6 +4562,12 @@ export default function App() {
   const handleTransaction = async (e: React.FormEvent) => {
     e.preventDefault();
     
+    const todayStr = format(new Date(), 'yyyy-MM-dd');
+    const isRetroactiveExit = showTransactionModal.type === 'exit' && Boolean(transactionDate) && transactionDate < todayStr;
+    const effectiveTxDateISO = (!transactionDate || transactionDate === todayStr)
+      ? new Date().toISOString()
+      : new Date(`${transactionDate}T12:00:00`).toISOString();
+
     try {
       if (showTransactionModal.type === 'exit') {
         if (basket.length === 0) return;
@@ -4472,12 +4585,12 @@ export default function App() {
 
             const currentItemData = itemSnap.data() as Item;
             const currentQty = Number(currentItemData.quantity) || 0;
-            if (currentQty < b.quantity) {
+            if (!isRetroactiveExit && currentQty < b.quantity) {
               throw new Error(`Estoque insuficiente para o item ${currentItemData.name}. Disponível: ${currentQty}`);
             }
 
             let pharmacyItemSnap = null;
-            if (selectedSector === 'Farmácia' && exitReason === 'consumo') {
+            if (!isRetroactiveExit && selectedSector === 'Farmácia' && exitReason === 'consumo') {
               const pharmacyItemsQuery = query(
                 collection(db, 'items'),
                 where('name', '==', currentItemData.name),
@@ -4507,18 +4620,23 @@ export default function App() {
             const { itemRef, currentItemData, quantity, pharmacyItemSnap } = pi;
             const currentQty = Number(currentItemData.quantity) || 0;
 
-            transaction.update(itemRef, {
-              quantity: currentQty - quantity,
-              updatedAt: serverTimestamp()
-            });
+            // REGRA DE SAÍDA RETROATIVA:
+            // Saídas com data anterior à data atual NÃO descontam a quantidade do estoque atual.
+            // Saídas com data atual ou futura descontam normalmente.
+            if (!isRetroactiveExit) {
+              transaction.update(itemRef, {
+                quantity: currentQty - quantity,
+                updatedAt: serverTimestamp()
+              });
+            }
 
             const newTransRef = doc(transCol);
             const currentDonationNumber = exitReason === 'doacao' ? (() => {
-              const currentYear = new Date().getFullYear();
+              const txYear = new Date(effectiveTxDateISO).getFullYear();
               const yearlyDonations = transactions.filter(t => 
                 t.exitReason === 'doacao' && 
                 !t.deletedAt && 
-                new Date(t.date).getFullYear() === currentYear
+                new Date(t.date).getFullYear() === txYear
               );
               const uniqueDonations = new Set();
               yearlyDonations.forEach(t => {
@@ -4532,7 +4650,7 @@ export default function App() {
                 }
               });
               const nextCount = uniqueDonations.size + 1;
-              return `${nextCount.toString().padStart(2, '0')}/${currentYear}`;
+              return `${nextCount.toString().padStart(2, '0')}/${txYear}`;
             })() : null;
 
             const sectorValue = (exitReason === 'vencido' || exitReason === 'perda')
@@ -4547,7 +4665,7 @@ export default function App() {
               quantity: quantity,
               sector: sectorValue,
               location: inventoryLocation,
-              date: new Date().toISOString(),
+              date: effectiveTxDateISO,
               responsible: user?.displayName || 'Sistema',
               responsibleEmail: user?.email || '',
               exitReason: exitReason,
@@ -4558,10 +4676,12 @@ export default function App() {
               donationRevisionDate: exitReason === 'doacao' ? donationRevisionDate : null,
               donationNumber: currentDonationNumber,
               batch_number: currentItemData.batch_number,
-              expiry_date: currentItemData.expiry_date
+              expiry_date: currentItemData.expiry_date,
+              isRetroactive: isRetroactiveExit,
+              stockAffected: !isRetroactiveExit
             });
 
-            if (pharmacyItemSnap) {
+            if (!isRetroactiveExit && pharmacyItemSnap) {
               let pharmacyItemId = '';
               if (!pharmacyItemSnap.empty) {
                 const pharmacyItemDoc = pharmacyItemSnap.docs[0];
@@ -4597,11 +4717,12 @@ export default function App() {
                 origin: currentItemData.origin,
                 quantity: quantity,
                 location: 'Farmácia',
-                date: new Date().toISOString(),
+                date: effectiveTxDateISO,
                 responsible: 'Sistema (Transferência)',
                 batch_number: currentItemData.batch_number,
                 expiry_date: currentItemData.expiry_date,
-                supplier: currentItemData.supplier
+                supplier: currentItemData.supplier,
+                stockAffected: true
               });
             }
           }
@@ -4609,7 +4730,7 @@ export default function App() {
       } else {
         const item = showTransactionModal.item || items.find(i => i.id === selectedItemId);
         if (!item) {
-          alert('Por favor, selecione um item.');
+          showToast('Por favor, selecione um item.', 'error');
           return;
         }
 
@@ -4649,12 +4770,19 @@ export default function App() {
             responsibleEmail: user?.email || '',
             batch_number: currentItemData.batch_number,
             expiry_date: currentItemData.expiry_date,
-            supplier: currentItemData.supplier
+            supplier: currentItemData.supplier,
+            stockAffected: true
           });
         });
       }
 
       setShowTransactionModal({ show: false, type: 'entry' });
+      showToast(
+        isRetroactiveExit
+          ? `Saída retroativa (${format(parseISO(transactionDate), 'dd/MM/yyyy')}) registrada no histórico e relatórios sem alterar o estoque físico atual!`
+          : 'Movimentação registrada com sucesso!',
+        'success'
+      );
       
       // Post-transaction receipt/term generation
       if (showTransactionModal.type === 'exit' && basket.length > 0) {
@@ -5737,6 +5865,7 @@ export default function App() {
   useEffect(() => {
     if (showTransactionModal.show) {
       setTransactionQty(1);
+      setTransactionDate(format(new Date(), 'yyyy-MM-dd'));
       setDonationUnitName('');
       setDonationUnitAddress('');
       setDonationUnitCNPJ('');
@@ -7688,10 +7817,15 @@ export default function App() {
 
       if (!inRange || !matchesSector) return false;
 
+      const matchedItem =
+        items.find(i => i.id === t.item_id) ||
+        items.find(i => !i.deletedAt && (i.name || '').trim().toUpperCase() === (t.item_name || '').trim().toUpperCase());
+
+      if (!includeMedicamentosInReports && isMedicamentosCategory(matchedItem?.category)) {
+        return false;
+      }
+
       if (reportCategoryFilter !== 'all' || reportMaterialFilter !== 'all') {
-        const matchedItem =
-          items.find(i => i.id === t.item_id) ||
-          items.find(i => !i.deletedAt && (i.name || '').trim().toUpperCase() === (t.item_name || '').trim().toUpperCase());
         const itemCat = (matchedItem?.category || 'Outros').trim();
         const itemNormName = (matchedItem?.name || t.item_name || '').trim().toUpperCase();
 
@@ -7743,7 +7877,7 @@ export default function App() {
     });
 
     // Base items for location/sector (before category/material filter, for dropdown options)
-    const baseLocationItems = items.filter(item => {
+    const rawBaseLocationItems = items.filter(item => {
       if (item.deletedAt) return false;
       if (!isAdmin) {
         const userLocation = userProfile?.sector === 'Farmácia' ? 'Farmácia' : 'Almoxarifado';
@@ -7756,6 +7890,14 @@ export default function App() {
       }
       return true;
     });
+
+    const medicamentosDesconsideradosCount = rawBaseLocationItems.filter(item =>
+      isMedicamentosCategory(item.category)
+    ).length;
+
+    const baseLocationItems = includeMedicamentosInReports
+      ? rawBaseLocationItems
+      : rawBaseLocationItems.filter(item => !isMedicamentosCategory(item.category));
 
     const filteredItems = baseLocationItems.filter(item => {
       const cat = (item.category || 'Outros').trim();
@@ -7992,6 +8134,9 @@ export default function App() {
       if (isAdmin && reportSectorFilter !== 'all' && request.sector !== reportSectorFilter) return;
 
       const matchedItem = items.find(i => i.id === ri.product_id);
+      if (!includeMedicamentosInReports && isMedicamentosCategory(matchedItem?.category)) {
+        return;
+      }
       if (ignoreEtiquetasInCharts && isEtiquetaChartItem(matchedItem?.name || ri.product_name, matchedItem?.category)) {
         return;
       }
@@ -8003,19 +8148,20 @@ export default function App() {
       .sort((a, b) => b.value - a.value)
       .slice(0, 10);
 
-    // Exits by reason
+    // Exits by reason (distinguindo estritamente Consumo, Doação, Vencimento, Perda e Ajuste de Balanço)
     const exitsByReason: Record<string, number> = {
       'consumo': 0,
       'doacao': 0,
       'vencido': 0,
-      'perda': 0
+      'perda': 0,
+      'ajuste_balanco': 0
     };
     filteredTrans.filter(t => t.type === 'exit').forEach(t => {
       const matchedItem = items.find(i => i.id === t.item_id);
       if (ignoreEtiquetasInCharts && isEtiquetaChartItem(matchedItem?.name || t.item_name, matchedItem?.category)) {
         return;
       }
-      const reason = t.exitReason || 'consumo';
+      const reason = getCategorizedExitType(t);
       if (exitsByReason[reason] !== undefined) {
         exitsByReason[reason] += t.quantity;
       }
@@ -8260,7 +8406,9 @@ export default function App() {
             { name: 'Lotes Vencidos', value: expiredBatchesCount, color: '#991b1b' }
           ]
         };
-      })()
+      })(),
+      medicamentosDesconsideradosCount,
+      includeMedicamentos: includeMedicamentosInReports
     };
   }, [
     transactions,
@@ -8274,7 +8422,8 @@ export default function App() {
     userProfile,
     isAdmin,
     selectedSector,
-    monthlyExitRates
+    monthlyExitRates,
+    includeMedicamentosInReports
   ]);
 
   const handleExportOverviewCompletePDF = () => {
@@ -8306,7 +8455,10 @@ export default function App() {
                 : selectedSector || 'Setor'
               : reportSectorFilter,
           categoryFilter: reportCategoryFilter === 'all' ? 'Todas as Categorias' : reportCategoryFilter,
-          materialFilter: selectedMatName
+          materialFilter: selectedMatName,
+          medicamentosNote: !includeMedicamentosInReports
+            ? `${reportData.medicamentosDesconsideradosCount} itens de medicamentos desconsiderados`
+            : undefined
         },
         kpis: {
           consolidatedMaterialsCount: reportData.consolidatedMaterialsCount,
@@ -8416,6 +8568,92 @@ export default function App() {
     }
   };
 
+  const handleExportOverviewCompleteExcel = () => {
+    try {
+      const wb = XLSX.utils.book_new();
+      const periodFormatted = `${new Date(reportRange.start + 'T00:00:00').toLocaleDateString('pt-BR')} a ${new Date(reportRange.end + 'T00:00:00').toLocaleDateString('pt-BR')}`;
+      const selectedMatName =
+        reportMaterialFilter === 'all'
+          ? 'Todos os Materiais (Consolidados)'
+          : reportData.consolidatedMaterialsOptions.find(m => m.normName === reportMaterialFilter)?.name ||
+            reportMaterialFilter;
+
+      // Sheet 1: Resumo Executivo e Filtros
+      const summaryRows: any[] = [
+        { 'Parâmetro / Indicador': 'Título do Relatório', 'Valor': `Relatório Gerencial de Indicadores • ${inventoryLocation}` },
+        { 'Parâmetro / Indicador': 'Período', 'Valor': periodFormatted },
+        { 'Parâmetro / Indicador': 'Localização / Módulo', 'Valor': inventoryLocation },
+        { 'Parâmetro / Indicador': 'Filtro de Setor', 'Valor': reportSectorFilter === 'all' ? 'Todos os Setores' : reportSectorFilter },
+        { 'Parâmetro / Indicador': 'Filtro de Categoria', 'Valor': reportCategoryFilter === 'all' ? 'Todas as Categorias' : reportCategoryFilter },
+        { 'Parâmetro / Indicador': 'Filtro de Material', 'Valor': selectedMatName },
+        { 'Parâmetro / Indicador': 'Medicamentos nos Indicadores', 'Valor': includeMedicamentosInReports ? 'Incluídos' : 'Desconsiderados' },
+        { 'Parâmetro / Indicador': 'Nota de Medicamentos', 'Valor': !includeMedicamentosInReports ? `${reportData.medicamentosDesconsideradosCount} itens de medicamentos desconsiderados` : 'Todos os itens considerados' },
+        { 'Parâmetro / Indicador': 'Data de Emissão', 'Valor': format(new Date(), 'dd/MM/yyyy HH:mm:ss') },
+        { 'Parâmetro / Indicador': '---', 'Valor': '---' },
+        { 'Parâmetro / Indicador': 'Materiais Cadastrados Consolidados', 'Valor': reportData.consolidatedMaterialsCount },
+        { 'Parâmetro / Indicador': 'Total de Lotes Ativos', 'Valor': reportData.totalBatchesCount },
+        { 'Parâmetro / Indicador': 'Unidades Físicas em Estoque', 'Valor': reportData.currentStockUnits },
+        { 'Parâmetro / Indicador': 'Valor Total em Estoque (R$)', 'Valor': reportData.totalValue },
+        { 'Parâmetro / Indicador': 'Total de Movimentações no Período', 'Valor': reportData.totalMovementsCount },
+        { 'Parâmetro / Indicador': 'Entradas (Unidades)', 'Valor': reportData.entries },
+        { 'Parâmetro / Indicador': 'Entradas (Valor R$)', 'Valor': reportData.entriesValue },
+        { 'Parâmetro / Indicador': 'Saídas / Consumo Líquido (Unidades)', 'Valor': reportData.exits },
+        { 'Parâmetro / Indicador': 'Saídas / Consumo Líquido (Valor R$)', 'Valor': reportData.exitsValue },
+        { 'Parâmetro / Indicador': 'Materiais com Estoque Baixo (<= Mínimo)', 'Valor': reportData.lowStockConsolidatedCount },
+        { 'Parâmetro / Indicador': 'Materiais com Estoque Zerado (Ruptura)', 'Valor': reportData.zeroStockConsolidatedCount },
+        { 'Parâmetro / Indicador': 'Lotes com Vencimento em até 60 dias', 'Valor': reportData.expiring60dBatchesCount },
+        { 'Parâmetro / Indicador': 'Lotes Vencidos', 'Valor': reportData.expiredBatchesCount }
+      ];
+      const wsSummary = XLSX.utils.json_to_sheet(summaryRows);
+      XLSX.utils.book_append_sheet(wb, wsSummary, 'Resumo Executivo');
+
+      // Sheet 2: Materiais Consolidados
+      const materialsRows = reportData.consolidatedMaterialsList.map(m => ({
+        'Material': m.name,
+        'Categoria': m.category,
+        'Quantidade de Lotes': m.batchesCount,
+        'Saldo em Estoque (Un)': m.totalQty,
+        'Estoque Mínimo': m.minQty,
+        'Valor Total (R$)': m.totalVal,
+        'Situação do Estoque': m.status
+      }));
+      const wsMaterials = XLSX.utils.json_to_sheet(materialsRows);
+      XLSX.utils.book_append_sheet(wb, wsMaterials, 'Materiais e Situação');
+
+      // Sheet 3: Consumo por Setor
+      const sectorRows: any[] = [];
+      reportData.consumptionBySector.forEach(s => {
+        Object.values(s.items).forEach((item: any) => {
+          sectorRows.push({
+            'Setor': s.sector,
+            'Material': item.name,
+            'Categoria': item.category,
+            'Quantidade Consumida': item.quantity,
+            'Valor Consumido (R$)': item.value
+          });
+        });
+      });
+      const wsSector = XLSX.utils.json_to_sheet(sectorRows);
+      XLSX.utils.book_append_sheet(wb, wsSector, 'Consumo por Setor');
+
+      // Sheet 4: Top Requisitados
+      const topRows = reportData.topRequested.map((tr, idx) => ({
+        'Posição': idx + 1,
+        'Material': tr.name,
+        'Quantidade Requisitada': tr.value
+      }));
+      const wsTop = XLSX.utils.json_to_sheet(topRows);
+      XLSX.utils.book_append_sheet(wb, wsTop, 'Mais Requisitados');
+
+      const fileName = `Relatorio_Indicadores_${inventoryLocation}_${format(new Date(), 'dd-MM-yyyy')}.xlsx`;
+      XLSX.writeFile(wb, fileName);
+      showToast('Relatório de indicadores em Excel exportado com sucesso!', 'success');
+    } catch (error) {
+      console.error('Erro ao exportar Excel geral:', error);
+      showToast('Erro ao exportar Excel de indicadores.', 'error');
+    }
+  };
+
   const handleOverviewSingleIndicator = (
     mode: 'pdf' | 'print',
     payload: Omit<SingleIndicatorExportParams, 'filters'>
@@ -8441,7 +8679,10 @@ export default function App() {
                 : selectedSector || 'Setor'
               : reportSectorFilter,
           categoryFilter: reportCategoryFilter === 'all' ? 'Todas as Categorias' : reportCategoryFilter,
-          materialFilter: selectedMatName
+          materialFilter: selectedMatName,
+          medicamentosNote: !includeMedicamentosInReports
+            ? `${reportData.medicamentosDesconsideradosCount} itens de medicamentos desconsiderados`
+            : undefined
         }
       };
 
@@ -10739,25 +10980,25 @@ export default function App() {
                           </span>
                         </td>
                         <td className="px-6 py-5">
-                          <div className="font-bold whitespace-nowrap">{t.item_name}</div>
-                          {t.exitReason && (
-                            <div className={`text-[10px] font-bold mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-md ${
-                              t.exitReason === 'vencido' 
-                                ? 'bg-rose-100 text-rose-800 border border-rose-200' 
-                                : t.exitReason === 'perda' 
-                                ? 'bg-amber-100 text-amber-800 border border-amber-200' 
-                                : t.exitReason === 'doacao' 
-                                ? 'bg-indigo-100 text-indigo-800 border border-indigo-200' 
-                                : 'bg-slate-100 text-slate-700'
-                            }`}>
-                              <span>
-                                {t.exitReason === 'vencido' ? 'Descarte / Vencimento (Desperdício)' : 
-                                 t.exitReason === 'perda' ? 'Perda / Avaria' : 
-                                 t.exitReason === 'doacao' ? 'Doação' : 'Consumo do Setor'}
+                          <div className="font-bold whitespace-nowrap flex items-center gap-2">
+                            <span>{t.item_name}</span>
+                            {(t.isRetroactive || t.stockAffected === false) && (
+                              <span className="text-[10px] font-black px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200">
+                                Retroativa (Sem baixa no saldo)
                               </span>
-                              {t.expiryReason && <span className="text-slate-600 font-normal lowercase ml-1">({t.expiryReason})</span>}
-                            </div>
-                          )}
+                            )}
+                          </div>
+                          {t.type === 'exit' && (() => {
+                            const exitCat = getCategorizedExitType(t);
+                            if (exitCat === 'consumo' && !t.exitReason) return null;
+                            const badgeInfo = getExitReasonBadgeClasses(exitCat);
+                            return (
+                              <div className={`text-[10px] font-bold mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-md border ${badgeInfo.badge}`}>
+                                <span>{getExitReasonLabel(exitCat)}</span>
+                                {t.expiryReason && <span className="text-slate-600 font-normal lowercase ml-1">({t.expiryReason})</span>}
+                              </div>
+                            );
+                          })()}
                           {t.deletionReason && (
                             <div className="text-[10px] text-rose-500 font-bold mt-1">Exclusão: {t.deletionReason}</div>
                           )}
@@ -10924,7 +11165,7 @@ export default function App() {
                     </p>
                   </div>
 
-                  {/* Minimalist Summary Badges & PDF Export Action */}
+                  {/* Minimalist Summary Badges & PDF/Excel Export Actions */}
                   <div className="flex flex-wrap items-center gap-3">
                     <div className="flex items-center gap-3 sm:gap-4 bg-slate-50 p-2.5 sm:p-3 rounded-2xl border border-slate-200/80 shrink-0">
                       <div className="px-3 py-1 text-center">
@@ -10948,7 +11189,37 @@ export default function App() {
                           {new Date(reportRange.start + 'T00:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })} - {new Date(reportRange.end + 'T00:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}
                         </p>
                       </div>
+                      {!includeMedicamentosInReports && reportData.medicamentosDesconsideradosCount > 0 && (
+                        <>
+                          <div className="h-8 w-px bg-slate-200" />
+                          <div className="px-3 py-1 text-center">
+                            <p className="text-[10px] uppercase font-extrabold text-amber-700 tracking-wider">Medicamentos</p>
+                            <p className="text-xs font-black text-amber-800 mt-1">
+                              {reportData.medicamentosDesconsideradosCount} desconsiderados
+                            </p>
+                          </div>
+                        </>
+                      )}
                     </div>
+
+                    {isAdmin && (
+                      <button
+                        onClick={() => setShowTransactionModal({ show: true, type: 'exit' })}
+                        className="bg-slate-900 hover:bg-slate-800 text-white px-4 py-3 rounded-2xl font-extrabold text-xs flex items-center gap-2 shadow-md shadow-slate-900/15 transition-all cursor-pointer shrink-0"
+                        title="Registrar saída normal ou com data retroativa (sem alterar o saldo físico atual)"
+                      >
+                        <ArrowUpRight size={16} className="text-rose-400" />
+                        Lançar Saída / Retroativa
+                      </button>
+                    )}
+
+                    <button
+                      onClick={handleExportOverviewCompleteExcel}
+                      className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-3 rounded-2xl font-extrabold text-xs flex items-center gap-2 shadow-md shadow-emerald-600/20 transition-all cursor-pointer shrink-0"
+                    >
+                      <Download size={16} />
+                      Exportar Excel
+                    </button>
 
                     <button
                       onClick={handleExportOverviewCompletePDF}
@@ -11116,6 +11387,26 @@ export default function App() {
                           ))}
                         </select>
                       </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-100">
+                      <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={includeMedicamentosInReports}
+                          onChange={e => setIncludeMedicamentosInReports(e.target.checked)}
+                          className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer"
+                        />
+                        <span className="text-xs font-bold text-slate-700">
+                          Incluir medicamentos nos indicadores
+                        </span>
+                      </label>
+                      {!includeMedicamentosInReports && (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-amber-50 text-amber-800 border border-amber-200">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                          {reportData.medicamentosDesconsideradosCount} itens de medicamentos desconsiderados
+                        </span>
+                      )}
                     </div>
                   </div>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 items-stretch">
@@ -11498,6 +11789,39 @@ export default function App() {
                     </button>
                   </div>
                 </div>
+
+                {/* Consumo Mensal por Setor Card */}
+                <div className="bg-white p-6 rounded-3xl border border-blue-100/90 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group flex flex-col justify-between h-full">
+                  <div className="h-1.5 w-full bg-gradient-to-r from-indigo-600 via-blue-600 to-cyan-500 absolute top-0 left-0" />
+                  <div className="flex items-start gap-4 pt-2">
+                    <div className="bg-gradient-to-br from-indigo-600 to-blue-800 text-white p-3 rounded-2xl shadow-md shadow-indigo-600/20 group-hover:scale-105 transition-transform shrink-0">
+                      <Layers size={20} />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-indigo-50 text-indigo-700 border border-indigo-200">
+                          Novo Relatório
+                        </span>
+                        <span className="text-[10px] font-bold text-slate-400">
+                          Por Categoria & Mês
+                        </span>
+                      </div>
+                      <h3 className="text-base font-black text-slate-900 leading-tight">Consumo Mensal por Setor</h3>
+                      <p className="text-slate-500 text-xs font-medium mt-1 leading-snug">
+                        Gráfico de barras horizontais empilhadas e tabela detalhada mês a mês do consumo por setor de cada categoria de material
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 pt-4 border-t border-slate-100 flex flex-col sm:flex-row gap-2">
+                    <button 
+                      onClick={() => setReportsTab('consumo_mensal_setor')}
+                      className="w-full bg-gradient-to-r from-indigo-700 via-blue-800 to-blue-950 text-white px-3.5 py-2.5 rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 hover:from-indigo-800 hover:to-slate-950 transition-all shadow-md shadow-indigo-600/20 whitespace-nowrap cursor-pointer"
+                    >
+                      <BarChart3 size={14} /> Abrir Consumo Mensal por Setor
+                    </button>
+                  </div>
+                </div>
               </div>
 
               {/* KPI Stats Grid */}
@@ -11515,9 +11839,16 @@ export default function App() {
                               <Package size={18} />
                             </div>
                           </div>
-                          <h3 className="text-2xl font-black text-slate-900 tracking-tight">
-                            {reportData.consolidatedMaterialsCount.toLocaleString('pt-BR')}
-                          </h3>
+                          <div className="flex flex-wrap items-baseline gap-2">
+                            <h3 className="text-2xl font-black text-slate-900 tracking-tight">
+                              {reportData.consolidatedMaterialsCount.toLocaleString('pt-BR')}
+                            </h3>
+                            {!includeMedicamentosInReports && reportData.medicamentosDesconsideradosCount > 0 && (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200">
+                                {reportData.medicamentosDesconsideradosCount} itens de medicamentos desconsiderados
+                              </span>
+                            )}
+                          </div>
                           <div className="mt-2 pt-2 border-t border-slate-100 flex items-center justify-between">
                             <span className="text-[10px] font-bold text-slate-400 uppercase">Lotes somados</span>
                             <span className="text-xs font-black text-blue-700">
@@ -11846,20 +12177,24 @@ export default function App() {
                             <ResponsiveContainer width="100%" height="100%">
                               <BarChart
                                 data={[
-                                  { name: 'Consumo', valor: reportData.exitsByReason.consumo || 0, fill: '#e11d48' },
-                                  { name: 'Doação', valor: reportData.exitsByReason.doacao || 0, fill: '#f59e0b' },
-                                  { name: 'Venc./Perda', valor: (reportData.exitsByReason.vencido || 0) + (reportData.exitsByReason.perda || 0), fill: '#64748b' }
+                                  { name: 'Consumo', valor: reportData.exitsByReason.consumo || 0, fill: '#2563eb' },
+                                  { name: 'Doação', valor: reportData.exitsByReason.doacao || 0, fill: '#10b981' },
+                                  { name: 'Validade', valor: reportData.exitsByReason.vencido || 0, fill: '#ef4444' },
+                                  { name: 'Perda/Avaria', valor: reportData.exitsByReason.perda || 0, fill: '#f59e0b' },
+                                  { name: 'Ajuste Balanço', valor: reportData.exitsByReason.ajuste_balanco || 0, fill: '#8b5cf6' }
                                 ]}
                                 layout="vertical"
                                 margin={{ top: 2, right: 16, left: 0, bottom: 2 }}
                               >
                                 <XAxis type="number" hide />
-                                <YAxis dataKey="name" type="category" width={66} axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 700, fill: '#475569' }} />
+                                <YAxis dataKey="name" type="category" width={82} axisLine={false} tickLine={false} tick={{ fontSize: 9, fontWeight: 700, fill: '#475569' }} />
                                 <Tooltip formatter={(v: any) => [Number(v).toLocaleString('pt-BR'), 'Unidades']} />
-                                <Bar dataKey="valor" radius={[0, 6, 6, 0]} barSize={12} isAnimationActive={false}>
-                                  <Cell fill="#e11d48" />
+                                <Bar dataKey="valor" radius={[0, 6, 6, 0]} barSize={10} isAnimationActive={false}>
+                                  <Cell fill="#2563eb" />
+                                  <Cell fill="#10b981" />
+                                  <Cell fill="#ef4444" />
                                   <Cell fill="#f59e0b" />
-                                  <Cell fill="#64748b" />
+                                  <Cell fill="#8b5cf6" />
                                 </Bar>
                               </BarChart>
                             </ResponsiveContainer>
@@ -11869,25 +12204,28 @@ export default function App() {
                         <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-end">
                           {renderOverviewIndicatorActions(
                             {
-                              indicatorTitle: 'Saídas e Consumo no Período',
-                              indicatorSubtitle: 'Volume físico e valor financeiro de saídas por motivo de baixa',
+                              indicatorTitle: 'Saídas e Baixas no Período por Motivo',
+                              indicatorSubtitle: 'Volume físico e valor de saídas: consumo, doação, validade, perda e ajuste de balanço',
                               groupName: 'Visão Geral de Relatórios • KPIs',
                               accentColor: [225, 29, 72],
                               kpis: [
                                 { label: 'Unidades Saídas', value: reportData.exits.toLocaleString('pt-BR'), helper: 'Total no período' },
                                 { label: 'Valor Financeiro', value: new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(reportData.exitsValue), helper: 'Custo baixado' },
-                                { label: 'Consumo Setorial', value: (reportData.exitsByReason.consumo || 0).toLocaleString('pt-BR'), helper: 'Unidades' },
-                                { label: 'Doação / Vencimento', value: ((reportData.exitsByReason.doacao || 0) + (reportData.exitsByReason.vencido || 0) + (reportData.exitsByReason.perda || 0)).toLocaleString('pt-BR'), helper: 'Unidades' }
+                                { label: 'Consumo Regular', value: (reportData.exitsByReason.consumo || 0).toLocaleString('pt-BR'), helper: 'Unidades' },
+                                { label: 'Validade (Vencimento)', value: (reportData.exitsByReason.vencido || 0).toLocaleString('pt-BR'), helper: 'Unidades' },
+                                { label: 'Perda / Avaria', value: (reportData.exitsByReason.perda || 0).toLocaleString('pt-BR'), helper: 'Unidades' },
+                                { label: 'Ajuste de Balanço', value: (reportData.exitsByReason.ajuste_balanco || 0).toLocaleString('pt-BR'), helper: 'Unidades' }
                               ],
                               chart: {
                                 type: 'verticalBar',
                                 title: 'Saídas por Motivo de Baixa (Unidades)',
-                                subtitle: 'Composição das saídas entre consumo regular, doação e perdas/vencimento',
+                                subtitle: 'Composição entre consumo regular, doação, validade, perda física e ajuste de balanço',
                                 data: [
-                                  { label: 'Consumo Regular', value: reportData.exitsByReason.consumo || 0, color: '#e11d48' },
-                                  { label: 'Doação', value: reportData.exitsByReason.doacao || 0, color: '#f59e0b' },
-                                  { label: 'Vencimento', value: reportData.exitsByReason.vencido || 0, color: '#991b1b' },
-                                  { label: 'Perda / Avaria', value: reportData.exitsByReason.perda || 0, color: '#64748b' }
+                                  { label: 'Consumo Regular', value: reportData.exitsByReason.consumo || 0, color: '#2563eb' },
+                                  { label: 'Doação', value: reportData.exitsByReason.doacao || 0, color: '#10b981' },
+                                  { label: 'Vencimento (Validade)', value: reportData.exitsByReason.vencido || 0, color: '#ef4444' },
+                                  { label: 'Perda / Avaria', value: reportData.exitsByReason.perda || 0, color: '#f59e0b' },
+                                  { label: 'Ajuste de Balanço', value: reportData.exitsByReason.ajuste_balanco || 0, color: '#8b5cf6' }
                                 ]
                               }
                             },
@@ -12424,8 +12762,9 @@ export default function App() {
                             kpis: [
                               { label: 'Consumo', value: `${(reportData.exitsByReason.consumo || 0).toLocaleString('pt-BR')} un`, helper: 'Dispensação regular' },
                               { label: 'Doação', value: `${(reportData.exitsByReason.doacao || 0).toLocaleString('pt-BR')} un`, helper: 'Saídas por doação' },
-                              { label: 'Vencimento', value: `${(reportData.exitsByReason.vencido || 0).toLocaleString('pt-BR')} un`, helper: 'Baixa por validade' },
-                              { label: 'Perda / Avaria', value: `${(reportData.exitsByReason.perda || 0).toLocaleString('pt-BR')} un`, helper: 'Sinistro ou dano' }
+                              { label: 'Validade (Vencimento)', value: `${(reportData.exitsByReason.vencido || 0).toLocaleString('pt-BR')} un`, helper: 'Baixa por validade' },
+                              { label: 'Perda / Avaria', value: `${(reportData.exitsByReason.perda || 0).toLocaleString('pt-BR')} un`, helper: 'Dano ou quebra física' },
+                              { label: 'Ajuste de Balanço', value: `${(reportData.exitsByReason.ajuste_balanco || 0).toLocaleString('pt-BR')} un`, helper: 'Falta em inventário' }
                             ],
                             chart: {
                               type: 'donut',
@@ -12433,9 +12772,10 @@ export default function App() {
                               subtitle: 'Distribuição das saídas registradas no período',
                               data: [
                                 { label: 'Consumo', value: reportData.exitsByReason.consumo || 0, color: '#2563eb' },
-                                { label: 'Doação', value: reportData.exitsByReason.doacao || 0, color: '#f59e0b' },
-                                { label: 'Vencimento', value: reportData.exitsByReason.vencido || 0, color: '#ef4444' },
-                                { label: 'Perda/Avaria', value: reportData.exitsByReason.perda || 0, color: '#64748b' }
+                                { label: 'Doação', value: reportData.exitsByReason.doacao || 0, color: '#10b981' },
+                                { label: 'Vencimento (Validade)', value: reportData.exitsByReason.vencido || 0, color: '#ef4444' },
+                                { label: 'Perda / Avaria', value: reportData.exitsByReason.perda || 0, color: '#f59e0b' },
+                                { label: 'Ajuste de Balanço', value: reportData.exitsByReason.ajuste_balanco || 0, color: '#8b5cf6' }
                               ]
                             }
                           },
@@ -12447,11 +12787,12 @@ export default function App() {
                           <PieChart>
                             <Pie
                               data={[
-                                { name: 'Consumo', value: reportData.exitsByReason.consumo },
-                                { name: 'Doação', value: reportData.exitsByReason.doacao },
-                                { name: 'Vencimento', value: reportData.exitsByReason.vencido },
-                                { name: 'Perda/Avaria', value: reportData.exitsByReason.perda || 0 }
-                              ]}
+                                { name: 'Consumo', value: reportData.exitsByReason.consumo || 0 },
+                                { name: 'Doação', value: reportData.exitsByReason.doacao || 0 },
+                                { name: 'Vencimento (Validade)', value: reportData.exitsByReason.vencido || 0 },
+                                { name: 'Perda / Avaria', value: reportData.exitsByReason.perda || 0 },
+                                { name: 'Ajuste de Balanço', value: reportData.exitsByReason.ajuste_balanco || 0 }
+                              ].filter(d => d.value > 0)}
                               cx="50%"
                               cy="50%"
                               innerRadius={60}
@@ -12461,9 +12802,10 @@ export default function App() {
                               label={({ name, value }) => `${name}: ${value}`}
                             >
                               <Cell fill="#2563eb" />
-                              <Cell fill="#f59e0b" />
+                              <Cell fill="#10b981" />
                               <Cell fill="#ef4444" />
-                              <Cell fill="#64748b" />
+                              <Cell fill="#f59e0b" />
+                              <Cell fill="#8b5cf6" />
                             </Pie>
                             <Tooltip 
                               contentStyle={{ borderRadius: '16px', border: '1px solid #e2e8f0', boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.08)', fontWeight: 'bold' }}
@@ -12817,6 +13159,19 @@ export default function App() {
                 )}
               </div>
 
+              {/* NOVO RELATÓRIO: Consumo Mensal por Setor (Independente de Distribuição de Consumo por Categoria) */}
+              <div className="mt-6">
+                <MonthlySectorConsumptionReport
+                  items={items}
+                  transactions={transactions}
+                  inventoryLocation={inventoryLocation}
+                  letterheadImage={letterheadImage}
+                  showToast={showToast}
+                  embedded={true}
+                  onOpenFullReport={() => setReportsTab('consumo_mensal_setor')}
+                />
+              </div>
+
               {/* Detailed Sector Breakdown - Visible for Admin and Sector Leaders */}
               {(isAdmin || userProfile?.role === 'SETOR' || userProfile?.role === 'LÍDER') && (
                 <div className="bg-white p-6 sm:p-8 rounded-3xl border border-blue-100/80 shadow-sm lg:col-span-2">
@@ -12924,6 +13279,305 @@ export default function App() {
                   </div>
                 </div>
               )}
+
+              {/* Gerenciamento Direto de Lançamentos nos Relatórios (Entradas, Entradas por Doação e Saídas) */}
+              {isAdmin && (() => {
+                const startD = startOfDay(parseISO(reportRange.start));
+                const endD = endOfDay(parseISO(reportRange.end));
+                const searchNorm = normalizeString(reportTxSearch);
+
+                const baseReportTransactions = transactions.filter(t => {
+                  if (t.deletedAt) return false;
+                  if ((t.location || 'Almoxarifado') !== inventoryLocation) return false;
+
+                  if (!reportTxIgnoreDateRange) {
+                    const d = new Date(t.date);
+                    if (d < startD || d > endD) return false;
+                  }
+
+                  if (reportSectorFilter !== 'all') {
+                    const matchesSec =
+                      t.sector === reportSectorFilter ||
+                      (reportSectorFilter === 'Farmácia' && t.sector === 'Farmácia (Consumo Interno)');
+                    if (t.type === 'exit' && !matchesSec) return false;
+                  }
+
+                  const matchedItem =
+                    items.find(i => i.id === t.item_id) ||
+                    items.find(i => !i.deletedAt && normalizeString(i.name) === normalizeString(t.item_name));
+
+                  if (reportCategoryFilter !== 'all') {
+                    const cat = (matchedItem?.category || 'Outros').trim();
+                    if (cat !== reportCategoryFilter) return false;
+                  }
+
+                  if (reportMaterialFilter !== 'all') {
+                    const normMat = (matchedItem?.name || t.item_name || '').trim().toUpperCase();
+                    if (normMat !== reportMaterialFilter) return false;
+                  }
+
+                  if (searchNorm) {
+                    const matchesText =
+                      normalizeString(t.item_name).includes(searchNorm) ||
+                      normalizeString(t.batch_number).includes(searchNorm) ||
+                      normalizeString(t.sector).includes(searchNorm) ||
+                      normalizeString(t.supplier).includes(searchNorm) ||
+                      normalizeString(t.donationUnitName).includes(searchNorm) ||
+                      normalizeString(t.responsible).includes(searchNorm);
+                    if (!matchesText) return false;
+                  }
+
+                  return true;
+                });
+
+                const counts = {
+                  all: baseReportTransactions.length,
+                  entries: baseReportTransactions.filter(t => t.type === 'entry').length,
+                  donation_entries: baseReportTransactions.filter(t => t.type === 'entry' && !t.isReturn && t.origin === 'donation').length,
+                  exits: baseReportTransactions.filter(t => t.type === 'exit').length,
+                  donation_exits: baseReportTransactions.filter(t => t.type === 'exit' && (t.exitReason === 'doacao' || t.exitReason === 'vencido' || t.exitReason === 'perda' || t.exitReason === 'ajuste_balanco')).length,
+                  retroactive_exits: baseReportTransactions.filter(t => t.type === 'exit' && (t.isRetroactive || t.stockAffected === false)).length
+                };
+
+                const displayedReportTransactions = baseReportTransactions.filter(t => {
+                  if (reportTxTypeFilter === 'entries') return t.type === 'entry';
+                  if (reportTxTypeFilter === 'donation_entries') return t.type === 'entry' && !t.isReturn && t.origin === 'donation';
+                  if (reportTxTypeFilter === 'exits') return t.type === 'exit';
+                  if (reportTxTypeFilter === 'donation_exits') {
+                    return t.type === 'exit' && (t.exitReason === 'doacao' || t.exitReason === 'vencido' || t.exitReason === 'perda' || t.exitReason === 'ajuste_balanco');
+                  }
+                  if (reportTxTypeFilter === 'retroactive_exits') {
+                    return t.type === 'exit' && (t.isRetroactive || t.stockAffected === false);
+                  }
+                  return true;
+                });
+
+                return (
+                  <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-200/90 shadow-sm space-y-6">
+                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-slate-100">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2 mb-1">
+                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-rose-50 text-rose-700 border border-rose-200">
+                            Auditoria & Regularização de Histórico
+                          </span>
+                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-700">
+                            Unidade: {inventoryLocation}
+                          </span>
+                        </div>
+                        <h4 className="text-lg font-black text-slate-900 flex items-center gap-2">
+                          <History size={20} className="text-blue-600" />
+                          Lançamentos de Entradas, Doações e Saídas (Controle e Exclusão)
+                        </h4>
+                        <p className="text-xs text-slate-500 font-medium mt-0.5">
+                          Exclua registros indevidos ou de teste (entradas, entradas por doação e saídas) ou lance saídas retroativas sem descontar do saldo físico atual.
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setShowTransactionModal({ show: true, type: 'exit' })}
+                          className="px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-extrabold text-xs flex items-center gap-2 shadow-sm transition-all cursor-pointer"
+                        >
+                          <ArrowUpRight size={15} className="text-rose-400" />
+                          Lançar Saída (Normal ou Retroativa)
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Filter Pills & Search */}
+                    <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {[
+                          { id: 'all', label: `Todos (${counts.all})` },
+                          { id: 'entries', label: `Entradas (${counts.entries})` },
+                          { id: 'donation_entries', label: `Entradas por Doação (${counts.donation_entries})` },
+                          { id: 'exits', label: `Saídas (${counts.exits})` },
+                          { id: 'donation_exits', label: `Doações / Baixas (${counts.donation_exits})` },
+                          { id: 'retroactive_exits', label: `Saídas Retroativas (${counts.retroactive_exits})` }
+                        ].map(tab => (
+                          <button
+                            key={tab.id}
+                            type="button"
+                            onClick={() => setReportTxTypeFilter(tab.id as any)}
+                            className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer border ${
+                              reportTxTypeFilter === tab.id
+                                ? 'bg-blue-700 text-white border-blue-700 shadow-xs'
+                                : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-blue-50/60'
+                            }`}
+                          >
+                            {tab.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-3">
+                        <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-700 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={reportTxIgnoreDateRange}
+                            onChange={e => setReportTxIgnoreDateRange(e.target.checked)}
+                            className="w-3.5 h-3.5 rounded text-blue-600 focus:ring-blue-500 border-slate-300"
+                          />
+                          <span>Mostrar de todas as datas</span>
+                        </label>
+
+                        <div className="relative min-w-[240px] flex-1 sm:flex-initial">
+                          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                          <input
+                            type="text"
+                            value={reportTxSearch}
+                            onChange={e => setReportTxSearch(e.target.value)}
+                            placeholder="Buscar material, lote, setor, doador..."
+                            className="w-full pl-8 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Transactions Table */}
+                    <div className="overflow-x-auto rounded-2xl border border-slate-200/80 max-h-[520px]">
+                      <table className="w-full text-left border-collapse min-w-[900px]">
+                        <thead className="bg-slate-50 sticky top-0 z-10 border-b border-slate-200 text-[10px] font-black uppercase tracking-wider text-slate-500">
+                          <tr>
+                            <th className="py-3.5 px-4">Data</th>
+                            <th className="py-3.5 px-4">Tipo / Modalidade</th>
+                            <th className="py-3.5 px-4">Material</th>
+                            <th className="py-3.5 px-4">Lote / Validade</th>
+                            <th className="py-3.5 px-4">Setor / Fornecedor / Origem</th>
+                            <th className="py-3.5 px-4">Responsável</th>
+                            <th className="py-3.5 px-4 text-right">Quantidade</th>
+                            <th className="py-3.5 px-4 text-right">Valor</th>
+                            <th className="py-3.5 px-4 text-right">Ações</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 text-xs">
+                          {displayedReportTransactions.slice(0, 200).map(t => {
+                            const matchedItem =
+                              items.find(i => i.id === t.item_id) ||
+                              items.find(i => !i.deletedAt && normalizeString(i.name) === normalizeString(t.item_name));
+                            const unitPrice = Number(matchedItem?.unit_price) || 0;
+                            const totalVal = (Number(t.quantity) || 0) * unitPrice;
+                            const isRetro = Boolean(t.isRetroactive || t.stockAffected === false);
+                            const exitCat = t.type === 'exit' ? getCategorizedExitType(t) : null;
+
+                            return (
+                              <tr key={t.id} className="hover:bg-slate-50/80 transition-colors">
+                                <td className="py-3 px-4 font-bold text-slate-700 whitespace-nowrap">
+                                  <div>{new Date(t.date).toLocaleDateString('pt-BR')}</div>
+                                  <div className="text-[10px] text-slate-400 font-medium">
+                                    {new Date(t.date).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                                  </div>
+                                </td>
+                                <td className="py-3 px-4 whitespace-nowrap">
+                                  <div className="flex flex-col items-start gap-1">
+                                    {t.type === 'entry' ? (
+                                      <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                                        t.isReturn
+                                          ? 'bg-indigo-100 text-indigo-800'
+                                          : t.origin === 'donation'
+                                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                          : 'bg-teal-100 text-teal-800'
+                                      }`}>
+                                        <ArrowDownLeft size={12} />
+                                        {t.isReturn
+                                          ? 'Devolução'
+                                          : t.origin === 'donation'
+                                          ? 'Entrada por Doação'
+                                          : t.origin === 'contract'
+                                          ? 'Entrada (Contrato)'
+                                          : 'Entrada (Extra)'}
+                                      </span>
+                                    ) : (
+                                      <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                                        exitCat === 'doacao'
+                                          ? 'bg-indigo-100 text-indigo-800'
+                                          : exitCat === 'vencido'
+                                          ? 'bg-rose-100 text-rose-800'
+                                          : exitCat === 'perda'
+                                          ? 'bg-amber-100 text-amber-800'
+                                          : exitCat === 'ajuste_balanco'
+                                          ? 'bg-purple-100 text-purple-800'
+                                          : 'bg-rose-50 text-rose-700 border border-rose-200'
+                                      }`}>
+                                        <ArrowUpRight size={12} />
+                                        {exitCat ? getExitReasonLabel(exitCat) : 'Saída'}
+                                      </span>
+                                    )}
+                                    {isRetro && (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-black bg-amber-50 text-amber-800 border border-amber-200">
+                                        Retroativa • Sem baixa no estoque
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+                                <td className="py-3 px-4">
+                                  <div className="font-bold text-slate-900">{t.item_name}</div>
+                                  {matchedItem?.category && (
+                                    <span className="text-[10px] text-slate-500 font-semibold">
+                                      {matchedItem.category}
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="py-3 px-4 font-mono text-slate-600 whitespace-nowrap">
+                                  <div>Lote: <strong className="text-slate-800">{t.batch_number || 'S/L'}</strong></div>
+                                  {t.expiry_date && (
+                                    <div className="text-[10px] text-slate-400 font-sans">
+                                      Val: {t.expiry_date === 'Indeterminada' ? 'Indet.' : new Date(t.expiry_date).toLocaleDateString('pt-BR')}
+                                    </div>
+                                  )}
+                                </td>
+                                <td className="py-3 px-4 text-slate-700 font-medium">
+                                  {t.type === 'entry'
+                                    ? (t.supplier || (t.origin === 'donation' ? 'Doação Recebida' : 'Abastecimento de Estoque'))
+                                    : (t.donationUnitName || t.sector || '---')}
+                                  {t.expiryReason && (
+                                    <div className="text-[10px] text-slate-400 italic truncate max-w-[200px]" title={t.expiryReason}>
+                                      {t.expiryReason}
+                                    </div>
+                                  )}
+                                </td>
+                                <td className="py-3 px-4 text-slate-600 whitespace-nowrap">
+                                  {t.responsible || t.responsibleEmail || '---'}
+                                </td>
+                                <td className={`py-3 px-4 text-right font-black whitespace-nowrap ${
+                                  t.type === 'entry' ? 'text-emerald-700' : 'text-rose-700'
+                                }`}>
+                                  {t.type === 'entry' ? '+' : '-'}{t.quantity} un
+                                </td>
+                                <td className="py-3 px-4 text-right font-bold text-slate-700 whitespace-nowrap">
+                                  {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalVal)}
+                                </td>
+                                <td className="py-3 px-4 text-right whitespace-nowrap">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setDeletionReason('');
+                                      setShowDeleteModal({ show: true, transactionId: t.id });
+                                    }}
+                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-600 text-rose-700 hover:text-white border border-rose-200 hover:border-rose-600 font-extrabold text-[11px] transition-all cursor-pointer shadow-2xs"
+                                    title="Excluir este lançamento e atualizar relatórios e saldos"
+                                  >
+                                    <Trash2 size={13} />
+                                    Excluir
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                          {displayedReportTransactions.length === 0 && (
+                            <tr>
+                              <td colSpan={9} className="py-12 text-center text-slate-400 font-semibold">
+                                Nenhum lançamento encontrado para os filtros selecionados.
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })()}
               </div>
               )}
 
@@ -12942,6 +13596,8 @@ export default function App() {
                   transactions={transactions}
                   checkStockAndNotify={checkStockAndNotify}
                   initialOpenDivergencesDoc={openDivergencesDocOnMount}
+                  includeMedicamentos={includeMedicamentosInReports}
+                  onToggleIncludeMedicamentos={setIncludeMedicamentosInReports}
                 />
               )}
 
@@ -12959,12 +13615,32 @@ export default function App() {
                   isAdmin={isAdmin}
                   userProfile={userProfile}
                   selectedSector={selectedSector}
+                  includeMedicamentos={includeMedicamentosInReports}
+                  onToggleIncludeMedicamentos={setIncludeMedicamentosInReports}
+                  onDeleteTransaction={(txId) => {
+                    setDeletionReason('');
+                    setShowDeleteModal({ show: true, transactionId: txId });
+                  }}
+                  onOpenRetroactiveExitModal={() => {
+                    setShowTransactionModal({ show: true, type: 'exit' });
+                  }}
                   onOpenRoomMap={(roomName) => {
                     setSelectedRoom(roomName);
                     setCustomRoomName(roomName);
                     setSelectedRoomCategories([...categories]);
                     setShowRoomInventoryModal(true);
                   }}
+                />
+              )}
+
+              {reportsTab === 'consumo_mensal_setor' && (
+                <MonthlySectorConsumptionReport
+                  items={items}
+                  transactions={transactions}
+                  inventoryLocation={inventoryLocation}
+                  letterheadImage={letterheadImage}
+                  showToast={showToast}
+                  onBack={() => setReportsTab('overview')}
                 />
               )}
 
@@ -13743,150 +14419,200 @@ export default function App() {
             </div>
 
             <form onSubmit={handleTransaction} className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-600 mb-1.5">Setor Destino *</label>
-                  <select 
-                    required
-                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold focus:ring-2 focus:ring-blue-500/20"
-                    value={modalSector}
-                    onChange={e => setModalSector(e.target.value)}
-                  >
-                    <option value="">Selecione um setor...</option>
-                    {SECTORS.map(s => <option key={s} value={s}>{s}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-600 mb-1.5">Motivo da Saída *</label>
-                  <select 
-                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold focus:ring-2 focus:ring-blue-500/20"
-                    value={exitReason}
-                    onChange={e => setExitReason(e.target.value as any)}
-                  >
-                    <option value="consumo">Consumo / Atendimento</option>
-                    <option value="doacao">Doação Externa</option>
-                    <option value="vencido">Item Vencido</option>
-                    <option value="perda">Avaria / Perda</option>
-                  </select>
-                </div>
-              </div>
+              {(() => {
+                const todayStr = format(new Date(), 'yyyy-MM-dd');
+                const isRetroactiveModalExit = showTransactionModal.type === 'exit' && Boolean(transactionDate) && transactionDate < todayStr;
+                const availableItemsForExit = items.filter(i => {
+                  if (i.deletedAt) return false;
+                  if (isRetroactiveModalExit) return true;
+                  return (i.quantity || 0) > 0;
+                });
 
-              {(exitReason === 'vencido' || exitReason === 'perda') && (
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-600 mb-1.5">Observação / Justificativa *</label>
-                  <input 
-                    type="text"
-                    required
-                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold"
-                    placeholder="Descreva o motivo do descarte/perda..."
-                    value={expiryReason}
-                    onChange={e => setExpiryReason(e.target.value)}
-                  />
-                </div>
-              )}
+                return (
+                  <>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-600 mb-1.5">Data da Saída *</label>
+                        <input
+                          type="date"
+                          required
+                          className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold focus:ring-2 focus:ring-blue-500/20"
+                          value={transactionDate}
+                          onChange={e => setTransactionDate(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-600 mb-1.5">Setor Destino *</label>
+                        <select 
+                          required
+                          className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold focus:ring-2 focus:ring-blue-500/20"
+                          value={modalSector}
+                          onChange={e => setModalSector(e.target.value)}
+                        >
+                          <option value="">Selecione um setor...</option>
+                          {SECTORS.map(s => <option key={s} value={s}>{s}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-600 mb-1.5">Motivo da Saída *</label>
+                        <select 
+                          className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold focus:ring-2 focus:ring-blue-500/20"
+                          value={exitReason}
+                          onChange={e => setExitReason(e.target.value as any)}
+                        >
+                          <option value="consumo">Consumo / Atendimento aos Setores</option>
+                          <option value="doacao">Doação Externa</option>
+                          <option value="vencido">Vencimento / Descarte (Validade Expirada)</option>
+                          <option value="perda">Perda / Avaria Física</option>
+                        </select>
+                      </div>
+                    </div>
 
-              {/* Item selection */}
-              <div className="space-y-2 pt-2">
-                <label className="block text-[11px] font-bold text-slate-600">Selecionar Item para Saída</label>
-                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 w-full min-w-0">
-                  <div className="flex-1 min-w-0">
-                    <select 
-                      className="w-full min-w-0 px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold truncate focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 focus:outline-none"
-                      value={selectedItemId}
-                      onChange={e => setSelectedItemId(e.target.value)}
-                    >
-                      <option value="">Selecione um material...</option>
-                      {items.filter(i => (i.quantity || 0) > 0).map(i => (
-                        <option key={i.id} value={i.id}>
-                          {i.name} (Disponível: {i.quantity} {i.unit_measure || 'UN'}) - Lote: {i.batch_number || 'S/L'}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <input 
-                      type="number"
-                      min="1"
-                      className="w-20 sm:w-24 px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-center focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 focus:outline-none"
-                      placeholder="Qtd"
-                      value={transactionQty}
-                      onChange={e => setTransactionQty(parseInt(e.target.value) || 1)}
-                    />
-                    <button 
-                      type="button"
-                      onClick={() => {
-                        if (!selectedItemId) return;
-                        const it = items.find(i => i.id === selectedItemId);
-                        if (!it) return;
-                        if (transactionQty > (it.quantity || 0)) {
-                          showToast(`Quantidade excede o estoque disponível (${it.quantity})`, "error");
-                          return;
-                        }
-                        setBasket(prev => {
-                          const existing = prev.find(p => p.item_id === selectedItemId);
-                          if (existing) {
-                            return prev.map(p => p.item_id === selectedItemId ? { ...p, quantity: p.quantity + transactionQty } : p);
-                          }
-                          return [...prev, { item_id: selectedItemId, quantity: transactionQty }];
-                        });
-                        setSelectedItemId('');
-                        setTransactionQty(1);
-                      }}
-                      className="flex-1 sm:flex-none px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-1.5 shadow-sm active:scale-95 whitespace-nowrap shrink-0"
-                    >
-                      <Plus size={15} />
-                      Adicionar
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* Basket */}
-              {basket.length > 0 && (
-                <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200/80 space-y-2">
-                  <span className="text-xs font-black text-slate-500 uppercase tracking-wider">Itens na Cesta de Saída:</span>
-                  <div className="divide-y divide-slate-200/60 max-h-48 overflow-y-auto">
-                    {basket.map(b => {
-                      const it = items.find(i => i.id === b.item_id);
-                      return (
-                        <div key={b.item_id} className="py-2 flex items-center justify-between gap-3 text-sm">
-                          <span className="font-bold text-slate-800 min-w-0 truncate">{it?.name || 'Item'}</span>
-                          <div className="flex items-center gap-2.5 shrink-0">
-                            <span className="text-xs font-semibold bg-rose-100 text-rose-800 px-2 py-0.5 rounded-md whitespace-nowrap">
-                              {b.quantity} {it?.unit_measure || 'UN'}
-                            </span>
-                            <button 
-                              type="button"
-                              onClick={() => setBasket(prev => prev.filter(p => p.item_id !== b.item_id))}
-                              className="text-slate-400 hover:text-rose-600 p-1 rounded-lg hover:bg-rose-50 transition-colors"
-                              title="Remover item"
-                            >
-                              <X size={16} />
-                            </button>
-                          </div>
+                    {isRetroactiveModalExit ? (
+                      <div className="p-3.5 rounded-2xl bg-amber-50 border border-amber-200 flex items-start gap-3">
+                        <div className="p-2 rounded-xl bg-amber-100 text-amber-800 shrink-0 mt-0.5">
+                          <Clock size={16} />
                         </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
+                        <div className="text-xs text-amber-900 space-y-0.5">
+                          <p className="font-black">
+                            Saída com Data Retroativa ({format(parseISO(transactionDate), 'dd/MM/yyyy')}) — Sem Baixa no Estoque Atual
+                          </p>
+                          <p className="font-medium text-amber-800 leading-relaxed">
+                            Esta saída será registrada apenas para fins de histórico, controle e relatórios com sua data original. 
+                            O saldo físico atual do estoque <strong>NÃO será descontado</strong>.
+                          </p>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="px-3.5 py-2 rounded-xl bg-slate-50 border border-slate-200/80 flex items-center justify-between text-[11px] text-slate-600 font-medium">
+                        <span>
+                          Data atual ou futura: baixa normal no saldo físico do estoque.
+                        </span>
+                        <span className="text-[10px] font-bold text-slate-400">
+                          Para saída retroativa (histórico), selecione uma data anterior a hoje
+                        </span>
+                      </div>
+                    )}
 
-              <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-3">
-                <button 
-                  type="button"
-                  onClick={() => setShowTransactionModal({ show: false, type: 'entry' })}
-                  className="px-5 py-2.5 rounded-2xl text-slate-600 font-bold hover:bg-slate-100 text-sm transition-all"
-                >
-                  Cancelar
-                </button>
-                <button 
-                  type="submit"
-                  disabled={basket.length === 0}
-                  className="px-6 py-2.5 bg-gradient-to-r from-rose-600 to-rose-700 text-white rounded-2xl font-bold text-sm hover:from-rose-700 hover:to-rose-800 shadow-lg shadow-rose-700/20 transition-all disabled:opacity-50"
-                >
-                  Confirmar Saída
-                </button>
-              </div>
+                    {(exitReason === 'vencido' || exitReason === 'perda') && (
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-600 mb-1.5">Observação / Justificativa *</label>
+                        <input 
+                          type="text"
+                          required
+                          className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold"
+                          placeholder="Descreva o motivo do descarte/perda..."
+                          value={expiryReason}
+                          onChange={e => setExpiryReason(e.target.value)}
+                        />
+                      </div>
+                    )}
+
+                    {/* Item selection */}
+                    <div className="space-y-2 pt-2">
+                      <label className="block text-[11px] font-bold text-slate-600">Selecionar Item para Saída</label>
+                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 w-full min-w-0">
+                        <div className="flex-1 min-w-0">
+                          <select 
+                            className="w-full min-w-0 px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold truncate focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 focus:outline-none"
+                            value={selectedItemId}
+                            onChange={e => setSelectedItemId(e.target.value)}
+                          >
+                            <option value="">Selecione um material...</option>
+                            {availableItemsForExit.map(i => (
+                              <option key={i.id} value={i.id}>
+                                {i.name} (Saldo atual: {i.quantity} {i.unit_measure || 'UN'}) - Lote: {i.batch_number || 'S/L'}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <input 
+                            type="number"
+                            min="1"
+                            className="w-20 sm:w-24 px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-center focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 focus:outline-none"
+                            placeholder="Qtd"
+                            value={transactionQty}
+                            onChange={e => setTransactionQty(parseInt(e.target.value) || 1)}
+                          />
+                          <button 
+                            type="button"
+                            onClick={() => {
+                              if (!selectedItemId) return;
+                              const it = items.find(i => i.id === selectedItemId);
+                              if (!it) return;
+                              if (!isRetroactiveModalExit && transactionQty > (it.quantity || 0)) {
+                                showToast(`Quantidade excede o estoque disponível (${it.quantity})`, "error");
+                                return;
+                              }
+                              setBasket(prev => {
+                                const existing = prev.find(p => p.item_id === selectedItemId);
+                                if (existing) {
+                                  return prev.map(p => p.item_id === selectedItemId ? { ...p, quantity: p.quantity + transactionQty } : p);
+                                }
+                                return [...prev, { item_id: selectedItemId, quantity: transactionQty }];
+                              });
+                              setSelectedItemId('');
+                              setTransactionQty(1);
+                            }}
+                            className="flex-1 sm:flex-none px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-1.5 shadow-sm active:scale-95 whitespace-nowrap shrink-0"
+                          >
+                            <Plus size={15} />
+                            Adicionar
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Basket */}
+                    {basket.length > 0 && (
+                      <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200/80 space-y-2">
+                        <span className="text-xs font-black text-slate-500 uppercase tracking-wider">Itens na Cesta de Saída:</span>
+                        <div className="divide-y divide-slate-200/60 max-h-48 overflow-y-auto">
+                          {basket.map(b => {
+                            const it = items.find(i => i.id === b.item_id);
+                            return (
+                              <div key={b.item_id} className="py-2 flex items-center justify-between gap-3 text-sm">
+                                <span className="font-bold text-slate-800 min-w-0 truncate">{it?.name || 'Item'}</span>
+                                <div className="flex items-center gap-2.5 shrink-0">
+                                  <span className="text-xs font-semibold bg-rose-100 text-rose-800 px-2 py-0.5 rounded-md whitespace-nowrap">
+                                    {b.quantity} {it?.unit_measure || 'UN'}
+                                  </span>
+                                  <button 
+                                    type="button"
+                                    onClick={() => setBasket(prev => prev.filter(p => p.item_id !== b.item_id))}
+                                    className="text-slate-400 hover:text-rose-600 p-1 rounded-lg hover:bg-rose-50 transition-colors"
+                                    title="Remover item"
+                                  >
+                                    <X size={16} />
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-3">
+                      <button 
+                        type="button"
+                        onClick={() => setShowTransactionModal({ show: false, type: 'entry' })}
+                        className="px-5 py-2.5 rounded-2xl text-slate-600 font-bold hover:bg-slate-100 text-sm transition-all"
+                      >
+                        Cancelar
+                      </button>
+                      <button 
+                        type="submit"
+                        disabled={basket.length === 0}
+                        className="px-6 py-2.5 bg-gradient-to-r from-rose-600 to-rose-700 text-white rounded-2xl font-bold text-sm hover:from-rose-700 hover:to-rose-800 shadow-lg shadow-rose-700/20 transition-all disabled:opacity-50"
+                      >
+                        {isRetroactiveModalExit ? 'Registrar Saída Retroativa (Sem Baixar Estoque)' : 'Confirmar Saída'}
+                      </button>
+                    </div>
+                  </>
+                );
+              })()}
             </form>
           </div>
         </div>
@@ -13990,48 +14716,147 @@ export default function App() {
       )}
 
       {/* Delete Confirmation Modal */}
-      {showDeleteModal.show && (
-        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
-            <div className="flex items-center gap-3 text-rose-600">
-              <div className="bg-rose-50 p-2.5 rounded-2xl">
-                <Trash2 size={22} />
+      {showDeleteModal.show && (() => {
+        const txToDelete = transactions.find(t => t.id === showDeleteModal.transactionId);
+        const isRetroTx = Boolean(txToDelete?.isRetroactive || txToDelete?.stockAffected === false);
+        const exitCat = txToDelete?.type === 'exit' ? getCategorizedExitType(txToDelete) : null;
+        const txTypeLabel = !txToDelete
+          ? 'Movimentação'
+          : txToDelete.type === 'entry'
+          ? txToDelete.isReturn
+            ? 'Devolução de Setor (Entrada)'
+            : txToDelete.origin === 'donation'
+            ? 'Entrada por Doação'
+            : txToDelete.origin === 'contract'
+            ? 'Entrada (Contrato)'
+            : 'Entrada (Extra)'
+          : `Saída (${exitCat ? getExitReasonLabel(exitCat) : 'Consumo'})`;
+
+        return (
+          <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3 text-rose-600">
+                  <div className="bg-rose-50 p-2.5 rounded-2xl">
+                    <Trash2 size={22} />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-black text-slate-900">Confirmar Exclusão de Lançamento</h3>
+                    <p className="text-[11px] text-slate-500 font-medium">
+                      Confira os dados do registro que será excluído abaixo
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowDeleteModal({ show: false })}
+                  className="p-1.5 text-slate-400 hover:text-slate-700 rounded-xl hover:bg-slate-100"
+                >
+                  <X size={18} />
+                </button>
               </div>
-              <h3 className="text-lg font-black text-slate-900">Confirmar Exclusão</h3>
-            </div>
-            <p className="text-xs text-slate-600">
-              Tem certeza que deseja excluir esta movimentação? Informe o motivo abaixo para fins de auditoria:
-            </p>
-            <textarea 
-              rows={3}
-              required
-              className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold focus:ring-2 focus:ring-rose-500/20"
-              placeholder="Motivo da exclusão..."
-              value={deletionReason}
-              onChange={e => setDeletionReason(e.target.value)}
-            />
-            <div className="flex items-center justify-end gap-3 pt-2">
-              <button 
-                onClick={() => setShowDeleteModal({ show: false })}
-                className="px-4 py-2 rounded-xl text-slate-600 font-bold hover:bg-slate-100 text-xs"
-              >
-                Cancelar
-              </button>
-              <button 
-                onClick={() => {
-                  if (showDeleteModal.transactionId) {
-                    handleDeleteTransaction(showDeleteModal.transactionId, deletionReason);
-                    setShowDeleteModal({ show: false });
-                  }
-                }}
-                className="px-5 py-2 bg-rose-600 text-white rounded-xl font-bold text-xs hover:bg-rose-700 shadow-md shadow-rose-600/20"
-              >
-                Excluir
-              </button>
+
+              {txToDelete && (
+                <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200/90 space-y-2.5 text-xs">
+                  <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-200/80">
+                    <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                      txToDelete.type === 'entry'
+                        ? 'bg-emerald-100 text-emerald-800'
+                        : 'bg-rose-100 text-rose-800'
+                    }`}>
+                      {txTypeLabel}
+                    </span>
+                    <span className="font-bold text-slate-600">
+                      {new Date(txToDelete.date).toLocaleDateString('pt-BR')} às{' '}
+                      {new Date(txToDelete.date).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </div>
+
+                  <div>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase">Material</p>
+                    <p className="text-sm font-black text-slate-900">{txToDelete.item_name}</p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 pt-1">
+                    <div>
+                      <p className="text-[10px] font-bold text-slate-400 uppercase">Quantidade</p>
+                      <p className="font-black text-slate-900 text-sm">
+                        {txToDelete.type === 'entry' ? '+' : '-'}{txToDelete.quantity} un
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-bold text-slate-400 uppercase">Lote</p>
+                      <p className="font-bold text-slate-700 font-mono">{txToDelete.batch_number || 'Sem lote'}</p>
+                    </div>
+                    <div className="col-span-2">
+                      <p className="text-[10px] font-bold text-slate-400 uppercase">
+                        {txToDelete.type === 'entry' ? 'Origem / Doador / Fornecedor' : 'Setor / Destino'}
+                      </p>
+                      <p className="font-semibold text-slate-800">
+                        {txToDelete.type === 'entry'
+                          ? (txToDelete.supplier || (txToDelete.origin === 'donation' ? 'Doação Institucional' : 'Estoque'))
+                          : (txToDelete.donationUnitName || txToDelete.sector || '---')}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className={`mt-2 p-2.5 rounded-xl border text-[11px] font-medium leading-relaxed ${
+                    isRetroTx
+                      ? 'bg-amber-50 border-amber-200 text-amber-900'
+                      : 'bg-blue-50/70 border-blue-200 text-blue-900'
+                  }`}>
+                    {isRetroTx ? (
+                      <span>
+                        <strong>Saída Retroativa:</strong> Como este lançamento foi registrado apenas para histórico, sua exclusão atualizará os relatórios e indicadores <strong>sem alterar o saldo físico atual</strong>.
+                      </span>
+                    ) : txToDelete.type === 'entry' ? (
+                      <span>
+                        <strong>Atualização de Saldo e Relatórios:</strong> Ao confirmar, este lançamento será removido dos indicadores/relatórios e <strong>{txToDelete.quantity} un</strong> serão estornadas (subtraídas) do saldo atual no estoque.
+                      </span>
+                    ) : (
+                      <span>
+                        <strong>Atualização de Saldo e Relatórios:</strong> Ao confirmar, este lançamento será removido dos indicadores/relatórios e <strong>{txToDelete.quantity} un</strong> serão devolvidas (somadas) ao saldo atual no estoque.
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                  Motivo da exclusão (opcional para auditoria):
+                </label>
+                <textarea 
+                  rows={2}
+                  className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:ring-2 focus:ring-rose-500/20"
+                  placeholder="Ex.: Lançamento de teste, entrada por doação duplicada ou registro indevido..."
+                  value={deletionReason}
+                  onChange={e => setDeletionReason(e.target.value)}
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <button 
+                  onClick={() => setShowDeleteModal({ show: false })}
+                  className="px-4 py-2.5 rounded-xl text-slate-600 font-bold hover:bg-slate-100 text-xs cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  onClick={() => {
+                    if (showDeleteModal.transactionId) {
+                      handleDeleteTransaction(showDeleteModal.transactionId, deletionReason);
+                    }
+                  }}
+                  className="px-5 py-2.5 bg-rose-600 text-white rounded-xl font-black text-xs hover:bg-rose-700 shadow-md shadow-rose-600/20 flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Trash2 size={14} />
+                  Confirmar Exclusão
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* User Delete Modal */}
       {showUserDeleteConfirm.show && (

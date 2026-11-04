@@ -102,9 +102,9 @@ export interface Transaction {
   responsibleEmail?: string;
   supplier?: string;
   deletedAt?: string;
-  deletionReason?: string;
   deletedByEmail?: string;
-  exitReason?: 'consumo' | 'doacao' | 'troca' | 'vencido' | 'perda';
+  deletionReason?: string;
+  exitReason?: 'consumo' | 'doacao' | 'troca' | 'vencido' | 'perda' | 'ajuste_balanco';
   expiryReason?: string;
   donationUnitName?: string;
   donationUnitAddress?: string;
@@ -123,6 +123,8 @@ export interface Transaction {
   isReturn?: boolean;
   returnReason?: string;
   observation?: string;
+  isRetroactive?: boolean;
+  stockAffected?: boolean;
 }
 
 export interface DocumentTemplate {

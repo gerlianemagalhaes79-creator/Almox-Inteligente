@@ -31,7 +31,9 @@ import {
   FileText,
   Filter,
   Printer,
-  PieChart as PieChartIcon
+  PieChart as PieChartIcon,
+  Trash2,
+  History
 } from 'lucide-react';
 import {
   BarChart,
@@ -58,6 +60,13 @@ import {
   printSingleIndicator,
   SingleIndicatorExportParams
 } from '../utils/pdfReportGenerator';
+import { isMedicamentosCategory } from '../utils/medicamentosFilter';
+import {
+  getCategorizedExitType,
+  getExitReasonLabel,
+  getExitReasonBadgeClasses
+} from '../utils/exitReasonUtils';
+import { MonthlySectorConsumptionReport } from './MonthlySectorConsumptionReport';
 
 export interface IndicadoresReportProps {
   items: Item[];
@@ -73,10 +82,14 @@ export interface IndicadoresReportProps {
   isAdmin?: boolean;
   userProfile?: UserProfile | null;
   selectedSector?: string;
+  includeMedicamentos?: boolean;
+  onToggleIncludeMedicamentos?: (val: boolean) => void;
+  onDeleteTransaction?: (transactionId: string) => void;
+  onOpenRetroactiveExitModal?: () => void;
 }
 
 type PeriodOption = '1_semestre' | '2_semestre' | 'ano_completo' | 'ultimos_90_dias' | 'personalizado';
-type InternalTab = 'visao_geral' | 'situacao_sala' | 'dispensacao_tipo' | 'doacoes';
+type InternalTab = 'visao_geral' | 'situacao_sala' | 'dispensacao_tipo' | 'doacoes' | 'consumo_mensal_setor';
 
 const CHART_PALETTE = [
   '#2563eb',
@@ -167,7 +180,8 @@ const EXIT_REASON_LABELS: Record<string, string> = {
   doacao: 'Doação Externa',
   troca: 'Permuta / Troca',
   vencido: 'Baixa por Validade Vencida',
-  perda: 'Avaria / Perda Física'
+  perda: 'Avaria / Perda Física',
+  ajuste_balanco: 'Ajuste de Balanço (Inventário)'
 };
 
 export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
@@ -182,8 +196,23 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
   onOpenRoomMap,
   letterheadImage,
   isAdmin = true,
-  selectedSector
+  selectedSector,
+  includeMedicamentos: propIncludeMedicamentos,
+  onToggleIncludeMedicamentos,
+  onDeleteTransaction,
+  onOpenRetroactiveExitModal
 }) => {
+  const [localIncludeMedicamentos, setLocalIncludeMedicamentos] = useState<boolean>(false);
+  const includeMedicamentos =
+    propIncludeMedicamentos !== undefined ? propIncludeMedicamentos : localIncludeMedicamentos;
+
+  const handleToggleIncludeMedicamentos = (val: boolean) => {
+    setLocalIncludeMedicamentos(val);
+    if (onToggleIncludeMedicamentos) {
+      onToggleIncludeMedicamentos(val);
+    }
+  };
+
   const now = new Date();
   const currentYear = now.getFullYear();
   const defaultSemester: PeriodOption = now.getMonth() < 6 ? '1_semestre' : '2_semestre';
@@ -213,8 +242,9 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
   const [typeCategoryFilter, setTypeCategoryFilter] = useState<string>('todas');
   const [typeOriginFilter, setTypeOriginFilter] = useState<string>('todas');
   const [typeSearchTerm, setTypeSearchTerm] = useState<string>('');
-  const [donationSubView, setDonationSubView] = useState<'todas' | 'entradas' | 'saidas' | 'vencidos' | 'estoque'>('todas');
+  const [donationSubView, setDonationSubView] = useState<'todas' | 'entradas' | 'saidas' | 'vencidos' | 'perdas' | 'ajustes' | 'estoque'>('todas');
   const [donationSearchTerm, setDonationSearchTerm] = useState<string>('');
+  const [grupo4BaixasSubFilter, setGrupo4BaixasSubFilter] = useState<'todas' | 'vencido' | 'perda' | 'ajuste_balanco'>('todas');
 
   // Available years from existing records + standard window
   const availableYears = useMemo(() => {
@@ -274,18 +304,43 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
     };
   }, [periodOption, selectedYear, customStart, customEnd]);
 
-  // Base unfiltered items & transactions for current inventoryLocation (ignoring deletedAt)
-  const rawLocationItems = useMemo(() => {
+  // Contagem estrita de medicamentos desconsiderados na unidade (baseando-se APENAS no campo categoria, case/accent-insensitive)
+  const medicamentosDesconsideradosCount = useMemo(() => {
     return items.filter(
-      item => !item.deletedAt && (item.location || 'Almoxarifado') === inventoryLocation
-    );
+      item =>
+        !item.deletedAt &&
+        (item.location || 'Almoxarifado') === inventoryLocation &&
+        isMedicamentosCategory(item.category)
+    ).length;
   }, [items, inventoryLocation]);
 
+  // Base unfiltered items & transactions for current inventoryLocation (ignoring deletedAt e filtrando medicamentos quando desligado)
+  const rawLocationItems = useMemo(() => {
+    return items.filter(item => {
+      if (item.deletedAt) return false;
+      if ((item.location || 'Almoxarifado') !== inventoryLocation) return false;
+      if (!includeMedicamentos && isMedicamentosCategory(item.category)) return false;
+      return true;
+    });
+  }, [items, inventoryLocation, includeMedicamentos]);
+
   const rawLocationTransactions = useMemo(() => {
-    return transactions.filter(
-      tx => !tx.deletedAt && (tx.location || 'Almoxarifado') === inventoryLocation
-    );
-  }, [transactions, inventoryLocation]);
+    return transactions.filter(tx => {
+      if (tx.deletedAt) return false;
+      if ((tx.location || 'Almoxarifado') !== inventoryLocation) return false;
+      if (!includeMedicamentos) {
+        const item =
+          items.find(i => i.id === tx.item_id) ||
+          items.find(
+            i =>
+              !i.deletedAt &&
+              (i.name || '').trim().toUpperCase() === (tx.item_name || '').trim().toUpperCase()
+          );
+        if (item && isMedicamentosCategory(item.category)) return false;
+      }
+      return true;
+    });
+  }, [transactions, inventoryLocation, includeMedicamentos, items]);
 
   // Map raw items by ID and normalized name for fast lookup
   const rawItemMaps = useMemo(() => {
@@ -354,6 +409,24 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
       sectors: Array.from(sectorsSet).sort((a, b) => a.localeCompare(b, 'pt-BR'))
     };
   }, [rawLocationItems, rawLocationTransactions, requests, selectedCategoryFilter]);
+
+  // Itens de requisição respeitando a regra de desconsiderar medicamentos
+  const effectiveRequestItems = useMemo(() => {
+    if (includeMedicamentos) return allRequestItems;
+    return allRequestItems.filter(ri => {
+      const item =
+        (ri.product_id ? rawItemMaps.byId.get(ri.product_id) : undefined) ||
+        (ri.product_name ? rawItemMaps.byName.get(ri.product_name.trim().toUpperCase()) : undefined) ||
+        items.find(i => i.id === ri.product_id) ||
+        items.find(
+          i =>
+            !i.deletedAt &&
+            (i.name || '').trim().toUpperCase() === (ri.product_name || '').trim().toUpperCase()
+        );
+      if (item && isMedicamentosCategory(item.category)) return false;
+      return true;
+    });
+  }, [allRequestItems, includeMedicamentos, rawItemMaps, items]);
 
   // 1. Active items for current inventoryLocation filtered by Category & Material
   const locationItems = useMemo(() => {
@@ -490,6 +563,19 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
     let totalExitsInPeriodUnits = 0;
     let totalExitsInPeriodValue = 0;
 
+    // Baixas por tipo estritamente diferenciadas
+    let expiredExitsUnits = 0;
+    let expiredExitsValue = 0;
+    let expiredExitsCount = 0;
+
+    let lossExitsUnits = 0;
+    let lossExitsValue = 0;
+    let lossExitsCount = 0;
+
+    let balanceAdjustmentExitsUnits = 0;
+    let balanceAdjustmentExitsValue = 0;
+    let balanceAdjustmentExitsCount = 0;
+
     let lossAndExpiredExitsUnits = 0;
     let lossAndExpiredExitsValue = 0;
     let lossAndExpiredExitsCount = 0;
@@ -567,8 +653,8 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
           totalExitsInPeriodUnits += qty;
           totalExitsInPeriodValue += val;
 
-          const isConsumption = !tx.exitReason || tx.exitReason === 'consumo';
-          if (isConsumption) {
+          const exitCat = getCategorizedExitType(tx);
+          if (exitCat === 'consumo') {
             grossConsumptionExitsUnits += qty;
             grossConsumptionExitsValue += val;
             grossConsumptionExitsCount += 1;
@@ -576,9 +662,24 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
             const mCons = ensureMaterialCons(matName, matCat);
             mCons.grossUnits += qty;
             mCons.grossValue += val;
-          }
-
-          if (tx.exitReason === 'vencido' || tx.exitReason === 'perda') {
+          } else if (exitCat === 'vencido') {
+            expiredExitsUnits += qty;
+            expiredExitsValue += val;
+            expiredExitsCount += 1;
+            lossAndExpiredExitsUnits += qty;
+            lossAndExpiredExitsValue += val;
+            lossAndExpiredExitsCount += 1;
+          } else if (exitCat === 'perda') {
+            lossExitsUnits += qty;
+            lossExitsValue += val;
+            lossExitsCount += 1;
+            lossAndExpiredExitsUnits += qty;
+            lossAndExpiredExitsValue += val;
+            lossAndExpiredExitsCount += 1;
+          } else if (exitCat === 'ajuste_balanco') {
+            balanceAdjustmentExitsUnits += qty;
+            balanceAdjustmentExitsValue += val;
+            balanceAdjustmentExitsCount += 1;
             lossAndExpiredExitsUnits += qty;
             lossAndExpiredExitsValue += val;
             lossAndExpiredExitsCount += 1;
@@ -712,7 +813,7 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
 
     // --- GROUP 3: ATENDIMENTO (requests & request_items) ---
     const reqItemsByReqId = new Map<string, RequestItem[]>();
-    allRequestItems.forEach(ri => {
+    effectiveRequestItems.forEach(ri => {
       const list = reqItemsByReqId.get(ri.request_id) || [];
       list.push(ri);
       reqItemsByReqId.set(ri.request_id, list);
@@ -845,6 +946,12 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
         : 0;
 
     // --- GROUP 4: PERDAS E VALIDADE ---
+    const expiredShareOfExitsPct =
+      totalExitsInPeriodValue > 0 ? (expiredExitsValue / totalExitsInPeriodValue) * 100 : 0;
+    const lossShareOfExitsPct =
+      totalExitsInPeriodValue > 0 ? (lossExitsValue / totalExitsInPeriodValue) * 100 : 0;
+    const balanceAdjustmentShareOfExitsPct =
+      totalExitsInPeriodValue > 0 ? (balanceAdjustmentExitsValue / totalExitsInPeriodValue) * 100 : 0;
     const lossAndExpiredShareOfExitsPct =
       totalExitsInPeriodValue > 0
         ? (lossAndExpiredExitsValue / totalExitsInPeriodValue) * 100
@@ -989,6 +1096,18 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
         grossConsumptionExitsUnits
       },
       perdasValidade: {
+        expiredExitsUnits,
+        expiredExitsValue,
+        expiredExitsCount,
+        expiredShareOfExitsPct,
+        lossExitsUnits,
+        lossExitsValue,
+        lossExitsCount,
+        lossShareOfExitsPct,
+        balanceAdjustmentExitsUnits,
+        balanceAdjustmentExitsValue,
+        balanceAdjustmentExitsCount,
+        balanceAdjustmentShareOfExitsPct,
         lossAndExpiredExitsUnits,
         lossAndExpiredExitsValue,
         lossAndExpiredExitsCount,
@@ -1338,7 +1457,7 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
 
     // Also include requested quantities from valid requests in Top Materials
     const reqItemsByReqId = new Map<string, RequestItem[]>();
-    allRequestItems.forEach(ri => {
+    effectiveRequestItems.forEach(ri => {
       const list = reqItemsByReqId.get(ri.request_id) || [];
       list.push(ri);
       reqItemsByReqId.set(ri.request_id, list);
@@ -1646,7 +1765,7 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
       const finValue = qty * unitPrice;
       const category = (item?.category || 'Outros').trim();
       const originKey = tx.origin || item?.origin || 'contract';
-      const reasonKey = tx.exitReason || 'consumo';
+      const reasonKey = getCategorizedExitType(tx);
 
       totalUnits += qty;
       totalValue += finValue;
@@ -1789,13 +1908,18 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
         };
       });
 
-    // Baixas por Vencimento (and Perda/Descarte) in the period
-    const expiryWriteOffExits = periodTransactions
-      .filter(tx => tx.type === 'exit' && (tx.exitReason === 'vencido' || tx.exitReason === 'perda'))
+    // Baixas do período: Vencimento/Descarte (Validade), Perda/Avaria e Ajuste de Balanço
+    const allWriteOffExits = periodTransactions
+      .filter(tx => {
+        if (tx.type !== 'exit') return false;
+        const cat = getCategorizedExitType(tx);
+        return cat === 'vencido' || cat === 'perda' || cat === 'ajuste_balanco';
+      })
       .map(tx => {
         const item = resolveItemForTx(tx);
         const qty = Number(tx.quantity) || 0;
         const unitPrice = resolveUnitPriceForTx(tx);
+        const exitCat = getCategorizedExitType(tx);
         return {
           tx,
           item,
@@ -1803,13 +1927,22 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
           unitPrice,
           finValue: qty * unitPrice,
           category: item?.category || 'Outros',
-          reasonType: tx.exitReason === 'perda' ? 'Perda / Avaria' : 'Vencimento / Descarte',
+          exitType: exitCat,
+          reasonType: getExitReasonLabel(exitCat),
           justification:
             tx.expiryReason ||
             tx.observation ||
-            (tx.exitReason === 'perda' ? 'Baixa por perda ou avaria' : 'Baixa por validade vencida')
+            (exitCat === 'vencido'
+              ? 'Baixa por validade técnica expirada'
+              : exitCat === 'perda'
+              ? 'Baixa por perda / avaria física'
+              : 'Ajuste de falta apurado no balanço de estoque')
         };
       });
+
+    const expiryOnlyExits = allWriteOffExits.filter(r => r.exitType === 'vencido');
+    const lossOnlyExits = allWriteOffExits.filter(r => r.exitType === 'perda');
+    const balanceAdjustmentExits = allWriteOffExits.filter(r => r.exitType === 'ajuste_balanco');
 
     const donationStockItems = locationItems.filter(
       item => item.origin === 'donation' && (Number(item.quantity) || 0) > 0
@@ -1821,8 +1954,17 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
     const totalDonatedOutUnits = donationExits.reduce((acc, r) => acc + r.qty, 0);
     const totalDonatedOutValue = donationExits.reduce((acc, r) => acc + r.finValue, 0);
 
-    const totalExpiredExitUnits = expiryWriteOffExits.reduce((acc, r) => acc + r.qty, 0);
-    const totalExpiredExitValue = expiryWriteOffExits.reduce((acc, r) => acc + r.finValue, 0);
+    // Baixas estritamente por Validade / Vencimento
+    const totalExpiredExitUnits = expiryOnlyExits.reduce((acc, r) => acc + r.qty, 0);
+    const totalExpiredExitValue = expiryOnlyExits.reduce((acc, r) => acc + r.finValue, 0);
+
+    // Baixas estritamente por Perda / Avaria
+    const totalLossExitUnits = lossOnlyExits.reduce((acc, r) => acc + r.qty, 0);
+    const totalLossExitValue = lossOnlyExits.reduce((acc, r) => acc + r.finValue, 0);
+
+    // Baixas estritamente por Ajuste de Balanço
+    const totalBalanceAdjustExitUnits = balanceAdjustmentExits.reduce((acc, r) => acc + r.qty, 0);
+    const totalBalanceAdjustExitValue = balanceAdjustmentExits.reduce((acc, r) => acc + r.finValue, 0);
 
     const currentDonationStockUnits = donationStockItems.reduce(
       (acc, item) => acc + (Number(item.quantity) || 0),
@@ -1864,7 +2006,37 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
       );
     });
 
-    const filteredExpiryExits = expiryWriteOffExits.filter(e => {
+    const filteredExpiryExits = expiryOnlyExits.filter(e => {
+      if (!searchQ) return true;
+      return (
+        (e.tx.item_name || '').toLowerCase().includes(searchQ) ||
+        (e.tx.batch_number || '').toLowerCase().includes(searchQ) ||
+        e.justification.toLowerCase().includes(searchQ) ||
+        e.category.toLowerCase().includes(searchQ)
+      );
+    });
+
+    const filteredLossExits = lossOnlyExits.filter(e => {
+      if (!searchQ) return true;
+      return (
+        (e.tx.item_name || '').toLowerCase().includes(searchQ) ||
+        (e.tx.batch_number || '').toLowerCase().includes(searchQ) ||
+        e.justification.toLowerCase().includes(searchQ) ||
+        e.category.toLowerCase().includes(searchQ)
+      );
+    });
+
+    const filteredBalanceAdjustExits = balanceAdjustmentExits.filter(e => {
+      if (!searchQ) return true;
+      return (
+        (e.tx.item_name || '').toLowerCase().includes(searchQ) ||
+        (e.tx.batch_number || '').toLowerCase().includes(searchQ) ||
+        e.justification.toLowerCase().includes(searchQ) ||
+        e.category.toLowerCase().includes(searchQ)
+      );
+    });
+
+    const filteredAllWriteOffExits = allWriteOffExits.filter(e => {
       if (!searchQ) return true;
       return (
         (e.tx.item_name || '').toLowerCase().includes(searchQ) ||
@@ -1893,15 +2065,28 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
       totalDonatedOutCount: donationExits.length,
       totalExpiredExitUnits,
       totalExpiredExitValue,
-      totalExpiredExitCount: expiryWriteOffExits.length,
+      totalExpiredExitCount: expiryOnlyExits.length,
+      totalLossExitUnits,
+      totalLossExitValue,
+      totalLossExitCount: lossOnlyExits.length,
+      totalBalanceAdjustExitUnits,
+      totalBalanceAdjustExitValue,
+      totalBalanceAdjustExitCount: balanceAdjustmentExits.length,
       currentDonationStockUnits,
       currentDonationStockValue,
       currentDonationStockCount: donationStockItems.length,
       partnersCount: partnerUnitsSet.size,
-      expiryWriteOffExits,
+      expiryWriteOffExits: expiryOnlyExits,
+      expiryOnlyExits,
+      lossOnlyExits,
+      balanceAdjustmentExits,
+      allWriteOffExits,
       filteredEntries,
       filteredExits,
       filteredExpiryExits,
+      filteredLossExits,
+      filteredBalanceAdjustExits,
+      filteredAllWriteOffExits,
       filteredStock
     };
   }, [periodTransactions, locationItems, donationSearchTerm]);
@@ -1915,6 +2100,12 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
       const overviewRows = [
         ['INDICADORES DO ' + inventoryLocation.toUpperCase()],
         ['Período Analisado:', dateInterval.label],
+        [
+          'Medicamentos:',
+          !includeMedicamentos
+            ? `${medicamentosDesconsideradosCount} itens de medicamentos desconsiderados`
+            : 'Medicamentos incluídos nos indicadores'
+        ],
         [''],
         ['GRUPO', 'INDICADOR', 'VALOR PRINCIPAL', 'DETALHAMENTO'],
         [
@@ -1997,9 +2188,21 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
         ],
         [
           'Perdas e Validade',
-          'Saídas por Vencimento ou Perda',
-          `${formatCurrency(perdasValidade.lossAndExpiredExitsValue)} (${formatDecimal(perdasValidade.lossAndExpiredShareOfExitsPct, 2)}% das saídas)`,
-          `${perdasValidade.lossAndExpiredExitsUnits.toLocaleString('pt-BR')} un baixadas no período`
+          'Baixas por Validade / Vencimento',
+          `${formatCurrency(perdasValidade.expiredExitsValue)} (${formatDecimal(perdasValidade.expiredShareOfExitsPct, 2)}% das saídas)`,
+          `${perdasValidade.expiredExitsUnits.toLocaleString('pt-BR')} un baixadas por validade (${perdasValidade.expiredExitsCount} registros)`
+        ],
+        [
+          'Perdas e Validade',
+          'Baixas por Perda / Avaria Física',
+          `${formatCurrency(perdasValidade.lossExitsValue)} (${formatDecimal(perdasValidade.lossShareOfExitsPct, 2)}% das saídas)`,
+          `${perdasValidade.lossExitsUnits.toLocaleString('pt-BR')} un baixadas por avaria (${perdasValidade.lossExitsCount} registros)`
+        ],
+        [
+          'Perdas e Validade',
+          'Baixas por Ajuste de Balanço',
+          `${formatCurrency(perdasValidade.balanceAdjustmentExitsValue)} (${formatDecimal(perdasValidade.balanceAdjustmentShareOfExitsPct, 2)}% das saídas)`,
+          `${perdasValidade.balanceAdjustmentExitsUnits.toLocaleString('pt-BR')} un ajustadas em balanço (${perdasValidade.balanceAdjustmentExitsCount} registros)`
         ],
         [
           'Perdas e Validade',
@@ -2083,7 +2286,29 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
           Responsável: e.tx.responsible || '—'
         })),
         ...donationsMetrics.filteredExpiryExits.map(e => ({
-          Fluxo: `BAIXA (${e.reasonType.toUpperCase()})`,
+          Fluxo: 'BAIXA (VALIDADE / VENCIMENTO)',
+          Data: formatDateBR(e.tx.date),
+          Material: e.tx.item_name,
+          Categoria: e.category,
+          Quantidade: e.qty,
+          'Valor Estimado (R$)': e.finValue,
+          'Parceiro / Doador / Unidade': e.justification,
+          'Termo / Documento': `Lote: ${e.tx.batch_number || 'S/L'}`,
+          Responsável: e.tx.responsible || '—'
+        })),
+        ...donationsMetrics.filteredLossExits.map(e => ({
+          Fluxo: 'BAIXA (PERDA / AVARIA FÍSICA)',
+          Data: formatDateBR(e.tx.date),
+          Material: e.tx.item_name,
+          Categoria: e.category,
+          Quantidade: e.qty,
+          'Valor Estimado (R$)': e.finValue,
+          'Parceiro / Doador / Unidade': e.justification,
+          'Termo / Documento': `Lote: ${e.tx.batch_number || 'S/L'}`,
+          Responsável: e.tx.responsible || '—'
+        })),
+        ...donationsMetrics.filteredBalanceAdjustExits.map(e => ({
+          Fluxo: 'BAIXA (AJUSTE DE BALANÇO)',
           Data: formatDateBR(e.tx.date),
           Material: e.tx.item_name,
           Categoria: e.category,
@@ -2130,7 +2355,10 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
           location: inventoryLocation,
           sectorFilter: selectedSectorFilter === 'todos' ? 'Todos os Setores' : selectedSectorFilter,
           categoryFilter: selectedCategoryFilter === 'todas' ? 'Todas as Categorias' : selectedCategoryFilter,
-          materialFilter: selectedMaterialObj ? selectedMaterialObj.name : 'Todos os Materiais (Consolidados)'
+          materialFilter: selectedMaterialObj ? selectedMaterialObj.name : 'Todos os Materiais (Consolidados)',
+          medicamentosNote: !includeMedicamentos
+            ? `${medicamentosDesconsideradosCount} itens de medicamentos desconsiderados`
+            : undefined
         },
         kpis: {
           consolidatedMaterialsCount: visualChartsAndKpis.consolidatedMaterialsCount,
@@ -2284,14 +2512,19 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
         selectedCategoryFilter === 'todas' ? 'Todas as Categorias' : selectedCategoryFilter,
       materialFilter: selectedMaterialObj
         ? selectedMaterialObj.name
-        : 'Todos os Materiais (Consolidados)'
+        : 'Todos os Materiais (Consolidados)',
+      medicamentosNote: !includeMedicamentos
+        ? `${medicamentosDesconsideradosCount} itens de medicamentos desconsiderados`
+        : undefined
     }),
     [
       dateInterval.label,
       inventoryLocation,
       selectedSectorFilter,
       selectedCategoryFilter,
-      selectedMaterialObj
+      selectedMaterialObj,
+      includeMedicamentos,
+      medicamentosDesconsideradosCount
     ]
   );
 
@@ -2385,6 +2618,15 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
             </div>
 
             <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+              {isAdmin && onOpenRetroactiveExitModal && (
+                <button
+                  onClick={onOpenRetroactiveExitModal}
+                  className="bg-amber-600 hover:bg-amber-700 text-white px-4 py-2.5 rounded-xl font-extrabold text-xs flex items-center gap-2 shadow-md shadow-amber-600/20 transition-all cursor-pointer"
+                >
+                  <History size={15} />
+                  Lançar Saída / Retroativa
+                </button>
+              )}
               <button
                 onClick={handleExportPDF}
                 disabled={isGeneratingPDF}
@@ -2574,6 +2816,35 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                 )}
               </div>
             </div>
+
+            {/* Toggle de Medicamentos e Nota de Desconsiderados */}
+            <div className="pt-3 border-t border-slate-200/80 flex flex-wrap items-center justify-between gap-3">
+              <label className="flex items-center gap-2.5 cursor-pointer bg-white px-3.5 py-2 rounded-xl border border-slate-200 hover:border-blue-300 transition-colors shadow-2xs">
+                <input
+                  type="checkbox"
+                  checked={includeMedicamentos}
+                  onChange={e => handleToggleIncludeMedicamentos(e.target.checked)}
+                  className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer"
+                />
+                <span className="text-xs font-black text-slate-800">
+                  Incluir medicamentos nos indicadores
+                </span>
+              </label>
+
+              <div>
+                {!includeMedicamentos ? (
+                  <span className="text-xs font-extrabold text-amber-800 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-xl flex items-center gap-1.5 shadow-2xs">
+                    <Info size={14} className="text-amber-600 shrink-0" />
+                    {medicamentosDesconsideradosCount} {medicamentosDesconsideradosCount === 1 ? 'item de medicamento desconsiderado' : 'itens de medicamentos desconsiderados'}
+                  </span>
+                ) : (
+                  <span className="text-xs font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-xl flex items-center gap-1.5 shadow-2xs">
+                    <CheckCircle size={14} className="text-emerald-600 shrink-0" />
+                    Medicamentos incluídos nos indicadores
+                  </span>
+                )}
+              </div>
+            </div>
           </div>
 
           {/* Top Executive Strip: Materiais Cadastrados (Consolidados), Estoque Baixo, Movimentações e Situação do Estoque */}
@@ -2585,11 +2856,19 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                   <span className="text-[10px] font-black text-blue-700 uppercase tracking-widest block">
                     Materiais Cadastrados
                   </span>
-                  <p className="text-2xl font-black text-slate-900 tracking-tight mt-0.5">
-                    {visualChartsAndKpis.consolidatedMaterialsCount.toLocaleString('pt-BR')}{' '}
-                    <span className="text-xs font-bold text-slate-500">materiais</span>
-                  </p>
-                  <p className="text-[11px] font-bold text-slate-500 mt-0.5">
+                  <div className="flex flex-wrap items-baseline gap-2 mt-0.5">
+                    <p className="text-2xl font-black text-slate-900 tracking-tight">
+                      {visualChartsAndKpis.consolidatedMaterialsCount.toLocaleString('pt-BR')}{' '}
+                      <span className="text-xs font-bold text-slate-500">materiais</span>
+                    </p>
+                  </div>
+                  {!includeMedicamentos && (
+                    <span className="text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md mt-1 inline-flex items-center gap-1">
+                      <Info size={10} className="text-amber-600 shrink-0" />
+                      {medicamentosDesconsideradosCount} {medicamentosDesconsideradosCount === 1 ? 'item desconsiderado' : 'itens desconsiderados'}
+                    </span>
+                  )}
+                  <p className="text-[11px] font-bold text-slate-500 mt-1">
                     Soma de {visualChartsAndKpis.totalBatchesCount.toLocaleString('pt-BR')} lotes (sem duplicar itens)
                   </p>
                 </div>
@@ -2984,8 +3263,8 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
             </div>
           </div>
 
-          {/* 4 Internal Navigation Tabs */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 pt-1">
+          {/* 5 Internal Navigation Tabs */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5 pt-1">
             {(
               [
                 {
@@ -3005,6 +3284,12 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                   label: 'Dispensação por tipo',
                   desc: 'Consumo por categoria e modalidade',
                   icon: Layers
+                },
+                {
+                  id: 'consumo_mensal_setor',
+                  label: 'Consumo Mensal por Setor',
+                  desc: 'Barras empilhadas por mês e categoria',
+                  icon: TrendingUp
                 },
                 {
                   id: 'doacoes',
@@ -3079,9 +3364,16 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                   </p>
                 </div>
               </div>
-              <span className="text-[11px] font-extrabold text-blue-700 bg-blue-50 px-3 py-1 rounded-full border border-blue-200 self-start sm:self-auto">
-                Lotes somados por material • Etiquetas desconsideradas nos gráficos
-              </span>
+              <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+                {!includeMedicamentos && (
+                  <span className="text-[11px] font-extrabold text-amber-800 bg-amber-50 px-3 py-1 rounded-full border border-amber-200">
+                    {medicamentosDesconsideradosCount} itens de medicamentos desconsiderados
+                  </span>
+                )}
+                <span className="text-[11px] font-extrabold text-blue-700 bg-blue-50 px-3 py-1 rounded-full border border-blue-200">
+                  Lotes somados por material • Etiquetas desconsideradas nos gráficos
+                </span>
+              </div>
             </div>
 
             {/* Row 1: Entradas e Saídas por Período + Situação do Estoque Consolidado */}
@@ -4806,33 +5098,38 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-              {/* 4.1 Saídas por Vencido ou Perda */}
+              {/* 4.1 Saídas por Validade / Vencimento (Descarte Sanitário) */}
               <div className="bg-white rounded-3xl border border-blue-100/90 shadow-sm hover:shadow-md transition-all overflow-hidden relative flex flex-col justify-between">
-                <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-800" />
+                <div className="h-1.5 w-full bg-gradient-to-r from-rose-500 via-rose-600 to-amber-500" />
                 <div className="p-6 space-y-3 flex-1 flex flex-col justify-between">
                   <div>
                     <div className="flex items-start justify-between gap-2 mb-2">
-                      <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">
-                        Baixas por Vencimento ou Perda
+                      <span className="text-[11px] font-black text-rose-600 uppercase tracking-widest flex items-center gap-1.5">
+                        <AlertTriangle size={13} className="text-rose-500" />
+                        Baixas por Validade / Vencimento
                       </span>
                       {renderIndicatorActions(
                         {
-                          indicatorTitle: 'Baixas por Vencimento ou Perda no Período',
-                          indicatorSubtitle: 'Valor e proporção sobre o total financeiro das saídas',
+                          indicatorTitle: 'Baixas por Validade / Vencimento no Período',
+                          indicatorSubtitle: 'Descarte sanitário por expiração do prazo de validade (segregado de perdas e ajustes)',
                           groupName: 'Grupo 4 • Perdas e Validade',
-                          explanation: 'Soma do valor e quantidade das saídas com motivo vencido ou perda e sua proporção sobre o valor total das saídas.',
+                          explanation: 'Soma do valor e quantidade das saídas registradas com motivo estrito de validade/vencimento expirado. Não se mistura com perdas físicas nem com ajustes de balanço.',
                           kpis: [
-                            { label: 'Valor Baixado', value: formatCurrency(perdasValidade.lossAndExpiredExitsValue), tone: 'rose' },
-                            { label: '% sobre Saídas Totais', value: `${formatDecimal(perdasValidade.lossAndExpiredShareOfExitsPct, 2)}%`, tone: 'amber' },
-                            { label: 'Quantidade Baixada', value: `${perdasValidade.lossAndExpiredExitsUnits.toLocaleString('pt-BR')} un`, subvalue: `${perdasValidade.lossAndExpiredExitsCount} registros`, tone: 'slate' }
+                            { label: 'Baixas Validade (R$)', value: formatCurrency(perdasValidade.expiredExitsValue), tone: 'rose' },
+                            { label: '% sobre Saídas Totais', value: `${formatDecimal(perdasValidade.expiredShareOfExitsPct, 2)}%`, tone: 'amber' },
+                            { label: 'Unidades Baixadas', value: `${perdasValidade.expiredExitsUnits.toLocaleString('pt-BR')} un`, subvalue: `${perdasValidade.expiredExitsCount} registros`, tone: 'slate' },
+                            { label: 'Perdas / Avarias (R$)', value: formatCurrency(perdasValidade.lossExitsValue), subvalue: `${perdasValidade.lossExitsUnits.toLocaleString('pt-BR')} un (${perdasValidade.lossExitsCount} reg.)`, tone: 'amber' },
+                            { label: 'Ajuste Balanço (R$)', value: formatCurrency(perdasValidade.balanceAdjustmentExitsValue), subvalue: `${perdasValidade.balanceAdjustmentExitsUnits.toLocaleString('pt-BR')} un (${perdasValidade.balanceAdjustmentExitsCount} reg.)`, tone: 'purple' }
                           ],
                           chart: {
                             type: 'donut',
-                            title: 'Participação de Perdas/Vencidos sobre Saídas Totais (R$)',
+                            title: 'Segregação de Saídas por Motivo (R$)',
                             valueFormatter: 'currency',
                             data: [
-                              { label: 'Saídas Regulares / Consumo (R$)', value: Math.max(0, estoqueGiro.netConsumptionValue), color: '#2563eb' },
-                              { label: 'Baixas Vencido/Perda (R$)', value: perdasValidade.lossAndExpiredExitsValue, color: '#ef4444' }
+                              { label: 'Consumo Regular (R$)', value: Math.max(0, estoqueGiro.netConsumptionValue), color: '#2563eb' },
+                              { label: 'Validade / Vencimento (R$)', value: perdasValidade.expiredExitsValue, color: '#ef4444' },
+                              { label: 'Perda / Avaria (R$)', value: perdasValidade.lossExitsValue, color: '#f59e0b' },
+                              { label: 'Ajuste de Balanço (R$)', value: perdasValidade.balanceAdjustmentExitsValue, color: '#8b5cf6' }
                             ]
                           }
                         },
@@ -4840,36 +5137,68 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                       )}
                     </div>
                     <div className="flex items-baseline gap-2 flex-wrap">
-                      <p className="text-3xl font-black text-slate-900 tracking-tight">
-                        {formatCurrency(perdasValidade.lossAndExpiredExitsValue)}
+                      <p className="text-3xl font-black text-rose-700 tracking-tight">
+                        {formatCurrency(perdasValidade.expiredExitsValue)}
                       </p>
-                      <span className="px-2.5 py-0.5 rounded-lg bg-blue-50 text-blue-700 border border-blue-200 text-xs font-black">
-                        {formatDecimal(perdasValidade.lossAndExpiredShareOfExitsPct, 2)}% das saídas
+                      <span className="px-2.5 py-0.5 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 text-xs font-black">
+                        {formatDecimal(perdasValidade.expiredShareOfExitsPct, 2)}% das saídas
                       </span>
                     </div>
-                    <p className="text-xs font-extrabold text-blue-700 mt-1">
-                      {perdasValidade.lossAndExpiredExitsUnits.toLocaleString('pt-BR')} un (
-                      {perdasValidade.lossAndExpiredExitsCount} registros de baixa)
+                    <p className="text-xs font-extrabold text-slate-700 mt-1">
+                      {perdasValidade.expiredExitsUnits.toLocaleString('pt-BR')} un baixadas por validade (
+                      {perdasValidade.expiredExitsCount} registros)
                     </p>
 
-                    <div className="h-28 w-full mt-3 pt-2 border-t border-slate-100">
+                    {/* Breakdown pills segregating Validade, Perda and Ajuste de Balanço */}
+                    <div className="mt-2.5 pt-2 border-t border-slate-100 flex flex-col gap-1 text-[11px] font-semibold text-slate-600">
+                      <div className="flex items-center justify-between">
+                        <span className="flex items-center gap-1.5 text-rose-600 font-bold">
+                          <span className="w-2 h-2 rounded-full bg-rose-500" /> Validade / Vencimento:
+                        </span>
+                        <span className="font-black text-rose-700">
+                          {formatCurrency(perdasValidade.expiredExitsValue)} ({perdasValidade.expiredExitsUnits.toLocaleString('pt-BR')} un)
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="flex items-center gap-1.5 text-amber-600 font-bold">
+                          <span className="w-2 h-2 rounded-full bg-amber-500" /> Perda / Avaria Física:
+                        </span>
+                        <span className="font-black text-amber-700">
+                          {formatCurrency(perdasValidade.lossExitsValue)} ({perdasValidade.lossExitsUnits.toLocaleString('pt-BR')} un)
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="flex items-center gap-1.5 text-purple-600 font-bold">
+                          <span className="w-2 h-2 rounded-full bg-purple-500" /> Ajuste de Balanço:
+                        </span>
+                        <span className="font-black text-purple-700">
+                          {formatCurrency(perdasValidade.balanceAdjustmentExitsValue)} ({perdasValidade.balanceAdjustmentExitsUnits.toLocaleString('pt-BR')} un)
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="h-24 w-full mt-2 pt-1 border-t border-slate-100">
                       <ResponsiveContainer width="100%" height="100%">
                         <PieChart>
                           <Pie
                             data={[
-                              { name: 'Saídas Regulares (R$)', value: Number(Math.max(0.01, estoqueGiro.netConsumptionValue).toFixed(2)), color: '#2563eb' },
-                              { name: 'Baixas Perda/Venc. (R$)', value: Number(perdasValidade.lossAndExpiredExitsValue.toFixed(2)), color: '#ef4444' }
+                              { name: 'Consumo Regular', value: Number(Math.max(0.01, estoqueGiro.netConsumptionValue).toFixed(2)), color: '#2563eb' },
+                              { name: 'Validade / Vencido', value: Number(perdasValidade.expiredExitsValue.toFixed(2)), color: '#ef4444' },
+                              { name: 'Perda / Avaria', value: Number(perdasValidade.lossExitsValue.toFixed(2)), color: '#f59e0b' },
+                              { name: 'Ajuste de Balanço', value: Number(perdasValidade.balanceAdjustmentExitsValue.toFixed(2)), color: '#8b5cf6' }
                             ]}
                             dataKey="value"
                             nameKey="name"
                             cx="50%"
                             cy="50%"
-                            innerRadius={24}
-                            outerRadius={42}
+                            innerRadius={22}
+                            outerRadius={38}
                             paddingAngle={3}
                           >
                             <Cell fill="#2563eb" />
                             <Cell fill="#ef4444" />
+                            <Cell fill="#f59e0b" />
+                            <Cell fill="#8b5cf6" />
                           </Pie>
                           <Tooltip formatter={(val: any) => [formatCurrency(Number(val) || 0), 'Valor']} contentStyle={{ borderRadius: '10px', fontSize: '10px', fontWeight: 700 }} />
                         </PieChart>
@@ -4877,7 +5206,7 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                     </div>
                   </div>
                   <p className="text-[11px] text-slate-500 font-medium leading-snug pt-2 border-t border-slate-100">
-                    Soma do valor e quantidade das saídas com motivo vencido ou perda e sua proporção sobre o valor total das saídas.
+                    Soma do valor e unidades descartadas estritamente por prazo de validade expirado. Perdas por avaria e ajustes de balanço são segregados.
                   </p>
                 </div>
               </div>
@@ -5032,135 +5361,201 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
               </div>
             </div>
 
-            {/* Detailed Table of Expiry / Loss Write-offs inside Grupo 4 */}
-            <div className="bg-white rounded-3xl border border-slate-200/90 shadow-xs overflow-hidden relative">
-              <div className="h-1 w-full bg-gradient-to-r from-rose-500 via-amber-500 to-blue-700" />
-              <div className="p-5 sm:p-6 space-y-3">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <div>
-                    <h4 className="text-sm font-black text-slate-900 flex items-center gap-2">
-                      <AlertTriangle size={16} className="text-rose-600" />
-                      Relação de Baixas por Vencimento e Perda no Período (
-                      {donationsMetrics.expiryWriteOffExits.length})
-                    </h4>
-                    <p className="text-xs text-slate-500 font-medium">
-                      Itens efetivamente baixados do estoque por validade vencida ou avaria no período selecionado
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="px-3 py-1 rounded-full text-xs font-extrabold bg-rose-50 text-rose-700 border border-rose-200">
-                      Total Baixado: {donationsMetrics.totalExpiredExitUnits.toLocaleString('pt-BR')} un (
-                      {formatCurrency(donationsMetrics.totalExpiredExitValue)})
-                    </span>
-                    {renderIndicatorActions({
-                      indicatorTitle: 'Relação de Baixas por Vencimento e Perda no Período',
-                      indicatorSubtitle: 'Itens efetivamente baixados do estoque por validade vencida ou avaria',
-                      groupName: 'Grupo 4 • Perdas e Validade',
-                      explanation: 'Lista detalhada das saídas registradas com motivo vencido ou perda e gráfico dos maiores valores baixados.',
-                      kpis: [
-                        { label: 'Total de Registros', value: `${donationsMetrics.expiryWriteOffExits.length} baixas`, tone: 'rose' },
-                        { label: 'Unidades Baixadas', value: `${donationsMetrics.totalExpiredExitUnits.toLocaleString('pt-BR')} un`, tone: 'amber' },
-                        { label: 'Valor Total Baixado', value: formatCurrency(donationsMetrics.totalExpiredExitValue), tone: 'slate' }
-                      ],
-                      chart: {
-                        type: 'horizontalBar',
-                        title: 'Principais Materiais Baixados por Vencimento ou Perda (R$)',
-                        valueFormatter: 'currency',
-                        data: donationsMetrics.expiryWriteOffExits
-                          .slice(0, 10)
-                          .map(r => ({
-                            label: r.tx.item_name,
-                            value: r.finValue,
-                            color: r.tx.exitReason === 'perda' ? '#f59e0b' : '#ef4444'
-                          }))
-                      },
-                      table: {
-                        title: 'Detalhamento das Baixas no Período',
-                        headers: ['Data', 'Tipo', 'Material', 'Categoria', 'Lote', 'Qtd.', 'Valor'],
-                        rows: donationsMetrics.expiryWriteOffExits.map(r => [
-                          formatDateBR(r.tx.date),
-                          r.reasonType,
-                          r.tx.item_name,
-                          r.category,
-                          r.tx.batch_number || 'S/L',
-                          `-${r.qty.toLocaleString('pt-BR')} un`,
-                          formatCurrency(r.finValue)
-                        ])
-                      }
-                    })}
+            {/* Detailed Table of Expiry / Loss / Balance Adjustment Write-offs inside Grupo 4 */}
+            {(() => {
+              const grupo4DisplayedRows =
+                grupo4BaixasSubFilter === 'vencido'
+                  ? donationsMetrics.expiryOnlyExits
+                  : grupo4BaixasSubFilter === 'perda'
+                  ? donationsMetrics.lossOnlyExits
+                  : grupo4BaixasSubFilter === 'ajuste_balanco'
+                  ? donationsMetrics.balanceAdjustmentExits
+                  : donationsMetrics.allWriteOffExits;
+
+              const grupo4TotalUnits = grupo4DisplayedRows.reduce((acc, r) => acc + r.qty, 0);
+              const grupo4TotalValue = grupo4DisplayedRows.reduce((acc, r) => acc + r.finValue, 0);
+
+              return (
+                <div className="bg-white rounded-3xl border border-slate-200/90 shadow-xs overflow-hidden relative">
+                  <div className="h-1.5 w-full bg-gradient-to-r from-rose-500 via-amber-500 to-purple-600" />
+                  <div className="p-5 sm:p-6 space-y-4">
+                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                      <div>
+                        <h4 className="text-sm font-black text-slate-900 flex items-center gap-2">
+                          <AlertTriangle size={16} className="text-rose-600" />
+                          Relação de Baixas no Período por Categoria Específica ({grupo4DisplayedRows.length})
+                        </h4>
+                        <p className="text-xs text-slate-500 font-medium">
+                          Segregação absoluta entre validade vencida (descarte), avarias físicas e ajustes de inventário físico
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="px-3 py-1 rounded-full text-xs font-extrabold bg-slate-100 text-slate-700 border border-slate-200">
+                          Total Listado: {grupo4TotalUnits.toLocaleString('pt-BR')} un ({formatCurrency(grupo4TotalValue)})
+                        </span>
+                        {renderIndicatorActions({
+                          indicatorTitle: 'Relação de Baixas Segregadas no Período',
+                          indicatorSubtitle: 'Detalhamento de validade, avarias e ajustes de balanço',
+                          groupName: 'Grupo 4 • Perdas e Validade',
+                          explanation: 'Lista detalhada das baixas no período categorizadas estritamente entre Vencimento, Perda e Ajuste de Balanço.',
+                          kpis: [
+                            { label: 'Registros Listados', value: `${grupo4DisplayedRows.length} baixas`, tone: 'rose' },
+                            { label: 'Unidades Baixadas', value: `${grupo4TotalUnits.toLocaleString('pt-BR')} un`, tone: 'amber' },
+                            { label: 'Valor Baixado', value: formatCurrency(grupo4TotalValue), tone: 'slate' }
+                          ],
+                          chart: {
+                            type: 'horizontalBar',
+                            title: 'Maiores Baixas no Período (R$)',
+                            valueFormatter: 'currency',
+                            data: grupo4DisplayedRows.slice(0, 10).map(r => {
+                              const t = getCategorizedExitType(r.tx);
+                              return {
+                                label: r.tx.item_name,
+                                value: r.finValue,
+                                color: t === 'vencido' ? '#ef4444' : t === 'perda' ? '#f59e0b' : '#8b5cf6'
+                              };
+                            })
+                          },
+                          table: {
+                            title: 'Detalhamento das Baixas no Período',
+                            headers: ['Data', 'Tipo de Baixa', 'Material', 'Categoria', 'Lote', 'Qtd.', 'Valor'],
+                            rows: grupo4DisplayedRows.map(r => [
+                              formatDateBR(r.tx.date),
+                              getExitReasonLabel(getCategorizedExitType(r.tx)),
+                              r.tx.item_name,
+                              r.category,
+                              r.tx.batch_number || 'S/L',
+                              `-${r.qty.toLocaleString('pt-BR')} un`,
+                              formatCurrency(r.finValue)
+                            ])
+                          }
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Filter buttons to inspect each specific write-off type */}
+                    <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-slate-100">
+                      {[
+                        { id: 'todas', label: `Todas as Baixas (${donationsMetrics.allWriteOffExits.length})` },
+                        { id: 'vencido', label: `Validade / Vencimento (${donationsMetrics.expiryOnlyExits.length})` },
+                        { id: 'perda', label: `Perda / Avaria (${donationsMetrics.lossOnlyExits.length})` },
+                        { id: 'ajuste_balanco', label: `Ajuste de Balanço (${donationsMetrics.balanceAdjustmentExits.length})` }
+                      ].map(btn => (
+                        <button
+                          key={btn.id}
+                          type="button"
+                          onClick={() => setGrupo4BaixasSubFilter(btn.id as any)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer border ${
+                            grupo4BaixasSubFilter === btn.id
+                              ? btn.id === 'vencido'
+                                ? 'bg-rose-600 text-white border-rose-600 shadow-sm'
+                                : btn.id === 'perda'
+                                ? 'bg-amber-600 text-white border-amber-600 shadow-sm'
+                                : btn.id === 'ajuste_balanco'
+                                ? 'bg-purple-600 text-white border-purple-600 shadow-sm'
+                                : 'bg-slate-800 text-white border-slate-800 shadow-sm'
+                              : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          {btn.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    {grupo4DisplayedRows.length > 0 ? (
+                      <div className="overflow-x-auto rounded-2xl border border-slate-200/80">
+                        <table className="w-full text-left border-collapse">
+                          <thead>
+                            <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-black uppercase tracking-wider text-slate-500">
+                              <th className="py-3 px-4">Data da Baixa</th>
+                              <th className="py-3 px-4">Tipo Específico de Baixa</th>
+                              <th className="py-3 px-4">Material</th>
+                              <th className="py-3 px-4">Categoria</th>
+                              <th className="py-3 px-4">Lote / Validade</th>
+                              <th className="py-3 px-4">Motivo / Justificativa</th>
+                              <th className="py-3 px-4">Responsável</th>
+                                <th className="py-3 px-4 text-right">Qtd. Baixada</th>
+                                <th className="py-3 px-4 text-right">Valor</th>
+                                {isAdmin && onDeleteTransaction && (
+                                  <th className="py-3 px-4 text-right">Ações</th>
+                                )}
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 text-xs">
+                              {grupo4DisplayedRows.map(row => {
+                                const exitType = getCategorizedExitType(row.tx);
+                                const isRetro = row.tx.isRetroactive || row.tx.stockAffected === false;
+                                return (
+                                  <tr key={row.tx.id} className="hover:bg-slate-50/50 transition-colors">
+                                    <td className="py-3 px-4 font-bold text-slate-600 whitespace-nowrap">
+                                      {formatDateBR(row.tx.date)}
+                                      {isRetro && (
+                                        <span className="ml-1.5 px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200 text-[9px] font-black uppercase">
+                                          Retroativa
+                                        </span>
+                                      )}
+                                    </td>
+                                    <td className="py-3 px-4 whitespace-nowrap">
+                                      <span
+                                        className={`px-2.5 py-0.5 rounded-full text-[10px] font-black border ${getExitReasonBadgeClasses(
+                                          exitType
+                                        )}`}
+                                      >
+                                        {getExitReasonLabel(exitType)}
+                                      </span>
+                                    </td>
+                                    <td className="py-3 px-4 font-bold text-slate-900">{row.tx.item_name}</td>
+                                    <td className="py-3 px-4">
+                                      <span
+                                        className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold text-white"
+                                        style={{ backgroundColor: getCategoryColor(row.category) }}
+                                      >
+                                        {row.category}
+                                      </span>
+                                    </td>
+                                    <td className="py-3 px-4 text-slate-600 font-medium whitespace-nowrap">
+                                      Lote: <strong className="text-slate-800">{row.tx.batch_number || 'S/L'}</strong> • Val:{' '}
+                                      {row.tx.expiry_date ? formatDateBR(row.tx.expiry_date) : '—'}
+                                    </td>
+                                    <td className="py-3 px-4 text-slate-600 font-medium">
+                                      {row.justification}
+                                    </td>
+                                    <td className="py-3 px-4 text-slate-600 font-medium whitespace-nowrap">
+                                      {row.tx.responsible || '—'}
+                                    </td>
+                                    <td className="py-3 px-4 text-right font-black text-rose-700 whitespace-nowrap">
+                                      -{row.qty.toLocaleString('pt-BR')} un
+                                    </td>
+                                    <td className="py-3 px-4 text-right font-bold text-slate-800 whitespace-nowrap">
+                                      {formatCurrency(row.finValue)}
+                                    </td>
+                                    {isAdmin && onDeleteTransaction && (
+                                      <td className="py-3 px-4 text-right whitespace-nowrap">
+                                        <button
+                                          onClick={() => onDeleteTransaction(row.tx.id)}
+                                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 font-extrabold text-[10px] uppercase tracking-wider transition-all cursor-pointer"
+                                          title="Excluir lançamento"
+                                        >
+                                          <Trash2 size={12} />
+                                          Excluir
+                                        </button>
+                                      </td>
+                                    )}
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div className="py-6 text-center bg-slate-50 rounded-2xl border border-slate-100 text-xs font-semibold text-slate-400">
+                        Nenhuma baixa registrada na categoria selecionada para este período.
+                      </div>
+                    )}
                   </div>
                 </div>
-
-                {donationsMetrics.expiryWriteOffExits.length > 0 ? (
-                  <div className="overflow-x-auto rounded-2xl border border-slate-200/80">
-                    <table className="w-full text-left border-collapse">
-                      <thead>
-                        <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-black uppercase tracking-wider text-slate-500">
-                          <th className="py-3 px-4">Data da Baixa</th>
-                          <th className="py-3 px-4">Tipo de Baixa</th>
-                          <th className="py-3 px-4">Material</th>
-                          <th className="py-3 px-4">Categoria</th>
-                          <th className="py-3 px-4">Lote / Validade</th>
-                          <th className="py-3 px-4">Motivo / Justificativa</th>
-                          <th className="py-3 px-4">Responsável</th>
-                          <th className="py-3 px-4 text-right">Qtd. Baixada</th>
-                          <th className="py-3 px-4 text-right">Valor</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 text-xs">
-                        {donationsMetrics.expiryWriteOffExits.map(row => (
-                          <tr key={row.tx.id} className="hover:bg-rose-50/30 transition-colors">
-                            <td className="py-3 px-4 font-bold text-slate-600 whitespace-nowrap">
-                              {formatDateBR(row.tx.date)}
-                            </td>
-                            <td className="py-3 px-4 whitespace-nowrap">
-                              <span
-                                className={`px-2.5 py-0.5 rounded-full text-[10px] font-black border ${
-                                  row.tx.exitReason === 'perda'
-                                    ? 'bg-amber-100 text-amber-800 border-amber-200'
-                                    : 'bg-rose-100 text-rose-700 border-rose-200'
-                                }`}
-                              >
-                                {row.reasonType}
-                              </span>
-                            </td>
-                            <td className="py-3 px-4 font-bold text-slate-900">{row.tx.item_name}</td>
-                            <td className="py-3 px-4">
-                              <span
-                                className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold text-white"
-                                style={{ backgroundColor: getCategoryColor(row.category) }}
-                              >
-                                {row.category}
-                              </span>
-                            </td>
-                            <td className="py-3 px-4 text-slate-600 font-medium whitespace-nowrap">
-                              Lote: <strong className="text-slate-800">{row.tx.batch_number || 'S/L'}</strong> • Val:{' '}
-                              {row.tx.expiry_date ? formatDateBR(row.tx.expiry_date) : '—'}
-                            </td>
-                            <td className="py-3 px-4 text-slate-600 font-medium">
-                              {row.justification}
-                            </td>
-                            <td className="py-3 px-4 text-slate-600 font-medium whitespace-nowrap">
-                              {row.tx.responsible || '—'}
-                            </td>
-                            <td className="py-3 px-4 text-right font-black text-rose-700 whitespace-nowrap">
-                              -{row.qty.toLocaleString('pt-BR')} un
-                            </td>
-                            <td className="py-3 px-4 text-right font-bold text-slate-800 whitespace-nowrap">
-                              {formatCurrency(row.finValue)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : (
-                  <div className="py-6 text-center bg-slate-50 rounded-2xl border border-slate-100 text-xs font-semibold text-slate-400">
-                    Nenhuma baixa por vencimento ou perda registrada no período selecionado.
-                  </div>
-                )}
-              </div>
-            </div>
+              );
+            })()}
           </div>
 
           {/* PAINEL DE CURVA ABC POR VALOR CONSUMIDO NO PERÍODO */}
@@ -6633,40 +7028,63 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                       <th className="py-3 px-4">Setor / Destino</th>
                       <th className="py-3 px-4 text-right">Qtd.</th>
                       <th className="py-3 px-4 text-right">Valor</th>
+                      {isAdmin && onDeleteTransaction && (
+                        <th className="py-3 px-4 text-right">Ações</th>
+                      )}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-xs">
-                    {dispensationByTypeMetrics.filteredExits.slice(0, 100).map(row => (
-                      <tr key={row.tx.id} className="hover:bg-blue-50/30 transition-colors">
-                        <td className="py-3 px-4 font-bold text-slate-600 whitespace-nowrap">
-                          {formatDateBR(row.tx.date)}
-                        </td>
-                        <td className="py-3 px-4 font-bold text-slate-900">{row.tx.item_name}</td>
-                        <td className="py-3 px-4">
-                          <span
-                            className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold text-white"
-                            style={{ backgroundColor: getCategoryColor(row.category) }}
-                          >
-                            {row.category}
-                          </span>
-                        </td>
-                        <td className="py-3 px-4 text-slate-600 font-semibold">
-                          {row.originLabel} • <span className="text-blue-700">{row.reasonLabel}</span>
-                        </td>
-                        <td className="py-3 px-4 font-bold text-slate-800">
-                          {row.tx.sector || row.tx.donationUnitName || '—'}
-                        </td>
-                        <td className="py-3 px-4 text-right font-black text-slate-900 whitespace-nowrap">
-                          {row.qty.toLocaleString('pt-BR')} un
-                        </td>
-                        <td className="py-3 px-4 text-right font-bold text-blue-700 whitespace-nowrap">
-                          {formatCurrency(row.finValue)}
-                        </td>
-                      </tr>
-                    ))}
+                    {dispensationByTypeMetrics.filteredExits.slice(0, 100).map(row => {
+                      const isRetro = row.tx.isRetroactive || row.tx.stockAffected === false;
+                      return (
+                        <tr key={row.tx.id} className="hover:bg-blue-50/30 transition-colors">
+                          <td className="py-3 px-4 font-bold text-slate-600 whitespace-nowrap">
+                            {formatDateBR(row.tx.date)}
+                            {isRetro && (
+                              <span className="ml-1.5 px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200 text-[9px] font-black uppercase">
+                                Retroativa
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3 px-4 font-bold text-slate-900">{row.tx.item_name}</td>
+                          <td className="py-3 px-4">
+                            <span
+                              className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold text-white"
+                              style={{ backgroundColor: getCategoryColor(row.category) }}
+                            >
+                              {row.category}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4 text-slate-600 font-semibold">
+                            {row.originLabel} • <span className="text-blue-700">{row.reasonLabel}</span>
+                          </td>
+                          <td className="py-3 px-4 font-bold text-slate-800">
+                            {row.tx.sector || row.tx.donationUnitName || '—'}
+                          </td>
+                          <td className="py-3 px-4 text-right font-black text-slate-900 whitespace-nowrap">
+                            {row.qty.toLocaleString('pt-BR')} un
+                          </td>
+                          <td className="py-3 px-4 text-right font-bold text-blue-700 whitespace-nowrap">
+                            {formatCurrency(row.finValue)}
+                          </td>
+                          {isAdmin && onDeleteTransaction && (
+                            <td className="py-3 px-4 text-right whitespace-nowrap">
+                              <button
+                                onClick={() => onDeleteTransaction(row.tx.id)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 font-extrabold text-[10px] uppercase tracking-wider transition-all cursor-pointer"
+                                title="Excluir lançamento"
+                              >
+                                <Trash2 size={12} />
+                                Excluir
+                              </button>
+                            </td>
+                          )}
+                        </tr>
+                      );
+                    })}
                     {dispensationByTypeMetrics.filteredExits.length === 0 && (
                       <tr>
-                        <td colSpan={7} className="py-10 text-center text-slate-400 font-semibold">
+                        <td colSpan={isAdmin && onDeleteTransaction ? 8 : 7} className="py-10 text-center text-slate-400 font-semibold">
                           Nenhuma dispensação encontrada com os filtros atuais.
                         </td>
                       </tr>
@@ -6830,20 +7248,21 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
               </div>
             </div>
 
-            {/* 3. Baixas por Vencimento / Perda no Período */}
+            {/* 3. Baixas por Validade / Vencimento (Descarte Sanitário) */}
             <div className="bg-white rounded-3xl border border-rose-100/90 shadow-sm overflow-hidden relative">
-              <div className="h-1.5 w-full bg-gradient-to-r from-rose-500 via-rose-600 to-amber-500" />
+              <div className="h-1.5 w-full bg-gradient-to-r from-rose-500 via-rose-600 to-red-700" />
               <div className="p-6 space-y-3">
                 <div className="flex items-start justify-between gap-2">
-                  <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">
-                    Baixas por Vencimento
+                  <span className="text-[11px] font-black text-rose-600 uppercase tracking-widest flex items-center gap-1.5">
+                    <AlertTriangle size={13} className="text-rose-500" />
+                    Baixas por Validade / Vencimento
                   </span>
                   {renderIndicatorActions(
                     {
-                      indicatorTitle: 'Baixas por Vencimento e Perda no Período',
-                      indicatorSubtitle: 'Saídas definitivas por expiração de validade ou avaria',
+                      indicatorTitle: 'Baixas por Validade / Vencimento no Período',
+                      indicatorSubtitle: 'Descarte sanitário por expiração de prazo de validade (sem perdas ou ajustes)',
                       groupName: 'Doações e Baixas',
-                      explanation: 'Soma das unidades e valores baixados por vencimento ou perda no período.',
+                      explanation: 'Contabiliza exclusivamente os descartes sanitários por prazo de validade expirado.',
                       kpis: [
                         { label: 'Unidades Baixadas', value: `${donationsMetrics.totalExpiredExitUnits.toLocaleString('pt-BR')} un`, tone: 'rose' },
                         { label: 'Valor Financeiro', value: formatCurrency(donationsMetrics.totalExpiredExitValue), tone: 'amber' },
@@ -6851,7 +7270,7 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                       ],
                       chart: {
                         type: 'horizontalBar',
-                        title: 'Principais Itens Baixados por Vencimento/Perda (R$)',
+                        title: 'Principais Itens Baixados por Validade Vencida (R$)',
                         valueFormatter: 'currency',
                         data: donationsMetrics.filteredExpiryExits.slice(0, 8).map(e => ({
                           label: e.tx.item_name,
@@ -6863,13 +7282,13 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                     true
                   )}
                 </div>
-                <h3 className="text-2xl sm:text-3xl font-black text-slate-900">
+                <h3 className="text-2xl sm:text-3xl font-black text-rose-700">
                   {donationsMetrics.totalExpiredExitUnits.toLocaleString('pt-BR')}{' '}
                   <span className="text-xs font-bold text-slate-400">un</span>
                 </h3>
                 <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs">
                   <span className="font-bold text-slate-500">
-                    {donationsMetrics.totalExpiredExitCount} baixas no período
+                    {donationsMetrics.totalExpiredExitCount} baixas por validade
                   </span>
                   <span className="font-black text-rose-600">
                     {formatCurrency(donationsMetrics.totalExpiredExitValue)}
@@ -6892,6 +7311,74 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                       <YAxis tick={{ fontSize: 8, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
                       <Tooltip formatter={(val: any) => [`${Number(val || 0).toLocaleString('pt-BR')} un`, 'Baixado']} contentStyle={{ borderRadius: '8px', fontSize: '10px', fontWeight: 700 }} />
                       <Bar dataKey="un" fill="#ef4444" radius={[4, 4, 0, 0]} maxBarSize={18} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </div>
+
+            {/* 3.1 Perdas por Avaria e Ajustes de Balanço */}
+            <div className="bg-white rounded-3xl border border-amber-100/90 shadow-sm overflow-hidden relative">
+              <div className="h-1.5 w-full bg-gradient-to-r from-amber-500 via-purple-600 to-indigo-800" />
+              <div className="p-6 space-y-3">
+                <div className="flex items-start justify-between gap-2">
+                  <span className="text-[11px] font-black text-slate-600 uppercase tracking-widest flex items-center gap-1.5">
+                    Perdas & Ajustes de Balanço
+                  </span>
+                  {renderIndicatorActions(
+                    {
+                      indicatorTitle: 'Perdas por Avaria e Ajustes de Balanço no Período',
+                      indicatorSubtitle: 'Quebras operacionais e baixas decorrentes de contagem física de inventário',
+                      groupName: 'Doações e Baixas',
+                      explanation: 'Segrega de forma inequívoca quebras físicas/avarias das divergências apuradas em contagens de balanço.',
+                      kpis: [
+                        { label: 'Perdas / Avarias', value: `${donationsMetrics.totalLossExitUnits.toLocaleString('pt-BR')} un`, subvalue: formatCurrency(donationsMetrics.totalLossExitValue), tone: 'amber' },
+                        { label: 'Ajuste Balanço', value: `${donationsMetrics.totalBalanceAdjustExitUnits.toLocaleString('pt-BR')} un`, subvalue: formatCurrency(donationsMetrics.totalBalanceAdjustExitValue), tone: 'purple' },
+                        { label: 'Total Baixas Operacionais', value: `${(donationsMetrics.totalLossExitUnits + donationsMetrics.totalBalanceAdjustExitUnits).toLocaleString('pt-BR')} un`, tone: 'slate' }
+                      ],
+                      chart: {
+                        type: 'donut',
+                        title: 'Comparativo Financeiro: Avarias vs Ajustes de Balanço (R$)',
+                        valueFormatter: 'currency',
+                        data: [
+                          { label: 'Perdas / Avarias Físicas (R$)', value: donationsMetrics.totalLossExitValue, color: '#f59e0b' },
+                          { label: 'Ajustes de Balanço (R$)', value: donationsMetrics.totalBalanceAdjustExitValue, color: '#8b5cf6' }
+                        ]
+                      }
+                    },
+                    true
+                  )}
+                </div>
+                <h3 className="text-2xl sm:text-3xl font-black text-slate-900">
+                  {(donationsMetrics.totalLossExitUnits + donationsMetrics.totalBalanceAdjustExitUnits).toLocaleString('pt-BR')}{' '}
+                  <span className="text-xs font-bold text-slate-400">un</span>
+                </h3>
+                <div className="pt-2 border-t border-slate-100 flex flex-col gap-0.5 text-xs">
+                  <div className="flex items-center justify-between font-bold text-amber-700">
+                    <span>Avarias: {donationsMetrics.totalLossExitUnits.toLocaleString('pt-BR')} un</span>
+                    <span>{formatCurrency(donationsMetrics.totalLossExitValue)}</span>
+                  </div>
+                  <div className="flex items-center justify-between font-bold text-purple-700">
+                    <span>Ajuste Balanço: {donationsMetrics.totalBalanceAdjustExitUnits.toLocaleString('pt-BR')} un</span>
+                    <span>{formatCurrency(donationsMetrics.totalBalanceAdjustExitValue)}</span>
+                  </div>
+                </div>
+                <div className="h-16 w-full pt-1">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={[
+                        { name: 'Avarias', un: donationsMetrics.totalLossExitUnits, fill: '#f59e0b' },
+                        { name: 'Ajustes', un: donationsMetrics.totalBalanceAdjustExitUnits, fill: '#8b5cf6' }
+                      ]}
+                      margin={{ top: 2, right: 2, left: -26, bottom: 0 }}
+                    >
+                      <XAxis dataKey="name" tick={{ fontSize: 8, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fontSize: 8, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                      <Tooltip formatter={(val: any) => [`${Number(val || 0).toLocaleString('pt-BR')} un`, 'Quantidade']} contentStyle={{ borderRadius: '8px', fontSize: '10px', fontWeight: 700 }} />
+                      <Bar dataKey="un" radius={[4, 4, 0, 0]} maxBarSize={18}>
+                        <Cell fill="#f59e0b" />
+                        <Cell fill="#8b5cf6" />
+                      </Bar>
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -6974,39 +7461,43 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100">
                 <div>
                   <h3 className="text-base font-black text-slate-900">
-                    Comparativo Gráfico: Doações Recebidas, Doações Realizadas, Baixas e Saldo
+                    Comparativo Gráfico: Doações, Baixas Segregadas e Saldo
                   </h3>
                   <p className="text-xs text-slate-500 font-medium">
-                    Confronto direto de volume físico (unidades) e impacto financeiro (R$) no período
+                    Confronto direto de volume físico (unidades) e impacto financeiro (R$) segregando validade de avarias e balanço
                   </p>
                 </div>
                 {renderIndicatorActions({
-                  indicatorTitle: 'Comparativo de Doações e Baixas por Vencimento',
-                  indicatorSubtitle: 'Doações recebidas, doações realizadas, baixas por vencimento e saldo atual de doação',
+                  indicatorTitle: 'Comparativo de Doações e Baixas Segregadas',
+                  indicatorSubtitle: 'Doações, descartes sanitários por validade, avarias físicas e ajustes de inventário',
                   groupName: 'Doações e Baixas',
-                  explanation: 'Visão comparativa consolidada exclusivamente sobre movimentações de doação e descartes por vencimento/perda.',
+                  explanation: 'Visão comparativa consolidada que separa rigorosamente validade vencida de ajustes e perdas.',
                   kpis: [
-                    { label: 'Recebido por Doação', value: formatCurrency(donationsMetrics.totalReceivedValue), subvalue: `${donationsMetrics.totalReceivedUnits.toLocaleString('pt-BR')} un`, tone: 'blue' },
+                    { label: 'Recebido (Doação)', value: formatCurrency(donationsMetrics.totalReceivedValue), subvalue: `${donationsMetrics.totalReceivedUnits.toLocaleString('pt-BR')} un`, tone: 'blue' },
                     { label: 'Doado (Saídas)', value: formatCurrency(donationsMetrics.totalDonatedOutValue), subvalue: `${donationsMetrics.totalDonatedOutUnits.toLocaleString('pt-BR')} un`, tone: 'indigo' },
-                    { label: 'Baixas por Vencimento', value: formatCurrency(donationsMetrics.totalExpiredExitValue), subvalue: `${donationsMetrics.totalExpiredExitUnits.toLocaleString('pt-BR')} un`, tone: 'rose' },
+                    { label: 'Baixas Validade', value: formatCurrency(donationsMetrics.totalExpiredExitValue), subvalue: `${donationsMetrics.totalExpiredExitUnits.toLocaleString('pt-BR')} un`, tone: 'rose' },
+                    { label: 'Perdas / Avarias', value: formatCurrency(donationsMetrics.totalLossExitValue), subvalue: `${donationsMetrics.totalLossExitUnits.toLocaleString('pt-BR')} un`, tone: 'amber' },
+                    { label: 'Ajuste Balanço', value: formatCurrency(donationsMetrics.totalBalanceAdjustExitValue), subvalue: `${donationsMetrics.totalBalanceAdjustExitUnits.toLocaleString('pt-BR')} un`, tone: 'purple' },
                     { label: 'Saldo Atual Doação', value: formatCurrency(donationsMetrics.currentDonationStockValue), subvalue: `${donationsMetrics.currentDonationStockUnits.toLocaleString('pt-BR')} un`, tone: 'emerald' }
                   ],
                   chart: {
                     type: 'verticalBar',
-                    title: 'Comparativo Financeiro de Doações e Baixas por Vencimento (R$)',
+                    title: 'Comparativo Financeiro Segregado de Doações e Baixas (R$)',
                     valueFormatter: 'currency',
                     data: [
                       { label: 'Recebido (Doação)', value: donationsMetrics.totalReceivedValue, color: '#2563eb' },
                       { label: 'Doado (Saídas)', value: donationsMetrics.totalDonatedOutValue, color: '#4f46e5' },
-                      { label: 'Baixas Vencimento', value: donationsMetrics.totalExpiredExitValue, color: '#ef4444' },
-                      { label: 'Saldo em Estoque', value: donationsMetrics.currentDonationStockValue, color: '#0284c7' }
+                      { label: 'Baixas Validade', value: donationsMetrics.totalExpiredExitValue, color: '#ef4444' },
+                      { label: 'Perdas / Avarias', value: donationsMetrics.totalLossExitValue, color: '#f59e0b' },
+                      { label: 'Ajuste Balanço', value: donationsMetrics.totalBalanceAdjustExitValue, color: '#8b5cf6' },
+                      { label: 'Saldo Atual', value: donationsMetrics.currentDonationStockValue, color: '#0284c7' }
                     ]
                   }
                 })}
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div className="h-60 w-full p-3 rounded-2xl bg-slate-50/70 border border-slate-100">
+                <div className="h-64 w-full p-3 rounded-2xl bg-slate-50/70 border border-slate-100">
                   <p className="text-xs font-black text-slate-700 mb-2 uppercase tracking-wider">
                     Comparativo em Valor Financeiro (R$)
                   </p>
@@ -7015,26 +7506,30 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                       data={[
                         { name: 'Recebido', valor: Number(donationsMetrics.totalReceivedValue.toFixed(2)), fill: '#2563eb' },
                         { name: 'Doado', valor: Number(donationsMetrics.totalDonatedOutValue.toFixed(2)), fill: '#4f46e5' },
-                        { name: 'Baixas Venc.', valor: Number(donationsMetrics.totalExpiredExitValue.toFixed(2)), fill: '#ef4444' },
+                        { name: 'Validade', valor: Number(donationsMetrics.totalExpiredExitValue.toFixed(2)), fill: '#ef4444' },
+                        { name: 'Avarias', valor: Number(donationsMetrics.totalLossExitValue.toFixed(2)), fill: '#f59e0b' },
+                        { name: 'Ajustes', valor: Number(donationsMetrics.totalBalanceAdjustExitValue.toFixed(2)), fill: '#8b5cf6' },
                         { name: 'Saldo Atual', valor: Number(donationsMetrics.currentDonationStockValue.toFixed(2)), fill: '#0284c7' }
                       ]}
                       margin={{ top: 8, right: 12, left: 0, bottom: 4 }}
                     >
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                      <XAxis dataKey="name" tick={{ fontSize: 10, fontWeight: 700, fill: '#334155' }} />
-                      <YAxis tick={{ fontSize: 10, fill: '#64748b' }} tickFormatter={v => `R$${Number(v).toLocaleString('pt-BR')}`} />
+                      <XAxis dataKey="name" tick={{ fontSize: 9, fontWeight: 700, fill: '#334155' }} />
+                      <YAxis tick={{ fontSize: 9, fill: '#64748b' }} tickFormatter={v => `R$${Number(v).toLocaleString('pt-BR')}`} />
                       <Tooltip formatter={(val: any) => [formatCurrency(Number(val) || 0), 'Valor (R$)']} contentStyle={{ borderRadius: '12px', fontSize: '11px', fontWeight: 700 }} />
-                      <Bar dataKey="valor" radius={[6, 6, 0, 0]} maxBarSize={38}>
+                      <Bar dataKey="valor" radius={[6, 6, 0, 0]} maxBarSize={32}>
                         <Cell fill="#2563eb" />
                         <Cell fill="#4f46e5" />
                         <Cell fill="#ef4444" />
+                        <Cell fill="#f59e0b" />
+                        <Cell fill="#8b5cf6" />
                         <Cell fill="#0284c7" />
                       </Bar>
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
 
-                <div className="h-60 w-full p-3 rounded-2xl bg-slate-50/70 border border-slate-100">
+                <div className="h-64 w-full p-3 rounded-2xl bg-slate-50/70 border border-slate-100">
                   <p className="text-xs font-black text-slate-700 mb-2 uppercase tracking-wider">
                     Comparativo em Quantidade Física (Unidades)
                   </p>
@@ -7043,19 +7538,23 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                       data={[
                         { name: 'Recebido', un: donationsMetrics.totalReceivedUnits, fill: '#2563eb' },
                         { name: 'Doado', un: donationsMetrics.totalDonatedOutUnits, fill: '#4f46e5' },
-                        { name: 'Baixas Venc.', un: donationsMetrics.totalExpiredExitUnits, fill: '#ef4444' },
+                        { name: 'Validade', un: donationsMetrics.totalExpiredExitUnits, fill: '#ef4444' },
+                        { name: 'Avarias', un: donationsMetrics.totalLossExitUnits, fill: '#f59e0b' },
+                        { name: 'Ajustes', un: donationsMetrics.totalBalanceAdjustExitUnits, fill: '#8b5cf6' },
                         { name: 'Saldo Atual', un: donationsMetrics.currentDonationStockUnits, fill: '#0284c7' }
                       ]}
                       margin={{ top: 8, right: 12, left: 0, bottom: 4 }}
                     >
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                      <XAxis dataKey="name" tick={{ fontSize: 10, fontWeight: 700, fill: '#334155' }} />
-                      <YAxis tick={{ fontSize: 10, fill: '#64748b' }} />
+                      <XAxis dataKey="name" tick={{ fontSize: 9, fontWeight: 700, fill: '#334155' }} />
+                      <YAxis tick={{ fontSize: 9, fill: '#64748b' }} />
                       <Tooltip formatter={(val: any) => [`${Number(val || 0).toLocaleString('pt-BR')} un`, 'Unidades']} contentStyle={{ borderRadius: '12px', fontSize: '11px', fontWeight: 700 }} />
-                      <Bar dataKey="un" radius={[6, 6, 0, 0]} maxBarSize={38}>
+                      <Bar dataKey="un" radius={[6, 6, 0, 0]} maxBarSize={32}>
                         <Cell fill="#2563eb" />
                         <Cell fill="#4f46e5" />
                         <Cell fill="#ef4444" />
+                        <Cell fill="#f59e0b" />
+                        <Cell fill="#8b5cf6" />
                         <Cell fill="#0284c7" />
                       </Bar>
                     </BarChart>
@@ -7071,36 +7570,46 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
             <div className="p-6 space-y-6">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div className="flex flex-wrap items-center gap-2">
-                  {(
-                    [
-                      { id: 'todas', label: 'Visão Completa' },
-                      {
-                        id: 'saidas',
-                        label: `Doações Realizadas (${donationsMetrics.filteredExits.length})`
-                      },
-                      {
-                        id: 'entradas',
-                        label: `Doações Recebidas (${donationsMetrics.filteredEntries.length})`
-                      },
-                      {
-                        id: 'vencidos',
-                        label: `Baixas por Vencimento (${donationsMetrics.filteredExpiryExits.length})`
-                      },
-                      {
-                        id: 'estoque',
-                        label: `Saldo em Estoque (${donationsMetrics.filteredStock.length})`
-                      }
-                    ] as {
-                      id: 'todas' | 'entradas' | 'saidas' | 'vencidos' | 'estoque';
-                      label: string;
-                    }[]
-                  ).map(btn => (
+                  {[
+                    { id: 'todas', label: 'Visão Completa' },
+                    {
+                      id: 'saidas',
+                      label: `Doações Realizadas (${donationsMetrics.filteredExits.length})`
+                    },
+                    {
+                      id: 'entradas',
+                      label: `Doações Recebidas (${donationsMetrics.filteredEntries.length})`
+                    },
+                    {
+                      id: 'vencidos',
+                      label: `Validade / Vencimento (${donationsMetrics.filteredExpiryExits.length})`
+                    },
+                    {
+                      id: 'perdas',
+                      label: `Perda / Avaria (${donationsMetrics.filteredLossExits.length})`
+                    },
+                    {
+                      id: 'ajustes',
+                      label: `Ajuste de Balanço (${donationsMetrics.filteredBalanceAdjustExits.length})`
+                    },
+                    {
+                      id: 'estoque',
+                      label: `Saldo em Estoque (${donationsMetrics.filteredStock.length})`
+                    }
+                  ].map(btn => (
                     <button
                       key={btn.id}
-                      onClick={() => setDonationSubView(btn.id)}
+                      type="button"
+                      onClick={() => setDonationSubView(btn.id as any)}
                       className={`px-3.5 py-2 rounded-xl text-xs font-extrabold transition-all cursor-pointer border ${
                         donationSubView === btn.id
-                          ? 'bg-gradient-to-r from-blue-600 to-indigo-700 text-white border-blue-600'
+                          ? btn.id === 'vencidos'
+                            ? 'bg-rose-600 text-white border-rose-600'
+                            : btn.id === 'perdas'
+                            ? 'bg-amber-600 text-white border-amber-600'
+                            : btn.id === 'ajustes'
+                            ? 'bg-purple-600 text-white border-purple-600'
+                            : 'bg-gradient-to-r from-blue-600 to-indigo-700 text-white border-blue-600'
                           : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-blue-50'
                       }`}
                     >
@@ -7183,52 +7692,75 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                           <th className="py-3 px-4">Responsável</th>
                           <th className="py-3 px-4 text-right">Qtd. Doada</th>
                           <th className="py-3 px-4 text-right">Valor Estimado</th>
+                          {isAdmin && onDeleteTransaction && (
+                            <th className="py-3 px-4 text-right">Ações</th>
+                          )}
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 text-xs">
-                        {donationsMetrics.filteredExits.map(row => (
-                          <tr key={row.tx.id} className="hover:bg-blue-50/30 transition-colors">
-                            <td className="py-3 px-4 font-bold text-slate-600 whitespace-nowrap">
-                              {formatDateBR(row.tx.date)}
-                            </td>
-                            <td className="py-3 px-4 font-black text-blue-700 whitespace-nowrap">
-                              {row.docNumber}
-                            </td>
-                            <td className="py-3 px-4">
-                              <p className="font-bold text-slate-900">{row.recipient}</p>
-                              {row.tx.donationUnitCNPJ && (
-                                <p className="text-[10px] font-semibold text-slate-400">
-                                  CNPJ: {row.tx.donationUnitCNPJ}
-                                </p>
+                        {donationsMetrics.filteredExits.map(row => {
+                          const isRetro = row.tx.isRetroactive || row.tx.stockAffected === false;
+                          return (
+                            <tr key={row.tx.id} className="hover:bg-blue-50/30 transition-colors">
+                              <td className="py-3 px-4 font-bold text-slate-600 whitespace-nowrap">
+                                {formatDateBR(row.tx.date)}
+                                {isRetro && (
+                                  <span className="ml-1.5 px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200 text-[9px] font-black uppercase">
+                                    Retroativa
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-3 px-4 font-black text-blue-700 whitespace-nowrap">
+                                {row.docNumber}
+                              </td>
+                              <td className="py-3 px-4">
+                                <p className="font-bold text-slate-900">{row.recipient}</p>
+                                {row.tx.donationUnitCNPJ && (
+                                  <p className="text-[10px] font-semibold text-slate-400">
+                                    CNPJ: {row.tx.donationUnitCNPJ}
+                                  </p>
+                                )}
+                              </td>
+                              <td className="py-3 px-4 font-bold text-slate-900">{row.tx.item_name}</td>
+                              <td className="py-3 px-4">
+                                <span
+                                  className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold text-white"
+                                  style={{ backgroundColor: getCategoryColor(row.category) }}
+                                >
+                                  {row.category}
+                                </span>
+                              </td>
+                              <td className="py-3 px-4 text-slate-600 font-medium whitespace-nowrap">
+                                {row.tx.batch_number || 'S/L'} •{' '}
+                                {row.tx.expiry_date ? formatDateBR(row.tx.expiry_date) : '—'}
+                              </td>
+                              <td className="py-3 px-4 text-slate-600 font-medium whitespace-nowrap">
+                                {row.tx.responsible || '—'}
+                              </td>
+                              <td className="py-3 px-4 text-right font-black text-indigo-700 whitespace-nowrap">
+                                {row.qty.toLocaleString('pt-BR')} un
+                              </td>
+                              <td className="py-3 px-4 text-right font-bold text-slate-700 whitespace-nowrap">
+                                {formatCurrency(row.finValue)}
+                              </td>
+                              {isAdmin && onDeleteTransaction && (
+                                <td className="py-3 px-4 text-right whitespace-nowrap">
+                                  <button
+                                    onClick={() => onDeleteTransaction(row.tx.id)}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 font-extrabold text-[10px] uppercase tracking-wider transition-all cursor-pointer"
+                                    title="Excluir saída por doação"
+                                  >
+                                    <Trash2 size={12} />
+                                    Excluir
+                                  </button>
+                                </td>
                               )}
-                            </td>
-                            <td className="py-3 px-4 font-bold text-slate-900">{row.tx.item_name}</td>
-                            <td className="py-3 px-4">
-                              <span
-                                className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold text-white"
-                                style={{ backgroundColor: getCategoryColor(row.category) }}
-                              >
-                                {row.category}
-                              </span>
-                            </td>
-                            <td className="py-3 px-4 text-slate-600 font-medium whitespace-nowrap">
-                              {row.tx.batch_number || 'S/L'} •{' '}
-                              {row.tx.expiry_date ? formatDateBR(row.tx.expiry_date) : '—'}
-                            </td>
-                            <td className="py-3 px-4 text-slate-600 font-medium whitespace-nowrap">
-                              {row.tx.responsible || '—'}
-                            </td>
-                            <td className="py-3 px-4 text-right font-black text-indigo-700 whitespace-nowrap">
-                              {row.qty.toLocaleString('pt-BR')} un
-                            </td>
-                            <td className="py-3 px-4 text-right font-bold text-slate-700 whitespace-nowrap">
-                              {formatCurrency(row.finValue)}
-                            </td>
-                          </tr>
-                        ))}
+                            </tr>
+                          );
+                        })}
                         {donationsMetrics.filteredExits.length === 0 && (
                           <tr>
-                            <td colSpan={9} className="py-8 text-center text-slate-400 font-semibold">
+                            <td colSpan={isAdmin && onDeleteTransaction ? 10 : 9} className="py-8 text-center text-slate-400 font-semibold">
                               Nenhuma saída por doação registrada no período selecionado.
                             </td>
                           </tr>
@@ -7299,6 +7831,9 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                           <th className="py-3 px-4">Responsável</th>
                           <th className="py-3 px-4 text-right">Qtd. Recebida</th>
                           <th className="py-3 px-4 text-right">Valor Estimado</th>
+                          {isAdmin && onDeleteTransaction && (
+                            <th className="py-3 px-4 text-right">Ações</th>
+                          )}
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 text-xs">
@@ -7334,11 +7869,23 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                             <td className="py-3 px-4 text-right font-bold text-slate-700 whitespace-nowrap">
                               {formatCurrency(row.finValue)}
                             </td>
+                            {isAdmin && onDeleteTransaction && (
+                              <td className="py-3 px-4 text-right whitespace-nowrap">
+                                <button
+                                  onClick={() => onDeleteTransaction(row.tx.id)}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 font-extrabold text-[10px] uppercase tracking-wider transition-all cursor-pointer"
+                                  title="Excluir entrada por doação"
+                                >
+                                  <Trash2 size={12} />
+                                  Excluir
+                                </button>
+                              </td>
+                            )}
                           </tr>
                         ))}
                         {donationsMetrics.filteredEntries.length === 0 && (
                           <tr>
-                            <td colSpan={8} className="py-8 text-center text-slate-400 font-semibold">
+                            <td colSpan={isAdmin && onDeleteTransaction ? 9 : 8} className="py-8 text-center text-slate-400 font-semibold">
                               Nenhuma entrada de doação registrada no período selecionado.
                             </td>
                           </tr>
@@ -7349,13 +7896,13 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                 </div>
               )}
 
-              {/* Table 3: Baixas por Vencimento / Perda no Período */}
+              {/* Table 3: Baixas por Validade / Vencimento (Descarte Sanitário) */}
               {(donationSubView === 'todas' || donationSubView === 'vencidos') && (
                 <div className="space-y-3">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                     <h4 className="text-sm font-black text-slate-900 flex items-center gap-2">
                       <AlertTriangle size={16} className="text-rose-600" />
-                      Baixas por Vencimento / Descarte no Período (
+                      Baixas por Validade / Vencimento no Período (
                       {donationsMetrics.filteredExpiryExits.length})
                     </h4>
                     <div className="flex flex-wrap items-center gap-2">
@@ -7364,8 +7911,8 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                         {formatCurrency(donationsMetrics.totalExpiredExitValue)})
                       </span>
                       {renderIndicatorActions({
-                        indicatorTitle: 'Relação de Baixas por Vencimento / Descarte',
-                        indicatorSubtitle: 'Itens baixados do estoque por validade expirada ou perda',
+                        indicatorTitle: 'Relação de Baixas por Validade / Vencimento',
+                        indicatorSubtitle: 'Descarte sanitário exclusivamente por expiração de prazo de validade',
                         groupName: 'Doações e Baixas',
                         kpis: [
                           { label: 'Total de Baixas', value: `${donationsMetrics.filteredExpiryExits.length}`, tone: 'rose' },
@@ -7374,7 +7921,7 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                         ],
                         chart: {
                           type: 'horizontalBar',
-                          title: 'Maiores Baixas por Vencimento/Perda (R$)',
+                          title: 'Maiores Baixas por Validade Vencida (R$)',
                           valueFormatter: 'currency',
                           data: donationsMetrics.filteredExpiryExits.slice(0, 10).map(r => ({
                             label: r.tx.item_name,
@@ -7383,11 +7930,11 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                           }))
                         },
                         table: {
-                          title: 'Baixas por Vencimento e Perda no Período',
+                          title: 'Baixas por Validade / Vencimento no Período',
                           headers: ['Data', 'Tipo', 'Material', 'Categoria', 'Lote', 'Justificativa', 'Qtd.', 'Valor'],
                           rows: donationsMetrics.filteredExpiryExits.map(r => [
                             formatDateBR(r.tx.date),
-                            r.reasonType,
+                            'Validade / Vencimento',
                             r.tx.item_name,
                             r.category,
                             r.tx.batch_number || 'S/L',
@@ -7412,56 +7959,73 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                           <th className="py-3 px-4">Responsável</th>
                           <th className="py-3 px-4 text-right">Qtd. Baixada</th>
                           <th className="py-3 px-4 text-right">Valor</th>
+                          {isAdmin && onDeleteTransaction && (
+                            <th className="py-3 px-4 text-right">Ações</th>
+                          )}
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 text-xs">
-                        {donationsMetrics.filteredExpiryExits.map(row => (
-                          <tr key={row.tx.id} className="hover:bg-rose-50/30 transition-colors">
-                            <td className="py-3 px-4 font-bold text-slate-600 whitespace-nowrap">
-                              {formatDateBR(row.tx.date)}
-                            </td>
-                            <td className="py-3 px-4 whitespace-nowrap">
-                              <span
-                                className={`px-2.5 py-0.5 rounded-full text-[10px] font-black border ${
-                                  row.tx.exitReason === 'perda'
-                                    ? 'bg-amber-100 text-amber-800 border-amber-200'
-                                    : 'bg-rose-100 text-rose-700 border-rose-200'
-                                }`}
-                              >
-                                {row.reasonType}
-                              </span>
-                            </td>
-                            <td className="py-3 px-4 font-bold text-slate-900">{row.tx.item_name}</td>
-                            <td className="py-3 px-4">
-                              <span
-                                className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold text-white"
-                                style={{ backgroundColor: getCategoryColor(row.category) }}
-                              >
-                                {row.category}
-                              </span>
-                            </td>
-                            <td className="py-3 px-4 text-slate-600 font-medium whitespace-nowrap">
-                              {row.tx.batch_number || 'S/L'} •{' '}
-                              {row.tx.expiry_date ? formatDateBR(row.tx.expiry_date) : '—'}
-                            </td>
-                            <td className="py-3 px-4 text-slate-600 font-medium">
-                              {row.justification}
-                            </td>
-                            <td className="py-3 px-4 text-slate-600 font-medium whitespace-nowrap">
-                              {row.tx.responsible || '—'}
-                            </td>
-                            <td className="py-3 px-4 text-right font-black text-rose-700 whitespace-nowrap">
-                              -{row.qty.toLocaleString('pt-BR')} un
-                            </td>
-                            <td className="py-3 px-4 text-right font-bold text-slate-800 whitespace-nowrap">
-                              {formatCurrency(row.finValue)}
-                            </td>
-                          </tr>
-                        ))}
+                        {donationsMetrics.filteredExpiryExits.map(row => {
+                          const isRetro = row.tx.isRetroactive || row.tx.stockAffected === false;
+                          return (
+                            <tr key={row.tx.id} className="hover:bg-rose-50/30 transition-colors">
+                              <td className="py-3 px-4 font-bold text-slate-600 whitespace-nowrap">
+                                {formatDateBR(row.tx.date)}
+                                {isRetro && (
+                                  <span className="ml-1.5 px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200 text-[9px] font-black uppercase">
+                                    Retroativa
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-3 px-4 whitespace-nowrap">
+                                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black border bg-rose-100 text-rose-700 border-rose-200">
+                                  Validade / Vencimento
+                                </span>
+                              </td>
+                              <td className="py-3 px-4 font-bold text-slate-900">{row.tx.item_name}</td>
+                              <td className="py-3 px-4">
+                                <span
+                                  className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold text-white"
+                                  style={{ backgroundColor: getCategoryColor(row.category) }}
+                                >
+                                  {row.category}
+                                </span>
+                              </td>
+                              <td className="py-3 px-4 text-slate-600 font-medium whitespace-nowrap">
+                                {row.tx.batch_number || 'S/L'} •{' '}
+                                {row.tx.expiry_date ? formatDateBR(row.tx.expiry_date) : '—'}
+                              </td>
+                              <td className="py-3 px-4 text-slate-600 font-medium">
+                                {row.justification}
+                              </td>
+                              <td className="py-3 px-4 text-slate-600 font-medium whitespace-nowrap">
+                                {row.tx.responsible || '—'}
+                              </td>
+                              <td className="py-3 px-4 text-right font-black text-rose-700 whitespace-nowrap">
+                                -{row.qty.toLocaleString('pt-BR')} un
+                              </td>
+                              <td className="py-3 px-4 text-right font-bold text-slate-800 whitespace-nowrap">
+                                {formatCurrency(row.finValue)}
+                              </td>
+                              {isAdmin && onDeleteTransaction && (
+                                <td className="py-3 px-4 text-right whitespace-nowrap">
+                                  <button
+                                    onClick={() => onDeleteTransaction(row.tx.id)}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 font-extrabold text-[10px] uppercase tracking-wider transition-all cursor-pointer"
+                                    title="Excluir baixa por validade"
+                                  >
+                                    <Trash2 size={12} />
+                                    Excluir
+                                  </button>
+                                </td>
+                              )}
+                            </tr>
+                          );
+                        })}
                         {donationsMetrics.filteredExpiryExits.length === 0 && (
                           <tr>
-                            <td colSpan={9} className="py-8 text-center text-slate-400 font-semibold">
-                              Nenhuma baixa por vencimento ou perda registrada no período selecionado.
+                            <td colSpan={isAdmin && onDeleteTransaction ? 10 : 9} className="py-8 text-center text-slate-400 font-semibold">
+                              Nenhuma baixa por validade vencida registrada no período selecionado.
                             </td>
                           </tr>
                         )}
@@ -7471,7 +8035,272 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                 </div>
               )}
 
-              {/* Table 4: Estoque Atual de Origem Doação */}
+              {/* Table 4: Baixas por Perda / Avaria Física */}
+              {(donationSubView === 'todas' || donationSubView === 'perdas') && (
+                <div className="space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <h4 className="text-sm font-black text-slate-900 flex items-center gap-2">
+                      <AlertTriangle size={16} className="text-amber-600" />
+                      Baixas por Perda / Avaria Física no Período ({donationsMetrics.filteredLossExits.length})
+                    </h4>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs font-extrabold text-amber-700">
+                        Total Perdas: {donationsMetrics.totalLossExitUnits.toLocaleString('pt-BR')} un (
+                        {formatCurrency(donationsMetrics.totalLossExitValue)})
+                      </span>
+                      {renderIndicatorActions({
+                        indicatorTitle: 'Relação de Baixas por Perda / Avaria Física',
+                        indicatorSubtitle: 'Quebras operacionais, danos e avarias físicas no estoque',
+                        groupName: 'Doações e Baixas',
+                        kpis: [
+                          { label: 'Total de Perdas', value: `${donationsMetrics.filteredLossExits.length}`, tone: 'amber' },
+                          { label: 'Qtd. Avariada', value: `${donationsMetrics.totalLossExitUnits.toLocaleString('pt-BR')} un`, tone: 'rose' },
+                          { label: 'Valor da Perda', value: formatCurrency(donationsMetrics.totalLossExitValue), tone: 'slate' }
+                        ],
+                        chart: {
+                          type: 'horizontalBar',
+                          title: 'Maiores Baixas por Perda/Avaria Física (R$)',
+                          valueFormatter: 'currency',
+                          data: donationsMetrics.filteredLossExits.slice(0, 10).map(r => ({
+                            label: r.tx.item_name,
+                            value: r.finValue,
+                            color: '#f59e0b'
+                          }))
+                        },
+                        table: {
+                          title: 'Baixas por Perda e Avaria Física no Período',
+                          headers: ['Data', 'Tipo', 'Material', 'Categoria', 'Lote', 'Justificativa', 'Qtd.', 'Valor'],
+                          rows: donationsMetrics.filteredLossExits.map(r => [
+                            formatDateBR(r.tx.date),
+                            'Perda / Avaria Física',
+                            r.tx.item_name,
+                            r.category,
+                            r.tx.batch_number || 'S/L',
+                            r.justification,
+                            `-${r.qty.toLocaleString('pt-BR')} un`,
+                            formatCurrency(r.finValue)
+                          ])
+                        }
+                      })}
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto rounded-2xl border border-slate-200/80">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-black uppercase tracking-wider text-slate-500">
+                          <th className="py-3 px-4">Data da Baixa</th>
+                          <th className="py-3 px-4">Tipo de Baixa</th>
+                          <th className="py-3 px-4">Material Baixado</th>
+                          <th className="py-3 px-4">Categoria</th>
+                          <th className="py-3 px-4">Lote / Validade</th>
+                          <th className="py-3 px-4">Motivo / Justificativa</th>
+                          <th className="py-3 px-4">Responsável</th>
+                          <th className="py-3 px-4 text-right">Qtd. Baixada</th>
+                          <th className="py-3 px-4 text-right">Valor</th>
+                          {isAdmin && onDeleteTransaction && (
+                            <th className="py-3 px-4 text-right">Ações</th>
+                          )}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-xs">
+                        {donationsMetrics.filteredLossExits.map(row => {
+                          const isRetro = row.tx.isRetroactive || row.tx.stockAffected === false;
+                          return (
+                            <tr key={row.tx.id} className="hover:bg-amber-50/30 transition-colors">
+                              <td className="py-3 px-4 font-bold text-slate-600 whitespace-nowrap">
+                                {formatDateBR(row.tx.date)}
+                                {isRetro && (
+                                  <span className="ml-1.5 px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200 text-[9px] font-black uppercase">
+                                    Retroativa
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-3 px-4 whitespace-nowrap">
+                                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black border bg-amber-100 text-amber-800 border-amber-200">
+                                  Perda / Avaria
+                                </span>
+                              </td>
+                              <td className="py-3 px-4 font-bold text-slate-900">{row.tx.item_name}</td>
+                              <td className="py-3 px-4">
+                                <span
+                                  className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold text-white"
+                                  style={{ backgroundColor: getCategoryColor(row.category) }}
+                                >
+                                  {row.category}
+                                </span>
+                              </td>
+                              <td className="py-3 px-4 text-slate-600 font-medium whitespace-nowrap">
+                                {row.tx.batch_number || 'S/L'} • {row.tx.expiry_date ? formatDateBR(row.tx.expiry_date) : '—'}
+                              </td>
+                              <td className="py-3 px-4 text-slate-600 font-medium">{row.justification}</td>
+                              <td className="py-3 px-4 text-slate-600 font-medium whitespace-nowrap">{row.tx.responsible || '—'}</td>
+                              <td className="py-3 px-4 text-right font-black text-amber-700 whitespace-nowrap">
+                                -{row.qty.toLocaleString('pt-BR')} un
+                              </td>
+                              <td className="py-3 px-4 text-right font-bold text-slate-800 whitespace-nowrap">
+                                {formatCurrency(row.finValue)}
+                              </td>
+                              {isAdmin && onDeleteTransaction && (
+                                <td className="py-3 px-4 text-right whitespace-nowrap">
+                                  <button
+                                    onClick={() => onDeleteTransaction(row.tx.id)}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 font-extrabold text-[10px] uppercase tracking-wider transition-all cursor-pointer"
+                                    title="Excluir baixa por perda/avaria"
+                                  >
+                                    <Trash2 size={12} />
+                                    Excluir
+                                  </button>
+                                </td>
+                              )}
+                            </tr>
+                          );
+                        })}
+                        {donationsMetrics.filteredLossExits.length === 0 && (
+                          <tr>
+                            <td colSpan={isAdmin && onDeleteTransaction ? 10 : 9} className="py-8 text-center text-slate-400 font-semibold">
+                              Nenhuma baixa por perda ou avaria física registrada no período selecionado.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Table 5: Baixas por Ajuste de Balanço (Inventário Físico) */}
+              {(donationSubView === 'todas' || donationSubView === 'ajustes') && (
+                <div className="space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <h4 className="text-sm font-black text-slate-900 flex items-center gap-2">
+                      <AlertTriangle size={16} className="text-purple-600" />
+                      Baixas por Ajuste de Balanço / Inventário Físico no Período ({donationsMetrics.filteredBalanceAdjustExits.length})
+                    </h4>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs font-extrabold text-purple-700">
+                        Total Ajustes: {donationsMetrics.totalBalanceAdjustExitUnits.toLocaleString('pt-BR')} un ({formatCurrency(donationsMetrics.totalBalanceAdjustExitValue)})
+                      </span>
+                      {renderIndicatorActions({
+                        indicatorTitle: 'Relação de Baixas por Ajuste de Balanço',
+                        indicatorSubtitle: 'Divergências apuradas em contagens de inventário físico',
+                        groupName: 'Doações e Baixas',
+                        kpis: [
+                          { label: 'Total de Ajustes', value: `${donationsMetrics.filteredBalanceAdjustExits.length}`, tone: 'purple' },
+                          { label: 'Qtd. Ajustada', value: `${donationsMetrics.totalBalanceAdjustExitUnits.toLocaleString('pt-BR')} un`, tone: 'amber' },
+                          { label: 'Valor Ajustado', value: formatCurrency(donationsMetrics.totalBalanceAdjustExitValue), tone: 'slate' }
+                        ],
+                        chart: {
+                          type: 'horizontalBar',
+                          title: 'Maiores Baixas por Ajuste de Balanço (R$)',
+                          valueFormatter: 'currency',
+                          data: donationsMetrics.filteredBalanceAdjustExits.slice(0, 10).map(r => ({
+                            label: r.tx.item_name,
+                            value: r.finValue,
+                            color: '#8b5cf6'
+                          }))
+                        },
+                        table: {
+                          title: 'Baixas por Ajuste de Balanço no Período',
+                          headers: ['Data', 'Tipo', 'Material', 'Categoria', 'Lote', 'Justificativa', 'Qtd.', 'Valor'],
+                          rows: donationsMetrics.filteredBalanceAdjustExits.map(r => [
+                            formatDateBR(r.tx.date),
+                            'Ajuste de Balanço',
+                            r.tx.item_name,
+                            r.category,
+                            r.tx.batch_number || 'S/L',
+                            r.justification,
+                            `-${r.qty.toLocaleString('pt-BR')} un`,
+                            formatCurrency(r.finValue)
+                          ])
+                        }
+                      })}
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto rounded-2xl border border-slate-200/80">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-black uppercase tracking-wider text-slate-500">
+                          <th className="py-3 px-4">Data do Ajuste</th>
+                          <th className="py-3 px-4">Tipo de Baixa</th>
+                          <th className="py-3 px-4">Material Ajustado</th>
+                          <th className="py-3 px-4">Categoria</th>
+                          <th className="py-3 px-4">Lote / Validade</th>
+                          <th className="py-3 px-4">Motivo / Justificativa</th>
+                          <th className="py-3 px-4">Responsável</th>
+                          <th className="py-3 px-4 text-right">Qtd. Ajustada</th>
+                          <th className="py-3 px-4 text-right">Valor</th>
+                          {isAdmin && onDeleteTransaction && (
+                            <th className="py-3 px-4 text-right">Ações</th>
+                          )}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-xs">
+                        {donationsMetrics.filteredBalanceAdjustExits.map(row => {
+                          const isRetro = row.tx.isRetroactive || row.tx.stockAffected === false;
+                          return (
+                            <tr key={row.tx.id} className="hover:bg-purple-50/30 transition-colors">
+                              <td className="py-3 px-4 font-bold text-slate-600 whitespace-nowrap">
+                                {formatDateBR(row.tx.date)}
+                                {isRetro && (
+                                  <span className="ml-1.5 px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200 text-[9px] font-black uppercase">
+                                    Retroativa
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-3 px-4 whitespace-nowrap">
+                                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black border bg-purple-100 text-purple-800 border-purple-200">
+                                  Ajuste de Balanço
+                                </span>
+                              </td>
+                              <td className="py-3 px-4 font-bold text-slate-900">{row.tx.item_name}</td>
+                              <td className="py-3 px-4">
+                                <span
+                                  className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold text-white"
+                                  style={{ backgroundColor: getCategoryColor(row.category) }}
+                                >
+                                  {row.category}
+                                </span>
+                              </td>
+                              <td className="py-3 px-4 text-slate-600 font-medium whitespace-nowrap">
+                                {row.tx.batch_number || 'S/L'} • {row.tx.expiry_date ? formatDateBR(row.tx.expiry_date) : '—'}
+                              </td>
+                              <td className="py-3 px-4 text-slate-600 font-medium">{row.justification}</td>
+                              <td className="py-3 px-4 text-slate-600 font-medium whitespace-nowrap">{row.tx.responsible || '—'}</td>
+                              <td className="py-3 px-4 text-right font-black text-purple-700 whitespace-nowrap">
+                                -{row.qty.toLocaleString('pt-BR')} un
+                              </td>
+                              <td className="py-3 px-4 text-right font-bold text-slate-800 whitespace-nowrap">
+                                {formatCurrency(row.finValue)}
+                              </td>
+                              {isAdmin && onDeleteTransaction && (
+                                <td className="py-3 px-4 text-right whitespace-nowrap">
+                                  <button
+                                    onClick={() => onDeleteTransaction(row.tx.id)}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 font-extrabold text-[10px] uppercase tracking-wider transition-all cursor-pointer"
+                                    title="Excluir ajuste de balanço"
+                                  >
+                                    <Trash2 size={12} />
+                                    Excluir
+                                  </button>
+                                </td>
+                              )}
+                            </tr>
+                          );
+                        })}
+                        {donationsMetrics.filteredBalanceAdjustExits.length === 0 && (
+                          <tr>
+                            <td colSpan={isAdmin && onDeleteTransaction ? 10 : 9} className="py-8 text-center text-slate-400 font-semibold">
+                              Nenhum ajuste de balanço negativo registrado no período selecionado.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Table 6: Estoque Atual de Origem Doação */}
               {(donationSubView === 'todas' || donationSubView === 'estoque') && (
                 <div className="space-y-3">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
@@ -7573,6 +8402,20 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* ===================================================================
+          ABA 5: CONSUMO MENSAL POR SETOR (NOVO RELATÓRIO INDEPENDENTE)
+         =================================================================== */}
+      {activeTab === 'consumo_mensal_setor' && (
+        <MonthlySectorConsumptionReport
+          items={items}
+          transactions={transactions}
+          inventoryLocation={inventoryLocation}
+          letterheadImage={letterheadImage}
+          showToast={showToast}
+          embedded={true}
+        />
       )}
     </div>
   );

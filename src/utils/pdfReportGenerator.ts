@@ -8,6 +8,7 @@ export interface PDFReportFilterSummary {
   categoryFilter: string;
   materialFilter: string;
   generatedBy?: string;
+  medicamentosNote?: string;
 }
 
 export interface PDFReportKPIs {
@@ -741,9 +742,11 @@ export async function generateCompletePDFReport(params: GenerateCompletePDFRepor
   };
 
   // --- 1. APPLIED FILTERS SUMMARY BOX ---
+  const hasMedNote = Boolean(filters.medicamentosNote);
+  const filterBoxH = hasMedNote ? 23 : 18;
   doc.setFillColor(248, 250, 252);
   doc.setDrawColor(203, 213, 225);
-  doc.roundedRect(margin, currentY, contentWidth, 18, 2, 2, 'FD');
+  doc.roundedRect(margin, currentY, contentWidth, filterBoxH, 2, 2, 'FD');
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7.5);
@@ -757,8 +760,13 @@ export async function generateCompletePDFReport(params: GenerateCompletePDFRepor
   const filterLine2 = `Categoria: ${filters.categoryFilter}   |   Material: ${filters.materialFilter}   |   Data de Emissão: ${nowStr}`;
   doc.text(truncateText(filterLine1, 115), margin + 4, currentY + 10.5);
   doc.text(truncateText(filterLine2, 115), margin + 4, currentY + 15.2);
+  if (hasMedNote) {
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(180, 83, 9);
+    doc.text(`Nota: ${truncateText(filters.medicamentosNote!, 115)}`, margin + 4, currentY + 19.8);
+  }
 
-  currentY += 22;
+  currentY += filterBoxH + 4;
 
   // --- 2. EXECUTIVE KPI CARDS GRID (2 ROWS OF 4 CARDS) ---
   doc.setFont('helvetica', 'bold');
@@ -1789,9 +1797,11 @@ export function exportSingleIndicatorPDF(params: SingleIndicatorExportParams): v
   let currentY = drawHeader(true);
 
   // Filters box
+  const hasMedNote = Boolean(filters.medicamentosNote);
+  const filterBoxH = hasMedNote ? 23 : 18;
   doc.setFillColor(248, 250, 252);
   doc.setDrawColor(203, 213, 225);
-  doc.roundedRect(margin, currentY, contentWidth, 18, 2, 2, 'FD');
+  doc.roundedRect(margin, currentY, contentWidth, filterBoxH, 2, 2, 'FD');
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7.5);
@@ -1817,7 +1827,12 @@ export function exportSingleIndicatorPDF(params: SingleIndicatorExportParams): v
     margin + 4,
     currentY + 15.2
   );
-  currentY += 22;
+  if (hasMedNote) {
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(180, 83, 9);
+    doc.text(`Nota: ${truncateText(filters.medicamentosNote!, 115)}`, margin + 4, currentY + 19.8);
+  }
+  currentY += filterBoxH + 4;
 
   if (subtitle) {
     doc.setFont('helvetica', 'italic');
@@ -2040,6 +2055,7 @@ export function printSingleIndicator(params: SingleIndicatorExportParams): void 
           <div style="font-weight:800;color:#1e3a8a;margin-bottom:4px;text-transform:uppercase;">Período e Filtros Aplicados</div>
           <div><strong>Período:</strong> ${filters.periodLabel} &nbsp;|&nbsp; <strong>Unidade:</strong> ${filters.location} &nbsp;|&nbsp; <strong>Setor:</strong> ${filters.sectorFilter}</div>
           <div style="margin-top:2px;"><strong>Categoria:</strong> ${filters.categoryFilter} &nbsp;|&nbsp; <strong>Material:</strong> ${filters.materialFilter}</div>
+          ${filters.medicamentosNote ? `<div style="margin-top:4px;color:#b45309;font-weight:700;"><strong>Nota:</strong> ${filters.medicamentosNote}</div>` : ''}
         </div>
 
         ${
