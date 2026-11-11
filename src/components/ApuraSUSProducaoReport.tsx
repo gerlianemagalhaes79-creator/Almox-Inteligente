@@ -27,6 +27,7 @@ import { format, parseISO, startOfMonth, endOfMonth, addMonths, subMonths, isWit
 import { ptBR } from 'date-fns/locale';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell, PieChart, Pie } from 'recharts';
 import { Item, Transaction } from '../types';
+import { getCategorizedExitType } from '../utils/exitReasonUtils';
 
 interface ApuraSUSProducaoReportProps {
   transactions: Transaction[];
@@ -117,7 +118,7 @@ export const ApuraSUSProducaoReport: React.FC<ApuraSUSProducaoReportProps> = ({
         return false;
       }
 
-      if (t.exitReason && t.exitReason !== 'consumo') {
+      if (getCategorizedExitType(t) !== 'consumo') {
         return false;
       }
 

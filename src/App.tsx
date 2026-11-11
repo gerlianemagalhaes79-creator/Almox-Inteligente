@@ -953,7 +953,7 @@ export default function App() {
   const [modalSector, setModalSector] = useState<string>('');
   const [transactionQty, setTransactionQty] = useState(1);
   const [transactionDate, setTransactionDate] = useState<string>(() => format(new Date(), 'yyyy-MM-dd'));
-  const [exitReason, setExitReason] = useState<'consumo' | 'doacao' | 'vencido' | 'perda'>('consumo');
+  const [exitReason, setExitReason] = useState<'consumo' | 'doacao' | 'vencido' | 'perda' | 'ajuste_balanco'>('consumo');
   const [expiryReason, setExpiryReason] = useState('');
   const [selectedItemId, setSelectedItemId] = useState<string>('');
   const [selectedItemName, setSelectedItemName] = useState<string>('');
@@ -1099,11 +1099,57 @@ export default function App() {
   const handleUpdateQuantity = async () => {
     if (!editingQuantity) return;
     try {
+      const targetItem = items.find(i => i.id === editingQuantity.id);
+      const oldQty = Number(targetItem?.quantity) || 0;
+      const newQty = Number(editingQuantity.quantity) || 0;
+
       await updateDoc(doc(db, 'items', editingQuantity.id), {
-        quantity: editingQuantity.quantity
+        quantity: newQty
       });
+
+      // Registrar alteração de saldo como SAÍDA DE BALANÇO (Alteração de Balanço) quando houver redução manual de estoque
+      if (targetItem && newQty !== oldQty) {
+        const diffQty = Math.abs(oldQty - newQty);
+        if (newQty < oldQty) {
+          await addDoc(collection(db, 'transactions'), {
+            item_id: targetItem.id,
+            item_name: targetItem.name,
+            type: 'exit',
+            origin: targetItem.origin || 'contract',
+            quantity: diffQty,
+            sector: 'Saída de Balanço (Alteração de Balanço)',
+            location: targetItem.location || inventoryLocation,
+            date: new Date().toISOString(),
+            responsible: user?.displayName || 'Sistema',
+            responsibleEmail: user?.email || '',
+            exitReason: 'ajuste_balanco',
+            balanceMovementType: 'alteracao_balanco',
+            batch_number: targetItem.batch_number || 'S/L',
+            expiry_date: targetItem.expiry_date || '',
+            stockAffected: true,
+            observation: `[Alteração de Balanço] Ajuste manual de saldo físico de ${oldQty} para ${newQty} (${targetItem.unit_measure || 'UN'}).`
+          });
+        } else {
+          await addDoc(collection(db, 'transactions'), {
+            item_id: targetItem.id,
+            item_name: targetItem.name,
+            type: 'entry',
+            origin: targetItem.origin || 'contract',
+            quantity: diffQty,
+            sector: 'Ajuste Positivo de Balanço',
+            location: targetItem.location || inventoryLocation,
+            date: new Date().toISOString(),
+            responsible: user?.displayName || 'Sistema',
+            responsibleEmail: user?.email || '',
+            batch_number: targetItem.batch_number || 'S/L',
+            expiry_date: targetItem.expiry_date || '',
+            observation: `[Alteração de Balanço] Ajuste positivo de saldo físico de ${oldQty} para ${newQty} (${targetItem.unit_measure || 'UN'}).`
+          });
+        }
+      }
+
       showToast("Quantidade atualizada com sucesso!", "success");
-      const name = items.find(i => i.id === editingQuantity.id)?.name;
+      const name = targetItem?.name;
       setEditingQuantity(null);
       if (name) await checkStockAndNotify(name);
     } catch (error: any) {
@@ -1111,6 +1157,169 @@ export default function App() {
       showToast(`Erro ao atualizar quantidade: ${error.message}`, "error");
     }
   };
+
+  // Reclassificação direta na origem (Firestore) entre Consumo do Setor, Saída de Balanço e Alteração de Balanço
+  const handleReclassifyTransactionInReports = async (
+    txId: string,
+    targetClassification: 'consumo' | 'saida_balanco' | 'alteracao_balanco'
+  ) => {
+    if (!txId) return;
+    try {
+      const existingTx = transactions.find(t => t.id === txId);
+      if (!existingTx) return;
+      const ref = doc(db, 'transactions', txId);
+
+      if (targetClassification === 'saida_balanco' || targetClassification === 'alteracao_balanco') {
+        const prefix =
+          targetClassification === 'alteracao_balanco'
+            ? '[Alteração de Balanço]'
+            : '[Saída de Balanço]';
+        const cleanObs = String(existingTx.observation || '')
+          .replace(/^\[(Saída de Balanço[^\]]*|Alteração de Balanço[^\]]*)\]\s*/i, '')
+          .trim();
+        const origSec = existingTx.originalSector || existingTx.sector || 'Almoxarifado';
+
+        await updateDoc(ref, {
+          exitReason: 'ajuste_balanco',
+          balanceMovementType: targetClassification,
+          manualClassificationOverride: targetClassification,
+          originalSector: origSec,
+          reclassifiedFrom: existingTx.exitReason || 'consumo',
+          reclassifiedReason:
+            targetClassification === 'alteracao_balanco'
+              ? 'Reclassificado como Alteração de Balanço'
+              : 'Reclassificado como Saída de Balanço',
+          reclassifiedAt: new Date().toISOString(),
+          observation: cleanObs
+            ? `${prefix} ${cleanObs}`
+            : `${prefix} Classificado como ${
+                targetClassification === 'alteracao_balanco'
+                  ? 'Alteração de Balanço'
+                  : 'Saída de Balanço'
+              } (Setor original: ${origSec}).`
+        });
+        showToast(
+          `Movimentação reclassificada como ${
+            targetClassification === 'alteracao_balanco' ? 'ALTERAÇÃO DE BALANÇO' : 'SAÍDA DE BALANÇO'
+          } (excluída dos indicadores de consumo, mantendo o histórico).`,
+          'success'
+        );
+      } else {
+        const cleanObs = String(existingTx.observation || '')
+          .replace(/^\[(Saída de Balanço[^\]]*|Alteração de Balanço[^\]]*|Ajuste de Balanço[^\]]*)\]\s*/i, '')
+          .replace(/Classificação corrigida na origem\s*\([^)]*\)\.?/i, '')
+          .replace(/Classificado como (Saída|Alteração) de Balanço\s*\([^)]*\)\.?/i, '')
+          .trim();
+
+        await updateDoc(ref, {
+          exitReason: 'consumo',
+          balanceMovementType: null,
+          manualClassificationOverride: 'consumo',
+          sector: existingTx.originalSector || existingTx.sector || 'Almoxarifado',
+          reclassifiedAt: new Date().toISOString(),
+          observation: cleanObs
+        });
+        showToast('Movimentação restaurada para CONSUMO DO SETOR.', 'success');
+      }
+    } catch (error: any) {
+      console.error('Erro ao reclassificar movimentação:', error);
+      showToast(`Erro ao reclassificar movimentação: ${error.message || 'Tente novamente.'}`, 'error');
+    }
+  };
+
+  // Sincronização automática na origem (Firestore) para saídas do 1º Balanço (Junho - Materiais Alimentícios) e movimentações de balanço legadas
+  useEffect(() => {
+    if (!isAdmin || transactions.length === 0 || items.length === 0) return;
+
+    const itemById = new Map<string, Item>();
+    const itemByNormName = new Map<string, Item>();
+    items.forEach(it => {
+      if (it.id) itemById.set(it.id, it);
+      const n = String(it.name || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase()
+        .trim();
+      if (n && !itemByNormName.has(n)) itemByNormName.set(n, it);
+    });
+
+    const toMigrate: { id: string; data: Record<string, any> }[] = [];
+
+    transactions.forEach(tx => {
+      if (!tx.id || tx.deletedAt || tx.type !== 'exit') return;
+      if (tx.manualClassificationOverride) return;
+
+      const parsedDate = new Date(tx.date);
+      if (isNaN(parsedDate.getTime())) return;
+
+      const matchedById = tx.item_id ? itemById.get(tx.item_id) : undefined;
+      const normName = String(matchedById?.name || tx.item_name || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase()
+        .trim();
+      const matchedByName = normName ? itemByNormName.get(normName) : undefined;
+      const cat = String(matchedById?.category || matchedByName?.category || 'Outros')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase()
+        .trim();
+
+      const isJuneFoodBalance = parsedDate.getMonth() === 5 && cat.includes('ALIMENT');
+      const detectedType = getCategorizedExitType(tx);
+
+      if (
+        (isJuneFoodBalance || detectedType === 'ajuste_balanco') &&
+        tx.exitReason !== 'ajuste_balanco'
+      ) {
+        const currentObs = (tx.observation || '').trim();
+        const balanceTag = isJuneFoodBalance
+          ? '[Saída de Balanço - 1º Balanço]'
+          : '[Saída de Balanço]';
+        const updatedObs = currentObs.includes('Balanço')
+          ? currentObs
+          : `${balanceTag} ${currentObs ? currentObs + ' — ' : ''}Classificação corrigida na origem (Setor de registro original: ${tx.sector || 'Almoxarifado'}).`;
+
+        toMigrate.push({
+          id: tx.id,
+          data: {
+            exitReason: 'ajuste_balanco',
+            balanceMovementType: tx.balanceMovementType || 'saida_balanco',
+            originalSector: tx.originalSector || tx.sector || 'Almoxarifado',
+            reclassifiedFrom: tx.exitReason || 'consumo',
+            reclassifiedReason: isJuneFoodBalance
+              ? '1º Balanço de Estoque (Junho - Materiais Alimentícios)'
+              : 'Regularização de Saída de Balanço na origem',
+            reclassifiedAt: new Date().toISOString(),
+            observation: updatedObs
+          }
+        });
+      }
+    });
+
+    if (toMigrate.length === 0) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        for (let i = 0; i < toMigrate.length; i += 400) {
+          if (cancelled) return;
+          const batch = writeBatch(db);
+          const chunk = toMigrate.slice(i, i + 400);
+          chunk.forEach(entry => {
+            batch.update(doc(db, 'transactions', entry.id), entry.data);
+          });
+          await batch.commit();
+        }
+      } catch (err) {
+        console.error('Erro ao sincronizar saídas de balanço na origem:', err);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isAdmin, transactions, items]);
 
   const handleUpdateMaterialName = async () => {
     if (!editingMaterialName || !editingMaterialName.newName.trim()) return;
@@ -4653,8 +4862,12 @@ export default function App() {
               return `${nextCount.toString().padStart(2, '0')}/${txYear}`;
             })() : null;
 
-            const sectorValue = (exitReason === 'vencido' || exitReason === 'perda')
-              ? (exitReason === 'vencido' ? 'Descarte por Vencimento (Desperdício)' : 'Descarte por Perda/Avaria')
+            const sectorValue = (exitReason === 'vencido' || exitReason === 'perda' || exitReason === 'ajuste_balanco')
+              ? (exitReason === 'vencido'
+                  ? 'Descarte por Vencimento (Desperdício)'
+                  : exitReason === 'perda'
+                  ? 'Descarte por Perda/Avaria'
+                  : (modalSector || 'Saída de Balanço (Inventário)'))
               : (modalSector || (inventoryLocation === 'Farmácia' ? 'Farmácia (Consumo Interno)' : 'Almoxarifado'));
 
             transaction.set(newTransRef, {
@@ -4669,7 +4882,11 @@ export default function App() {
               responsible: user?.displayName || 'Sistema',
               responsibleEmail: user?.email || '',
               exitReason: exitReason,
-              expiryReason: (exitReason === 'vencido' || exitReason === 'perda') ? expiryReason : null,
+              balanceMovementType: exitReason === 'ajuste_balanco' ? 'saida_balanco' : null,
+              expiryReason: (exitReason === 'vencido' || exitReason === 'perda' || exitReason === 'ajuste_balanco') ? expiryReason : null,
+              observation: exitReason === 'ajuste_balanco'
+                ? `[Saída de Balanço] ${expiryReason ? expiryReason : 'Movimentação decorrente de balanço de estoque.'}`
+                : null,
               donationUnitName: exitReason === 'doacao' ? (donationUnitName || 'Policlínica de Sobral') : null,
               donationUnitAddress: exitReason === 'doacao' ? donationUnitAddress : null,
               donationUnitCNPJ: exitReason === 'doacao' ? donationUnitCNPJ : null,
@@ -5909,7 +6126,7 @@ export default function App() {
 
       const consumptionTransactions = transactions.filter(t => {
         if (t.deletedAt) return false;
-        if (t.type !== 'exit' || t.exitReason !== 'consumo') return false;
+        if (t.type !== 'exit' || getCategorizedExitType(t) !== 'consumo') return false;
         const d = new Date(t.date);
         return d >= start && d <= end;
       });
@@ -7970,7 +8187,7 @@ export default function App() {
     const sectorData: Record<string, any> = {};
     const categoriesInSector: Set<string> = new Set();
 
-    filteredTrans.filter(t => t.type === 'exit' && t.sector && (t.exitReason === 'consumo' || !t.exitReason)).forEach(t => {
+    filteredTrans.filter(t => t.type === 'exit' && t.sector && getCategorizedExitType(t) === 'consumo').forEach(t => {
       const item = items.find(i => i.id === t.item_id);
       const category = item?.category || 'Outros';
       if (ignoreEtiquetasInCharts && isEtiquetaChartItem(item?.name || t.item_name, category)) return;
@@ -8020,8 +8237,8 @@ export default function App() {
       }>
     }> = {};
 
-    // Process exits (only regular consumption)
-    filteredTrans.filter(t => t.type === 'exit' && (t.exitReason === 'consumo' || !t.exitReason)).forEach(t => {
+    // Process exits (only regular consumption - excluding Saídas de Balanço, Doações, Vencimentos e Perdas)
+    filteredTrans.filter(t => t.type === 'exit' && getCategorizedExitType(t) === 'consumo').forEach(t => {
       const item = items.find(i => i.id === t.item_id);
       const price = Number(item?.unit_price) || 0;
       const value = t.quantity * price;
@@ -8215,7 +8432,7 @@ export default function App() {
             const item = items.find(i => i.id === t.item_id);
             const cat = item?.category || 'Outros';
             if (ignoreEtiquetasInCharts && isEtiquetaChartItem(item?.name || t.item_name, cat)) return;
-            if (t.type === 'exit') {
+            if (t.type === 'exit' && getCategorizedExitType(t) === 'consumo') {
               acc[cat] = (acc[cat] || 0) + t.quantity;
             } else if (t.type === 'entry' && t.isReturn) {
               acc[cat] = (acc[cat] || 0) - t.quantity;
@@ -13335,7 +13552,7 @@ export default function App() {
                   entries: baseReportTransactions.filter(t => t.type === 'entry').length,
                   donation_entries: baseReportTransactions.filter(t => t.type === 'entry' && !t.isReturn && t.origin === 'donation').length,
                   exits: baseReportTransactions.filter(t => t.type === 'exit').length,
-                  donation_exits: baseReportTransactions.filter(t => t.type === 'exit' && (t.exitReason === 'doacao' || t.exitReason === 'vencido' || t.exitReason === 'perda' || t.exitReason === 'ajuste_balanco')).length,
+                  donation_exits: baseReportTransactions.filter(t => t.type === 'exit' && getCategorizedExitType(t) !== 'consumo').length,
                   retroactive_exits: baseReportTransactions.filter(t => t.type === 'exit' && (t.isRetroactive || t.stockAffected === false)).length
                 };
 
@@ -13344,7 +13561,7 @@ export default function App() {
                   if (reportTxTypeFilter === 'donation_entries') return t.type === 'entry' && !t.isReturn && t.origin === 'donation';
                   if (reportTxTypeFilter === 'exits') return t.type === 'exit';
                   if (reportTxTypeFilter === 'donation_exits') {
-                    return t.type === 'exit' && (t.exitReason === 'doacao' || t.exitReason === 'vencido' || t.exitReason === 'perda' || t.exitReason === 'ajuste_balanco');
+                    return t.type === 'exit' && getCategorizedExitType(t) !== 'consumo';
                   }
                   if (reportTxTypeFilter === 'retroactive_exits') {
                     return t.type === 'exit' && (t.isRetroactive || t.stockAffected === false);
@@ -13501,7 +13718,7 @@ export default function App() {
                                           : 'bg-rose-50 text-rose-700 border border-rose-200'
                                       }`}>
                                         <ArrowUpRight size={12} />
-                                        {exitCat ? getExitReasonLabel(exitCat) : 'Saída'}
+                                        {exitCat ? getExitReasonLabel(exitCat, t) : 'Saída'}
                                       </span>
                                     )}
                                     {isRetro && (
@@ -13531,9 +13748,9 @@ export default function App() {
                                   {t.type === 'entry'
                                     ? (t.supplier || (t.origin === 'donation' ? 'Doação Recebida' : 'Abastecimento de Estoque'))
                                     : (t.donationUnitName || t.sector || '---')}
-                                  {t.expiryReason && (
-                                    <div className="text-[10px] text-slate-400 italic truncate max-w-[200px]" title={t.expiryReason}>
-                                      {t.expiryReason}
+                                  {(t.expiryReason || t.observation) && (
+                                    <div className="text-[10px] text-slate-400 italic truncate max-w-[220px]" title={t.observation || t.expiryReason}>
+                                      {t.observation || t.expiryReason}
                                     </div>
                                   )}
                                 </td>
@@ -13549,18 +13766,43 @@ export default function App() {
                                   {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalVal)}
                                 </td>
                                 <td className="py-3 px-4 text-right whitespace-nowrap">
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setDeletionReason('');
-                                      setShowDeleteModal({ show: true, transactionId: t.id });
-                                    }}
-                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-600 text-rose-700 hover:text-white border border-rose-200 hover:border-rose-600 font-extrabold text-[11px] transition-all cursor-pointer shadow-2xs"
-                                    title="Excluir este lançamento e atualizar relatórios e saldos"
-                                  >
-                                    <Trash2 size={13} />
-                                    Excluir
-                                  </button>
+                                  <div className="inline-flex items-center justify-end gap-1.5">
+                                    {t.type === 'exit' && isAdmin && (
+                                      <select
+                                        value={
+                                          exitCat === 'ajuste_balanco'
+                                            ? t.balanceMovementType === 'alteracao_balanco'
+                                              ? 'alteracao_balanco'
+                                              : 'saida_balanco'
+                                            : 'consumo'
+                                        }
+                                        onChange={e =>
+                                          handleReclassifyTransactionInReports(
+                                            t.id,
+                                            e.target.value as 'consumo' | 'saida_balanco' | 'alteracao_balanco'
+                                          )
+                                        }
+                                        className="px-2 py-1.5 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-200 text-[10px] font-extrabold text-slate-700 cursor-pointer"
+                                        title="Classificar na origem sem apagar o histórico"
+                                      >
+                                        <option value="consumo">Consumo do Setor</option>
+                                        <option value="saida_balanco">Saída de Balanço</option>
+                                        <option value="alteracao_balanco">Alteração de Balanço</option>
+                                      </select>
+                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setDeletionReason('');
+                                        setShowDeleteModal({ show: true, transactionId: t.id });
+                                      }}
+                                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-600 text-rose-700 hover:text-white border border-rose-200 hover:border-rose-600 font-extrabold text-[11px] transition-all cursor-pointer shadow-2xs"
+                                      title="Excluir este lançamento e atualizar relatórios e saldos"
+                                    >
+                                      <Trash2 size={13} />
+                                      Excluir
+                                    </button>
+                                  </div>
                                 </td>
                               </tr>
                             );
@@ -14442,14 +14684,20 @@ export default function App() {
                         />
                       </div>
                       <div>
-                        <label className="block text-[11px] font-bold text-slate-600 mb-1.5">Setor Destino *</label>
+                        <label className="block text-[11px] font-bold text-slate-600 mb-1.5">
+                          {exitReason === 'ajuste_balanco' ? 'Setor de Referência (Opcional)' : 'Setor Destino *'}
+                        </label>
                         <select 
-                          required
+                          required={exitReason === 'consumo'}
                           className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold focus:ring-2 focus:ring-blue-500/20"
                           value={modalSector}
                           onChange={e => setModalSector(e.target.value)}
                         >
-                          <option value="">Selecione um setor...</option>
+                          <option value="">
+                            {exitReason === 'ajuste_balanco'
+                              ? 'Saída de Balanço (Inventário Geral)'
+                              : 'Selecione um setor...'}
+                          </option>
                           {SECTORS.map(s => <option key={s} value={s}>{s}</option>)}
                         </select>
                       </div>
@@ -14461,6 +14709,7 @@ export default function App() {
                           onChange={e => setExitReason(e.target.value as any)}
                         >
                           <option value="consumo">Consumo / Atendimento aos Setores</option>
+                          <option value="ajuste_balanco">Saída de Balanço / Alteração de Balanço (Inventário)</option>
                           <option value="doacao">Doação Externa</option>
                           <option value="vencido">Vencimento / Descarte (Validade Expirada)</option>
                           <option value="perda">Perda / Avaria Física</option>
@@ -14494,14 +14743,20 @@ export default function App() {
                       </div>
                     )}
 
-                    {(exitReason === 'vencido' || exitReason === 'perda') && (
+                    {(exitReason === 'vencido' || exitReason === 'perda' || exitReason === 'ajuste_balanco') && (
                       <div>
-                        <label className="block text-[11px] font-bold text-slate-600 mb-1.5">Observação / Justificativa *</label>
+                        <label className="block text-[11px] font-bold text-slate-600 mb-1.5">
+                          {exitReason === 'ajuste_balanco' ? 'Observação do Balanço (Opcional)' : 'Observação / Justificativa *'}
+                        </label>
                         <input 
                           type="text"
-                          required
+                          required={exitReason === 'vencido' || exitReason === 'perda'}
                           className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold"
-                          placeholder="Descreva o motivo do descarte/perda..."
+                          placeholder={
+                            exitReason === 'ajuste_balanco'
+                              ? 'Ex.: Regularização de saldo após conferência física de balanço...'
+                              : 'Descreva o motivo do descarte/perda...'
+                          }
                           value={expiryReason}
                           onChange={e => setExpiryReason(e.target.value)}
                         />

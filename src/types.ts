@@ -105,6 +105,12 @@ export interface Transaction {
   deletedByEmail?: string;
   deletionReason?: string;
   exitReason?: 'consumo' | 'doacao' | 'troca' | 'vencido' | 'perda' | 'ajuste_balanco';
+  balanceMovementType?: 'saida_balanco' | 'alteracao_balanco' | null;
+  reclassifiedFrom?: string;
+  reclassifiedReason?: string;
+  reclassifiedAt?: string;
+  manualClassificationOverride?: string;
+  originalSector?: string;
   expiryReason?: string;
   donationUnitName?: string;
   donationUnitAddress?: string;

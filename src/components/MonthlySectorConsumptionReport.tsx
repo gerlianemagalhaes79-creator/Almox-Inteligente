@@ -16,12 +16,20 @@ import {
   ArrowLeft,
   TrendingUp,
   History,
-  Edit3
+  Edit3,
+  CheckSquare,
+  Square,
+  ClipboardCheck,
+  ShieldCheck,
+  CheckCircle2,
+  SlidersHorizontal
 } from 'lucide-react';
+import { doc, writeBatch } from 'firebase/firestore';
 import { jsPDF } from 'jspdf';
 import * as XLSX from 'xlsx';
+import { db } from '../firebase';
 import { Item, Transaction } from '../types';
-import { getCategorizedExitType } from '../utils/exitReasonUtils';
+import { getCategorizedExitType, getExitReasonLabel } from '../utils/exitReasonUtils';
 
 export interface MonthlySectorConsumptionReportProps {
   items: Item[];
@@ -68,7 +76,10 @@ interface SectorMovementDetail {
   monthKey: string;
   monthLabel: string;
   itemName: string;
+  category: string;
   batchNumber: string;
+  sector: string;
+  originalSector?: string;
   quantity: number;
   unitMeasure: string;
   unitPrice: number;
@@ -76,6 +87,9 @@ interface SectorMovementDetail {
   responsible: string;
   isRetroactive: boolean;
   isReturn: boolean;
+  exitReason?: string;
+  balanceMovementType?: 'saida_balanco' | 'alteracao_balanco' | null;
+  observation?: string;
 }
 
 interface SectorMonthlyRow {
@@ -570,20 +584,33 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
     const yearTotals = new Map<number, number>();
     const catTotals = new Map<string, number>();
 
+    // Helper: identifies exits from June in the Food category (Materiais/Gêneros Alimentícios)
+    // that were recorded for the 1st Balance before the dedicated balance module existed
+    const isLegacyFirstBalanceFoodExit = (tx: Transaction, catName: string, d: Date): boolean => {
+      if (tx.manualClassificationOverride === 'consumo') return false;
+      const normCat = normalizeText(catName);
+      const isFoodCategory = normCat.includes('ALIMENT');
+      const isJune = d.getMonth() === 5; // 0-indexed: 5 === Junho
+      return isFoodCategory && isJune;
+    };
+
     transactions.forEach(tx => {
       if (tx.deletedAt || tx.type !== 'exit') return;
       if ((tx.location || 'Almoxarifado') !== inventoryLocation) return;
       if (getCategorizedExitType(tx) !== 'consumo') return;
       const d = parseFlexibleDate(tx.date);
       if (!d) return;
-      const yr = d.getFullYear();
-      const qty = Math.max(0, Number(tx.quantity) || 0);
-      yearTotals.set(yr, (yearTotals.get(yr) || 0) + qty);
 
       const matchedById = tx.item_id ? materialCatalog.byId.get(tx.item_id) : undefined;
       const normName = normalizeText(matchedById?.name || tx.item_name);
       const matchedByName = normName ? materialCatalog.byNormName.get(normName) : undefined;
       const cat = (matchedById?.category || matchedByName?.category || 'Outros').trim() || 'Outros';
+
+      if (isLegacyFirstBalanceFoodExit(tx, cat, d)) return;
+
+      const yr = d.getFullYear();
+      const qty = Math.max(0, Number(tx.quantity) || 0);
+      yearTotals.set(yr, (yearTotals.get(yr) || 0) + qty);
       catTotals.set(cat, (catTotals.get(cat) || 0) + qty);
     });
 
@@ -621,6 +648,191 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
   const [sectorSearch, setSectorSearch] = useState<string>('');
   const [detailSectorRow, setDetailSectorRow] = useState<SectorMonthlyRow | null>(null);
   const [isExportingPDF, setIsExportingPDF] = useState<boolean>(false);
+
+  // Reclassification Modal State (Consumo Real vs. Saída de Balanço / Alteração de Balanço)
+  const [showReclassifyModal, setShowReclassifyModal] = useState<boolean>(false);
+  const [reclassifyTab, setReclassifyTab] = useState<'active_consumption' | 'segregated_balance'>('active_consumption');
+  const [reclassifyMonthFilter, setReclassifyMonthFilter] = useState<string>('ALL');
+  const [reclassifySectorFilter, setReclassifySectorFilter] = useState<string>('ALL');
+  const [reclassifySearch, setReclassifySearch] = useState<string>('');
+  const [selectedTxIdsForReclassify, setSelectedTxIdsForReclassify] = useState<Set<string>>(new Set());
+  const [isReclassifying, setIsReclassifying] = useState<boolean>(false);
+
+  // Automatic source-level correction in Firestore for legacy 1st Balance exits
+  // (specifically June exits in Materiais/Gêneros Alimentícios and any exit with balance indicators not yet marked with exitReason: 'ajuste_balanco')
+  useEffect(() => {
+    if (!isAdmin || transactions.length === 0) return;
+
+    const toMigrate: { id: string; data: Record<string, any> }[] = [];
+
+    transactions.forEach(tx => {
+      if (!tx.id || tx.deletedAt || tx.type !== 'exit') return;
+      if (tx.manualClassificationOverride) return; // Respect explicit manual overrides
+
+      const d = parseFlexibleDate(tx.date);
+      if (!d) return;
+
+      const matchedById = tx.item_id ? materialCatalog.byId.get(tx.item_id) : undefined;
+      const normName = normalizeText(matchedById?.name || tx.item_name);
+      const matchedByName = normName ? materialCatalog.byNormName.get(normName) : undefined;
+      const cat = (matchedById?.category || matchedByName?.category || 'Outros').trim() || 'Outros';
+      const normCat = normalizeText(cat);
+
+      const isJuneFoodBalance = d.getMonth() === 5 && normCat.includes('ALIMENT');
+      const detectedType = getCategorizedExitType(tx);
+
+      if (
+        (isJuneFoodBalance || detectedType === 'ajuste_balanco') &&
+        tx.exitReason !== 'ajuste_balanco'
+      ) {
+        const currentObs = (tx.observation || '').trim();
+        const balanceTag = isJuneFoodBalance
+          ? '[Saída de Balanço - 1º Balanço]'
+          : '[Saída de Balanço]';
+        const updatedObs = currentObs.includes('Balanço')
+          ? currentObs
+          : `${balanceTag} ${currentObs ? currentObs + ' — ' : ''}Classificação corrigida na origem (Setor de registro original: ${tx.sector || 'Almoxarifado'}).`;
+
+        toMigrate.push({
+          id: tx.id,
+          data: {
+            exitReason: 'ajuste_balanco',
+            balanceMovementType: tx.balanceMovementType || 'saida_balanco',
+            originalSector: tx.originalSector || tx.sector || 'Almoxarifado',
+            reclassifiedFrom: tx.exitReason || 'consumo',
+            reclassifiedReason: isJuneFoodBalance
+              ? '1º Balanço de Estoque (Junho - Materiais Alimentícios)'
+              : 'Regularização de Saída de Balanço na origem',
+            reclassifiedAt: new Date().toISOString(),
+            observation: updatedObs
+          }
+        });
+      }
+    });
+
+    if (toMigrate.length === 0) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        for (let i = 0; i < toMigrate.length; i += 400) {
+          if (cancelled) return;
+          const batch = writeBatch(db);
+          const chunk = toMigrate.slice(i, i + 400);
+          chunk.forEach(item => {
+            batch.update(doc(db, 'transactions', item.id), item.data);
+          });
+          await batch.commit();
+        }
+      } catch (err) {
+        console.error('Erro ao sincronizar classificação de saídas de balanço na origem:', err);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isAdmin, transactions, materialCatalog]);
+
+  // Function to reclassify one or multiple movements at the source in Firestore without deleting history or altering stock
+  const handleReclassifyMovements = async (
+    txIds: string[],
+    targetClassification: 'saida_balanco' | 'alteracao_balanco' | 'consumo'
+  ) => {
+    const validIds = txIds.filter(Boolean);
+    if (validIds.length === 0) return;
+
+    try {
+      setIsReclassifying(true);
+      const txMap = new Map<string, Transaction>();
+      transactions.forEach(t => {
+        if (t.id) txMap.set(t.id, t);
+      });
+
+      for (let i = 0; i < validIds.length; i += 400) {
+        const batch = writeBatch(db);
+        const chunk = validIds.slice(i, i + 400);
+
+        chunk.forEach(id => {
+          const existingTx = txMap.get(id);
+          const ref = doc(db, 'transactions', id);
+
+          if (targetClassification === 'saida_balanco' || targetClassification === 'alteracao_balanco') {
+            const labelPrefix =
+              targetClassification === 'alteracao_balanco'
+                ? '[Alteração de Balanço]'
+                : '[Saída de Balanço]';
+            const cleanOldObs = String(existingTx?.observation || '')
+              .replace(/^\[(Saída de Balanço[^\]]*|Alteração de Balanço[^\]]*)\]\s*/i, '')
+              .trim();
+            const origSec = existingTx?.originalSector || existingTx?.sector || 'Almoxarifado';
+
+            batch.update(ref, {
+              exitReason: 'ajuste_balanco',
+              balanceMovementType: targetClassification,
+              manualClassificationOverride: targetClassification,
+              originalSector: origSec,
+              reclassifiedFrom: existingTx?.exitReason || 'consumo',
+              reclassifiedReason:
+                targetClassification === 'alteracao_balanco'
+                  ? 'Reclassificado como Alteração de Balanço'
+                  : 'Reclassificado como Saída de Balanço',
+              reclassifiedAt: new Date().toISOString(),
+              observation: cleanOldObs
+                ? `${labelPrefix} ${cleanOldObs}`
+                : `${labelPrefix} Movimentação classificada como ${
+                    targetClassification === 'alteracao_balanco'
+                      ? 'Alteração de Balanço'
+                      : 'Saída de Balanço'
+                  } (Setor original: ${origSec}).`
+            });
+          } else {
+            // Restore to real sector consumption ('consumo')
+            const cleanOldObs = String(existingTx?.observation || '')
+              .replace(/^\[(Saída de Balanço[^\]]*|Alteração de Balanço[^\]]*|Ajuste de Balanço[^\]]*)\]\s*/i, '')
+              .replace(/Classificação corrigida na origem\s*\([^)]*\)\.?/i, '')
+              .replace(/Movimentação classificada como (Saída|Alteração) de Balanço\s*\([^)]*\)\.?/i, '')
+              .trim();
+
+            batch.update(ref, {
+              exitReason: 'consumo',
+              balanceMovementType: null,
+              manualClassificationOverride: 'consumo',
+              sector: existingTx?.originalSector || existingTx?.sector || 'Almoxarifado',
+              reclassifiedAt: new Date().toISOString(),
+              observation: cleanOldObs
+            });
+          }
+        });
+
+        await batch.commit();
+      }
+
+      setSelectedTxIdsForReclassify(new Set());
+      if (detailSectorRow) {
+        setDetailSectorRow(null);
+      }
+
+      const labelMsg =
+        targetClassification === 'saida_balanco'
+          ? 'SAÍDA DE BALANÇO'
+          : targetClassification === 'alteracao_balanco'
+          ? 'ALTERAÇÃO DE BALANÇO'
+          : 'CONSUMO DO SETOR';
+
+      showToast(
+        `${validIds.length} ${
+          validIds.length === 1 ? 'movimentação reclassificada' : 'movimentações reclassificadas'
+        } na origem como ${labelMsg} (histórico preservado)!`,
+        'success'
+      );
+    } catch (error) {
+      console.error('Erro ao reclassificar movimentações:', error);
+      showToast('Erro ao atualizar a classificação das movimentações.', 'error');
+    } finally {
+      setIsReclassifying(false);
+    }
+  };
 
   // Build ordered Month Buckets for the selected period
   const periodInfo = useMemo(() => {
@@ -752,7 +964,10 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
       return sectorMap.get(normKey)!;
     };
 
-    // Process real transactions without duplicating movements and without counting entries as consumption
+    const allConsumptionMovements: SectorMovementDetail[] = [];
+    const segregatedBalanceMovements: SectorMovementDetail[] = [];
+
+    // Process real transactions without duplicating movements and without counting entries or balance exits as consumption
     transactions.forEach(tx => {
       if (tx.deletedAt) return;
       if (tx.id && seenTxIds.has(tx.id)) return;
@@ -761,18 +976,7 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
       const loc = tx.location || 'Almoxarifado';
       if (loc !== inventoryLocation) return;
 
-      // Only count exits of departmental consumption (never entries, never write-offs/donations)
-      // Note: Retroactive exits (tx.isRetroactive === true / tx.stockAffected === false) ARE included here
-      // as valid historical exits on their original date without affecting current stock balances.
-      const isConsumptionExit = tx.type === 'exit' && getCategorizedExitType(tx) === 'consumo';
-      if (!isConsumptionExit) return;
-
-      // If user is not admin and restricted to a sector
-      if (!isAdmin && selectedSector && selectedSector !== 'Almoxarifado') {
-        const txSecNorm = normalizeText(tx.sector);
-        const userSecNorm = normalizeText(selectedSector);
-        if (txSecNorm !== userSecNorm) return;
-      }
+      if (tx.type !== 'exit') return;
 
       const d = parseFlexibleDate(tx.date);
       if (!d || d < start || d > end) return;
@@ -788,6 +992,55 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
       if (qty <= 0) return;
 
       const finVal = qty * matInfo.unitPrice;
+      const normCat = normalizeText(matInfo.category);
+      const isLegacyJuneFoodBalance =
+        tx.manualClassificationOverride !== 'consumo' &&
+        d.getMonth() === 5 &&
+        normCat.includes('ALIMENT');
+
+      const exitType = isLegacyJuneFoodBalance ? 'ajuste_balanco' : getCategorizedExitType(tx);
+
+      // Segregate Saída de Balanço & Alteração de Balanço so they NEVER enter sector consumption totals or charts
+      if (exitType === 'ajuste_balanco') {
+        segregatedBalanceMovements.push({
+          id: tx.id,
+          date: tx.date,
+          parsedDate: d,
+          monthKey: mKey,
+          monthLabel: months[mIdx].label,
+          itemName: matInfo.cleanName,
+          category: matInfo.category,
+          batchNumber: matInfo.batchNumber,
+          sector: tx.sector || 'Almoxarifado',
+          originalSector: tx.originalSector || tx.sector || 'Almoxarifado',
+          quantity: qty,
+          unitMeasure: matInfo.unitMeasure,
+          unitPrice: matInfo.unitPrice,
+          totalValue: finVal,
+          responsible: tx.responsible || tx.responsibleEmail || 'Almoxarifado',
+          isRetroactive: Boolean(tx.isRetroactive || tx.stockAffected === false),
+          isReturn: false,
+          exitReason: 'ajuste_balanco',
+          balanceMovementType:
+            tx.balanceMovementType ||
+            (String(tx.observation || '').includes('Alteração de Balanço')
+              ? 'alteracao_balanco'
+              : 'saida_balanco'),
+          observation: tx.observation
+        });
+        return;
+      }
+
+      // Only count exits of real departmental consumption (never donations, expiry, loss, or balance adjustments)
+      if (exitType !== 'consumo') return;
+
+      // If user is not admin and restricted to a sector
+      if (!isAdmin && selectedSector && selectedSector !== 'Almoxarifado') {
+        const txSecNorm = normalizeText(tx.sector);
+        const userSecNorm = normalizeText(selectedSector);
+        if (txSecNorm !== userSecNorm) return;
+      }
+
       const secEntry = ensureSector(tx.sector);
 
       secEntry.monthlyValues[mIdx] += qty;
@@ -816,25 +1069,34 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
       matCons.totalValue += finVal;
       matCons.movementsCount += 1;
 
-      secEntry.movements.push({
+      const movDetail: SectorMovementDetail = {
         id: tx.id,
         date: tx.date,
         parsedDate: d,
         monthKey: mKey,
         monthLabel: months[mIdx].label,
         itemName: matInfo.cleanName,
+        category: matInfo.category,
         batchNumber: matInfo.batchNumber,
+        sector: secEntry.sector,
+        originalSector: tx.originalSector || secEntry.sector,
         quantity: qty,
         unitMeasure: matInfo.unitMeasure,
         unitPrice: matInfo.unitPrice,
         totalValue: finVal,
         responsible: tx.responsible || tx.responsibleEmail || 'Almoxarifado',
         isRetroactive: Boolean(tx.isRetroactive || tx.stockAffected === false),
-        isReturn: false
-      });
+        isReturn: false,
+        exitReason: 'consumo',
+        balanceMovementType: null,
+        observation: tx.observation
+      };
+
+      secEntry.movements.push(movDetail);
+      allConsumptionMovements.push(movDetail);
     });
 
-    // Build final sorted sector rows (only sectors that had consumption > 0 in the period)
+    // Build final sorted sector rows (only sectors that had real consumption > 0 in the period)
     const activeRowsRaw = Array.from(sectorMap.values()).filter(s => s.total > 0);
     const grandTotal = activeRowsRaw.reduce((acc, s) => acc + s.total, 0);
     const grandTotalValue = activeRowsRaw.reduce((acc, s) => acc + s.totalValue, 0);
@@ -868,6 +1130,11 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
       }
     });
 
+    const segregatedBalanceUnits = segregatedBalanceMovements.reduce(
+      (acc, m) => acc + m.quantity,
+      0
+    );
+
     return {
       sectorsList,
       monthTotals,
@@ -875,7 +1142,14 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
       grandTotalValue,
       totalMovementsCount,
       peakMonthLabel,
-      peakMonthQty
+      peakMonthQty,
+      allConsumptionMovements: allConsumptionMovements.sort(
+        (a, b) => b.parsedDate.getTime() - a.parsedDate.getTime()
+      ),
+      segregatedBalanceMovements: segregatedBalanceMovements.sort(
+        (a, b) => b.parsedDate.getTime() - a.parsedDate.getTime()
+      ),
+      segregatedBalanceUnits
     };
   }, [periodInfo, transactions, inventoryLocation, selectedCategory, materialCatalog, isAdmin, selectedSector]);
 
@@ -1557,8 +1831,33 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
               </div>
             </div>
 
-            {/* Action Buttons: Print, Export PDF, Excel, Expand */}
+            {/* Action Buttons: Reclassify Balance, Print, Export PDF, Excel, Expand */}
             <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReclassifyTab(
+                      reportAggregation.segregatedBalanceMovements.length > 0 &&
+                        reportAggregation.allConsumptionMovements.length === 0
+                        ? 'segregated_balance'
+                        : 'active_consumption'
+                    );
+                    setSelectedTxIdsForReclassify(new Set());
+                    setShowReclassifyModal(true);
+                  }}
+                  className="px-3.5 py-2.5 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 font-extrabold text-xs flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap shadow-2xs"
+                  title="Identificar e corrigir na origem saídas decorrentes de balanço para que não apareçam como consumo dos setores"
+                >
+                  <ClipboardCheck size={15} className="text-amber-700" />
+                  Classificação de Saídas / Balanço
+                  {reportAggregation.segregatedBalanceMovements.length > 0 && (
+                    <span className="ml-0.5 px-1.5 py-0.5 rounded-md bg-amber-600 text-white text-[10px] font-black">
+                      {reportAggregation.segregatedBalanceMovements.length}
+                    </span>
+                  )}
+                </button>
+              )}
               {embedded && onOpenFullReport && (
                 <button
                   type="button"
@@ -1573,7 +1872,7 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
                 type="button"
                 onClick={handlePrintReport}
                 className="px-3.5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 font-extrabold text-xs flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap"
-                title="Imprimir este relatório com gráfico e tabela"
+                title="Imprimir este relatório com gráfico e análise crítica em página única"
               >
                 <Printer size={15} className="text-slate-700" />
                 Imprimir
@@ -1582,7 +1881,7 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
                 type="button"
                 onClick={handleExportExcel}
                 className="px-3.5 py-2.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 font-extrabold text-xs flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap"
-                title="Exportar tabela mensal e detalhes por setor em Excel"
+                title="Exportar dados mensais e detalhes por setor em Excel"
               >
                 <Download size={15} className="text-emerald-700" />
                 Excel
@@ -1592,7 +1891,7 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
                 onClick={handleExportPDF}
                 disabled={isExportingPDF}
                 className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-rose-600 via-rose-700 to-red-800 hover:from-rose-700 hover:to-red-900 disabled:opacity-60 text-white font-extrabold text-xs flex items-center gap-2 shadow-md shadow-rose-600/20 transition-all cursor-pointer whitespace-nowrap"
-                title="Exportar relatório em PDF com gráfico empilhado e tabela mensal"
+                title="Exportar relatório em PDF com gráfico empilhado e análise crítica em página única"
               >
                 <FileText size={15} />
                 {isExportingPDF ? 'Gerando PDF...' : 'Exportar em PDF'}
@@ -1753,6 +2052,47 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
               >
                 Todas as Categorias
               </button>
+            </div>
+          )}
+
+          {/* Notice Banner showing segregated SAÍDA DE BALANÇO movements for this category & period */}
+          {reportAggregation.segregatedBalanceMovements.length > 0 && (
+            <div className="p-3.5 rounded-2xl bg-amber-50/90 border border-amber-200/90 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-start gap-2.5">
+                <ShieldCheck size={18} className="text-amber-700 shrink-0 mt-0.5" />
+                <div className="text-xs text-amber-950">
+                  <span className="font-black uppercase tracking-wider">
+                    Separação de Indicadores Ativa (Saídas de Balanço Segregadas):{' '}
+                  </span>
+                  <span>
+                    Foram identificadas{' '}
+                    <strong>
+                      {reportAggregation.segregatedBalanceMovements.length}{' '}
+                      {reportAggregation.segregatedBalanceMovements.length === 1
+                        ? 'movimentação classificada'
+                        : 'movimentações classificadas'}{' '}
+                      como SAÍDA DE BALANÇO
+                    </strong>{' '}
+                    ({formatInt(reportAggregation.segregatedBalanceUnits)} unidades) nesta categoria e
+                    período. Elas estão preservadas no histórico com rastreabilidade integral e não são
+                    contabilizadas como consumo dos setores no gráfico, totais ou análise crítica.
+                  </span>
+                </div>
+              </div>
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReclassifyTab('segregated_balance');
+                    setSelectedTxIdsForReclassify(new Set());
+                    setShowReclassifyModal(true);
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-white hover:bg-amber-100 text-amber-900 border border-amber-300 font-extrabold text-[11px] flex items-center gap-1.5 shrink-0 cursor-pointer transition-colors"
+                >
+                  <ClipboardCheck size={13} />
+                  Auditar Saídas de Balanço ({reportAggregation.segregatedBalanceMovements.length})
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -2036,6 +2376,7 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
               </p>
             </div>
           )}
+
           {/* ===================================================================
               ANÁLISE CRÍTICA IMEDIATAMENTE ABAIXO DO GRÁFICO (AUTOMÁTICA E EDITÁVEL, SEM AUTORIA)
              =================================================================== */}
@@ -2233,11 +2574,18 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
 
               {/* Table 2: Individual Exit Movements History */}
               <div className="space-y-2.5">
-                <h4 className="text-xs font-black uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
-                  <History size={15} className="text-indigo-600" />
-                  2. Histórico Individual de Saídas Registradas para {detailSectorRow.sector} (
-                  {detailSectorRow.movements.length} lançamentos)
-                </h4>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h4 className="text-xs font-black uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                    <History size={15} className="text-indigo-600" />
+                    2. Histórico Individual de Saídas Registradas para {detailSectorRow.sector} (
+                    {detailSectorRow.movements.length} lançamentos)
+                  </h4>
+                  {isAdmin && (
+                    <span className="text-[11px] font-semibold text-amber-800 bg-amber-50 px-2.5 py-0.5 rounded-md border border-amber-200">
+                      Caso algum lançamento seja de balanço, reclassifique-o abaixo sem apagar o histórico
+                    </span>
+                  )}
+                </div>
 
                 <div className="overflow-x-auto rounded-2xl border border-slate-200 max-h-72">
                   <table className="w-full text-left border-collapse text-xs">
@@ -2249,6 +2597,9 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
                         <th className="py-2.5 px-3.5">Lote</th>
                         <th className="py-2.5 px-3.5">Responsável</th>
                         <th className="py-2.5 px-3.5 text-right">Quantidade</th>
+                        {isAdmin && (
+                          <th className="py-2.5 px-3.5 text-center">Classificação na Origem</th>
+                        )}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -2276,6 +2627,30 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
                           >
                             {formatInt(mov.quantity)} {mov.unitMeasure}
                           </td>
+                          {isAdmin && (
+                            <td className="py-2 px-3 text-center whitespace-nowrap">
+                              <div className="inline-flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  disabled={isReclassifying}
+                                  onClick={() => handleReclassifyMovements([mov.id], 'saida_balanco')}
+                                  className="px-2 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 font-extrabold text-[10px] cursor-pointer transition-colors"
+                                  title="Classificar como SAÍDA DE BALANÇO (retira do consumo do setor sem apagar o histórico)"
+                                >
+                                  Saída de Balanço
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={isReclassifying}
+                                  onClick={() => handleReclassifyMovements([mov.id], 'alteracao_balanco')}
+                                  className="px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 font-extrabold text-[10px] cursor-pointer transition-colors"
+                                  title="Classificar como ALTERAÇÃO DE BALANÇO (retira do consumo do setor sem apagar o histórico)"
+                                >
+                                  Alteração Balanço
+                                </button>
+                              </div>
+                            </td>
+                          )}
                         </tr>
                       ))}
                     </tbody>
@@ -2301,6 +2676,453 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
           </div>
         </div>
       )}
+
+      {/* ===================================================================
+          MODAL: CLASSIFICAÇÃO NA ORIGEM — CONSUMO DO SETOR vs. SAÍDA DE BALANÇO / ALTERAÇÃO DE BALANÇO
+         =================================================================== */}
+      {showReclassifyModal && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto"
+          onClick={() => setShowReclassifyModal(false)}
+        >
+          <div
+            className="bg-white rounded-3xl border border-slate-200 shadow-2xl max-w-6xl w-full max-h-[92vh] flex flex-col overflow-hidden my-auto"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="p-5 sm:p-6 bg-slate-900 text-white flex items-start justify-between gap-4">
+              <div>
+                <div className="flex flex-wrap items-center gap-2 mb-1">
+                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-amber-500/20 text-amber-300 border border-amber-400/30">
+                    Auditoria e Classificação na Origem
+                  </span>
+                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-white/10 text-slate-200">
+                    Categoria: {categoryDisplayLabel}
+                  </span>
+                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-white/10 text-slate-200">
+                    {periodInfo.periodLabel}
+                  </span>
+                </div>
+                <h3 className="text-lg sm:text-xl font-black tracking-tight flex items-center gap-2">
+                  <ClipboardCheck size={20} className="text-amber-400" />
+                  Classificação das Movimentações: Consumo do Setor × Saída de Balanço
+                </h3>
+                <p className="text-xs text-slate-300 mt-1 max-w-3xl">
+                  Identifique e corrija na origem as movimentações que foram lançadas durante balanços
+                  de estoque. Ao classificar como{' '}
+                  <strong className="text-amber-300">SAÍDA DE BALANÇO</strong> ou{' '}
+                  <strong className="text-amber-300">ALTERAÇÃO DE BALANÇO</strong>, o registro deixa de
+                  compor o consumo dos setores (gráficos, totais e análise crítica), preservando
+                  integralmente o histórico, datas, lotes e quantidades no banco de dados.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowReclassifyModal(false)}
+                className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer"
+                title="Fechar modal"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Tabs Bar */}
+            <div className="px-5 pt-4 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReclassifyTab('active_consumption');
+                    setSelectedTxIdsForReclassify(new Set());
+                  }}
+                  className={`px-4 py-2.5 rounded-t-xl font-extrabold text-xs flex items-center gap-2 border-b-2 transition-all cursor-pointer ${
+                    reclassifyTab === 'active_consumption'
+                      ? 'bg-white text-blue-800 border-blue-700 shadow-2xs'
+                      : 'text-slate-600 border-transparent hover:text-slate-900'
+                  }`}
+                >
+                  <CheckCircle2 size={15} className="text-blue-600" />
+                  1. Saídas Contabilizadas como Consumo ({reportAggregation.allConsumptionMovements.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReclassifyTab('segregated_balance');
+                    setSelectedTxIdsForReclassify(new Set());
+                  }}
+                  className={`px-4 py-2.5 rounded-t-xl font-extrabold text-xs flex items-center gap-2 border-b-2 transition-all cursor-pointer ${
+                    reclassifyTab === 'segregated_balance'
+                      ? 'bg-white text-amber-900 border-amber-600 shadow-2xs'
+                      : 'text-slate-600 border-transparent hover:text-slate-900'
+                  }`}
+                >
+                  <ShieldCheck size={15} className="text-amber-600" />
+                  2. Saídas de Balanço Segregadas ({reportAggregation.segregatedBalanceMovements.length})
+                </button>
+              </div>
+
+              {/* Filter Controls inside Modal */}
+              <div className="flex flex-wrap items-center gap-2 pb-2">
+                <select
+                  value={reclassifyMonthFilter}
+                  onChange={e => setReclassifyMonthFilter(e.target.value)}
+                  className="px-3 py-1.5 rounded-xl bg-white border border-slate-200 text-xs font-bold text-slate-800"
+                >
+                  <option value="ALL">Todos os Meses do Período</option>
+                  {periodInfo.months.map(m => (
+                    <option key={m.key} value={m.key}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+
+                <select
+                  value={reclassifySectorFilter}
+                  onChange={e => setReclassifySectorFilter(e.target.value)}
+                  className="px-3 py-1.5 rounded-xl bg-white border border-slate-200 text-xs font-bold text-slate-800"
+                >
+                  <option value="ALL">Todos os Setores</option>
+                  {Array.from(
+                    new Set(
+                      [
+                        ...reportAggregation.allConsumptionMovements.map(m => m.sector),
+                        ...reportAggregation.segregatedBalanceMovements.map(m => m.sector)
+                      ].filter(Boolean)
+                    )
+                  )
+                    .sort((a, b) => a.localeCompare(b, 'pt-BR'))
+                    .map(secName => (
+                      <option key={secName} value={secName}>
+                        {secName}
+                      </option>
+                    ))}
+                </select>
+
+                <div className="relative min-w-[200px]">
+                  <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    value={reclassifySearch}
+                    onChange={e => setReclassifySearch(e.target.value)}
+                    placeholder="Buscar material, lote, setor..."
+                    className="w-full pl-7 pr-6 py-1.5 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-800"
+                  />
+                  {reclassifySearch && (
+                    <button
+                      type="button"
+                      onClick={() => setReclassifySearch('')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-5 overflow-y-auto flex-1 space-y-4">
+              {(() => {
+                const sourceList =
+                  reclassifyTab === 'active_consumption'
+                    ? reportAggregation.allConsumptionMovements
+                    : reportAggregation.segregatedBalanceMovements;
+
+                const normQ = normalizeText(reclassifySearch);
+                const filteredMovements = sourceList.filter(mov => {
+                  if (reclassifyMonthFilter !== 'ALL' && mov.monthKey !== reclassifyMonthFilter) {
+                    return false;
+                  }
+                  if (reclassifySectorFilter !== 'ALL' && mov.sector !== reclassifySectorFilter) {
+                    return false;
+                  }
+                  if (normQ) {
+                    const matchItem = normalizeText(mov.itemName).includes(normQ);
+                    const matchSec = normalizeText(mov.sector).includes(normQ);
+                    const matchBatch = normalizeText(mov.batchNumber).includes(normQ);
+                    const matchObs = normalizeText(mov.observation).includes(normQ);
+                    if (!matchItem && !matchSec && !matchBatch && !matchObs) return false;
+                  }
+                  return true;
+                });
+
+                const allVisibleSelected =
+                  filteredMovements.length > 0 &&
+                  filteredMovements.every(m => selectedTxIdsForReclassify.has(m.id));
+
+                const toggleSelectAllVisible = () => {
+                  const next = new Set(selectedTxIdsForReclassify);
+                  if (allVisibleSelected) {
+                    filteredMovements.forEach(m => next.delete(m.id));
+                  } else {
+                    filteredMovements.forEach(m => {
+                      if (m.id) next.add(m.id);
+                    });
+                  }
+                  setSelectedTxIdsForReclassify(next);
+                };
+
+                const toggleSelectOne = (id: string) => {
+                  if (!id) return;
+                  const next = new Set(selectedTxIdsForReclassify);
+                  if (next.has(id)) {
+                    next.delete(id);
+                  } else {
+                    next.add(id);
+                  }
+                  setSelectedTxIdsForReclassify(next);
+                };
+
+                return (
+                  <>
+                    {/* Batch Action Bar */}
+                    <div className="p-3.5 rounded-2xl bg-slate-100 border border-slate-200 flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex items-center gap-2 text-xs font-bold text-slate-700">
+                        <span>
+                          Exibindo <strong>{filteredMovements.length}</strong> movimentações •{' '}
+                          <strong className="text-blue-700">
+                            {selectedTxIdsForReclassify.size} selecionada(s)
+                          </strong>
+                        </span>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        {reclassifyTab === 'active_consumption' ? (
+                          <>
+                            <button
+                              type="button"
+                              disabled={selectedTxIdsForReclassify.size === 0 || isReclassifying}
+                              onClick={() =>
+                                handleReclassifyMovements(
+                                  Array.from(selectedTxIdsForReclassify),
+                                  'saida_balanco'
+                                )
+                              }
+                              className="px-3.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 disabled:opacity-40 text-white font-extrabold text-xs flex items-center gap-1.5 cursor-pointer transition-colors shadow-2xs"
+                            >
+                              <ClipboardCheck size={14} />
+                              Classificar Selecionadas como SAÍDA DE BALANÇO
+                            </button>
+                            <button
+                              type="button"
+                              disabled={selectedTxIdsForReclassify.size === 0 || isReclassifying}
+                              onClick={() =>
+                                handleReclassifyMovements(
+                                  Array.from(selectedTxIdsForReclassify),
+                                  'alteracao_balanco'
+                                )
+                              }
+                              className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-900 disabled:opacity-40 text-white font-extrabold text-xs flex items-center gap-1.5 cursor-pointer transition-colors shadow-2xs"
+                            >
+                              <SlidersHorizontal size={14} />
+                              Classificar Selecionadas como ALTERAÇÃO DE BALANÇO
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              disabled={selectedTxIdsForReclassify.size === 0 || isReclassifying}
+                              onClick={() =>
+                                handleReclassifyMovements(
+                                  Array.from(selectedTxIdsForReclassify),
+                                  'saida_balanco'
+                                )
+                              }
+                              className="px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 disabled:opacity-40 text-white font-extrabold text-xs cursor-pointer transition-colors"
+                            >
+                              Definir como SAÍDA DE BALANÇO
+                            </button>
+                            <button
+                              type="button"
+                              disabled={selectedTxIdsForReclassify.size === 0 || isReclassifying}
+                              onClick={() =>
+                                handleReclassifyMovements(
+                                  Array.from(selectedTxIdsForReclassify),
+                                  'alteracao_balanco'
+                                )
+                              }
+                              className="px-3 py-1.5 rounded-xl bg-slate-700 hover:bg-slate-800 disabled:opacity-40 text-white font-extrabold text-xs cursor-pointer transition-colors"
+                            >
+                              Definir como ALTERAÇÃO DE BALANÇO
+                            </button>
+                            <button
+                              type="button"
+                              disabled={selectedTxIdsForReclassify.size === 0 || isReclassifying}
+                              onClick={() =>
+                                handleReclassifyMovements(
+                                  Array.from(selectedTxIdsForReclassify),
+                                  'consumo'
+                                )
+                              }
+                              className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white font-extrabold text-xs flex items-center gap-1.5 cursor-pointer transition-colors"
+                            >
+                              <RotateCcw size={14} />
+                              Restaurar Selecionadas para CONSUMO DO SETOR
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Movements Table */}
+                    {filteredMovements.length > 0 ? (
+                      <div className="overflow-x-auto rounded-2xl border border-slate-200 max-h-[52vh]">
+                        <table className="w-full text-left border-collapse text-xs">
+                          <thead className="bg-slate-100 sticky top-0 border-b border-slate-200 text-[10px] font-black uppercase tracking-wider text-slate-600 z-10">
+                            <tr>
+                              <th className="py-2.5 px-3 text-center w-10">
+                                <input
+                                  type="checkbox"
+                                  checked={allVisibleSelected}
+                                  onChange={toggleSelectAllVisible}
+                                  className="rounded border-slate-300 cursor-pointer"
+                                />
+                              </th>
+                              <th className="py-2.5 px-3">Data</th>
+                              <th className="py-2.5 px-3">Mês</th>
+                              <th className="py-2.5 px-3">Setor Original</th>
+                              <th className="py-2.5 px-3">Material</th>
+                              <th className="py-2.5 px-3">Lote</th>
+                              <th className="py-2.5 px-3 text-right">Qtd</th>
+                              <th className="py-2.5 px-3">Classificação Atual</th>
+                              <th className="py-2.5 px-3 text-center">Ação Direta na Origem</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {filteredMovements.map(mov => {
+                              const isChecked = selectedTxIdsForReclassify.has(mov.id);
+                              return (
+                                <tr
+                                  key={mov.id || `${mov.itemName}-${mov.date}-${mov.quantity}`}
+                                  className={`hover:bg-slate-50 transition-colors ${
+                                    isChecked ? 'bg-blue-50/50' : ''
+                                  }`}
+                                >
+                                  <td className="py-2.5 px-3 text-center">
+                                    <input
+                                      type="checkbox"
+                                      checked={isChecked}
+                                      onChange={() => toggleSelectOne(mov.id)}
+                                      className="rounded border-slate-300 cursor-pointer"
+                                    />
+                                  </td>
+                                  <td className="py-2.5 px-3 font-bold text-slate-700 whitespace-nowrap">
+                                    {mov.parsedDate.toLocaleDateString('pt-BR')}
+                                  </td>
+                                  <td className="py-2.5 px-3 font-semibold text-slate-600 whitespace-nowrap">
+                                    {mov.monthLabel}
+                                  </td>
+                                  <td className="py-2.5 px-3 font-bold text-slate-800">
+                                    {mov.sector}
+                                  </td>
+                                  <td className="py-2.5 px-3 font-bold text-slate-900">
+                                    {mov.itemName}
+                                    {mov.observation && (
+                                      <span className="block text-[10px] font-normal text-slate-500 truncate max-w-xs">
+                                        {mov.observation}
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="py-2.5 px-3 font-mono text-slate-600">
+                                    {mov.batchNumber}
+                                  </td>
+                                  <td
+                                    className="py-2.5 px-3 text-right font-black text-slate-900 whitespace-nowrap"
+                                    style={{ fontVariantNumeric: 'tabular-nums' }}
+                                  >
+                                    {formatInt(mov.quantity)} {mov.unitMeasure}
+                                  </td>
+                                  <td className="py-2.5 px-3 whitespace-nowrap">
+                                    {reclassifyTab === 'active_consumption' ? (
+                                      <span className="px-2 py-0.5 rounded-md bg-blue-50 text-blue-800 border border-blue-200 font-black text-[10px] uppercase">
+                                        Consumo do Setor
+                                      </span>
+                                    ) : mov.balanceMovementType === 'alteracao_balanco' ? (
+                                      <span className="px-2 py-0.5 rounded-md bg-slate-800 text-white font-black text-[10px] uppercase">
+                                        Saída de Balanço (Alteração)
+                                      </span>
+                                    ) : (
+                                      <span className="px-2 py-0.5 rounded-md bg-amber-100 text-amber-900 border border-amber-300 font-black text-[10px] uppercase">
+                                        Saída de Balanço
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="py-2 px-3 text-center whitespace-nowrap">
+                                    {reclassifyTab === 'active_consumption' ? (
+                                      <div className="inline-flex items-center gap-1">
+                                        <button
+                                          type="button"
+                                          disabled={isReclassifying}
+                                          onClick={() =>
+                                            handleReclassifyMovements([mov.id], 'saida_balanco')
+                                          }
+                                          className="px-2.5 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 font-extrabold text-[10px] cursor-pointer transition-colors"
+                                        >
+                                          Saída de Balanço
+                                        </button>
+                                        <button
+                                          type="button"
+                                          disabled={isReclassifying}
+                                          onClick={() =>
+                                            handleReclassifyMovements([mov.id], 'alteracao_balanco')
+                                          }
+                                          className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 font-extrabold text-[10px] cursor-pointer transition-colors"
+                                        >
+                                          Alteração Balanço
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <div className="inline-flex items-center gap-1">
+                                        <button
+                                          type="button"
+                                          disabled={isReclassifying}
+                                          onClick={() =>
+                                            handleReclassifyMovements([mov.id], 'consumo')
+                                          }
+                                          className="px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 font-extrabold text-[10px] cursor-pointer transition-colors"
+                                        >
+                                          Restaurar p/ Consumo
+                                        </button>
+                                      </div>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div className="py-10 text-center bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                        <p className="text-xs font-bold text-slate-600">
+                          Nenhuma movimentação encontrada para os filtros selecionados nesta aba.
+                        </p>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
+              <span className="text-xs font-semibold text-slate-600">
+                Todas as alterações preservam datas, lotes, quantidades e rastreabilidade histórica no banco de dados.
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowReclassifyModal(false)}
+                className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-extrabold text-xs cursor-pointer transition-colors"
+              >
+                Concluir e Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
+

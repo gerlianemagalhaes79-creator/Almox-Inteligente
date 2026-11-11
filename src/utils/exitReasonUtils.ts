@@ -3,28 +3,63 @@ export type CategorizedExitType = 'consumo' | 'doacao' | 'vencido' | 'perda' | '
 export interface ExitTxLike {
   type?: string;
   exitReason?: string;
+  balanceMovementType?: 'saida_balanco' | 'alteracao_balanco' | string | null;
   observation?: string;
+  expiryReason?: string;
+  sector?: string;
 }
+
+const normalizeForMatch = (val?: string | null): string =>
+  String(val || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .trim();
 
 /**
  * Categoriza com precisão o tipo de saída, garantindo que:
- * - Vencimento / Descarte (Validade técnica expirada) NUNCA se misture com Perda / Avaria nem com Ajuste de Balanço.
+ * - Toda movimentação decorrente de balanço (Saída de Balanço e Alteração de Balanço) seja
+ *   identificada como 'ajuste_balanco' (SAÍDA DE BALANÇO), nunca como consumo do setor.
+ * - Vencimento / Descarte (Validade técnica expirada) NUNCA se misture com Perda / Avaria nem com Balanço.
  * - Perda / Avaria física (quebra, extravio operacional) fique estritamente separada.
- * - Ajuste de Balanço (falta apurada na contagem física periódica do inventário) tenha categoria própria.
  */
 export function getCategorizedExitType(tx: ExitTxLike): CategorizedExitType {
   const obs = tx.observation || '';
+  const normObs = normalizeForMatch(obs);
+  const normExpiry = normalizeForMatch(tx.expiryReason);
+  const normSector = normalizeForMatch(tx.sector);
 
-  // Verifica se é um ajuste originado no balanço físico ou inventário
+  // Verifica se é uma Saída de Balanço ou Alteração de Balanço
   if (
     tx.exitReason === 'ajuste_balanco' ||
+    tx.exitReason === 'saida_balanco' ||
+    tx.exitReason === 'alteracao_balanco' ||
+    tx.balanceMovementType === 'saida_balanco' ||
+    tx.balanceMovementType === 'alteracao_balanco' ||
     obs.includes('[Ajuste de Balanço') ||
+    obs.includes('[Saída de Balanço') ||
+    obs.includes('[Alteração de Balanço') ||
     obs.includes('[Balanço em Lote') ||
-    obs.includes('Ajuste de Balanço') ||
-    obs.includes('Balanço Periódico') ||
-    obs.includes('conferência física do inventário/balanço') ||
-    obs.includes('Falta de contagem') ||
-    obs.includes('Falta / Quebra física')
+    normObs.includes('SAIDA DE BALANCO') ||
+    normObs.includes('ALTERACAO DE BALANCO') ||
+    normObs.includes('AJUSTE DE BALANCO') ||
+    normObs.includes('BALANCO PERIODICO') ||
+    normObs.includes('PRIMEIRO BALANCO') ||
+    normObs.includes('1O BALANCO') ||
+    normObs.includes('1º BALANCO') ||
+    normObs.includes('CONFERENCIA FISICA DO INVENTARIO') ||
+    normObs.includes('FALTA DE CONTAGEM') ||
+    normObs.includes('FALTA / QUEBRA FISICA') ||
+    normExpiry.includes('SAIDA DE BALANCO') ||
+    normExpiry.includes('ALTERACAO DE BALANCO') ||
+    normExpiry.includes('AJUSTE DE BALANCO') ||
+    normExpiry.includes('BALANCO DE ESTOQUE') ||
+    normSector === 'BALANCO' ||
+    normSector === 'SAIDA DE BALANCO' ||
+    normSector === 'ALTERACAO DE BALANCO' ||
+    normSector === 'AJUSTE DE BALANCO' ||
+    normSector.includes('SAIDA DE BALANCO') ||
+    normSector.includes('AJUSTE DE BALANCO')
   ) {
     return 'ajuste_balanco';
   }
@@ -47,14 +82,25 @@ export function getCategorizedExitType(tx: ExitTxLike): CategorizedExitType {
   return 'consumo';
 }
 
-export function getExitReasonLabel(type: CategorizedExitType): string {
+export function getExitReasonLabel(type: CategorizedExitType, tx?: ExitTxLike): string {
   switch (type) {
     case 'vencido':
       return 'Vencimento / Descarte (Validade)';
     case 'perda':
       return 'Perda / Avaria';
-    case 'ajuste_balanco':
-      return 'Ajuste de Balanço (Inventário)';
+    case 'ajuste_balanco': {
+      if (tx) {
+        const normObs = normalizeForMatch(tx.observation);
+        if (
+          tx.balanceMovementType === 'alteracao_balanco' ||
+          normObs.includes('ALTERACAO DE BALANCO') ||
+          normObs.includes('AJUSTE DIRETO DE CONTAGEM')
+        ) {
+          return 'Saída de Balanço (Alteração de Balanço)';
+        }
+      }
+      return 'Saída de Balanço';
+    }
     case 'doacao':
       return 'Doação';
     case 'consumo':

@@ -730,12 +730,12 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
       const qty = Math.max(0, Number(tx.quantity) || 0);
 
       if (d >= start180DaysAgo && d <= nowTime) {
-        if (tx.type === 'exit' && (!tx.exitReason || tx.exitReason === 'consumo')) {
+        if (tx.type === 'exit' && getCategorizedExitType(tx) === 'consumo') {
           consumedLast180ByMat.set(normName, (consumedLast180ByMat.get(normName) || 0) + qty);
         }
       }
       if (d >= start90DaysAgo && d <= nowTime) {
-        if (tx.type === 'exit') {
+        if (tx.type === 'exit' && getCategorizedExitType(tx) === 'consumo') {
           consumedLast90ByMat.set(normName, (consumedLast90ByMat.get(normName) || 0) + qty);
         } else if (tx.type === 'entry' && tx.isReturn) {
           consumedLast90ByMat.set(normName, (consumedLast90ByMat.get(normName) || 0) - qty);
@@ -1428,7 +1428,7 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
           chartTimelineExitsUnits += qty;
         }
 
-        const isConsumption = !tx.exitReason || tx.exitReason === 'consumo';
+        const isConsumption = getCategorizedExitType(tx) === 'consumo';
         if (isConsumption && !skipInChart) {
           const secName = (tx.sector || 'Geral / Não Informado').trim();
           const secEntry = sectorMap.get(secName) || { sector: secName, units: 0, value: 0, count: 0 };
