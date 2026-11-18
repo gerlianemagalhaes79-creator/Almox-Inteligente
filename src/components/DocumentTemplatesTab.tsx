@@ -294,9 +294,9 @@ ${htmlContent}
           donorName: 'Policlínica de Sobral Bernardo Félix da Silva',
           donorCnpj: '12.208.466/0001-66',
           donorAddress: 'Av. Monsenhor Aloísio Pinto, 481, CEP 62050-255, Sobral-CE',
-          recipientName: tx.donationUnitName || tx.exchangePartnerName || 'Unidade Parceira de Saúde',
-          recipientCnpj: tx.donationUnitCNPJ || tx.exchangePartnerCNPJ || '07.598.667/0001-14',
-          recipientAddress: tx.donationUnitAddress || tx.exchangePartnerAddress || 'Sobral - CE',
+          recipientName: tx.donationRecipientName || (tx.sector && tx.sector !== 'Almoxarifado' && tx.sector !== 'Farmácia (Consumo Interno)' ? tx.sector : null) || tx.donationUnitName || tx.exchangePartnerName || 'Unidade Parceira de Saúde',
+          recipientCnpj: tx.donationRecipientCNPJ || tx.donationUnitCNPJ || tx.exchangePartnerCNPJ || '07.598.667/0001-14',
+          recipientAddress: tx.donationRecipientAddress || tx.donationUnitAddress || tx.exchangePartnerAddress || 'Sobral - CE',
           recipientResponsible: tx.responsible || 'Responsável pelo Recebimento',
           reason: tx.observation || tx.expiryReason || 'Otimização e remanejamento do estoque do Almoxarifado Central.',
           items: [

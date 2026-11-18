@@ -1903,7 +1903,7 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
           unitPrice,
           finValue: qty * unitPrice,
           category: item?.category || 'Outros',
-          recipient: tx.donationUnitName || tx.sector || 'Unidade Recebedora Externa',
+          recipient: tx.donationRecipientName || (tx.sector && tx.sector !== 'Almoxarifado' && tx.sector !== 'Farmácia (Consumo Interno)' ? tx.sector : null) || tx.donationUnitName || 'Unidade Recebedora Externa',
           docNumber: tx.donationNumber || 'S/N'
         };
       });

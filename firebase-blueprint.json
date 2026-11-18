@@ -67,8 +67,13 @@
         "type": { "type": "string", "enum": ["entry", "exit"], "description": "Type of movement" },
         "origin": { "type": "string", "enum": ["contract", "extra"], "description": "Origin of the item (contract or extra)" },
         "quantity": { "type": "number", "description": "Quantity moved" },
-        "sector": { "type": "string", "description": "Destination sector for exits" },
-        "date": { "type": "string", "format": "date-time", "description": "Transaction date" }
+        "sector": { "type": "string", "description": "Destination sector or external unit for exits" },
+        "date": { "type": "string", "format": "date-time", "description": "Transaction date" },
+        "exitReason": { "type": "string", "description": "Reason for exit (consumo, doacao, vencido, perda, ajuste_balanco)" },
+        "donationType": { "type": "string", "enum": ["externa", "interna"], "description": "Donation modality" },
+        "donationRecipientName": { "type": "string", "description": "Saved external destination unit name" },
+        "donationRecipientAddress": { "type": "string", "description": "External destination address" },
+        "donationRecipientCNPJ": { "type": "string", "description": "External destination CNPJ" }
       },
       "required": ["item_id", "type", "quantity", "date"]
     },
@@ -101,7 +106,11 @@
       "description": "System configuration and settings like appLogo",
       "type": "object",
       "properties": {
-        "appLogo": { "type": "string" }
+        "appLogo": { "type": "string" },
+        "destinations": {
+          "type": "array",
+          "description": "Saved external donation destination locations (stored in settings/donation_destinations)"
+        }
       }
     },
     "DocumentTemplate": {

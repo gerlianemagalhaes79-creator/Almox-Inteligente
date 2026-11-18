@@ -48,7 +48,9 @@ import {
   Boxes,
   ArrowLeft,
   Layers,
-  Eye
+  Eye,
+  MapPin,
+  Building2
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
@@ -89,7 +91,7 @@ import {
 import { initializeApp } from 'firebase/app';
 import { db, auth } from './firebase';
 import firebaseConfig from '../firebase-applet-config.json';
-import { Item, Transaction, UserProfile, MaterialRequest, RequestItem, Notification } from './types';
+import { Item, Transaction, UserProfile, MaterialRequest, RequestItem, Notification, ExternalDonationLocation } from './types';
 import { ApuraSUSProducaoReport } from './components/ApuraSUSProducaoReport';
 import { ApuraSUSCustosReport } from './components/ApuraSUSCustosReport';
 import { BalancoReport } from './components/BalancoReport';
@@ -954,6 +956,23 @@ export default function App() {
   const [transactionQty, setTransactionQty] = useState(1);
   const [transactionDate, setTransactionDate] = useState<string>(() => format(new Date(), 'yyyy-MM-dd'));
   const [exitReason, setExitReason] = useState<'consumo' | 'doacao' | 'vencido' | 'perda' | 'ajuste_balanco'>('consumo');
+  const [donationModality, setDonationModality] = useState<'externa' | 'interna'>('externa');
+  const [externalDonationLocations, setExternalDonationLocations] = useState<ExternalDonationLocation[]>(() => {
+    try {
+      const saved = localStorage.getItem('external_donation_locations');
+      const parsed = saved ? JSON.parse(saved) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  });
+  const [selectedExternalLocationId, setSelectedExternalLocationId] = useState<string>('');
+  const [showNewExternalLocationForm, setShowNewExternalLocationForm] = useState<boolean>(false);
+  const [newExtLocName, setNewExtLocName] = useState<string>('');
+  const [newExtLocAddress, setNewExtLocAddress] = useState<string>('');
+  const [newExtLocCnpj, setNewExtLocCnpj] = useState<string>('');
+  const [isSavingExternalLocation, setIsSavingExternalLocation] = useState<boolean>(false);
+  const [confirmDeleteExtLocId, setConfirmDeleteExtLocId] = useState<string | null>(null);
   const [expiryReason, setExpiryReason] = useState('');
   const [selectedItemId, setSelectedItemId] = useState<string>('');
   const [selectedItemName, setSelectedItemName] = useState<string>('');
@@ -1058,6 +1077,11 @@ export default function App() {
       setModalSearchTerm('');
       setSelectedItemName('');
       setSelectedItemId('');
+      setShowNewExternalLocationForm(false);
+      setNewExtLocName('');
+      setNewExtLocAddress('');
+      setNewExtLocCnpj('');
+      setConfirmDeleteExtLocId(null);
       if (showTransactionModal.type === 'exit') {
         setBasket([]);
       }
@@ -4780,6 +4804,41 @@ export default function App() {
     try {
       if (showTransactionModal.type === 'exit') {
         if (basket.length === 0) return;
+
+        let resolvedDonationRecipient: { name: string; address: string; cnpj: string } | null = null;
+        if (exitReason === 'doacao') {
+          if (donationModality === 'externa') {
+            let matchedLoc = externalDonationLocations.find(
+              l => l.id === selectedExternalLocationId || (modalSector && normalizeString(l.name) === normalizeString(modalSector))
+            );
+            if (!matchedLoc && newExtLocName.trim()) {
+              const saved = await handleSaveExternalDonationLocation();
+              if (saved) {
+                matchedLoc = saved;
+              }
+            }
+            if (!matchedLoc) {
+              showToast('Selecione ou cadastre um local de destino para a doação externa.', 'error');
+              return;
+            }
+            resolvedDonationRecipient = {
+              name: matchedLoc.name,
+              address: matchedLoc.address || '',
+              cnpj: matchedLoc.cnpj || ''
+            };
+          } else {
+            const internalSector = modalSector || selectedSector;
+            if (!internalSector) {
+              showToast('Selecione o setor de destino para a doação interna.', 'error');
+              return;
+            }
+            resolvedDonationRecipient = {
+              name: internalSector,
+              address: donationUnitAddress || '',
+              cnpj: donationUnitCNPJ || ''
+            };
+          }
+        }
         
         await runTransaction(db, async (transaction) => {
           const processedItems = [];
@@ -4868,6 +4927,8 @@ export default function App() {
                   : exitReason === 'perda'
                   ? 'Descarte por Perda/Avaria'
                   : (modalSector || 'Saída de Balanço (Inventário)'))
+              : exitReason === 'doacao' && resolvedDonationRecipient
+              ? resolvedDonationRecipient.name
               : (modalSector || (inventoryLocation === 'Farmácia' ? 'Farmácia (Consumo Interno)' : 'Almoxarifado'));
 
             transaction.set(newTransRef, {
@@ -4887,9 +4948,13 @@ export default function App() {
               observation: exitReason === 'ajuste_balanco'
                 ? `[Saída de Balanço] ${expiryReason ? expiryReason : 'Movimentação decorrente de balanço de estoque.'}`
                 : null,
+              donationType: exitReason === 'doacao' ? donationModality : null,
+              donationRecipientName: exitReason === 'doacao' && resolvedDonationRecipient ? resolvedDonationRecipient.name : null,
+              donationRecipientAddress: exitReason === 'doacao' && resolvedDonationRecipient ? (resolvedDonationRecipient.address || null) : null,
+              donationRecipientCNPJ: exitReason === 'doacao' && resolvedDonationRecipient ? (resolvedDonationRecipient.cnpj || null) : null,
               donationUnitName: exitReason === 'doacao' ? (donationUnitName || 'Policlínica de Sobral') : null,
-              donationUnitAddress: exitReason === 'doacao' ? donationUnitAddress : null,
-              donationUnitCNPJ: exitReason === 'doacao' ? donationUnitCNPJ : null,
+              donationUnitAddress: exitReason === 'doacao' ? (resolvedDonationRecipient?.address || donationUnitAddress || null) : null,
+              donationUnitCNPJ: exitReason === 'doacao' ? (resolvedDonationRecipient?.cnpj || donationUnitCNPJ || null) : null,
               donationRevisionDate: exitReason === 'doacao' ? donationRevisionDate : null,
               donationNumber: currentDonationNumber,
               batch_number: currentItemData.batch_number,
@@ -5033,13 +5098,29 @@ export default function App() {
           });
           const currentDonationNumber = `${(uniqueDonations.size + 1).toString().padStart(2, '0')}/${currentYear}`;
 
+          const resolvedRecipientForPdf = (() => {
+            if (donationModality === 'externa') {
+              const matched = externalDonationLocations.find(
+                l => l.id === selectedExternalLocationId || (modalSector && normalizeString(l.name) === normalizeString(modalSector))
+              );
+              if (matched) {
+                return {
+                  name: matched.name,
+                  address: matched.address || '',
+                  cnpj: matched.cnpj || ''
+                };
+              }
+            }
+            return {
+              name: modalSector || selectedSector || 'Unidade Receptora',
+              address: donationUnitAddress || '',
+              cnpj: donationUnitCNPJ || ''
+            };
+          })();
+
           handleExportDonationTermPDF({
             donatingUnitName: donationUnitName || 'Policlínica de Sobral',
-            receivingUnit: {
-              name: modalSector || selectedSector || 'Unidade Receptora',
-              address: donationUnitAddress,
-              cnpj: donationUnitCNPJ
-            },
+            receivingUnit: resolvedRecipientForPdf,
             items: itemsForReceipt,
             revisionDate: donationRevisionDate,
             donationNumber: currentDonationNumber,
@@ -6893,8 +6974,8 @@ export default function App() {
 
       const donorName = formatTitleCase(data.donatingUnitName || 'Policlínica de Sobral');
       const receivingName = formatTitleCase(data.receivingUnit.name);
-      const receivingAddress = data.receivingUnit.address;
-      const receivingCNPJ = data.receivingUnit.cnpj;
+      const receivingAddress = (data.receivingUnit.address || '').trim();
+      const receivingCNPJ = (data.receivingUnit.cnpj || '').trim();
 
       drawLetterhead(doc);
 
@@ -6933,7 +7014,9 @@ export default function App() {
       doc.setTextColor(31, 41, 55);
       doc.setFont('helvetica', 'normal');
       
-      const donationText = `A ${donorName}, inscrita sob o CNPJ nº 12.208.466/0001-66, por intermédio de seu Setor de Almoxarifado, formaliza por este instrumento a doação à unidade ${receivingName}, situada em ${receivingAddress}, inscrita sob o CNPJ nº ${receivingCNPJ}, dos materiais e insumos abaixo discriminados. A presente cessão justifica-se pela otimização de estoque em virtude da redução de demanda interna e proximidade do prazo de validade, assegurando a destinação útil dos itens.`;
+      const addressClause = receivingAddress ? `, situada em ${receivingAddress}` : '';
+      const cnpjClause = receivingCNPJ ? `, inscrita sob o CNPJ nº ${receivingCNPJ}` : '';
+      const donationText = `A ${donorName}, inscrita sob o CNPJ nº 12.208.466/0001-66, por intermédio de seu Setor de Almoxarifado, formaliza por este instrumento a doação à unidade ${receivingName}${addressClause}${cnpjClause}, dos materiais e insumos abaixo discriminados. A presente cessão justifica-se pela otimização de estoque em virtude da redução de demanda interna e proximidade do prazo de validade, assegurando a destinação útil dos itens.`;
       
       const textWidth = pageWidth - (margin * 2);
       const textLines = doc.splitTextToSize(donationText, textWidth);
@@ -7018,7 +7101,7 @@ export default function App() {
       showToast("Termo de Doação gerado com sucesso!", "success");
     } catch (error) {
       console.error('Erro ao exportar PDF de Doação:', error);
-      alert('Ocorreu um erro ao gerar o Termo de Doação.');
+      showToast('Ocorreu um erro ao gerar o Termo de Doação.', 'error');
     }
   };
 
@@ -7201,6 +7284,139 @@ export default function App() {
 
     return () => unsubscribe();
   }, []);
+
+  // Load and sync persistent external donation destinations from Firestore
+  useEffect(() => {
+    const destRef = doc(db, 'settings', 'donation_destinations');
+    const unsubscribe = onSnapshot(
+      destRef,
+      (snapshot) => {
+        if (snapshot.exists()) {
+          const data = snapshot.data();
+          const list: ExternalDonationLocation[] = Array.isArray(data?.destinations)
+            ? data.destinations
+                .filter((d: any) => d && typeof d.name === 'string' && d.name.trim())
+                .map((d: any) => ({
+                  id: String(d.id || `ext_loc_${normalizeString(d.name)}`),
+                  name: String(d.name).trim(),
+                  address: d.address ? String(d.address).trim() : '',
+                  cnpj: d.cnpj ? String(d.cnpj).trim() : '',
+                  createdAt: d.createdAt || new Date().toISOString(),
+                  createdBy: d.createdBy || ''
+                }))
+            : [];
+          const sorted = [...list].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+          setExternalDonationLocations(sorted);
+          try {
+            localStorage.setItem('external_donation_locations', JSON.stringify(sorted));
+          } catch {
+            // ignore storage quota issues
+          }
+        }
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.GET, 'settings/donation_destinations');
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  const persistExternalDonationLocations = async (nextList: ExternalDonationLocation[]) => {
+    const sorted = [...nextList].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+    setExternalDonationLocations(sorted);
+    try {
+      localStorage.setItem('external_donation_locations', JSON.stringify(sorted));
+    } catch {
+      // ignore storage quota issues
+    }
+    const payload = sorted.map(loc => ({
+      id: loc.id,
+      name: loc.name,
+      address: loc.address || '',
+      cnpj: loc.cnpj || '',
+      createdAt: loc.createdAt || new Date().toISOString(),
+      createdBy: loc.createdBy || ''
+    }));
+    try {
+      await setDoc(
+        doc(db, 'settings', 'donation_destinations'),
+        { destinations: payload, updatedAt: new Date().toISOString() },
+        { merge: true }
+      );
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'settings/donation_destinations');
+    }
+  };
+
+  const handleSaveExternalDonationLocation = async (): Promise<ExternalDonationLocation | null> => {
+    const trimmedName = newExtLocName.trim();
+    const trimmedAddress = newExtLocAddress.trim();
+    const trimmedCnpj = newExtLocCnpj.trim();
+
+    if (!trimmedName) {
+      showToast('Informe o nome do local de destino da doação.', 'error');
+      return null;
+    }
+
+    const existing = externalDonationLocations.find(
+      loc => normalizeString(loc.name) === normalizeString(trimmedName)
+    );
+    if (existing) {
+      setSelectedExternalLocationId(existing.id);
+      setModalSector(existing.name);
+      setNewExtLocName('');
+      setNewExtLocAddress('');
+      setNewExtLocCnpj('');
+      setShowNewExternalLocationForm(false);
+      showToast(`Local "${existing.name}" já cadastrado e foi selecionado.`, 'info');
+      return existing;
+    }
+
+    const newLocation: ExternalDonationLocation = {
+      id: `ext_loc_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      name: trimmedName,
+      ...(trimmedAddress ? { address: trimmedAddress } : {}),
+      ...(trimmedCnpj ? { cnpj: trimmedCnpj } : {}),
+      createdAt: new Date().toISOString(),
+      ...(user?.email ? { createdBy: user.email } : userProfile?.name ? { createdBy: userProfile.name } : {})
+    };
+
+    setIsSavingExternalLocation(true);
+    try {
+      await persistExternalDonationLocations([...externalDonationLocations, newLocation]);
+      setSelectedExternalLocationId(newLocation.id);
+      setModalSector(newLocation.name);
+      setNewExtLocName('');
+      setNewExtLocAddress('');
+      setNewExtLocCnpj('');
+      setShowNewExternalLocationForm(false);
+      showToast(`Local "${newLocation.name}" cadastrado e salvo para futuras doações!`, 'success');
+      return newLocation;
+    } catch (err) {
+      console.error('Erro ao salvar local de doação externa:', err);
+      showToast('Não foi possível salvar o local no banco de dados. Tente novamente.', 'error');
+      return null;
+    } finally {
+      setIsSavingExternalLocation(false);
+    }
+  };
+
+  const handleDeleteExternalDonationLocation = async (locId: string) => {
+    const nextList = externalDonationLocations.filter(l => l.id !== locId);
+    try {
+      await persistExternalDonationLocations(nextList);
+      if (selectedExternalLocationId === locId) {
+        setSelectedExternalLocationId('');
+        setModalSector('');
+      }
+      setConfirmDeleteExtLocId(null);
+      showToast('Local de doação removido da lista.', 'success');
+    } catch (err) {
+      console.error('Erro ao remover local de doação externa:', err);
+      showToast('Não foi possível remover o local de doação.', 'error');
+    }
+  };
 
   const handleLetterheadUpload = async (file: File) => {
     if (file.size > 5 * 1024 * 1024) {
@@ -11271,9 +11487,9 @@ export default function App() {
                                     handleExportDonationTermPDF({
                                       donatingUnitName: t.donationUnitName,
                                       receivingUnit: {
-                                        name: t.sector || 'Unidade Receptora',
-                                        address: t.donationUnitAddress || '',
-                                        cnpj: t.donationUnitCNPJ || ''
+                                        name: t.donationRecipientName || t.sector || 'Unidade Receptora',
+                                        address: t.donationRecipientAddress || t.donationUnitAddress || '',
+                                        cnpj: t.donationRecipientCNPJ || t.donationUnitCNPJ || ''
                                       },
                                       items: [{ product_name: t.item_name, quantity: t.quantity, batch_number: t.batch_number, expiry_date: t.expiry_date }],
                                       revisionDate: t.donationRevisionDate || '',
@@ -13747,7 +13963,9 @@ export default function App() {
                                 <td className="py-3 px-4 text-slate-700 font-medium">
                                   {t.type === 'entry'
                                     ? (t.supplier || (t.origin === 'donation' ? 'Doação Recebida' : 'Abastecimento de Estoque'))
-                                    : (t.donationUnitName || t.sector || '---')}
+                                    : t.exitReason === 'doacao'
+                                      ? `${t.donationRecipientName || (t.sector && t.sector !== 'Almoxarifado' && t.sector !== 'Farmácia (Consumo Interno)' ? t.sector : null) || t.donationUnitName || 'Unidade Receptora'}${t.donationType === 'externa' ? ' (Doação Externa)' : t.donationType === 'interna' ? ' (Doação Interna)' : ''}`
+                                      : (t.donationRecipientName || t.sector || t.donationUnitName || '---')}
                                   {(t.expiryReason || t.observation) && (
                                     <div className="text-[10px] text-slate-400 italic truncate max-w-[220px]" title={t.observation || t.expiryReason}>
                                       {t.observation || t.expiryReason}
@@ -14683,39 +14901,317 @@ export default function App() {
                           onChange={e => setTransactionDate(e.target.value)}
                         />
                       </div>
-                      <div>
-                        <label className="block text-[11px] font-bold text-slate-600 mb-1.5">
-                          {exitReason === 'ajuste_balanco' ? 'Setor de Referência (Opcional)' : 'Setor Destino *'}
-                        </label>
-                        <select 
-                          required={exitReason === 'consumo'}
-                          className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold focus:ring-2 focus:ring-blue-500/20"
-                          value={modalSector}
-                          onChange={e => setModalSector(e.target.value)}
-                        >
-                          <option value="">
-                            {exitReason === 'ajuste_balanco'
-                              ? 'Saída de Balanço (Inventário Geral)'
-                              : 'Selecione um setor...'}
-                          </option>
-                          {SECTORS.map(s => <option key={s} value={s}>{s}</option>)}
-                        </select>
-                      </div>
+
+                      {exitReason === 'doacao' ? (
+                        <div>
+                          <label className="block text-[11px] font-bold text-slate-600 mb-1.5">Tipo de Doação *</label>
+                          <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-100 rounded-xl border border-slate-200">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setDonationModality('externa');
+                                const matched = externalDonationLocations.find(l => l.id === selectedExternalLocationId);
+                                setModalSector(matched ? matched.name : '');
+                                if (externalDonationLocations.length === 0) {
+                                  setShowNewExternalLocationForm(true);
+                                }
+                              }}
+                              className={`px-3 py-2 rounded-lg text-xs font-extrabold transition-all ${
+                                donationModality === 'externa'
+                                  ? 'bg-indigo-600 text-white shadow-sm'
+                                  : 'text-slate-600 hover:text-slate-900 hover:bg-white/70'
+                              }`}
+                            >
+                              Externa
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setDonationModality('interna');
+                                setShowNewExternalLocationForm(false);
+                                setModalSector('');
+                              }}
+                              className={`px-3 py-2 rounded-lg text-xs font-extrabold transition-all ${
+                                donationModality === 'interna'
+                                  ? 'bg-slate-900 text-white shadow-sm'
+                                  : 'text-slate-600 hover:text-slate-900 hover:bg-white/70'
+                              }`}
+                            >
+                              Interna
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div>
+                          <label className="block text-[11px] font-bold text-slate-600 mb-1.5">
+                            {exitReason === 'ajuste_balanco' ? 'Setor de Referência (Opcional)' : 'Setor Destino *'}
+                          </label>
+                          <select 
+                            required={exitReason === 'consumo'}
+                            className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold focus:ring-2 focus:ring-blue-500/20"
+                            value={modalSector}
+                            onChange={e => setModalSector(e.target.value)}
+                          >
+                            <option value="">
+                              {exitReason === 'ajuste_balanco'
+                                ? 'Saída de Balanço (Inventário Geral)'
+                                : 'Selecione um setor...'}
+                            </option>
+                            {SECTORS.map(s => <option key={s} value={s}>{s}</option>)}
+                          </select>
+                        </div>
+                      )}
+
                       <div>
                         <label className="block text-[11px] font-bold text-slate-600 mb-1.5">Motivo da Saída *</label>
                         <select 
                           className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold focus:ring-2 focus:ring-blue-500/20"
                           value={exitReason}
-                          onChange={e => setExitReason(e.target.value as any)}
+                          onChange={e => {
+                            const nextReason = e.target.value as 'consumo' | 'doacao' | 'vencido' | 'perda' | 'ajuste_balanco';
+                            setExitReason(nextReason);
+                            if (nextReason === 'doacao') {
+                              setDonationModality('externa');
+                              const matched = externalDonationLocations.find(l => l.id === selectedExternalLocationId);
+                              setModalSector(matched ? matched.name : '');
+                              if (externalDonationLocations.length === 0) {
+                                setShowNewExternalLocationForm(true);
+                              }
+                            } else {
+                              setShowNewExternalLocationForm(false);
+                              setConfirmDeleteExtLocId(null);
+                              if (externalDonationLocations.some(l => l.name === modalSector)) {
+                                setModalSector('');
+                              }
+                            }
+                          }}
                         >
                           <option value="consumo">Consumo / Atendimento aos Setores</option>
                           <option value="ajuste_balanco">Saída de Balanço / Alteração de Balanço (Inventário)</option>
-                          <option value="doacao">Doação Externa</option>
+                          <option value="doacao">Doação</option>
                           <option value="vencido">Vencimento / Descarte (Validade Expirada)</option>
                           <option value="perda">Perda / Avaria Física</option>
                         </select>
                       </div>
                     </div>
+
+                    {exitReason === 'doacao' && donationModality === 'interna' && (
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-600 mb-1.5">Setor Destino (Doação Interna) *</label>
+                        <select
+                          required
+                          className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold focus:ring-2 focus:ring-blue-500/20"
+                          value={modalSector}
+                          onChange={e => setModalSector(e.target.value)}
+                        >
+                          <option value="">Selecione um setor interno...</option>
+                          {SECTORS.map(s => <option key={s} value={s}>{s}</option>)}
+                        </select>
+                      </div>
+                    )}
+
+                    {exitReason === 'doacao' && donationModality === 'externa' && (
+                      <div className="p-4 rounded-2xl bg-indigo-50/60 border border-indigo-200/80 space-y-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <div className="p-1.5 rounded-lg bg-indigo-100 text-indigo-700">
+                              <MapPin size={15} />
+                            </div>
+                            <div>
+                              <label className="block text-xs font-black text-indigo-950">
+                                Local de Destino — Doação Externa *
+                              </label>
+                              <p className="text-[11px] text-indigo-700/90 font-medium">
+                                Locais salvos ficam disponíveis para seleção rápida nas próximas doações.
+                              </p>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowNewExternalLocationForm(prev => !prev);
+                              setConfirmDeleteExtLocId(null);
+                            }}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-sm transition-all active:scale-95"
+                          >
+                            {showNewExternalLocationForm ? <X size={14} /> : <Plus size={14} />}
+                            {showNewExternalLocationForm ? 'Fechar Cadastro' : 'Cadastrar Novo Local'}
+                          </button>
+                        </div>
+
+                        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                          <div className="flex-1 min-w-0">
+                            <select
+                              value={selectedExternalLocationId}
+                              onChange={e => {
+                                const locId = e.target.value;
+                                setSelectedExternalLocationId(locId);
+                                setConfirmDeleteExtLocId(null);
+                                const found = externalDonationLocations.find(l => l.id === locId);
+                                setModalSector(found ? found.name : '');
+                              }}
+                              className="w-full px-3.5 py-2.5 bg-white border border-indigo-200 rounded-xl text-sm font-semibold text-slate-800 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 focus:outline-none"
+                            >
+                              <option value="">
+                                {externalDonationLocations.length === 0
+                                  ? 'Nenhum local salvo — cadastre abaixo (ex: UPA de Sobral)'
+                                  : 'Selecione um local cadastrado...'}
+                              </option>
+                              {externalDonationLocations.map(loc => (
+                                <option key={loc.id} value={loc.id}>
+                                  {loc.name}{loc.cnpj ? ` (${loc.cnpj})` : ''}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          {selectedExternalLocationId && (
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteExtLocId(
+                                confirmDeleteExtLocId === selectedExternalLocationId ? null : selectedExternalLocationId
+                              )}
+                              className="px-3 py-2.5 rounded-xl bg-white hover:bg-rose-50 text-slate-500 hover:text-rose-600 border border-indigo-200 hover:border-rose-200 transition-colors flex items-center justify-center gap-1.5 text-xs font-bold shrink-0"
+                              title="Remover este local salvo"
+                            >
+                              <Trash2 size={15} />
+                              <span className="sm:hidden">Remover Local</span>
+                            </button>
+                          )}
+                        </div>
+
+                        {confirmDeleteExtLocId && (() => {
+                          const targetLoc = externalDonationLocations.find(l => l.id === confirmDeleteExtLocId);
+                          if (!targetLoc) return null;
+                          return (
+                            <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 flex flex-wrap items-center justify-between gap-2 text-xs">
+                              <span className="font-semibold text-rose-900">
+                                Remover <strong>{targetLoc.name}</strong> da lista de locais salvos?
+                              </span>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteExtLocId(null)}
+                                  className="px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-slate-600 font-bold hover:bg-slate-50"
+                                >
+                                  Cancelar
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteExternalDonationLocation(targetLoc.id)}
+                                  className="px-2.5 py-1 rounded-lg bg-rose-600 text-white font-bold hover:bg-rose-700"
+                                >
+                                  Excluir Local
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })()}
+
+                        {selectedExternalLocationId && !confirmDeleteExtLocId && (() => {
+                          const selectedLoc = externalDonationLocations.find(l => l.id === selectedExternalLocationId);
+                          if (!selectedLoc || (!selectedLoc.address && !selectedLoc.cnpj)) return null;
+                          return (
+                            <div className="px-3 py-2 rounded-xl bg-white/80 border border-indigo-100 text-[11px] text-slate-600 flex flex-wrap items-center gap-x-4 gap-y-1">
+                              {selectedLoc.address && (
+                                <span className="inline-flex items-center gap-1 font-medium">
+                                  <Building2 size={12} className="text-indigo-500" />
+                                  {selectedLoc.address}
+                                </span>
+                              )}
+                              {selectedLoc.cnpj && (
+                                <span className="font-mono font-semibold text-slate-700">
+                                  CNPJ: {selectedLoc.cnpj}
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })()}
+
+                        {(showNewExternalLocationForm || externalDonationLocations.length === 0) && (
+                          <div className="p-3.5 rounded-xl bg-white border border-indigo-200 space-y-3 shadow-2xs">
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-black text-slate-800 uppercase tracking-wide">
+                                Novo Local de Destino
+                              </span>
+                              {externalDonationLocations.length > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => setShowNewExternalLocationForm(false)}
+                                  className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+                                >
+                                  <X size={14} />
+                                </button>
+                              )}
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                              <div className="md:col-span-2">
+                                <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                                  Nome do Local / Instituição *
+                                </label>
+                                <input
+                                  type="text"
+                                  value={newExtLocName}
+                                  onChange={e => setNewExtLocName(e.target.value)}
+                                  onKeyDown={e => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault();
+                                      handleSaveExternalDonationLocation();
+                                    }
+                                  }}
+                                  placeholder="Ex: UPA de Sobral"
+                                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 focus:outline-none"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                                  Endereço (opcional)
+                                </label>
+                                <input
+                                  type="text"
+                                  value={newExtLocAddress}
+                                  onChange={e => setNewExtLocAddress(e.target.value)}
+                                  placeholder="Rua, bairro, cidade..."
+                                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 focus:outline-none"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                                  CNPJ (opcional)
+                                </label>
+                                <input
+                                  type="text"
+                                  value={newExtLocCnpj}
+                                  onChange={e => setNewExtLocCnpj(e.target.value)}
+                                  placeholder="00.000.000/0000-00"
+                                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 focus:outline-none"
+                                />
+                              </div>
+                            </div>
+                            <div className="flex items-center justify-end gap-2 pt-1">
+                              {externalDonationLocations.length > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => setShowNewExternalLocationForm(false)}
+                                  className="px-3 py-1.5 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100"
+                                >
+                                  Cancelar
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                disabled={isSavingExternalLocation || !newExtLocName.trim()}
+                                onClick={handleSaveExternalDonationLocation}
+                                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-extrabold shadow-sm transition-all disabled:opacity-50"
+                              >
+                                <Save size={14} />
+                                {isSavingExternalLocation ? 'Salvando...' : 'Salvar Local'}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
 
                     {isRetroactiveModalExit ? (
                       <div className="p-3.5 rounded-2xl bg-amber-50 border border-amber-200 flex items-start gap-3">

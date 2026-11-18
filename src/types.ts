@@ -115,6 +115,10 @@ export interface Transaction {
   donationUnitName?: string;
   donationUnitAddress?: string;
   donationUnitCNPJ?: string;
+  donationRecipientName?: string;
+  donationRecipientAddress?: string;
+  donationRecipientCNPJ?: string;
+  donationType?: 'externa' | 'interna';
   donationRevisionDate?: string;
   donationNumber?: string;
   exchangePartnerName?: string;
@@ -131,6 +135,15 @@ export interface Transaction {
   observation?: string;
   isRetroactive?: boolean;
   stockAffected?: boolean;
+}
+
+export interface ExternalDonationLocation {
+  id: string;
+  name: string;
+  address?: string;
+  cnpj?: string;
+  createdAt: string;
+  createdBy?: string;
 }
 
 export interface DocumentTemplate {
