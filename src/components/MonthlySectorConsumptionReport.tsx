@@ -305,12 +305,40 @@ function renderMonthlyStackedChartCanvas(params: {
   const { title, subtitle, months, sectors, grandTotal } = params;
   const W = 1120;
   const rowsCount = Math.max(1, sectors.length);
-  // Adapt row height when many sectors exist so the chart always fits comfortably on a single page
+  // Adapt row height when many sectors exist so the chart always fits comfortably on a single landscape page
   const rowH = rowsCount > 14 ? 25 : rowsCount > 10 ? 28 : 32;
   const barH = Math.max(17, rowH - 10);
   const headerH = 66;
-  const legendH = 52;
-  const H = headerH + rowsCount * rowH + legendH + 18;
+
+  // Pre-compute wrapped legend rows accurately so multi-month (e.g. 12 months) legends never overlap
+  const measureCanvas = document.createElement('canvas');
+  const measureCtx = measureCanvas.getContext('2d')!;
+  measureCtx.font = 'bold 10px Helvetica, Arial, sans-serif';
+
+  const legendEntries: Array<{ label: string; color: string; isTotal?: boolean }> = [
+    ...months.map((m, idx) => ({
+      label: m.label,
+      color: m.color || MONTH_COLORS[idx % MONTH_COLORS.length]
+    })),
+    { label: 'Total por Setor', color: '#0f172a', isTotal: true }
+  ];
+
+  const legendRows: Array<Array<{ label: string; color: string; width: number; isTotal?: boolean }>> = [[]];
+  let rowCursorX = 28;
+  const legendMaxX = W - 26;
+  legendEntries.forEach(entry => {
+    const itemW = measureCtx.measureText(entry.label).width + (entry.isTotal ? 30 : 28);
+    if (rowCursorX + itemW > legendMaxX && legendRows[legendRows.length - 1].length > 0) {
+      legendRows.push([]);
+      rowCursorX = 28;
+    }
+    legendRows[legendRows.length - 1].push({ ...entry, width: itemW });
+    rowCursorX += itemW;
+  });
+
+  const legendRowH = 19;
+  const legendH = Math.max(40, legendRows.length * legendRowH + 22);
+  const H = headerH + rowsCount * rowH + legendH + 12;
 
   const scale = 2;
   const canvas = document.createElement('canvas');
@@ -327,25 +355,28 @@ function renderMonthlyStackedChartCanvas(params: {
   ctx.lineWidth = 1.2;
   ctx.strokeRect(1, 1, W - 2, H - 2);
 
-  // Title & Grand Total badge
-  ctx.fillStyle = '#0f172a';
-  ctx.font = 'bold 14.5px Helvetica, Arial, sans-serif';
-  ctx.textAlign = 'left';
-  ctx.fillText(title.toUpperCase(), 22, 26);
-
-  ctx.fillStyle = '#475569';
-  ctx.font = '11px Helvetica, Arial, sans-serif';
-  ctx.fillText(subtitle, 22, 43);
-
-  // Grand total pill on top right
+  // Grand total badge on top right (measured first so title/subtitle never collide with it)
   const totalBadgeText = `TOTAL GERAL DA CATEGORIA: ${formatInt(grandTotal)} UN`;
   ctx.font = 'bold 11px Helvetica, Arial, sans-serif';
   const badgeW = Math.max(235, ctx.measureText(totalBadgeText).width + 26);
+  const maxHeaderTextW = W - badgeW - 56;
+
+  // Title & Subtitle
+  ctx.fillStyle = '#0f172a';
+  ctx.font = 'bold 14.5px Helvetica, Arial, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(title.toUpperCase(), 22, 26, maxHeaderTextW);
+
+  ctx.fillStyle = '#475569';
+  ctx.font = '11px Helvetica, Arial, sans-serif';
+  ctx.fillText(subtitle, 22, 43, maxHeaderTextW);
+
   ctx.fillStyle = '#0f172a';
   ctx.fillRect(W - badgeW - 22, 14, badgeW, 28);
   ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 11px Helvetica, Arial, sans-serif';
   ctx.textAlign = 'center';
-  ctx.fillText(totalBadgeText, W - badgeW / 2 - 22, 32);
+  ctx.fillText(totalBadgeText, W - badgeW / 2 - 22, 32, badgeW - 12);
 
   // Divider line
   ctx.strokeStyle = '#e2e8f0';
@@ -386,8 +417,8 @@ function renderMonthlyStackedChartCanvas(params: {
     ctx.font = `bold ${rowsCount > 14 ? '9.5px' : '10.5px'} Helvetica, Arial, sans-serif`;
     ctx.textAlign = 'right';
     const cleanSecName =
-      sec.sector.length > 25 ? sec.sector.slice(0, 24) + '…' : sec.sector;
-    ctx.fillText(cleanSecName.toUpperCase(), barLeft - 12, textBaselineY);
+      sec.sector.length > 26 ? sec.sector.slice(0, 25) + '…' : sec.sector;
+    ctx.fillText(cleanSecName.toUpperCase(), barLeft - 12, textBaselineY, barLeft - 24);
 
     // Track bar rectangle
     ctx.fillStyle = '#f1f5f9';
@@ -415,17 +446,16 @@ function renderMonthlyStackedChartCanvas(params: {
         ctx.stroke();
       }
 
-      // Always draw the quantity centered inside the colored segment
+      // Always draw the quantity centered inside the colored segment without overflowing into neighbors
       const valStr = formatInt(val);
       ctx.font = `bold ${rowsCount > 14 ? '9px' : '10px'} Helvetica, Arial, sans-serif`;
-      let textW = ctx.measureText(valStr).width;
+      const textW = ctx.measureText(valStr).width;
       if (textW > segW - 6) {
         ctx.font = 'bold 8px Helvetica, Arial, sans-serif';
-        textW = ctx.measureText(valStr).width;
       }
       ctx.fillStyle = '#ffffff';
       ctx.textAlign = 'center';
-      ctx.fillText(valStr, currentX + segW / 2, textBaselineY);
+      ctx.fillText(valStr, currentX + segW / 2, textBaselineY, Math.max(10, segW - 4));
 
       currentX += segW;
     });
@@ -442,10 +472,10 @@ function renderMonthlyStackedChartCanvas(params: {
     ctx.fillStyle = '#ffffff';
     ctx.font = `bold ${rowsCount > 14 ? '9.5px' : '10.5px'} Helvetica, Arial, sans-serif`;
     ctx.textAlign = 'center';
-    ctx.fillText(formatInt(sec.total), badgeX + (totalColW - 10) / 2, textBaselineY);
+    ctx.fillText(formatInt(sec.total), badgeX + (totalColW - 10) / 2, textBaselineY, totalColW - 16);
   });
 
-  // Legend at the bottom
+  // Legend at the bottom (cleanly wrapped across multiple lines when needed)
   const legendTop = headerH + rowsCount * rowH + 10;
   ctx.strokeStyle = '#e2e8f0';
   ctx.beginPath();
@@ -453,29 +483,20 @@ function renderMonthlyStackedChartCanvas(params: {
   ctx.lineTo(W - 22, legendTop - 4);
   ctx.stroke();
 
-  let legX = 28;
-  const legY = legendTop + 13;
   ctx.font = 'bold 10px Helvetica, Arial, sans-serif';
   ctx.textAlign = 'left';
 
-  months.forEach((m, idx) => {
-    const itemText = m.label;
-    const itemW = ctx.measureText(itemText).width + 26;
-    if (legX + itemW > W - 140) {
-      legX = 28;
-    }
-    ctx.fillStyle = m.color || MONTH_COLORS[idx % MONTH_COLORS.length];
-    ctx.fillRect(legX, legY - 9, 11, 11);
-    ctx.fillStyle = '#1e293b';
-    ctx.fillText(itemText, legX + 15, legY);
-    legX += itemW;
+  legendRows.forEach((row, rowIdx) => {
+    let legX = 28;
+    const legY = legendTop + 14 + rowIdx * legendRowH;
+    row.forEach(entry => {
+      ctx.fillStyle = entry.color;
+      ctx.fillRect(legX, legY - 9, 11, 11);
+      ctx.fillStyle = entry.isTotal ? '#0f172a' : '#1e293b';
+      ctx.fillText(entry.label, legX + 15, legY);
+      legX += entry.width;
+    });
   });
-
-  // Total Geral legend item
-  ctx.fillStyle = '#0f172a';
-  ctx.fillRect(legX + 6, legY - 9, 11, 11);
-  ctx.fillStyle = '#0f172a';
-  ctx.fillText('Total por Setor', legX + 21, legY);
 
   return { dataUrl: canvas.toDataURL('image/png', 1.0), width: W, height: H };
 }
@@ -1341,21 +1362,17 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
 
       doc.setTextColor(15, 23, 42);
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(11);
-      doc.text(
-        `RELATÓRIO DE CONSUMO MENSAL POR SETOR — CATEGORIA: ${categoryDisplayLabel.toUpperCase()}`,
-        margin,
-        y + 4.5
-      );
+      doc.setFontSize(10.8);
+      const pdfTitleRaw = `RELATÓRIO DE CONSUMO MENSAL POR SETOR — CATEGORIA: ${categoryDisplayLabel.toUpperCase()}`;
+      const pdfTitleLines = doc.splitTextToSize(pdfTitleRaw, contentWidth);
+      doc.text(pdfTitleLines[0] || pdfTitleRaw, margin, y + 4.5);
 
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7.8);
       doc.setTextColor(71, 85, 105);
-      doc.text(
-        `Unidade: ${inventoryLocation}   |   Período Analisado: ${periodInfo.periodLabel}   |   Emitido em: ${nowStr}`,
-        margin,
-        y + 9.2
-      );
+      const pdfSubtitleRaw = `Unidade: ${inventoryLocation}   |   Período Analisado: ${periodInfo.periodLabel}   |   Emitido em: ${nowStr}`;
+      const pdfSubtitleLines = doc.splitTextToSize(pdfSubtitleRaw, contentWidth);
+      doc.text(pdfSubtitleLines[0] || pdfSubtitleRaw, margin, y + 9.2);
 
       const dividerY = y + 11.8;
       doc.setDrawColor(203, 213, 225);
@@ -1423,10 +1440,10 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
 
       currentY += cardH + 3.5;
 
-      // Prepare Critical Analysis text and calculate its exact height so Chart + Analysis fit on 1 page
+      // Prepare Critical Analysis text and calculate its exact height so Chart + Analysis + Footer never overlap
       const fullAnalysisParagraph = `ANÁLISE CRÍTICA: ${normalizedAnalysisBody || autoGeneratedCriticalAnalysis}`;
-      let analysisFontSize = 8.5;
-      let lineH = 3.8;
+      let analysisFontSize = 8.4;
+      let lineH = 3.7;
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(analysisFontSize);
       let wrappedAnalysisLines: string[] = doc.splitTextToSize(
@@ -1435,8 +1452,8 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
       );
 
       if (wrappedAnalysisLines.length > 5) {
-        analysisFontSize = 7.6;
-        lineH = 3.3;
+        analysisFontSize = 7.5;
+        lineH = 3.25;
         doc.setFontSize(analysisFontSize);
         wrappedAnalysisLines = doc.splitTextToSize(fullAnalysisParagraph, contentWidth - 8);
       }
@@ -1444,10 +1461,21 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
         wrappedAnalysisLines = wrappedAnalysisLines.slice(0, 8);
       }
 
-      const analysisBoxH = Math.max(14, wrappedAnalysisLines.length * lineH + 7);
-      const footerReserve = 10;
+      let analysisBoxH = Math.max(14, wrappedAnalysisLines.length * lineH + 6.5);
+      const footerReserve = 11;
+      let availableForChart = pageHeight - footerReserve - currentY - analysisBoxH - 3.5;
 
-      // Render Horizontal Stacked Bar Chart Image scaled to fit remaining single-page height
+      // If vertical space for the chart is tight (e.g. letterhead + long analysis), compact analysis slightly
+      if (availableForChart < 56 && wrappedAnalysisLines.length > 4) {
+        analysisFontSize = 7.0;
+        lineH = 3.0;
+        doc.setFontSize(analysisFontSize);
+        wrappedAnalysisLines = doc.splitTextToSize(fullAnalysisParagraph, contentWidth - 8).slice(0, 7);
+        analysisBoxH = Math.max(13, wrappedAnalysisLines.length * lineH + 6);
+        availableForChart = pageHeight - footerReserve - currentY - analysisBoxH - 3.5;
+      }
+
+      // Render Horizontal Stacked Bar Chart Image scaled to fit remaining single-page height strictly above analysis & footer
       const chartRender = renderMonthlyStackedChartCanvas({
         title: `Gráfico de Consumo Mensal por Setor — ${categoryDisplayLabel}`,
         subtitle: `Período: ${periodInfo.periodLabel} • Quantidade consumida mês a mês por setor (lotes consolidados)`,
@@ -1456,15 +1484,17 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
         grandTotal: displayedGrandTotal
       });
 
-      const availableForChart = pageHeight - footerReserve - currentY - analysisBoxH - 3.5;
       const naturalChartH = (contentWidth * chartRender.height) / chartRender.width;
-      const finalChartH = Math.max(45, Math.min(naturalChartH, availableForChart));
+      const safeAvailableChartH = Math.max(28, availableForChart);
+      const finalChartH = Math.min(naturalChartH, safeAvailableChartH);
 
-      // Center chart horizontally if height-constrained so aspect ratio remains crisp
-      const finalChartW =
+      // Center chart horizontally if height-constrained so aspect ratio remains crisp without distortion
+      const finalChartW = Math.min(
+        contentWidth,
         finalChartH < naturalChartH
           ? (finalChartH * chartRender.width) / chartRender.height
-          : contentWidth;
+          : contentWidth
+      );
       const chartX = margin + (contentWidth - finalChartW) / 2;
 
       doc.addImage(
@@ -1490,7 +1520,7 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
       doc.setFontSize(analysisFontSize);
 
       wrappedAnalysisLines.forEach((lineText, idx) => {
-        const lineY = currentY + 4.8 + idx * lineH;
+        const lineY = currentY + 4.6 + idx * lineH;
         if (idx === 0 && lineText.toUpperCase().startsWith('ANÁLISE CRÍTICA:')) {
           const prefix = 'ANÁLISE CRÍTICA: ';
           doc.setFont('helvetica', 'bold');
@@ -1512,8 +1542,9 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7.2);
       doc.setTextColor(100, 116, 139);
+      const footerLeftText = `Consumo Mensal por Setor • Categoria: ${categoryDisplayLabel} • Emitido em ${nowStr}`;
       doc.text(
-        `Consumo Mensal por Setor • Categoria: ${categoryDisplayLabel} • Emitido em ${nowStr}`,
+        footerLeftText.length > 130 ? footerLeftText.slice(0, 129) + '…' : footerLeftText,
         margin,
         pageHeight - 4.5
       );
@@ -1528,7 +1559,7 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
       doc.save(
         `Consumo_Mensal_Por_Setor_${safeCat}_${new Date().toISOString().slice(0, 10)}.pdf`
       );
-      showToast('Relatório "Consumo Mensal por Setor" exportado em PDF (página única)!', 'success');
+      showToast('Relatório "Consumo Mensal por Setor" exportado em PDF (paisagem, página única)!', 'success');
     } catch (error) {
       console.error('Erro ao exportar PDF de Consumo Mensal por Setor:', error);
       showToast('Erro ao gerar o PDF do relatório.', 'error');
@@ -1537,7 +1568,7 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
     }
   };
 
-  // Print Report — Single-Page Landscape A4 with Chart + Critical Analysis (no table, no author info)
+  // Print Report — Single-Page Landscape A4 via hidden iframe (avoids popup blockers & guarantees landscape orientation)
   const handlePrintReport = () => {
     try {
       const chartRender = renderMonthlyStackedChartCanvas({
@@ -1548,27 +1579,49 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
         grandTotal: displayedGrandTotal
       });
 
-      const printWin = window.open('', '_blank', 'width=1200,height=850');
-      if (!printWin) {
-        window.print();
-        return;
+      const escapeHtml = (str: string) =>
+        String(str || '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+
+      const safeCategory = escapeHtml(categoryDisplayLabel);
+      const safeLocation = escapeHtml(inventoryLocation);
+      const safePeriod = escapeHtml(periodInfo.periodLabel);
+      const safePeakMonth = escapeHtml(reportAggregation.peakMonthLabel);
+      const safeAnalysisHtml = escapeHtml(
+        normalizedAnalysisBody || autoGeneratedCriticalAnalysis
+      ).replace(/\n/g, '<br/>');
+
+      const existingFrame = document.getElementById('monthly-sector-print-frame');
+      if (existingFrame && existingFrame.parentNode) {
+        existingFrame.parentNode.removeChild(existingFrame);
       }
 
-      const safeAnalysisHtml = (normalizedAnalysisBody || autoGeneratedCriticalAnalysis)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/\n/g, '<br/>');
+      const iframe = document.createElement('iframe');
+      iframe.id = 'monthly-sector-print-frame';
+      iframe.style.position = 'fixed';
+      iframe.style.right = '0';
+      iframe.style.bottom = '0';
+      iframe.style.width = '0';
+      iframe.style.height = '0';
+      iframe.style.border = '0';
+      document.body.appendChild(iframe);
 
-      printWin.document.write(`
+      const htmlContent = `
         <!DOCTYPE html>
         <html lang="pt-BR">
         <head>
           <meta charset="UTF-8" />
-          <title>Consumo Mensal por Setor - ${categoryDisplayLabel}</title>
+          <title>Consumo Mensal por Setor - ${safeCategory}</title>
           <style>
             @page { size: A4 landscape; margin: 8mm 10mm; }
-            * { box-sizing: border-box; }
+            * {
+              box-sizing: border-box;
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+            }
             html, body {
               width: 100%;
               height: 100%;
@@ -1576,14 +1629,16 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
               padding: 0;
               font-family: Helvetica, Arial, sans-serif;
               color: #0f172a;
+              background: #ffffff;
               overflow: hidden;
             }
             .page-container {
               display: flex;
               flex-direction: column;
               justify-content: space-between;
-              height: 190mm;
-              max-height: 190mm;
+              width: 100%;
+              height: 192mm;
+              max-height: 192mm;
               page-break-after: avoid;
               page-break-inside: avoid;
               break-inside: avoid;
@@ -1596,40 +1651,51 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
               color: #0f172a;
               padding: 2px 0 6px;
               border-bottom: 1px solid #cbd5e1;
-              margin-bottom: 8px;
+              margin-bottom: 7px;
               display: flex;
               justify-content: space-between;
               align-items: center;
+              gap: 12px;
             }
-            .header h1 { margin: 0; font-size: 14px; text-transform: uppercase; color: #0f172a; }
-            .header p { margin: 2px 0 0; font-size: 10px; color: #475569; }
+            .header h1 { margin: 0; font-size: 13.5px; text-transform: uppercase; color: #0f172a; }
+            .header p { margin: 2px 0 0; font-size: 9.8px; color: #475569; }
             .kpis {
               display: grid;
               grid-template-columns: repeat(4, 1fr);
               gap: 8px;
-              margin-bottom: 8px;
+              margin-bottom: 7px;
             }
             .kpi {
               border: 1px solid #cbd5e1;
               background: #f8fafc;
               border-radius: 6px;
               padding: 6px 10px;
+              min-width: 0;
             }
-            .kpi-label { font-size: 8.5px; font-weight: 700; color: #64748b; text-transform: uppercase; }
-            .kpi-val { font-size: 12.5px; font-weight: 800; color: #0f172a; margin-top: 2px; }
+            .kpi-label { font-size: 8.2px; font-weight: 700; color: #64748b; text-transform: uppercase; }
+            .kpi-val {
+              font-size: 12px;
+              font-weight: 800;
+              color: #0f172a;
+              margin-top: 2px;
+              white-space: nowrap;
+              overflow: hidden;
+              text-overflow: ellipsis;
+            }
             .chart-box {
               flex: 1 1 auto;
               min-height: 0;
               display: flex;
               align-items: center;
               justify-content: center;
-              margin-bottom: 8px;
+              margin-bottom: 7px;
               overflow: hidden;
             }
             .chart-box img {
-              width: 100%;
-              height: 100%;
-              max-height: ${letterheadImage ? '106mm' : '120mm'};
+              max-width: 100%;
+              max-height: 100%;
+              width: auto;
+              height: auto;
               object-fit: contain;
               border-radius: 6px;
             }
@@ -1638,9 +1704,9 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
               border: 1px solid #cbd5e1;
               background: #f8fafc;
               border-radius: 6px;
-              padding: 9px 12px;
-              font-size: 10.5px;
-              line-height: 1.42;
+              padding: 8px 12px;
+              font-size: 10px;
+              line-height: 1.38;
               color: #0f172a;
               text-align: justify;
             }
@@ -1648,7 +1714,7 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
               flex-shrink: 0;
               border-top: 1px solid #e2e8f0;
               padding-top: 4px;
-              margin-top: 6px;
+              margin-top: 5px;
               display: flex;
               justify-content: space-between;
               font-size: 9px;
@@ -1661,24 +1727,24 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
             <div class="top-section">
               ${
                 letterheadImage
-                  ? `<div style="text-align:center;margin-bottom:4px;"><img src="${letterheadImage}" style="max-height:42px;object-fit:contain;" /></div>`
+                  ? `<div style="text-align:center;margin-bottom:4px;"><img src="${letterheadImage}" style="max-height:40px;max-width:100%;object-fit:contain;" /></div>`
                   : ''
               }
               <div class="header">
-                <div>
-                  <h1>Relatório de Consumo Mensal por Setor — Categoria: ${categoryDisplayLabel}</h1>
-                  <p>Unidade: ${inventoryLocation} • Período Analisado: ${periodInfo.periodLabel} • Emitido em ${new Date().toLocaleString('pt-BR')}</p>
+                <div style="min-width:0;">
+                  <h1>Relatório de Consumo Mensal por Setor — Categoria: ${safeCategory}</h1>
+                  <p>Unidade: ${safeLocation} • Período Analisado: ${safePeriod} • Emitido em ${new Date().toLocaleString('pt-BR')}</p>
                 </div>
-                <div style="text-align:right;">
-                  <div style="font-size:9px;color:#475569;text-transform:uppercase;font-weight:700;">Total Geral da Categoria</div>
-                  <div style="font-size:15px;font-weight:900;color:#0f172a;">${formatInt(displayedGrandTotal)} un</div>
+                <div style="text-align:right;flex-shrink:0;">
+                  <div style="font-size:8.5px;color:#475569;text-transform:uppercase;font-weight:700;">Total Geral da Categoria</div>
+                  <div style="font-size:14.5px;font-weight:900;color:#0f172a;">${formatInt(displayedGrandTotal)} un</div>
                 </div>
               </div>
 
               <div class="kpis">
                 <div class="kpi">
                   <div class="kpi-label">Categoria Selecionada</div>
-                  <div class="kpi-val">${categoryDisplayLabel}</div>
+                  <div class="kpi-val">${safeCategory}</div>
                 </div>
                 <div class="kpi">
                   <div class="kpi-label">Total Geral Consumido</div>
@@ -1690,13 +1756,13 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
                 </div>
                 <div class="kpi">
                   <div class="kpi-label">Mês de Maior Consumo</div>
-                  <div class="kpi-val">${reportAggregation.peakMonthLabel} (${formatInt(reportAggregation.peakMonthQty)} un)</div>
+                  <div class="kpi-val">${safePeakMonth} (${formatInt(reportAggregation.peakMonthQty)} un)</div>
                 </div>
               </div>
             </div>
 
             <div class="chart-box">
-              <img src="${chartRender.dataUrl}" alt="Gráfico de Consumo Mensal por Setor" />
+              <img id="monthly-chart-img" src="${chartRender.dataUrl}" alt="Gráfico de Consumo Mensal por Setor" />
             </div>
 
             <div class="analysis-box">
@@ -1704,24 +1770,55 @@ export const MonthlySectorConsumptionReport: React.FC<MonthlySectorConsumptionRe
             </div>
 
             <div class="footer">
-              <span>Consumo Mensal por Setor • Categoria: ${categoryDisplayLabel}</span>
+              <span>Consumo Mensal por Setor • Categoria: ${safeCategory}</span>
               <strong style="color:#0f172a;">Página 1 de 1</strong>
             </div>
           </div>
-          <script>
-            window.onload = function() {
-              setTimeout(function() {
-                window.print();
-              }, 250);
-            };
-          </script>
         </body>
         </html>
-      `);
-      printWin.document.close();
+      `;
+
+      const frameDoc = iframe.contentWindow?.document;
+      if (frameDoc) {
+        frameDoc.open();
+        frameDoc.write(htmlContent);
+        frameDoc.close();
+
+        let printed = false;
+        const triggerPrint = () => {
+          if (printed) return;
+          printed = true;
+          try {
+            iframe.contentWindow?.focus();
+            iframe.contentWindow?.print();
+          } catch (e) {
+            console.error('Erro ao acionar impressão em paisagem:', e);
+            showToast('Erro ao abrir visualização de impressão.', 'error');
+          }
+        };
+
+        const imgs = Array.from(frameDoc.querySelectorAll('img'));
+        const pending = imgs.filter(img => !img.complete);
+        if (pending.length === 0) {
+          setTimeout(triggerPrint, 180);
+        } else {
+          let remaining = pending.length;
+          const onImgDone = () => {
+            remaining -= 1;
+            if (remaining <= 0) {
+              setTimeout(triggerPrint, 120);
+            }
+          };
+          pending.forEach(img => {
+            img.onload = onImgDone;
+            img.onerror = onImgDone;
+          });
+          setTimeout(triggerPrint, 1200);
+        }
+      }
     } catch (error) {
       console.error('Erro ao imprimir relatório:', error);
-      window.print();
+      showToast('Erro ao preparar impressão do relatório.', 'error');
     }
   };
 

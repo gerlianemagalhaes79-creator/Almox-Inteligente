@@ -213,52 +213,51 @@ function drawRoundRect(
 /**
  * Chart 1: Entradas vs Saídas por Período (Grouped Bar Chart with Legend & Values)
  */
-function renderTimelineChartCanvas(data: PDFTimePoint[]): string {
-  const W = 800;
+function renderTimelineChartCanvas(data: PDFTimePoint[]): {
+  dataUrl: string;
+  width: number;
+  height: number;
+} {
+  const W = 1100;
   const H = 310;
   const { canvas, ctx } = createHiDPICanvas(W, H);
 
   drawRoundRect(ctx, 2, 2, W - 4, H - 4, 12, '#ffffff', '#e2e8f0');
 
-  // Header
   ctx.fillStyle = '#0f172a';
-  ctx.font = 'bold 14px Helvetica, Arial, sans-serif';
-  ctx.fillText('Evolução de Entradas e Saídas no Período (Unidades)', 20, 28);
+  ctx.font = 'bold 14.5px Helvetica, Arial, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('Evolução de Entradas e Saídas no Período (Unidades)', 22, 28);
 
-  // Legend on top-right
   const legY = 18;
-  drawRoundRect(ctx, W - 230, legY, 12, 12, 3, '#10b981');
+  drawRoundRect(ctx, W - 245, legY, 12, 12, 3, '#10b981');
   ctx.fillStyle = '#334155';
   ctx.font = 'bold 11px Helvetica, Arial, sans-serif';
-  ctx.fillText('Entradas', W - 212, legY + 10);
+  ctx.fillText('Entradas', W - 227, legY + 10);
 
-  drawRoundRect(ctx, W - 135, legY, 12, 12, 3, '#2563eb');
+  drawRoundRect(ctx, W - 145, legY, 12, 12, 3, '#2563eb');
   ctx.fillStyle = '#334155';
-  ctx.fillText('Saídas / Consumo', W - 117, legY + 10);
+  ctx.fillText('Saídas / Consumo', W - 127, legY + 10);
 
   if (!data || data.length === 0) {
-    drawRoundRect(ctx, 20, 50, W - 40, H - 70, 8, '#f8fafc', '#e2e8f0');
+    drawRoundRect(ctx, 22, 50, W - 44, H - 70, 8, '#f8fafc', '#e2e8f0');
     ctx.fillStyle = '#64748b';
     ctx.font = 'bold 12px Helvetica, Arial, sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText('Nenhuma movimentação registrada para os filtros selecionados neste período.', W / 2, H / 2 + 10);
-    return canvas.toDataURL('image/png', 1.0);
+    return { dataUrl: canvas.toDataURL('image/png', 1.0), width: W, height: H };
   }
 
-  const displayData = data.slice(-14); // Max 14 buckets for clean legibility
-  const chartLeft = 58;
-  const chartRight = W - 24;
+  const displayData = data.slice(-14);
+  const chartLeft = 68;
+  const chartRight = W - 26;
   const chartTop = 52;
   const chartBottom = H - 48;
   const chartW = chartRight - chartLeft;
   const chartH = chartBottom - chartTop;
 
-  const maxVal = Math.max(
-    10,
-    ...displayData.map(d => Math.max(d.entries || 0, d.exits || 0))
-  );
+  const maxVal = Math.max(10, ...displayData.map(d => Math.max(d.entries || 0, d.exits || 0)));
 
-  // Horizontal grid lines & Y axis labels
   const steps = 4;
   ctx.textAlign = 'right';
   ctx.font = '10px Helvetica, Arial, sans-serif';
@@ -277,12 +276,12 @@ function renderTimelineChartCanvas(data: PDFTimePoint[]): string {
   }
 
   const groupW = chartW / displayData.length;
-  const barW = Math.min(22, Math.max(8, (groupW - 14) / 2));
+  const barW = Math.min(26, Math.max(10, (groupW - 16) / 2));
+  const maxLabelChars = Math.max(8, Math.floor((groupW - 6) / 5.5));
 
   displayData.forEach((pt, idx) => {
     const centerX = chartLeft + groupW * idx + groupW / 2;
 
-    // Entries Bar
     const entH = maxVal > 0 ? ((pt.entries || 0) / maxVal) * chartH : 0;
     const entX = centerX - barW - 2;
     const entY = chartBottom - entH;
@@ -292,11 +291,10 @@ function renderTimelineChartCanvas(data: PDFTimePoint[]): string {
         ctx.fillStyle = '#047857';
         ctx.font = 'bold 9px Helvetica, Arial, sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText(formatInt(pt.entries), entX + barW / 2, Math.max(chartTop - 4, entY - 4));
+        ctx.fillText(formatInt(pt.entries), entX + barW / 2, Math.max(chartTop - 4, entY - 4), barW + 10);
       }
     }
 
-    // Exits Bar
     const extH = maxVal > 0 ? ((pt.exits || 0) / maxVal) * chartH : 0;
     const extX = centerX + 2;
     const extY = chartBottom - extH;
@@ -306,22 +304,20 @@ function renderTimelineChartCanvas(data: PDFTimePoint[]): string {
         ctx.fillStyle = '#1d4ed8';
         ctx.font = 'bold 9px Helvetica, Arial, sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText(formatInt(pt.exits), extX + barW / 2, Math.max(chartTop - 4, extY - 4));
+        ctx.fillText(formatInt(pt.exits), extX + barW / 2, Math.max(chartTop - 4, extY - 4), barW + 10);
       }
     }
 
-    // X Axis Label
     ctx.fillStyle = '#334155';
     ctx.font = 'bold 9.5px Helvetica, Arial, sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(truncateText(pt.label, 10), centerX, chartBottom + 16);
+    ctx.fillText(truncateText(pt.label, maxLabelChars), centerX, chartBottom + 16, groupW - 6);
   });
 
-  // Totals Footer Summary inside chart
   const totalEnt = data.reduce((a, b) => a + (b.entries || 0), 0);
   const totalExt = data.reduce((a, b) => a + (b.exits || 0), 0);
   ctx.fillStyle = '#475569';
-  ctx.font = 'bold 10px Helvetica, Arial, sans-serif';
+  ctx.font = 'bold 10.5px Helvetica, Arial, sans-serif';
   ctx.textAlign = 'left';
   ctx.fillText(
     `Total no período: Entradas = ${formatInt(totalEnt)} un  |  Saídas = ${formatInt(totalExt)} un`,
@@ -329,126 +325,100 @@ function renderTimelineChartCanvas(data: PDFTimePoint[]): string {
     H - 10
   );
 
-  return canvas.toDataURL('image/png', 1.0);
+  return { dataUrl: canvas.toDataURL('image/png', 1.0), width: W, height: H };
 }
 
 /**
  * Chart 2: Situação do Estoque Consolidado (Horizontal Status Breakdown)
  */
-function renderStockStatusChartCanvas(summary: PDFStockStatusSummary): string {
-  const W = 800;
-  const H = 250;
+function renderStockStatusChartCanvas(summary: PDFStockStatusSummary): {
+  dataUrl: string;
+  width: number;
+  height: number;
+} {
+  const W = 1100;
+  const H = 242;
   const { canvas, ctx } = createHiDPICanvas(W, H);
 
   drawRoundRect(ctx, 2, 2, W - 4, H - 4, 12, '#ffffff', '#e2e8f0');
 
   ctx.fillStyle = '#0f172a';
-  ctx.font = 'bold 14px Helvetica, Arial, sans-serif';
-  ctx.fillText('Situação Atual do Estoque Consolidado (Materiais e Validades)', 20, 28);
+  ctx.font = 'bold 14.5px Helvetica, Arial, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('Situação Atual do Estoque Consolidado (Materiais e Validades)', 22, 28);
 
   const items = [
-    {
-      label: 'Materiais com Estoque Regular (Acima do Mínimo)',
-      value: summary.regularCount,
-      color: '#10b981',
-      bg: '#ecfdf5',
-      unit: 'materiais'
-    },
-    {
-      label: 'Materiais com Estoque Baixo (≤ Estoque Mínimo)',
-      value: summary.lowStockCount,
-      color: '#f59e0b',
-      bg: '#fffbeb',
-      unit: 'materiais'
-    },
-    {
-      label: 'Materiais Zerados / Em Ruptura (Saldo = 0)',
-      value: summary.zeroStockCount,
-      color: '#e11d48',
-      bg: '#fff1f2',
-      unit: 'materiais'
-    },
-    {
-      label: 'Lotes com Validade Próxima (Vencem em até 60 dias)',
-      value: summary.expiring60dBatchesCount,
-      color: '#d97706',
-      bg: '#fef3c7',
-      unit: 'lotes'
-    },
-    {
-      label: 'Lotes com Saldo Vencido Hoje',
-      value: summary.expiredBatchesCount,
-      color: '#be123c',
-      bg: '#ffe4e6',
-      unit: 'lotes'
-    }
+    { label: 'Materiais com Estoque Regular (Acima do Mínimo)', value: summary.regularCount, color: '#10b981', unit: 'materiais' },
+    { label: 'Materiais com Estoque Baixo (≤ Estoque Mínimo)', value: summary.lowStockCount, color: '#f59e0b', unit: 'materiais' },
+    { label: 'Materiais Zerados / Em Ruptura (Saldo = 0)', value: summary.zeroStockCount, color: '#e11d48', unit: 'materiais' },
+    { label: 'Lotes com Validade Próxima (Vencem em até 60 dias)', value: summary.expiring60dBatchesCount, color: '#d97706', unit: 'lotes' },
+    { label: 'Lotes com Saldo Vencido Hoje', value: summary.expiredBatchesCount, color: '#be123c', unit: 'lotes' }
   ];
 
   const maxVal = Math.max(10, ...items.map(i => i.value));
   const startY = 48;
-  const rowH = 36;
-  const labelW = 310;
-  const barLeft = 330;
-  const barMaxW = W - barLeft - 110;
+  const rowH = 35;
+  const barLeft = 365;
+  const barMaxW = W - barLeft - 130;
 
   items.forEach((it, idx) => {
     const y = startY + idx * rowH;
 
-    // Color dot + Label
-    drawRoundRect(ctx, 20, y + 6, 10, 10, 3, it.color);
+    drawRoundRect(ctx, 22, y + 6, 10, 10, 3, it.color);
     ctx.fillStyle = '#1e293b';
-    ctx.font = 'bold 11px Helvetica, Arial, sans-serif';
+    ctx.font = 'bold 11.5px Helvetica, Arial, sans-serif';
     ctx.textAlign = 'left';
-    ctx.fillText(it.label, 38, y + 15);
+    ctx.fillText(it.label, 40, y + 15, barLeft - 52);
 
-    // Track
     drawRoundRect(ctx, barLeft, y + 3, barMaxW, 16, 5, '#f1f5f9');
 
-    // Fill Bar
     const fillW = maxVal > 0 ? Math.max(it.value > 0 ? 8 : 0, (it.value / maxVal) * barMaxW) : 0;
     if (fillW > 0) {
       drawRoundRect(ctx, barLeft, y + 3, fillW, 16, 5, it.color);
     }
 
-    // Value label on right
     ctx.fillStyle = '#0f172a';
-    ctx.font = 'bold 11px Helvetica, Arial, sans-serif';
+    ctx.font = 'bold 11.5px Helvetica, Arial, sans-serif';
     ctx.textAlign = 'right';
-    ctx.fillText(`${formatInt(it.value)} ${it.unit}`, W - 20, y + 15);
+    ctx.fillText(`${formatInt(it.value)} ${it.unit}`, W - 22, y + 15);
   });
 
-  return canvas.toDataURL('image/png', 1.0);
+  return { dataUrl: canvas.toDataURL('image/png', 1.0), width: W, height: H };
 }
 
 /**
  * Chart 3: Consumo por Setor (Horizontal Ranking Bar Chart)
  */
-function renderSectorChartCanvas(sectors: PDFSectorPoint[], isAdmin = true): string {
+function renderSectorChartCanvas(
+  sectors: PDFSectorPoint[],
+  isAdmin = true
+): { dataUrl: string; width: number; height: number } {
   const topSectors = sectors.slice(0, 8);
-  const W = 800;
-  const H = Math.max(210, 70 + Math.max(1, topSectors.length) * 32);
+  const W = 1100;
+  const H = Math.max(210, 68 + Math.max(1, topSectors.length) * 31);
   const { canvas, ctx } = createHiDPICanvas(W, H);
 
   drawRoundRect(ctx, 2, 2, W - 4, H - 4, 12, '#ffffff', '#e2e8f0');
 
   ctx.fillStyle = '#0f172a';
-  ctx.font = 'bold 14px Helvetica, Arial, sans-serif';
+  ctx.font = 'bold 14.5px Helvetica, Arial, sans-serif';
   ctx.textAlign = 'left';
-  ctx.fillText('Consumo por Setor no Período (Top Setores Demandantes)', 20, 28);
+  ctx.fillText('Consumo por Setor no Período (Top Setores Demandantes)', 22, 28);
 
   if (topSectors.length === 0) {
-    drawRoundRect(ctx, 20, 44, W - 40, H - 64, 8, '#f8fafc', '#e2e8f0');
+    drawRoundRect(ctx, 22, 44, W - 44, H - 64, 8, '#f8fafc', '#e2e8f0');
     ctx.fillStyle = '#64748b';
     ctx.font = 'bold 12px Helvetica, Arial, sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText('Nenhum consumo setorial registrado para os filtros selecionados.', W / 2, H / 2 + 8);
-    return canvas.toDataURL('image/png', 1.0);
+    return { dataUrl: canvas.toDataURL('image/png', 1.0), width: W, height: H };
   }
 
   const totalUnitsAll = sectors.reduce((a, b) => a + (b.units || 0), 0);
   const maxUnits = Math.max(1, ...topSectors.map(s => s.units || 0));
-  const barLeft = 215;
-  const barMaxW = W - barLeft - (isAdmin ? 190 : 120);
+  const barLeft = 290;
+  const rightAreaW = isAdmin ? 245 : 155;
+  const barMaxW = W - barLeft - rightAreaW;
   const startY = 48;
   const rowH = 30;
 
@@ -457,68 +427,63 @@ function renderSectorChartCanvas(sectors: PDFSectorPoint[], isAdmin = true): str
     const pct = totalUnitsAll > 0 ? ((sec.units / totalUnitsAll) * 100).toFixed(1) : '0.0';
 
     ctx.fillStyle = '#1e293b';
-    ctx.font = 'bold 10.5px Helvetica, Arial, sans-serif';
+    ctx.font = 'bold 11px Helvetica, Arial, sans-serif';
     ctx.textAlign = 'left';
-    ctx.fillText(`${idx + 1}. ${truncateText(sec.sector, 26)}`, 20, y + 14);
+    ctx.fillText(`${idx + 1}. ${truncateText(sec.sector, 34)}`, 22, y + 14, barLeft - 32);
 
-    // Track
     drawRoundRect(ctx, barLeft, y + 2, barMaxW, 15, 4, '#f1f5f9');
 
-    // Bar
     const fillW = Math.max(6, (sec.units / maxUnits) * barMaxW);
     drawRoundRect(ctx, barLeft, y + 2, fillW, 15, 4, idx === 0 ? '#1d4ed8' : idx < 3 ? '#2563eb' : '#3b82f6');
 
-    // Value label
     ctx.fillStyle = '#0f172a';
-    ctx.font = 'bold 10px Helvetica, Arial, sans-serif';
+    ctx.font = 'bold 10.5px Helvetica, Arial, sans-serif';
     ctx.textAlign = 'left';
     const rightLabel = isAdmin
       ? `${formatInt(sec.units)} un (${pct}%) • ${formatBRL(sec.value)}`
       : `${formatInt(sec.units)} un (${pct}%)`;
-    ctx.fillText(rightLabel, barLeft + barMaxW + 10, y + 13);
+    ctx.fillText(rightLabel, barLeft + barMaxW + 12, y + 13, rightAreaW - 22);
   });
 
-  return canvas.toDataURL('image/png', 1.0);
+  return { dataUrl: canvas.toDataURL('image/png', 1.0), width: W, height: H };
 }
 
 /**
  * Chart 4: Distribuição por Categoria (Horizontal Bars + Legend & Share)
  */
-function renderCategoryChartCanvas(categories: PDFCategoryPoint[], isAdmin = true): string {
+function renderCategoryChartCanvas(
+  categories: PDFCategoryPoint[],
+  isAdmin = true
+): { dataUrl: string; width: number; height: number } {
   const topCats = categories.slice(0, 8);
-  const W = 800;
-  const H = Math.max(210, 70 + Math.max(1, topCats.length) * 32);
+  const W = 1100;
+  const H = Math.max(210, 68 + Math.max(1, topCats.length) * 31);
   const { canvas, ctx } = createHiDPICanvas(W, H);
 
   drawRoundRect(ctx, 2, 2, W - 4, H - 4, 12, '#ffffff', '#e2e8f0');
 
   ctx.fillStyle = '#0f172a';
-  ctx.font = 'bold 14px Helvetica, Arial, sans-serif';
+  ctx.font = 'bold 14.5px Helvetica, Arial, sans-serif';
   ctx.textAlign = 'left';
-  ctx.fillText('Distribuição por Categoria de Material (Consumo e Estoque)', 20, 28);
+  ctx.fillText('Distribuição por Categoria de Material (Consumo e Estoque)', 22, 28);
 
   if (topCats.length === 0) {
-    drawRoundRect(ctx, 20, 44, W - 40, H - 64, 8, '#f8fafc', '#e2e8f0');
+    drawRoundRect(ctx, 22, 44, W - 44, H - 64, 8, '#f8fafc', '#e2e8f0');
     ctx.fillStyle = '#64748b';
     ctx.font = 'bold 12px Helvetica, Arial, sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText('Nenhuma categoria com dados para os filtros selecionados.', W / 2, H / 2 + 8);
-    return canvas.toDataURL('image/png', 1.0);
+    return { dataUrl: canvas.toDataURL('image/png', 1.0), width: W, height: H };
   }
 
   const useConsumed = topCats.some(c => c.consumedUnits > 0);
-  const totalMetric = categories.reduce(
-    (a, b) => a + (useConsumed ? b.consumedUnits : b.stockUnits),
-    0
-  );
-  const maxMetric = Math.max(
-    1,
-    ...topCats.map(c => (useConsumed ? c.consumedUnits : c.stockUnits))
-  );
+  const totalMetric = categories.reduce((a, b) => a + (useConsumed ? b.consumedUnits : b.stockUnits), 0);
+  const maxMetric = Math.max(1, ...topCats.map(c => (useConsumed ? c.consumedUnits : c.stockUnits)));
 
   const palette = ['#2563eb', '#4f46e5', '#0891b2', '#059669', '#d97706', '#e11d48', '#7c3aed', '#475569'];
-  const barLeft = 220;
-  const barMaxW = W - barLeft - (isAdmin ? 205 : 130);
+  const barLeft = 295;
+  const rightAreaW = isAdmin ? 250 : 175;
+  const barMaxW = W - barLeft - rightAreaW;
   const startY = 48;
   const rowH = 30;
 
@@ -529,11 +494,11 @@ function renderCategoryChartCanvas(categories: PDFCategoryPoint[], isAdmin = tru
     const pct = totalMetric > 0 ? ((val / totalMetric) * 100).toFixed(1) : '0.0';
     const barColor = cat.color && cat.color.startsWith('#') ? cat.color : palette[idx % palette.length];
 
-    drawRoundRect(ctx, 20, y + 4, 11, 11, 3, barColor);
+    drawRoundRect(ctx, 22, y + 4, 11, 11, 3, barColor);
     ctx.fillStyle = '#1e293b';
-    ctx.font = 'bold 10.5px Helvetica, Arial, sans-serif';
+    ctx.font = 'bold 11px Helvetica, Arial, sans-serif';
     ctx.textAlign = 'left';
-    ctx.fillText(truncateText(cat.category, 25), 37, y + 14);
+    ctx.fillText(truncateText(cat.category, 33), 40, y + 14, barLeft - 50);
 
     drawRoundRect(ctx, barLeft, y + 2, barMaxW, 15, 4, '#f1f5f9');
     const fillW = Math.max(val > 0 ? 6 : 0, (val / maxMetric) * barMaxW);
@@ -542,96 +507,95 @@ function renderCategoryChartCanvas(categories: PDFCategoryPoint[], isAdmin = tru
     }
 
     ctx.fillStyle = '#0f172a';
-    ctx.font = 'bold 10px Helvetica, Arial, sans-serif';
+    ctx.font = 'bold 10.5px Helvetica, Arial, sans-serif';
     ctx.textAlign = 'left';
     const textRight = isAdmin
       ? `${formatInt(val)} un (${pct}%) • ${formatBRL(finVal)}`
       : `${formatInt(val)} un (${pct}%) • ${cat.materialsCount} itens`;
-    ctx.fillText(textRight, barLeft + barMaxW + 10, y + 13);
+    ctx.fillText(textRight, barLeft + barMaxW + 12, y + 13, rightAreaW - 22);
   });
 
-  return canvas.toDataURL('image/png', 1.0);
+  return { dataUrl: canvas.toDataURL('image/png', 1.0), width: W, height: H };
 }
 
 /**
  * Chart 5: Materiais Mais Requisitados / Consumidos (Top 10 Consolidado sem duplicar lotes)
  */
-function renderTopMaterialsChartCanvas(materials: PDFMaterialPoint[]): string {
+function renderTopMaterialsChartCanvas(materials: PDFMaterialPoint[]): {
+  dataUrl: string;
+  width: number;
+  height: number;
+} {
   const topList = materials.slice(0, 8);
-  const W = 800;
-  const H = Math.max(220, 76 + Math.max(1, topList.length) * 34);
+  const W = 1100;
+  const H = Math.max(220, 74 + Math.max(1, topList.length) * 33);
   const { canvas, ctx } = createHiDPICanvas(W, H);
 
   drawRoundRect(ctx, 2, 2, W - 4, H - 4, 12, '#ffffff', '#e2e8f0');
 
   ctx.fillStyle = '#0f172a';
-  ctx.font = 'bold 14px Helvetica, Arial, sans-serif';
+  ctx.font = 'bold 14.5px Helvetica, Arial, sans-serif';
   ctx.textAlign = 'left';
-  ctx.fillText('Materiais Mais Requisitados e Consumidos (Lotes Consolidados)', 20, 28);
+  ctx.fillText('Materiais Mais Requisitados e Consumidos (Lotes Consolidados)', 22, 28);
 
-  // Legend
-  drawRoundRect(ctx, W - 245, 16, 11, 11, 3, '#6366f1');
+  drawRoundRect(ctx, W - 260, 16, 11, 11, 3, '#6366f1');
   ctx.fillStyle = '#334155';
   ctx.font = 'bold 10.5px Helvetica, Arial, sans-serif';
-  ctx.fillText('Requisitado', W - 229, 25);
+  ctx.fillText('Requisitado', W - 244, 25);
 
-  drawRoundRect(ctx, W - 145, 16, 11, 11, 3, '#0284c7');
+  drawRoundRect(ctx, W - 150, 16, 11, 11, 3, '#0284c7');
   ctx.fillStyle = '#334155';
-  ctx.fillText('Consumido / Saída', W - 129, 25);
+  ctx.fillText('Consumido / Saída', W - 134, 25);
 
   if (topList.length === 0) {
-    drawRoundRect(ctx, 20, 46, W - 40, H - 66, 8, '#f8fafc', '#e2e8f0');
+    drawRoundRect(ctx, 22, 46, W - 44, H - 66, 8, '#f8fafc', '#e2e8f0');
     ctx.fillStyle = '#64748b';
     ctx.font = 'bold 12px Helvetica, Arial, sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText('Nenhum material requisitado ou consumido no período com os filtros atuais.', W / 2, H / 2 + 8);
-    return canvas.toDataURL('image/png', 1.0);
+    return { dataUrl: canvas.toDataURL('image/png', 1.0), width: W, height: H };
   }
 
-  const maxVal = Math.max(
-    1,
-    ...topList.map(m => Math.max(m.requestedUnits || 0, m.consumedUnits || 0))
-  );
+  const maxVal = Math.max(1, ...topList.map(m => Math.max(m.requestedUnits || 0, m.consumedUnits || 0)));
 
-  const barLeft = 250;
-  const barMaxW = W - barLeft - 155;
+  const barLeft = 345;
+  const rightAreaW = 215;
+  const barMaxW = W - barLeft - rightAreaW;
   const startY = 50;
-  const rowH = 33;
+  const rowH = 32;
 
   topList.forEach((mat, idx) => {
     const y = startY + idx * rowH;
 
     ctx.fillStyle = '#1e293b';
-    ctx.font = 'bold 10px Helvetica, Arial, sans-serif';
+    ctx.font = 'bold 10.5px Helvetica, Arial, sans-serif';
     ctx.textAlign = 'left';
-    ctx.fillText(`${idx + 1}º ${truncateText(mat.name, 32)}`, 20, y + 15);
+    ctx.fillText(`${idx + 1}º ${truncateText(mat.name, 44)}`, 22, y + 15, barLeft - 32);
 
-    // Requested bar (top thin bar)
     drawRoundRect(ctx, barLeft, y + 2, barMaxW, 8, 2, '#f1f5f9');
     const reqW = maxVal > 0 ? Math.max(mat.requestedUnits > 0 ? 4 : 0, (mat.requestedUnits / maxVal) * barMaxW) : 0;
     if (reqW > 0) {
       drawRoundRect(ctx, barLeft, y + 2, reqW, 8, 2, '#6366f1');
     }
 
-    // Consumed bar (bottom thin bar)
     drawRoundRect(ctx, barLeft, y + 12, barMaxW, 8, 2, '#f1f5f9');
     const consW = maxVal > 0 ? Math.max(mat.consumedUnits > 0 ? 4 : 0, (mat.consumedUnits / maxVal) * barMaxW) : 0;
     if (consW > 0) {
       drawRoundRect(ctx, barLeft, y + 12, consW, 8, 2, '#0284c7');
     }
 
-    // Values
     ctx.fillStyle = '#334155';
-    ctx.font = 'bold 9.5px Helvetica, Arial, sans-serif';
+    ctx.font = 'bold 10px Helvetica, Arial, sans-serif';
     ctx.textAlign = 'left';
     ctx.fillText(
       `Req: ${formatInt(mat.requestedUnits)} | Saída: ${formatInt(mat.consumedUnits)} un`,
-      barLeft + barMaxW + 8,
-      y + 14
+      barLeft + barMaxW + 10,
+      y + 14,
+      rightAreaW - 20
     );
   });
 
-  return canvas.toDataURL('image/png', 1.0);
+  return { dataUrl: canvas.toDataURL('image/png', 1.0), width: W, height: H };
 }
 
 /**
@@ -657,76 +621,81 @@ export async function generateCompletePDFReport(params: GenerateCompletePDFRepor
   } = params;
 
   const doc = new jsPDF({
-    orientation: 'portrait',
+    orientation: 'landscape',
     unit: 'mm',
     format: 'a4'
   });
 
-  const pageWidth = doc.internal.pageSize.getWidth();
-  const pageHeight = doc.internal.pageSize.getHeight();
-  const margin = 14;
-  const contentWidth = pageWidth - margin * 2;
+  const pageWidth = doc.internal.pageSize.getWidth(); // 297mm
+  const pageHeight = doc.internal.pageSize.getHeight(); // 210mm
+  const margin = 12;
+  const contentWidth = pageWidth - margin * 2; // 273mm
+  const continuationTopMargin = 23;
+  const footerBottomMargin = 16;
   const nowStr = new Date().toLocaleString('pt-BR');
 
   // Helper to draw page header
   const drawHeader = (isFirstPage: boolean): number => {
-    let y = 10;
+    let y = 8;
 
     if (isFirstPage && letterheadImage) {
       try {
         const imgFormat = letterheadImage.includes('image/png') ? 'PNG' : 'JPEG';
-        doc.addImage(letterheadImage, imgFormat, margin, 8, contentWidth, 24, undefined, 'FAST');
-        y = 35;
+        doc.addImage(letterheadImage, imgFormat, margin, 6, contentWidth, 18, undefined, 'FAST');
+        y = 26;
       } catch {
-        y = 12;
+        y = 8;
       }
     }
 
     if (!letterheadImage || !isFirstPage) {
-      // Clean institutional banner
-      doc.setFillColor(15, 23, 42); // Slate-900
-      doc.roundedRect(margin, y, contentWidth, isFirstPage ? 18 : 12, 2, 2, 'F');
+      const bannerY = isFirstPage ? y : 7;
+      const bannerH = isFirstPage ? 16 : 11;
+      doc.setFillColor(15, 23, 42);
+      doc.roundedRect(margin, bannerY, contentWidth, bannerH, 2, 2, 'F');
 
       doc.setTextColor(255, 255, 255);
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(isFirstPage ? 11.5 : 9);
-      doc.text(title.toUpperCase(), margin + 4, y + (isFirstPage ? 7.5 : 7.5));
+      doc.text(truncateText(title.toUpperCase(), 96), margin + 4, bannerY + (isFirstPage ? 6.8 : 7));
 
       if (isFirstPage) {
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(8);
         doc.setTextColor(191, 219, 254);
         doc.text(
-          subtitle || `Unidade: ${filters.location} • Emitido em: ${nowStr}`,
+          truncateText(subtitle || `Unidade: ${filters.location} • Emitido em: ${nowStr}`, 155),
           margin + 4,
-          y + 13.5
+          bannerY + 12.2
         );
       } else {
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(7.5);
         doc.setTextColor(203, 213, 225);
-        doc.text(`${filters.location} • ${filters.periodLabel}`, pageWidth - margin - 4, y + 7.5, {
-          align: 'right'
-        });
+        doc.text(
+          truncateText(`${filters.location} • ${filters.periodLabel}`, 70),
+          pageWidth - margin - 4,
+          bannerY + 7,
+          { align: 'right' }
+        );
       }
 
-      y += isFirstPage ? 22 : 16;
+      y = bannerY + bannerH + 4;
     } else {
-      // Title below custom letterhead on page 1
       doc.setTextColor(15, 23, 42);
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(13);
-      doc.text(title.toUpperCase(), pageWidth / 2, y + 4, { align: 'center' });
+      doc.setFontSize(12.5);
+      doc.text(truncateText(title.toUpperCase(), 105), pageWidth / 2, y + 4.2, { align: 'center' });
       doc.setFont('helvetica', 'normal');
-      doc.setFontSize(8.5);
+      doc.setFontSize(8.2);
       doc.setTextColor(71, 85, 105);
       doc.text(
-        subtitle || `Unidade: ${filters.location} • Emitido em: ${nowStr}`,
+        truncateText(subtitle || `Unidade: ${filters.location} • Emitido em: ${nowStr}`, 155),
         pageWidth / 2,
-        y + 9.5,
+        y + 9.2,
         { align: 'center' }
       );
-      y += 14;
+      y += 13;
     }
 
     return y;
@@ -735,15 +704,30 @@ export async function generateCompletePDFReport(params: GenerateCompletePDFRepor
   let currentY = drawHeader(true);
 
   const ensureSpace = (neededHeight: number) => {
-    if (currentY + neededHeight > pageHeight - 16) {
+    if (currentY + neededHeight > pageHeight - footerBottomMargin) {
       doc.addPage();
       currentY = drawHeader(false);
     }
   };
 
+  const addChartImage = (
+    rendered: { dataUrl: string; width: number; height: number },
+    maxHeightCap = 96
+  ) => {
+    const naturalH = (contentWidth * rendered.height) / rendered.width;
+    const maxAllowed = Math.min(maxHeightCap, pageHeight - continuationTopMargin - footerBottomMargin - 4);
+    const drawH = Math.min(naturalH, maxAllowed);
+    const drawW = (drawH * rendered.width) / rendered.height;
+    const drawX = margin + (contentWidth - drawW) / 2;
+
+    ensureSpace(drawH + 5);
+    doc.addImage(rendered.dataUrl, 'PNG', drawX, currentY, drawW, drawH, undefined, 'FAST');
+    currentY += drawH + 5;
+  };
+
   // --- 1. APPLIED FILTERS SUMMARY BOX ---
   const hasMedNote = Boolean(filters.medicamentosNote);
-  const filterBoxH = hasMedNote ? 23 : 18;
+  const filterBoxH = hasMedNote ? 21 : 16.5;
   doc.setFillColor(248, 250, 252);
   doc.setDrawColor(203, 213, 225);
   doc.roundedRect(margin, currentY, contentWidth, filterBoxH, 2, 2, 'FD');
@@ -751,22 +735,22 @@ export async function generateCompletePDFReport(params: GenerateCompletePDFRepor
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7.5);
   doc.setTextColor(30, 58, 138);
-  doc.text('PARÂMETROS E FILTROS APLICADOS NO RELATÓRIO', margin + 4, currentY + 5);
+  doc.text('PARÂMETROS E FILTROS APLICADOS NO RELATÓRIO', margin + 4, currentY + 4.8);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8);
   doc.setTextColor(30, 41, 59);
   const filterLine1 = `Período Analisado: ${filters.periodLabel}   |   Unidade: ${filters.location}   |   Setor: ${filters.sectorFilter}`;
   const filterLine2 = `Categoria: ${filters.categoryFilter}   |   Material: ${filters.materialFilter}   |   Data de Emissão: ${nowStr}`;
-  doc.text(truncateText(filterLine1, 115), margin + 4, currentY + 10.5);
-  doc.text(truncateText(filterLine2, 115), margin + 4, currentY + 15.2);
+  doc.text(truncateText(filterLine1, 170), margin + 4, currentY + 9.8);
+  doc.text(truncateText(filterLine2, 170), margin + 4, currentY + 14.3);
   if (hasMedNote) {
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(180, 83, 9);
-    doc.text(`Nota: ${truncateText(filters.medicamentosNote!, 115)}`, margin + 4, currentY + 19.8);
+    doc.text(`Nota: ${truncateText(filters.medicamentosNote!, 170)}`, margin + 4, currentY + 18.8);
   }
 
-  currentY += filterBoxH + 4;
+  currentY += filterBoxH + 4.5;
 
   // --- 2. EXECUTIVE KPI CARDS GRID (2 ROWS OF 4 CARDS) ---
   doc.setFont('helvetica', 'bold');
@@ -830,7 +814,7 @@ export async function generateCompletePDFReport(params: GenerateCompletePDFRepor
   ];
 
   const cardW = (contentWidth - 9) / 4;
-  const cardH = 19;
+  const cardH = 18.5;
 
   kpiCards.forEach((card, idx) => {
     const col = idx % 4;
@@ -842,75 +826,42 @@ export async function generateCompletePDFReport(params: GenerateCompletePDFRepor
     doc.setDrawColor(226, 232, 240);
     doc.roundedRect(x, y, cardW, cardH, 1.8, 1.8, 'FD');
 
-    // Top accent bar
     doc.setFillColor(card.accent[0], card.accent[1], card.accent[2]);
     doc.rect(x, y, cardW, 1.5, 'F');
 
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(6.2);
+    doc.setFontSize(6.5);
     doc.setTextColor(100, 116, 139);
-    doc.text(card.title, x + 2.5, y + 5.5);
+    doc.text(truncateText(card.title, 38), x + 3, y + 5.3);
 
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(9.5);
+    doc.setFontSize(10);
     doc.setTextColor(15, 23, 42);
-    doc.text(truncateText(card.main, 22), x + 2.5, y + 11.5);
+    doc.text(truncateText(card.main, 34), x + 3, y + 11.3);
 
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(6.5);
+    doc.setFontSize(6.8);
     doc.setTextColor(71, 85, 105);
-    doc.text(truncateText(card.sub, 32), x + 2.5, y + 16.2);
+    doc.text(truncateText(card.sub, 48), x + 3, y + 15.8);
   });
 
-  currentY += cardH * 2 + 9;
+  currentY += cardH * 2 + 8.5;
 
   // --- 3. VISUAL CHARTS SECTION ---
+  ensureSpace(75);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(9.5);
   doc.setTextColor(15, 23, 42);
   doc.text('2. PAINEL GRÁFICO DE MOVIMENTAÇÃO, ESTOQUE, SETORES E CATEGORIAS', margin, currentY);
-  currentY += 3;
+  currentY += 3.5;
 
-  // Chart 1: Timeline (Entradas e Saídas)
-  const timelineImg = renderTimelineChartCanvas(timelineData);
-  const timelineH = (contentWidth * 310) / 800;
-  ensureSpace(timelineH + 4);
-  doc.addImage(timelineImg, 'PNG', margin, currentY, contentWidth, timelineH, undefined, 'FAST');
-  currentY += timelineH + 5;
+  addChartImage(renderTimelineChartCanvas(timelineData), 80);
+  addChartImage(renderStockStatusChartCanvas(stockStatusSummary), 68);
+  addChartImage(renderSectorChartCanvas(sectorData, isAdmin), 88);
+  addChartImage(renderCategoryChartCanvas(categoryData, isAdmin), 88);
+  addChartImage(renderTopMaterialsChartCanvas(topMaterialsData), 92);
 
-  // Chart 2: Stock Status Summary
-  const stockStatusImg = renderStockStatusChartCanvas(stockStatusSummary);
-  const stockStatusH = (contentWidth * 250) / 800;
-  ensureSpace(stockStatusH + 4);
-  doc.addImage(stockStatusImg, 'PNG', margin, currentY, contentWidth, stockStatusH, undefined, 'FAST');
-  currentY += stockStatusH + 5;
-
-  // Chart 3: Sector Consumption
-  const secRowsCount = Math.max(1, Math.min(8, sectorData.length));
-  const secCanvasH = Math.max(210, 70 + secRowsCount * 32);
-  const sectorImg = renderSectorChartCanvas(sectorData, isAdmin);
-  const sectorH = (contentWidth * secCanvasH) / 800;
-  ensureSpace(sectorH + 4);
-  doc.addImage(sectorImg, 'PNG', margin, currentY, contentWidth, sectorH, undefined, 'FAST');
-  currentY += sectorH + 5;
-
-  // Chart 4: Category Breakdown
-  const catRowsCount = Math.max(1, Math.min(8, categoryData.length));
-  const catCanvasH = Math.max(210, 70 + catRowsCount * 32);
-  const categoryImg = renderCategoryChartCanvas(categoryData, isAdmin);
-  const categoryH = (contentWidth * catCanvasH) / 800;
-  ensureSpace(categoryH + 4);
-  doc.addImage(categoryImg, 'PNG', margin, currentY, contentWidth, categoryH, undefined, 'FAST');
-  currentY += categoryH + 5;
-
-  // Chart 5: Top Requested & Consumed Materials
-  const matRowsCount = Math.max(1, Math.min(8, topMaterialsData.length));
-  const matCanvasH = Math.max(220, 76 + matRowsCount * 34);
-  const topMatImg = renderTopMaterialsChartCanvas(topMaterialsData);
-  const topMatH = (contentWidth * matCanvasH) / 800;
-  ensureSpace(topMatH + 4);
-  doc.addImage(topMatImg, 'PNG', margin, currentY, contentWidth, topMatH, undefined, 'FAST');
-  currentY += topMatH + 7;
+  currentY += 2;
 
   // --- 4. ANALYTICAL TABLES SECTION ---
   // TABLE 1: CONSUMO POR SETOR
@@ -945,37 +896,35 @@ export async function generateCompletePDFReport(params: GenerateCompletePDFRepor
       head: secHead,
       body: secBody,
       theme: 'striped',
+      tableWidth: contentWidth,
       showHead: 'everyPage',
-      margin: { left: margin, right: margin, top: 28, bottom: 16 },
+      margin: { left: margin, right: margin, top: continuationTopMargin, bottom: footerBottomMargin },
       headStyles: {
         fillColor: [30, 58, 138],
         textColor: [255, 255, 255],
-        fontSize: 8,
+        fontSize: 8.2,
         fontStyle: 'bold',
-        halign: 'center'
+        halign: 'center',
+        valign: 'middle'
       },
       styles: {
-        fontSize: 7.5,
-        cellPadding: 2.2,
+        fontSize: 7.8,
+        cellPadding: 2.4,
         textColor: [30, 41, 59],
-        overflow: 'linebreak'
+        overflow: 'linebreak',
+        valign: 'middle'
       },
       columnStyles: {
-        0: { halign: 'center', cellWidth: 12 },
-        1: { halign: 'left', fontStyle: 'bold' },
-        2: { halign: 'center', cellWidth: 26 },
-        3: { halign: 'right', cellWidth: 34, fontStyle: 'bold' },
-        4: { halign: 'center', cellWidth: 26 },
-        ...(isAdmin ? { 5: { halign: 'right', cellWidth: 34, fontStyle: 'bold' } } : {})
-      },
-      didDrawPage: data => {
-        if (data.pageNumber > 1 && data.cursor && data.cursor.y < 30) {
-          drawHeader(false);
-        }
+        0: { halign: 'center', cellWidth: 14 },
+        1: { halign: 'left', fontStyle: 'bold', cellWidth: 'auto' },
+        2: { halign: 'center', cellWidth: 30 },
+        3: { halign: 'right', cellWidth: 38, fontStyle: 'bold' },
+        4: { halign: 'center', cellWidth: 28 },
+        ...(isAdmin ? { 5: { halign: 'right', cellWidth: 40, fontStyle: 'bold' } } : {})
       }
     });
 
-    currentY = (doc as any).lastAutoTable.finalY + 8;
+    currentY = (doc as any).lastAutoTable.finalY + 7;
   }
 
   // TABLE 2: MATERIAIS MAIS REQUISITADOS E CONSUMIDOS (LOTES SOMADOS)
@@ -1011,37 +960,40 @@ export async function generateCompletePDFReport(params: GenerateCompletePDFRepor
       head: matHead,
       body: matBody,
       theme: 'striped',
+      tableWidth: contentWidth,
       showHead: 'everyPage',
-      margin: { left: margin, right: margin, top: 28, bottom: 16 },
+      margin: { left: margin, right: margin, top: continuationTopMargin, bottom: footerBottomMargin },
       headStyles: {
         fillColor: [15, 23, 42],
         textColor: [255, 255, 255],
-        fontSize: 8,
+        fontSize: 8.2,
         fontStyle: 'bold',
-        halign: 'center'
+        halign: 'center',
+        valign: 'middle'
       },
       styles: {
-        fontSize: 7.5,
-        cellPadding: 2.2,
+        fontSize: 7.8,
+        cellPadding: 2.4,
         textColor: [30, 41, 59],
-        overflow: 'linebreak'
+        overflow: 'linebreak',
+        valign: 'middle'
       },
       columnStyles: {
-        0: { halign: 'center', cellWidth: 10 },
-        1: { halign: 'left', fontStyle: 'bold' },
-        2: { halign: 'left', cellWidth: 28 },
-        3: { halign: 'right', cellWidth: 25 },
-        4: { halign: 'right', cellWidth: 25, fontStyle: 'bold' },
+        0: { halign: 'center', cellWidth: 12 },
+        1: { halign: 'left', fontStyle: 'bold', cellWidth: 'auto' },
+        2: { halign: 'left', cellWidth: isAdmin ? 46 : 54 },
+        3: { halign: 'right', cellWidth: 32 },
+        4: { halign: 'right', cellWidth: 32, fontStyle: 'bold' },
         ...(isAdmin
           ? {
-              5: { halign: 'center', cellWidth: 20 },
-              6: { halign: 'right', cellWidth: 28, fontStyle: 'bold' }
+              5: { halign: 'center', cellWidth: 24 },
+              6: { halign: 'right', cellWidth: 34, fontStyle: 'bold' }
             }
           : {})
       }
     });
 
-    currentY = (doc as any).lastAutoTable.finalY + 8;
+    currentY = (doc as any).lastAutoTable.finalY + 7;
   }
 
   // TABLE 3: SITUAÇÃO DO ESTOQUE CONSOLIDADO POR MATERIAL (SEM DUPLICAR PRODUTOS)
@@ -1089,35 +1041,38 @@ export async function generateCompletePDFReport(params: GenerateCompletePDFRepor
       head: stockHead,
       body: stockBody,
       theme: 'striped',
+      tableWidth: contentWidth,
       showHead: 'everyPage',
-      margin: { left: margin, right: margin, top: 28, bottom: 16 },
+      margin: { left: margin, right: margin, top: continuationTopMargin, bottom: footerBottomMargin },
       headStyles: {
         fillColor: [30, 64, 175],
         textColor: [255, 255, 255],
-        fontSize: 7.5,
+        fontSize: 8,
         fontStyle: 'bold',
-        halign: 'center'
+        halign: 'center',
+        valign: 'middle'
       },
       styles: {
-        fontSize: 7,
-        cellPadding: 2,
+        fontSize: 7.5,
+        cellPadding: 2.2,
         textColor: [30, 41, 59],
-        overflow: 'linebreak'
+        overflow: 'linebreak',
+        valign: 'middle'
       },
       columnStyles: {
-        0: { halign: 'left', fontStyle: 'bold' },
-        1: { halign: 'left', cellWidth: 25 },
-        2: { halign: 'center', cellWidth: 13 },
-        3: { halign: 'right', cellWidth: 20, fontStyle: 'bold' },
-        4: { halign: 'right', cellWidth: 20 },
-        5: { halign: 'right', cellWidth: 20 },
+        0: { halign: 'left', fontStyle: 'bold', cellWidth: 'auto' },
+        1: { halign: 'left', cellWidth: isAdmin ? 42 : 46 },
+        2: { halign: 'center', cellWidth: 16 },
+        3: { halign: 'right', cellWidth: 26, fontStyle: 'bold' },
+        4: { halign: 'right', cellWidth: 24 },
+        5: { halign: 'right', cellWidth: 26 },
         ...(isAdmin
           ? {
-              6: { halign: 'right', cellWidth: 25 },
-              7: { halign: 'center', cellWidth: 24, fontStyle: 'bold' }
+              6: { halign: 'right', cellWidth: 30 },
+              7: { halign: 'center', cellWidth: 28, fontStyle: 'bold' }
             }
           : {
-              6: { halign: 'center', cellWidth: 26, fontStyle: 'bold' }
+              6: { halign: 'center', cellWidth: 30, fontStyle: 'bold' }
             })
       },
       didParseCell: data => {
@@ -1135,7 +1090,7 @@ export async function generateCompletePDFReport(params: GenerateCompletePDFRepor
       }
     });
 
-    currentY = (doc as any).lastAutoTable.finalY + 8;
+    currentY = (doc as any).lastAutoTable.finalY + 7;
   }
 
   // TABLE 4: SITUAÇÃO POR SALA DE ESTOQUE (IF PROVIDED)
@@ -1166,43 +1121,47 @@ export async function generateCompletePDFReport(params: GenerateCompletePDFRepor
       head: roomHead,
       body: roomBody,
       theme: 'striped',
+      tableWidth: contentWidth,
       showHead: 'everyPage',
-      margin: { left: margin, right: margin, top: 28, bottom: 16 },
+      margin: { left: margin, right: margin, top: continuationTopMargin, bottom: footerBottomMargin },
       headStyles: {
         fillColor: [15, 23, 42],
         textColor: [255, 255, 255],
-        fontSize: 7.5,
+        fontSize: 8,
         fontStyle: 'bold',
-        halign: 'center'
+        halign: 'center',
+        valign: 'middle'
       },
       styles: {
-        fontSize: 7.5,
-        cellPadding: 2.2,
-        textColor: [30, 41, 59]
+        fontSize: 7.8,
+        cellPadding: 2.4,
+        textColor: [30, 41, 59],
+        overflow: 'linebreak',
+        valign: 'middle'
       },
       columnStyles: {
-        0: { halign: 'left', fontStyle: 'bold' },
-        1: { halign: 'center', fontStyle: 'bold' },
-        2: { halign: 'right' },
-        3: { halign: 'right' },
-        4: { halign: 'right', fontStyle: 'bold' },
-        5: { halign: 'right', fontStyle: 'bold' },
-        6: { halign: 'center' },
-        7: { halign: 'center' }
+        0: { halign: 'left', fontStyle: 'bold', cellWidth: 'auto' },
+        1: { halign: 'center', fontStyle: 'bold', cellWidth: 32 },
+        2: { halign: 'right', cellWidth: 28 },
+        3: { halign: 'right', cellWidth: 20 },
+        4: { halign: 'right', fontStyle: 'bold', cellWidth: 32 },
+        5: { halign: 'right', fontStyle: 'bold', cellWidth: 38 },
+        6: { halign: 'center', cellWidth: 24 },
+        7: { halign: 'center', cellWidth: 28 }
       }
     });
 
-    currentY = (doc as any).lastAutoTable.finalY + 8;
+    currentY = (doc as any).lastAutoTable.finalY + 7;
   }
 
   // TABLE 5: DOAÇÕES E BAIXAS POR VENCIMENTO (IF PROVIDED)
   if (donationsAndWriteOffsTable && donationsAndWriteOffsTable.length > 0) {
-    ensureSpace(25);
+    ensureSpace(26);
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(9.5);
     doc.setTextColor(15, 23, 42);
     doc.text('7. REGISTROS DE DOAÇÕES EFETIVAS E BAIXAS POR VENCIMENTO / PERDA', margin, currentY);
-    currentY += 3;
+    currentY += 3.2;
 
     const donHead = [
       ['Fluxo / Tipo', 'Data', 'Material', 'Categoria', 'Lote', 'Unidade / Justificativa', 'Qtd.', 'Valor (R$)']
@@ -1223,34 +1182,37 @@ export async function generateCompletePDFReport(params: GenerateCompletePDFRepor
       head: donHead,
       body: donBody,
       theme: 'striped',
+      tableWidth: contentWidth,
       showHead: 'everyPage',
-      margin: { left: margin, right: margin, top: 28, bottom: 16 },
+      margin: { left: margin, right: margin, top: continuationTopMargin, bottom: footerBottomMargin },
       headStyles: {
         fillColor: [30, 58, 138],
         textColor: [255, 255, 255],
-        fontSize: 7.5,
+        fontSize: 8,
         fontStyle: 'bold',
-        halign: 'center'
+        halign: 'center',
+        valign: 'middle'
       },
       styles: {
-        fontSize: 7,
-        cellPadding: 2,
+        fontSize: 7.5,
+        cellPadding: 2.2,
         textColor: [30, 41, 59],
-        overflow: 'linebreak'
+        overflow: 'linebreak',
+        valign: 'middle'
       },
       columnStyles: {
-        0: { halign: 'left', cellWidth: 26, fontStyle: 'bold' },
-        1: { halign: 'center', cellWidth: 18 },
-        2: { halign: 'left', fontStyle: 'bold' },
-        3: { halign: 'left', cellWidth: 22 },
-        4: { halign: 'center', cellWidth: 18 },
-        5: { halign: 'left', cellWidth: 36 },
-        6: { halign: 'right', cellWidth: 16, fontStyle: 'bold' },
-        7: { halign: 'right', cellWidth: 22 }
+        0: { halign: 'left', cellWidth: 38, fontStyle: 'bold' },
+        1: { halign: 'center', cellWidth: 22 },
+        2: { halign: 'left', fontStyle: 'bold', cellWidth: 'auto' },
+        3: { halign: 'left', cellWidth: 34 },
+        4: { halign: 'center', cellWidth: 24 },
+        5: { halign: 'left', cellWidth: 50 },
+        6: { halign: 'right', cellWidth: 20, fontStyle: 'bold' },
+        7: { halign: 'right', cellWidth: 26, fontStyle: 'bold' }
       }
     });
 
-    currentY = (doc as any).lastAutoTable.finalY + 8;
+    currentY = (doc as any).lastAutoTable.finalY + 7;
   }
 
   // --- 5. ADD HEADERS & PAGE NUMBERS TO ALL PAGES ---
@@ -1396,12 +1358,12 @@ export function renderSingleIndicatorChartCanvas(chart: SingleIndicatorChartConf
   width: number;
   height: number;
 } {
-  const W = 820;
+  const W = 1120;
   const items = chart.data || [];
   const H =
     chart.type === 'horizontalBar'
-      ? Math.max(250, 90 + Math.min(12, Math.max(1, items.length)) * 34)
-      : 340;
+      ? Math.max(260, 88 + Math.min(12, Math.max(1, items.length)) * 31)
+      : 345;
 
   const { canvas, ctx } = createHiDPICanvas(W, H);
   drawRoundRect(ctx, 2, 2, W - 4, H - 4, 12, '#ffffff', '#cbd5e1');
@@ -1410,16 +1372,21 @@ export function renderSingleIndicatorChartCanvas(chart: SingleIndicatorChartConf
   ctx.fillStyle = '#2563eb';
   ctx.fillRect(2, 2, W - 4, 4);
 
-  // Title
+  const hasRightLegend =
+    chart.type === 'pareto' ||
+    (chart.type === 'groupedBar' &&
+      Boolean(chart.seriesLabels || (chart.seriesAName && chart.seriesBName)));
+
+  // Title (constrained so it never collides with right-side legend)
   ctx.fillStyle = '#0f172a';
-  ctx.font = 'bold 14px Helvetica, Arial, sans-serif';
+  ctx.font = 'bold 14.5px Helvetica, Arial, sans-serif';
   ctx.textAlign = 'left';
-  ctx.fillText(truncateText(chart.title, 78), 22, 30);
+  ctx.fillText(truncateText(chart.title, hasRightLegend ? 72 : 105), 24, 30, hasRightLegend ? W - 380 : W - 48);
 
   if (!items || items.length === 0 || items.every(d => (d.value || 0) === 0 && (d.secondaryValue || 0) === 0)) {
-    drawRoundRect(ctx, 22, 48, W - 44, H - 68, 8, '#f8fafc', '#e2e8f0');
+    drawRoundRect(ctx, 24, 48, W - 48, H - 68, 8, '#f8fafc', '#e2e8f0');
     ctx.fillStyle = '#64748b';
-    ctx.font = 'bold 12px Helvetica, Arial, sans-serif';
+    ctx.font = 'bold 12.5px Helvetica, Arial, sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText(
       'Dados insuficientes no período ou filtros selecionados para exibição gráfica.',
@@ -1433,9 +1400,10 @@ export function renderSingleIndicatorChartCanvas(chart: SingleIndicatorChartConf
     const topItems = items.slice(0, 12);
     const totalSum = items.reduce((acc, it) => acc + Math.max(0, it.value || 0), 0);
     const maxVal = Math.max(1, ...topItems.map(i => Math.max(i.value || 0, i.secondaryValue || 0)));
-    const barLeft = 235;
-    const barMaxW = W - barLeft - 195;
-    const startY = 54;
+    const barLeft = 305;
+    const rightAreaW = 245;
+    const barMaxW = W - barLeft - rightAreaW - 18;
+    const startY = 52;
     const rowH = 31;
 
     topItems.forEach((it, idx) => {
@@ -1443,11 +1411,15 @@ export function renderSingleIndicatorChartCanvas(chart: SingleIndicatorChartConf
       const color = it.color || DEFAULT_CHART_COLORS[idx % DEFAULT_CHART_COLORS.length];
       const pct = totalSum > 0 ? ((it.value / totalSum) * 100).toFixed(1) : '0.0';
 
-      drawRoundRect(ctx, 22, y + 4, 10, 10, 3, color);
+      if (idx % 2 === 0) {
+        drawRoundRect(ctx, 16, y - 3, W - 32, rowH - 3, 5, '#f8fafc');
+      }
+
+      drawRoundRect(ctx, 24, y + 4, 10, 10, 3, color);
       ctx.fillStyle = '#1e293b';
       ctx.font = 'bold 10.5px Helvetica, Arial, sans-serif';
       ctx.textAlign = 'left';
-      ctx.fillText(truncateText(it.label, 30), 38, y + 13);
+      ctx.fillText(truncateText(it.label, 38), 40, y + 13, barLeft - 52);
 
       drawRoundRect(ctx, barLeft, y + 1, barMaxW, 16, 4, '#f1f5f9');
       const fillW = Math.max(it.value > 0 ? 6 : 0, (it.value / maxVal) * barMaxW);
@@ -1459,7 +1431,7 @@ export function renderSingleIndicatorChartCanvas(chart: SingleIndicatorChartConf
       ctx.font = 'bold 10px Helvetica, Arial, sans-serif';
       ctx.textAlign = 'left';
       const valText = `${formatChartMetric(it.value, chart.isCurrency, chart.unit, chart.valueFormatter, chart.valuePrefix)} (${pct}%)`;
-      ctx.fillText(truncateText(valText, 30), barLeft + barMaxW + 10, y + 13);
+      ctx.fillText(truncateText(valText, 36), barLeft + barMaxW + 12, y + 13, rightAreaW - 8);
     });
 
     return { dataUrl: canvas.toDataURL('image/png', 1.0), width: W, height: H };
@@ -1468,10 +1440,10 @@ export function renderSingleIndicatorChartCanvas(chart: SingleIndicatorChartConf
   if (chart.type === 'donut') {
     const validSlices = items.filter(i => i.value > 0);
     const total = validSlices.reduce((acc, i) => acc + i.value, 0) || 1;
-    const centerX = 185;
+    const centerX = 230;
     const centerY = H / 2 + 12;
-    const outerR = 96;
-    const innerR = 54;
+    const outerR = 104;
+    const innerR = 58;
 
     let startAngle = -Math.PI / 2;
     validSlices.forEach((slice, idx) => {
@@ -1499,39 +1471,42 @@ export function renderSingleIndicatorChartCanvas(chart: SingleIndicatorChartConf
     ctx.fillStyle = '#64748b';
     ctx.font = 'bold 9.5px Helvetica, Arial, sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('TOTAL', centerX, centerY - 4);
+    ctx.fillText('TOTAL', centerX, centerY - 5);
     ctx.fillStyle = '#0f172a';
     ctx.font = 'bold 12px Helvetica, Arial, sans-serif';
     ctx.fillText(
-      truncateText(formatChartMetric(total, chart.isCurrency, chart.unit, chart.valueFormatter, chart.valuePrefix), 14),
+      truncateText(formatChartMetric(total, chart.isCurrency, chart.unit, chart.valueFormatter, chart.valuePrefix), 16),
       centerX,
-      centerY + 12
+      centerY + 12,
+      innerR * 1.8
     );
 
     // Legend table on right
-    const legLeft = 330;
-    const startY = 62;
-    const rowH = 32;
+    const legLeft = 400;
+    const legW = W - legLeft - 24;
+    const startY = 58;
+    const rowH = 33;
     items.slice(0, 8).forEach((slice, idx) => {
       const y = startY + idx * rowH;
       const color = slice.color || DEFAULT_CHART_COLORS[idx % DEFAULT_CHART_COLORS.length];
       const pct = total > 0 ? ((slice.value / total) * 100).toFixed(1) : '0.0';
 
-      drawRoundRect(ctx, legLeft, y, W - legLeft - 24, 25, 6, '#f8fafc', '#e2e8f0');
-      drawRoundRect(ctx, legLeft + 8, y + 6, 12, 12, 3, color);
+      drawRoundRect(ctx, legLeft, y, legW, 26, 6, '#f8fafc', '#e2e8f0');
+      drawRoundRect(ctx, legLeft + 10, y + 7, 12, 12, 3, color);
 
       ctx.fillStyle = '#1e293b';
-      ctx.font = 'bold 10.5px Helvetica, Arial, sans-serif';
+      ctx.font = 'bold 11px Helvetica, Arial, sans-serif';
       ctx.textAlign = 'left';
-      ctx.fillText(truncateText(slice.label, 30), legLeft + 26, y + 16);
+      ctx.fillText(truncateText(slice.label, 48), legLeft + 30, y + 17, legW - 265);
 
       ctx.fillStyle = '#0f172a';
-      ctx.font = 'bold 10.5px Helvetica, Arial, sans-serif';
+      ctx.font = 'bold 11px Helvetica, Arial, sans-serif';
       ctx.textAlign = 'right';
       ctx.fillText(
         `${formatChartMetric(slice.value, chart.isCurrency, chart.unit, chart.valueFormatter, chart.valuePrefix)} (${pct}%)`,
-        W - 34,
-        y + 16
+        W - 36,
+        y + 17,
+        225
       );
     });
 
@@ -1540,10 +1515,10 @@ export function renderSingleIndicatorChartCanvas(chart: SingleIndicatorChartConf
 
   // Vertical Bar, Grouped Bar, Line, or Pareto
   const displayData = items.slice(0, 14);
-  const chartLeft = 68;
-  const chartRight = chart.type === 'pareto' ? W - 56 : W - 26;
+  const chartLeft = 86;
+  const chartRight = chart.type === 'pareto' ? W - 62 : W - 28;
   const chartTop = 58;
-  const chartBottom = H - 52;
+  const chartBottom = H - 54;
   const chartW = chartRight - chartLeft;
   const chartH = chartBottom - chartTop;
 
@@ -1556,25 +1531,39 @@ export function renderSingleIndicatorChartCanvas(chart: SingleIndicatorChartConf
     chart.seriesLabels ||
     (chart.seriesAName && chart.seriesBName ? [chart.seriesAName, chart.seriesBName] : undefined);
 
-  // Legend for groupedBar or pareto
+  // Right-aligned dynamic legend for groupedBar or pareto (prevents text collision)
   if (chart.type === 'groupedBar' && resolvedSeriesLabels) {
-    drawRoundRect(ctx, W - 260, 16, 11, 11, 3, chart.seriesAColor || '#2563eb');
-    ctx.fillStyle = '#334155';
-    ctx.font = 'bold 10px Helvetica, Arial, sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText(resolvedSeriesLabels[0], W - 244, 25);
+    ctx.font = 'bold 10.5px Helvetica, Arial, sans-serif';
+    const labelA = truncateText(resolvedSeriesLabels[0], 24);
+    const labelB = truncateText(resolvedSeriesLabels[1], 24);
+    const wB = ctx.measureText(labelB).width;
+    const wA = ctx.measureText(labelA).width;
+    const xB = W - 26 - wB - 16;
+    const xA = xB - 20 - wA - 16;
 
-    drawRoundRect(ctx, W - 135, 16, 11, 11, 3, chart.seriesBColor || '#10b981');
-    ctx.fillText(resolvedSeriesLabels[1], W - 119, 25);
+    drawRoundRect(ctx, xA, 17, 11, 11, 3, chart.seriesAColor || '#2563eb');
+    ctx.fillStyle = '#334155';
+    ctx.textAlign = 'left';
+    ctx.fillText(labelA, xA + 16, 26);
+
+    drawRoundRect(ctx, xB, 17, 11, 11, 3, chart.seriesBColor || '#10b981');
+    ctx.fillText(labelB, xB + 16, 26);
   } else if (chart.type === 'pareto') {
-    drawRoundRect(ctx, W - 270, 16, 11, 11, 3, '#2563eb');
-    ctx.fillStyle = '#334155';
-    ctx.font = 'bold 10px Helvetica, Arial, sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText('Valor Consumido', W - 254, 25);
+    ctx.font = 'bold 10.5px Helvetica, Arial, sans-serif';
+    const labelA = 'Valor Consumido';
+    const labelB = '% Acumulado ABC';
+    const wB = ctx.measureText(labelB).width;
+    const wA = ctx.measureText(labelA).width;
+    const xB = W - 26 - wB - 16;
+    const xA = xB - 20 - wA - 16;
 
-    drawRoundRect(ctx, W - 140, 16, 11, 11, 3, '#e11d48');
-    ctx.fillText('% Acumulado ABC', W - 124, 25);
+    drawRoundRect(ctx, xA, 17, 11, 11, 3, '#2563eb');
+    ctx.fillStyle = '#334155';
+    ctx.textAlign = 'left';
+    ctx.fillText(labelA, xA + 16, 26);
+
+    drawRoundRect(ctx, xB, 17, 11, 11, 3, '#e11d48');
+    ctx.fillText(labelB, xB + 16, 26);
   }
 
   // Grid lines
@@ -1596,21 +1585,23 @@ export function renderSingleIndicatorChartCanvas(chart: SingleIndicatorChartConf
     ctx.fillText(
       isCurr ? `R$ ${formatInt(val)}` : formatInt(val),
       chartLeft - 8,
-      y + 3
+      y + 3,
+      chartLeft - 14
     );
 
     if (chart.type === 'pareto') {
       const pctVal = Math.round((100 / steps) * (steps - i));
       ctx.textAlign = 'left';
       ctx.fillStyle = '#e11d48';
-      ctx.fillText(`${pctVal}%`, chartRight + 6, y + 3);
+      ctx.fillText(`${pctVal}%`, chartRight + 8, y + 3);
     }
   }
 
   const groupW = chartW / displayData.length;
+  const maxLabelChars = Math.max(9, Math.min(20, Math.floor((groupW - 8) / 5.5)));
+  const maxLabelWidth = Math.max(26, groupW - 6);
 
   if (chart.type === 'line') {
-    // Draw shaded area & line
     const points = displayData.map((pt, idx) => ({
       x: chartLeft + groupW * idx + groupW / 2,
       y: chartBottom - ((pt.value || 0) / maxVal) * chartH,
@@ -1645,19 +1636,20 @@ export function renderSingleIndicatorChartCanvas(chart: SingleIndicatorChartConf
       ctx.fillText(
         formatChartMetric(p.pt.value, chart.isCurrency, chart.unit, chart.valueFormatter, chart.valuePrefix),
         p.x,
-        Math.max(chartTop - 4, p.y - 8)
+        Math.max(chartTop - 4, p.y - 8),
+        maxLabelWidth
       );
 
       ctx.fillStyle = '#334155';
       ctx.font = 'bold 9.5px Helvetica, Arial, sans-serif';
-      ctx.fillText(truncateText(p.pt.label, 12), p.x, chartBottom + 16);
+      ctx.fillText(truncateText(p.pt.label, maxLabelChars), p.x, chartBottom + 18, maxLabelWidth);
     });
   } else {
     // verticalBar, groupedBar, or pareto
     const isGrouped = chart.type === 'groupedBar';
     const barW = isGrouped
-      ? Math.min(24, Math.max(8, (groupW - 14) / 2))
-      : Math.min(42, Math.max(12, groupW * 0.55));
+      ? Math.min(28, Math.max(10, (groupW - 14) / 2))
+      : Math.min(48, Math.max(14, groupW * 0.55));
 
     displayData.forEach((pt, idx) => {
       const centerX = chartLeft + groupW * idx + groupW / 2;
@@ -1672,7 +1664,7 @@ export function renderSingleIndicatorChartCanvas(chart: SingleIndicatorChartConf
           ctx.fillStyle = '#1e3a8a';
           ctx.font = 'bold 8.5px Helvetica, Arial, sans-serif';
           ctx.textAlign = 'center';
-          ctx.fillText(formatInt(pt.value), x1 + barW / 2, Math.max(chartTop - 4, y1 - 4));
+          ctx.fillText(formatInt(pt.value), x1 + barW / 2, Math.max(chartTop - 4, y1 - 4), barW + 10);
         }
 
         const h2 = maxVal > 0 ? ((pt.secondaryValue || 0) / maxVal) * chartH : 0;
@@ -1683,7 +1675,7 @@ export function renderSingleIndicatorChartCanvas(chart: SingleIndicatorChartConf
           ctx.fillStyle = '#065f46';
           ctx.font = 'bold 8.5px Helvetica, Arial, sans-serif';
           ctx.textAlign = 'center';
-          ctx.fillText(formatInt(pt.secondaryValue || 0), x2 + barW / 2, Math.max(chartTop - 4, y2 - 4));
+          ctx.fillText(formatInt(pt.secondaryValue || 0), x2 + barW / 2, Math.max(chartTop - 4, y2 - 4), barW + 10);
         }
       } else {
         const h = maxVal > 0 ? ((pt.value || 0) / maxVal) * chartH : 0;
@@ -1696,16 +1688,17 @@ export function renderSingleIndicatorChartCanvas(chart: SingleIndicatorChartConf
         ctx.font = 'bold 9px Helvetica, Arial, sans-serif';
         ctx.textAlign = 'center';
         ctx.fillText(
-          truncateText(formatChartMetric(pt.value, chart.isCurrency, chart.unit, chart.valueFormatter, chart.valuePrefix), 14),
+          truncateText(formatChartMetric(pt.value, chart.isCurrency, chart.unit, chart.valueFormatter, chart.valuePrefix), 15),
           centerX,
-          Math.max(chartTop - 4, y - 5)
+          Math.max(chartTop - 4, y - 5),
+          maxLabelWidth
         );
       }
 
       ctx.fillStyle = '#334155';
       ctx.font = 'bold 9.5px Helvetica, Arial, sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText(truncateText(pt.label, 13), centerX, chartBottom + 16);
+      ctx.fillText(truncateText(pt.label, maxLabelChars), centerX, chartBottom + 18, maxLabelWidth);
     });
 
     // Overlay cumulative curve for Pareto
@@ -1741,8 +1734,61 @@ export function renderSingleIndicatorChartCanvas(chart: SingleIndicatorChartConf
   return { dataUrl: canvas.toDataURL('image/png', 1.0), width: W, height: H };
 }
 
+function escapeHtml(value: string): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function inferColumnAlignment(header: string): 'left' | 'center' | 'right' {
+  const norm = String(header || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase();
+
+  if (
+    norm === '#' ||
+    norm === 'pos' ||
+    norm === 'pos.' ||
+    norm === 'rk' ||
+    /^(classe|curva|abc|status|situacao|tipo|data|validade|vencimento|mes|periodo|lote|codigo|cod\.?|risco|criticidade|nivel|faixa|unidade|un\.?)$/.test(
+      norm
+    )
+  ) {
+    return 'center';
+  }
+
+  if (
+    /(%|qtd|quant|total|valor|custo|r\$|dias|horas|media|giro|saldo|estoque|minimo|maximo|consumo|saida|entrada|taxa|indice|ticket|cobertura|sku|itens|movim|variacao|acumul|share|part\.|particip|freq|nota|score|ponto|prazo)/.test(
+      norm
+    )
+  ) {
+    return 'right';
+  }
+
+  return 'left';
+}
+
+function buildSingleIndicatorColumnStyles(headers: string[]): Record<number, any> {
+  const styles: Record<number, any> = {};
+  headers.forEach((h, idx) => {
+    const trimmed = String(h || '').trim();
+    const halign = inferColumnAlignment(trimmed);
+    if (trimmed === '#' || trimmed.toLowerCase() === 'pos' || trimmed.toLowerCase() === 'pos.') {
+      styles[idx] = { halign: 'center', cellWidth: 11 };
+    } else {
+      styles[idx] = { halign };
+    }
+  });
+  return styles;
+}
+
 /**
- * Exports a PDF containing ONLY the selected indicator, its chart, title, KPIs, period, and applied filters
+ * Exports a PDF in mandatory A4 landscape orientation containing ONLY the selected indicator,
+ * its chart, title, KPIs, period, applied filters, and optional table
  */
 export function exportSingleIndicatorPDF(params: SingleIndicatorExportParams): void {
   const { groupName, letterheadImage, filters, kpis, chart, table, fileName } = params;
@@ -1750,108 +1796,122 @@ export function exportSingleIndicatorPDF(params: SingleIndicatorExportParams): v
   const subtitle = params.subtitle || params.indicatorSubtitle || chart.subtitle;
 
   const doc = new jsPDF({
-    orientation: 'portrait',
+    orientation: 'landscape',
     unit: 'mm',
     format: 'a4'
   });
 
-  const pageWidth = doc.internal.pageSize.getWidth();
-  const pageHeight = doc.internal.pageSize.getHeight();
-  const margin = 14;
-  const contentWidth = pageWidth - margin * 2;
+  const pageWidth = doc.internal.pageSize.getWidth(); // 297mm
+  const pageHeight = doc.internal.pageSize.getHeight(); // 210mm
+  const margin = 12;
+  const contentWidth = pageWidth - margin * 2; // 273mm
+  const continuationTopMargin = 23;
+  const footerBottomMargin = 16;
   const nowStr = new Date().toLocaleString('pt-BR');
 
   const drawHeader = (isFirstPage: boolean): number => {
-    let y = 10;
+    let y = 8;
     if (isFirstPage && letterheadImage) {
       try {
         const imgFormat = letterheadImage.includes('image/png') ? 'PNG' : 'JPEG';
-        doc.addImage(letterheadImage, imgFormat, margin, 8, contentWidth, 24, undefined, 'FAST');
-        y = 35;
+        doc.addImage(letterheadImage, imgFormat, margin, 6, contentWidth, 18, undefined, 'FAST');
+        y = 26;
       } catch {
-        y = 12;
+        y = 8;
       }
     }
 
+    const bannerH = isFirstPage ? 15 : 11;
     doc.setFillColor(15, 23, 42);
-    doc.roundedRect(margin, y, contentWidth, isFirstPage ? 19 : 12, 2, 2, 'F');
+    doc.roundedRect(margin, y, contentWidth, bannerH, 2, 2, 'F');
 
     doc.setTextColor(255, 255, 255);
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(isFirstPage ? 11 : 9);
-    doc.text(truncateText(title.toUpperCase(), 75), margin + 4, y + 7);
+    doc.setFontSize(isFirstPage ? 11.5 : 8.8);
+    doc.text(truncateText(title.toUpperCase(), 112), margin + 4, y + (isFirstPage ? 6.2 : 6.8));
 
     if (isFirstPage) {
       doc.setFont('helvetica', 'normal');
-      doc.setFontSize(8);
+      doc.setFontSize(7.8);
       doc.setTextColor(191, 219, 254);
       const subHeader = groupName
         ? `${groupName} • Unidade: ${filters.location} • Emitido em: ${nowStr}`
         : `Unidade: ${filters.location} • Emitido em: ${nowStr}`;
-      doc.text(truncateText(subHeader, 105), margin + 4, y + 13.5);
+      doc.text(truncateText(subHeader, 155), margin + 4, y + 11.8);
+    } else {
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.setTextColor(191, 219, 254);
+      doc.text(truncateText(`${filters.location} • ${filters.periodLabel}`, 65), pageWidth - margin - 4, y + 6.8, {
+        align: 'right'
+      });
     }
 
-    return y + (isFirstPage ? 23 : 16);
+    return y + bannerH + 3.5;
   };
 
   let currentY = drawHeader(true);
 
-  // Filters box
+  // Filters box (wide landscape distribution)
   const hasMedNote = Boolean(filters.medicamentosNote);
-  const filterBoxH = hasMedNote ? 23 : 18;
+  const filterBoxH = hasMedNote ? 20.5 : 16;
   doc.setFillColor(248, 250, 252);
   doc.setDrawColor(203, 213, 225);
   doc.roundedRect(margin, currentY, contentWidth, filterBoxH, 2, 2, 'FD');
 
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(7.5);
+  doc.setFontSize(7.2);
   doc.setTextColor(30, 58, 138);
-  doc.text('PERÍODO ANALISADO E FILTROS APLICADOS AO INDICADOR', margin + 4, currentY + 5);
+  doc.text('PERÍODO ANALISADO E FILTROS APLICADOS AO INDICADOR', margin + 4, currentY + 4.5);
 
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8);
+  doc.setFontSize(7.8);
   doc.setTextColor(30, 41, 59);
   doc.text(
     truncateText(
       `Período: ${filters.periodLabel}  |  Unidade: ${filters.location}  |  Setor: ${filters.sectorFilter}`,
-      115
+      165
     ),
     margin + 4,
-    currentY + 10.5
+    currentY + 9.5
   );
   doc.text(
     truncateText(
       `Categoria: ${filters.categoryFilter}  |  Material: ${filters.materialFilter}`,
-      115
+      165
     ),
     margin + 4,
-    currentY + 15.2
+    currentY + 13.8
   );
   if (hasMedNote) {
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(180, 83, 9);
-    doc.text(`Nota: ${truncateText(filters.medicamentosNote!, 115)}`, margin + 4, currentY + 19.8);
+    doc.text(`Nota: ${truncateText(filters.medicamentosNote!, 165)}`, margin + 4, currentY + 18.2);
   }
-  currentY += filterBoxH + 4;
+  currentY += filterBoxH + 3;
 
   if (subtitle) {
     doc.setFont('helvetica', 'italic');
-    doc.setFontSize(8.5);
+    doc.setFontSize(8.2);
     doc.setTextColor(71, 85, 105);
-    doc.text(truncateText(`Metodologia / Detalhamento: ${subtitle}`, 115), margin, currentY);
-    currentY += 6;
+    const wrappedSub = doc.splitTextToSize(`Metodologia / Detalhamento: ${subtitle}`, contentWidth).slice(0, 2);
+    wrappedSub.forEach((line: string) => {
+      doc.text(line, margin, currentY + 2.5);
+      currentY += 4;
+    });
+    currentY += 1.5;
   }
 
-  // KPIs Grid
+  // KPIs Grid (up to 4 wide cards across 273mm)
   if (kpis && kpis.length > 0) {
     const cols = Math.min(4, Math.max(1, kpis.length));
-    const cardW = (contentWidth - (cols - 1) * 3) / cols;
-    const cardH = 20;
+    const cardW = (contentWidth - (cols - 1) * 3.5) / cols;
+    const cardH = 18.5;
 
     kpis.forEach((kpi, idx) => {
       const col = idx % cols;
       const row = Math.floor(idx / cols);
-      const x = margin + col * (cardW + 3);
+      const x = margin + col * (cardW + 3.5);
       const y = currentY + row * (cardH + 3);
 
       doc.setFillColor(255, 255, 255);
@@ -1865,47 +1925,60 @@ export function exportSingleIndicatorPDF(params: SingleIndicatorExportParams): v
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(6.5);
       doc.setTextColor(100, 116, 139);
-      doc.text(truncateText(kpi.label.toUpperCase(), 32), x + 3, y + 6);
+      doc.text(truncateText(kpi.label.toUpperCase(), 42), x + 3.2, y + 5.6);
 
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(10.5);
       doc.setTextColor(15, 23, 42);
-      doc.text(truncateText(kpi.value, 28), x + 3, y + 12.5);
+      doc.text(truncateText(kpi.value, 34), x + 3.2, y + 11.8);
 
       const subText = kpi.subValue || kpi.subvalue || kpi.helper;
       if (subText) {
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(6.8);
         doc.setTextColor(71, 85, 105);
-        doc.text(truncateText(subText, 38), x + 3, y + 17.2);
+        doc.text(truncateText(subText, 48), x + 3.2, y + 16.2);
       }
     });
 
     const totalRows = Math.ceil(kpis.length / cols);
-    currentY += totalRows * (cardH + 3) + 4;
+    currentY += totalRows * (cardH + 3) + 2.5;
   }
 
-  // Chart Canvas
+  // Chart Canvas — scaled cleanly to landscape printable height and centered horizontally
   const rendered = renderSingleIndicatorChartCanvas(chart);
-  const imgH = (contentWidth * rendered.height) / rendered.width;
-  if (currentY + imgH > pageHeight - 18) {
-    doc.addPage();
-    currentY = drawHeader(false);
-  }
-  doc.addImage(rendered.dataUrl, 'PNG', margin, currentY, contentWidth, imgH, undefined, 'FAST');
-  currentY += imgH + 7;
+  const naturalH = (contentWidth * rendered.height) / rendered.width;
+  let remainingSpace = pageHeight - footerBottomMargin - currentY;
 
-  // Optional Table
+  if (remainingSpace < 62) {
+    doc.addPage();
+    currentY = continuationTopMargin;
+    remainingSpace = pageHeight - footerBottomMargin - currentY;
+  }
+
+  const maxChartH = Math.min(remainingSpace - 2, 112);
+  const finalChartH = Math.min(naturalH, Math.max(48, maxChartH));
+  const finalChartW = Math.min(contentWidth, (finalChartH * rendered.width) / rendered.height);
+  const chartX = margin + (contentWidth - finalChartW) / 2;
+
+  doc.addImage(rendered.dataUrl, 'PNG', chartX, currentY, finalChartW, finalChartH, undefined, 'FAST');
+  currentY += finalChartH + 6;
+
+  // Optional Table (full landscape width, balanced columns, automatic multi-page headers)
   if (table && table.rows.length > 0) {
-    if (currentY + 25 > pageHeight - 18) {
+    if (currentY + 28 > pageHeight - footerBottomMargin) {
       doc.addPage();
-      currentY = drawHeader(false);
+      currentY = continuationTopMargin;
     }
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(9.5);
     doc.setTextColor(15, 23, 42);
-    doc.text(truncateText(table.title.toUpperCase(), 90), margin, currentY);
+    doc.text(truncateText(table.title.toUpperCase(), 125), margin, currentY);
     currentY += 3;
+
+    const colCount = table.headers.length;
+    const headFontSize = colCount >= 10 ? 6.6 : colCount >= 8 ? 7.0 : 7.5;
+    const bodyFontSize = colCount >= 10 ? 6.4 : colCount >= 8 ? 6.8 : 7.3;
 
     autoTable(doc, {
       startY: currentY,
@@ -1913,40 +1986,49 @@ export function exportSingleIndicatorPDF(params: SingleIndicatorExportParams): v
       body: table.rows,
       theme: 'striped',
       showHead: 'everyPage',
-      margin: { left: margin, right: margin, top: 28, bottom: 16 },
+      tableWidth: contentWidth,
+      margin: { left: margin, right: margin, top: continuationTopMargin, bottom: footerBottomMargin },
       headStyles: {
         fillColor: [30, 58, 138],
         textColor: [255, 255, 255],
-        fontSize: 7.5,
-        fontStyle: 'bold'
+        fontSize: headFontSize,
+        fontStyle: 'bold',
+        valign: 'middle',
+        cellPadding: 2.2
       },
       styles: {
-        fontSize: 7.2,
+        fontSize: bodyFontSize,
         cellPadding: 2,
         textColor: [30, 41, 59],
-        overflow: 'linebreak'
-      }
+        overflow: 'linebreak',
+        valign: 'middle'
+      },
+      columnStyles: buildSingleIndicatorColumnStyles(table.headers)
     });
   }
 
   const totalPages = (doc as any).internal.getNumberOfPages();
   for (let p = 1; p <= totalPages; p++) {
     doc.setPage(p);
+    if (p > 1) {
+      drawHeader(false);
+    }
+
     doc.setDrawColor(226, 232, 240);
     doc.setLineWidth(0.3);
-    doc.line(margin, pageHeight - 12, pageWidth - margin, pageHeight - 12);
+    doc.line(margin, pageHeight - 11.5, pageWidth - margin, pageHeight - 11.5);
 
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(7.5);
     doc.setTextColor(100, 116, 139);
     doc.text(
-      `Indicador Individual: ${truncateText(title, 50)} • ${filters.location} • ${nowStr}`,
+      `Indicador Individual: ${truncateText(title, 85)} • ${filters.location} • ${nowStr}`,
       margin,
-      pageHeight - 7.5
+      pageHeight - 7
     );
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(30, 41, 59);
-    doc.text(`Página ${p} de ${totalPages}`, pageWidth - margin, pageHeight - 7.5, {
+    doc.text(`Página ${p} de ${totalPages}`, pageWidth - margin, pageHeight - 7, {
       align: 'right'
     });
   }
@@ -1961,8 +2043,8 @@ export function exportSingleIndicatorPDF(params: SingleIndicatorExportParams): v
 }
 
 /**
- * Prints ONLY the selected indicator (title, KPIs, rendered chart, period, filters, and optional table)
- * using a hidden iframe so it works seamlessly inside AI Studio and Vercel without window.open
+ * Prints ONLY the selected indicator in mandatory A4 landscape orientation (title, KPIs, rendered chart,
+ * period, filters, and optional table) using a hidden iframe so it works seamlessly without window.open
  */
 export function printSingleIndicator(params: SingleIndicatorExportParams): void {
   const { groupName, letterheadImage, filters, kpis, chart, table } = params;
@@ -1990,24 +2072,27 @@ export function printSingleIndicator(params: SingleIndicatorExportParams): void 
     .map(k => {
       const subText = k.subValue || k.subvalue || k.helper;
       return `
-      <div style="border:1px solid #cbd5e1;border-top:3px solid #2563eb;border-radius:8px;padding:10px 12px;background:#fff;">
-        <div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;">${k.label}</div>
-        <div style="font-size:16px;font-weight:900;color:#0f172a;margin-top:4px;">${k.value}</div>
-        ${subText ? `<div style="font-size:10px;color:#475569;margin-top:3px;">${subText}</div>` : ''}
+      <div class="kpi-card">
+        <div class="kpi-label">${escapeHtml(k.label)}</div>
+        <div class="kpi-val">${escapeHtml(k.value)}</div>
+        ${subText ? `<div class="kpi-sub">${escapeHtml(subText)}</div>` : ''}
       </div>
     `;
     })
     .join('');
 
+  const alignments = table ? table.headers.map(h => inferColumnAlignment(h)) : [];
   const tableHtml =
     table && table.rows.length > 0
       ? `
-      <div style="margin-top:18px;">
-        <h3 style="font-size:12px;font-weight:800;color:#0f172a;text-transform:uppercase;margin-bottom:8px;">${table.title}</h3>
-        <table style="width:100%;border-collapse:collapse;font-size:11px;">
+      <div class="table-section">
+        <h3 class="table-title">${escapeHtml(table.title)}</h3>
+        <table class="data-table">
           <thead>
-            <tr style="background:#1e3a8a;color:#fff;">
-              ${table.headers.map(h => `<th style="padding:6px 8px;text-align:left;border:1px solid #cbd5e1;">${h}</th>`).join('')}
+            <tr>
+              ${table.headers
+                .map((h, i) => `<th style="text-align:${alignments[i] || 'left'};">${escapeHtml(h)}</th>`)
+                .join('')}
             </tr>
           </thead>
           <tbody>
@@ -2015,8 +2100,13 @@ export function printSingleIndicator(params: SingleIndicatorExportParams): void 
               .slice(0, 60)
               .map(
                 (r, idx) => `
-                <tr style="background:${idx % 2 === 0 ? '#ffffff' : '#f8fafc'};">
-                  ${r.map(c => `<td style="padding:5px 8px;border:1px solid #e2e8f0;color:#1e293b;">${c}</td>`).join('')}
+                <tr class="${idx % 2 === 0 ? 'row-even' : 'row-odd'}">
+                  ${r
+                    .map(
+                      (c, i) =>
+                        `<td style="text-align:${alignments[i] || 'left'};">${escapeHtml(String(c ?? ''))}</td>`
+                    )
+                    .join('')}
                 </tr>
               `
               )
@@ -2032,44 +2122,139 @@ export function printSingleIndicator(params: SingleIndicatorExportParams): void 
     <html lang="pt-BR">
       <head>
         <meta charset="utf-8" />
-        <title>${title}</title>
+        <title>${escapeHtml(title)}</title>
         <style>
-          @page { size: A4 portrait; margin: 12mm; }
-          body { font-family: Helvetica, Arial, sans-serif; color: #0f172a; margin: 0; padding: 0; background: #fff; }
+          @page { size: A4 landscape; margin: 10mm 12mm; }
+          * {
+            box-sizing: border-box;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+          }
+          body {
+            font-family: Helvetica, Arial, sans-serif;
+            color: #0f172a;
+            margin: 0;
+            padding: 0;
+            background: #fff;
+          }
+          .letterhead { text-align: center; margin-bottom: 8px; }
+          .letterhead img { max-height: 60px; max-width: 100%; object-fit: contain; }
+          .banner {
+            background: #0f172a;
+            color: #fff;
+            padding: 10px 14px;
+            border-radius: 7px;
+            margin-bottom: 10px;
+          }
+          .banner-title { font-size: 14.5px; font-weight: 900; text-transform: uppercase; }
+          .banner-sub { font-size: 10.5px; color: #bfdbfe; margin-top: 3px; }
+          .filters-box {
+            background: #f8fafc;
+            border: 1px solid #cbd5e1;
+            border-radius: 7px;
+            padding: 8px 12px;
+            margin-bottom: 10px;
+            font-size: 10.5px;
+          }
+          .filters-title { font-weight: 800; color: #1e3a8a; margin-bottom: 3px; text-transform: uppercase; }
+          .subtitle { font-size: 10.5px; color: #475569; font-style: italic; margin-bottom: 10px; }
+          .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(${Math.min(4, Math.max(1, (kpis || []).length))}, 1fr);
+            gap: 8px;
+            margin-bottom: 10px;
+          }
+          .kpi-card {
+            border: 1px solid #cbd5e1;
+            border-top: 3px solid #2563eb;
+            border-radius: 7px;
+            padding: 8px 11px;
+            background: #fff;
+            break-inside: avoid;
+            page-break-inside: avoid;
+          }
+          .kpi-label { font-size: 9.5px; font-weight: 700; color: #64748b; text-transform: uppercase; }
+          .kpi-val { font-size: 15px; font-weight: 900; color: #0f172a; margin-top: 3px; }
+          .kpi-sub { font-size: 9.5px; color: #475569; margin-top: 2px; }
+          .chart-wrap {
+            text-align: center;
+            margin-top: 6px;
+            break-inside: avoid;
+            page-break-inside: avoid;
+          }
+          .chart-wrap img {
+            max-width: 100%;
+            max-height: 104mm;
+            width: auto;
+            height: auto;
+            object-fit: contain;
+            border-radius: 7px;
+          }
+          .table-section { margin-top: 14px; }
+          .table-title {
+            font-size: 11.5px;
+            font-weight: 800;
+            color: #0f172a;
+            text-transform: uppercase;
+            margin: 0 0 6px;
+          }
+          .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 10px;
+            table-layout: auto;
+          }
+          .data-table thead { display: table-header-group; }
+          .data-table tr { break-inside: avoid; page-break-inside: avoid; }
+          .data-table th {
+            background: #1e3a8a;
+            color: #fff;
+            padding: 5px 7px;
+            border: 1px solid #cbd5e1;
+            font-weight: 700;
+            word-break: break-word;
+          }
+          .data-table td {
+            padding: 4.5px 7px;
+            border: 1px solid #e2e8f0;
+            color: #1e293b;
+            word-break: break-word;
+            overflow-wrap: anywhere;
+          }
+          .row-even { background: #ffffff; }
+          .row-odd { background: #f8fafc; }
         </style>
       </head>
       <body>
         ${
           letterheadImage
-            ? `<div style="text-align:center;margin-bottom:10px;"><img src="${letterheadImage}" style="max-height:75px;max-width:100%;object-fit:contain;" /></div>`
+            ? `<div class="letterhead"><img src="${letterheadImage}" /></div>`
             : ''
         }
-        <div style="background:#0f172a;color:#fff;padding:12px 16px;border-radius:8px;margin-bottom:12px;">
-          <div style="font-size:15px;font-weight:900;text-transform:uppercase;">${title}</div>
-          <div style="font-size:11px;color:#bfdbfe;margin-top:3px;">
-            ${groupName ? `${groupName} • ` : ''}Unidade: ${filters.location} • Emitido em: ${nowStr}
+        <div class="banner">
+          <div class="banner-title">${escapeHtml(title)}</div>
+          <div class="banner-sub">
+            ${groupName ? `${escapeHtml(groupName)} • ` : ''}Unidade: ${escapeHtml(filters.location)} • Emitido em: ${escapeHtml(nowStr)}
           </div>
         </div>
 
-        <div style="background:#f8fafc;border:1px solid #cbd5e1;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:11px;">
-          <div style="font-weight:800;color:#1e3a8a;margin-bottom:4px;text-transform:uppercase;">Período e Filtros Aplicados</div>
-          <div><strong>Período:</strong> ${filters.periodLabel} &nbsp;|&nbsp; <strong>Unidade:</strong> ${filters.location} &nbsp;|&nbsp; <strong>Setor:</strong> ${filters.sectorFilter}</div>
-          <div style="margin-top:2px;"><strong>Categoria:</strong> ${filters.categoryFilter} &nbsp;|&nbsp; <strong>Material:</strong> ${filters.materialFilter}</div>
-          ${filters.medicamentosNote ? `<div style="margin-top:4px;color:#b45309;font-weight:700;"><strong>Nota:</strong> ${filters.medicamentosNote}</div>` : ''}
+        <div class="filters-box">
+          <div class="filters-title">Período e Filtros Aplicados</div>
+          <div><strong>Período:</strong> ${escapeHtml(filters.periodLabel)} &nbsp;|&nbsp; <strong>Unidade:</strong> ${escapeHtml(filters.location)} &nbsp;|&nbsp; <strong>Setor:</strong> ${escapeHtml(filters.sectorFilter)}</div>
+          <div style="margin-top:2px;"><strong>Categoria:</strong> ${escapeHtml(filters.categoryFilter)} &nbsp;|&nbsp; <strong>Material:</strong> ${escapeHtml(filters.materialFilter)}</div>
+          ${filters.medicamentosNote ? `<div style="margin-top:3px;color:#b45309;font-weight:700;"><strong>Nota:</strong> ${escapeHtml(filters.medicamentosNote)}</div>` : ''}
         </div>
 
         ${
           subtitle
-            ? `<div style="font-size:11px;color:#475569;font-style:italic;margin-bottom:12px;"><strong>Metodologia:</strong> ${subtitle}</div>`
+            ? `<div class="subtitle"><strong>Metodologia:</strong> ${escapeHtml(subtitle)}</div>`
             : ''
         }
 
-        <div style="display:grid;grid-template-columns:repeat(${Math.min(4, Math.max(1, (kpis || []).length))}, 1fr);gap:10px;margin-bottom:14px;">
-          ${kpisHtml}
-        </div>
+        ${kpis && kpis.length > 0 ? `<div class="kpi-grid">${kpisHtml}</div>` : ''}
 
-        <div style="text-align:center;margin-top:8px;">
-          <img id="chart-img" src="${rendered.dataUrl}" style="width:100%;max-width:760px;height:auto;border-radius:8px;" />
+        <div class="chart-wrap">
+          <img id="chart-img" src="${rendered.dataUrl}" />
         </div>
 
         ${tableHtml}
@@ -2083,7 +2268,10 @@ export function printSingleIndicator(params: SingleIndicatorExportParams): void 
     doc.write(htmlContent);
     doc.close();
 
+    let printed = false;
     const triggerPrint = () => {
+      if (printed) return;
+      printed = true;
       try {
         iframe.contentWindow?.focus();
         iframe.contentWindow?.print();
@@ -2092,12 +2280,23 @@ export function printSingleIndicator(params: SingleIndicatorExportParams): void 
       }
     };
 
-    const img = doc.getElementById('chart-img') as HTMLImageElement | null;
-    if (img && !img.complete) {
-      img.onload = () => setTimeout(triggerPrint, 120);
-      img.onerror = () => setTimeout(triggerPrint, 120);
-    } else {
+    const imgs = Array.from(doc.querySelectorAll('img'));
+    const pending = imgs.filter(img => !img.complete);
+    if (pending.length === 0) {
       setTimeout(triggerPrint, 180);
+    } else {
+      let remaining = pending.length;
+      const onImgDone = () => {
+        remaining -= 1;
+        if (remaining <= 0) {
+          setTimeout(triggerPrint, 120);
+        }
+      };
+      pending.forEach(img => {
+        img.onload = onImgDone;
+        img.onerror = onImgDone;
+      });
+      setTimeout(triggerPrint, 1200);
     }
   }
 }
