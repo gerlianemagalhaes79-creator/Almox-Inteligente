@@ -1,5 +1,11 @@
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import {
+  attachLetterheadToDoc,
+  drawContinuationAndPageNumbers,
+  drawInstitutionalReportHeader,
+  getPrintLetterheadLayout
+} from './letterheadLayout';
 
 export interface PDFReportFilterSummary {
   periodLabel: string;
@@ -626,131 +632,71 @@ export async function generateCompletePDFReport(params: GenerateCompletePDFRepor
     format: 'a4'
   });
 
-  const pageWidth = doc.internal.pageSize.getWidth(); // 297mm
-  const pageHeight = doc.internal.pageSize.getHeight(); // 210mm
-  const margin = 12;
-  const contentWidth = pageWidth - margin * 2; // 273mm
-  const continuationTopMargin = 23;
-  const footerBottomMargin = 16;
+  // Attach institutional letterhead proportionally (0% distortion) on Page 1 and every subsequent page
+  const lh = attachLetterheadToDoc(doc, letterheadImage, {
+    sideMargin: 12,
+    continuationHeaderHeight: 11
+  });
+
+  const pageWidth = lh.pageWidth; // 297mm
+  const pageHeight = lh.pageHeight; // 210mm
+  const margin = lh.marginLeft;
+  const contentWidth = lh.contentWidth; // 273mm
+  const continuationTopMargin = lh.continuationTop;
+  const footerBottomMargin = lh.marginBottom;
   const nowStr = new Date().toLocaleString('pt-BR');
 
-  // Helper to draw page header
-  const drawHeader = (isFirstPage: boolean): number => {
-    let y = 8;
-
-    if (isFirstPage && letterheadImage) {
-      try {
-        const imgFormat = letterheadImage.includes('image/png') ? 'PNG' : 'JPEG';
-        doc.addImage(letterheadImage, imgFormat, margin, 6, contentWidth, 18, undefined, 'FAST');
-        y = 26;
-      } catch {
-        y = 8;
-      }
-    }
-
-    if (!letterheadImage || !isFirstPage) {
-      const bannerY = isFirstPage ? y : 7;
-      const bannerH = isFirstPage ? 16 : 11;
-      doc.setFillColor(15, 23, 42);
-      doc.roundedRect(margin, bannerY, contentWidth, bannerH, 2, 2, 'F');
-
-      doc.setTextColor(255, 255, 255);
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(isFirstPage ? 11.5 : 9);
-      doc.text(truncateText(title.toUpperCase(), 96), margin + 4, bannerY + (isFirstPage ? 6.8 : 7));
-
-      if (isFirstPage) {
-        doc.setFont('helvetica', 'normal');
-        doc.setFontSize(8);
-        doc.setTextColor(191, 219, 254);
-        doc.text(
-          truncateText(subtitle || `Unidade: ${filters.location} • Emitido em: ${nowStr}`, 155),
-          margin + 4,
-          bannerY + 12.2
-        );
-      } else {
-        doc.setFont('helvetica', 'normal');
-        doc.setFontSize(7.5);
-        doc.setTextColor(203, 213, 225);
-        doc.text(
-          truncateText(`${filters.location} • ${filters.periodLabel}`, 70),
-          pageWidth - margin - 4,
-          bannerY + 7,
-          { align: 'right' }
-        );
-      }
-
-      y = bannerY + bannerH + 4;
-    } else {
-      doc.setTextColor(15, 23, 42);
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(12.5);
-      doc.text(truncateText(title.toUpperCase(), 105), pageWidth / 2, y + 4.2, { align: 'center' });
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(8.2);
-      doc.setTextColor(71, 85, 105);
-      doc.text(
-        truncateText(subtitle || `Unidade: ${filters.location} • Emitido em: ${nowStr}`, 155),
-        pageWidth / 2,
-        y + 9.2,
-        { align: 'center' }
-      );
-      y += 13;
-    }
-
-    return y;
-  };
-
-  let currentY = drawHeader(true);
+  // Unified light institutional editorial header directly on white background (no dark blocks or filter boxes)
+  let currentY = drawInstitutionalReportHeader(doc, lh, {
+    kicker: `Unidade Responsável: Policlínica de Sobral • ${filters.location}`,
+    emissionText: `Emitido em ${nowStr}`,
+    title,
+    subtitle: subtitle && !subtitle.includes('Emitido em') ? subtitle : undefined,
+    metadata: [
+      { label: 'Período Analisado', value: filters.periodLabel },
+      { label: 'Unidade', value: filters.location },
+      { label: 'Setor', value: filters.sectorFilter },
+      { label: 'Categoria', value: filters.categoryFilter },
+      { label: 'Material', value: filters.materialFilter },
+      ...(filters.generatedBy
+        ? [{ label: 'Responsável pela Emissão', value: filters.generatedBy }]
+        : [{ label: 'Data de Emissão', value: nowStr }])
+    ],
+    metadataColumns: 3,
+    observation: filters.medicamentosNote,
+    observationTone: 'warning'
+  });
 
   const ensureSpace = (neededHeight: number) => {
-    if (currentY + neededHeight > pageHeight - footerBottomMargin) {
+    if (currentY + neededHeight > lh.contentBottom) {
       doc.addPage();
-      currentY = drawHeader(false);
+      currentY = continuationTopMargin;
     }
   };
 
   const addChartImage = (
     rendered: { dataUrl: string; width: number; height: number },
-    maxHeightCap = 96
+    maxHeightCap = 76
   ) => {
     const naturalH = (contentWidth * rendered.height) / rendered.width;
-    const maxAllowed = Math.min(maxHeightCap, pageHeight - continuationTopMargin - footerBottomMargin - 4);
+    const fullPagePrintableH = lh.contentBottom - continuationTopMargin - 3;
+    let remaining = lh.contentBottom - currentY;
+
+    // Only break to a new page if the remaining space cannot fit a clearly readable chart (>= 56mm)
+    if (remaining < 56) {
+      doc.addPage();
+      currentY = continuationTopMargin;
+      remaining = lh.contentBottom - currentY;
+    }
+
+    const maxAllowed = Math.min(maxHeightCap, remaining - 2, fullPagePrintableH);
     const drawH = Math.min(naturalH, maxAllowed);
-    const drawW = (drawH * rendered.width) / rendered.height;
+    const drawW = Math.min(contentWidth, (drawH * rendered.width) / rendered.height);
     const drawX = margin + (contentWidth - drawW) / 2;
 
-    ensureSpace(drawH + 5);
     doc.addImage(rendered.dataUrl, 'PNG', drawX, currentY, drawW, drawH, undefined, 'FAST');
-    currentY += drawH + 5;
+    currentY += drawH + 4;
   };
-
-  // --- 1. APPLIED FILTERS SUMMARY BOX ---
-  const hasMedNote = Boolean(filters.medicamentosNote);
-  const filterBoxH = hasMedNote ? 21 : 16.5;
-  doc.setFillColor(248, 250, 252);
-  doc.setDrawColor(203, 213, 225);
-  doc.roundedRect(margin, currentY, contentWidth, filterBoxH, 2, 2, 'FD');
-
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(7.5);
-  doc.setTextColor(30, 58, 138);
-  doc.text('PARÂMETROS E FILTROS APLICADOS NO RELATÓRIO', margin + 4, currentY + 4.8);
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8);
-  doc.setTextColor(30, 41, 59);
-  const filterLine1 = `Período Analisado: ${filters.periodLabel}   |   Unidade: ${filters.location}   |   Setor: ${filters.sectorFilter}`;
-  const filterLine2 = `Categoria: ${filters.categoryFilter}   |   Material: ${filters.materialFilter}   |   Data de Emissão: ${nowStr}`;
-  doc.text(truncateText(filterLine1, 170), margin + 4, currentY + 9.8);
-  doc.text(truncateText(filterLine2, 170), margin + 4, currentY + 14.3);
-  if (hasMedNote) {
-    doc.setFont('helvetica', 'bold');
-    doc.setTextColor(180, 83, 9);
-    doc.text(`Nota: ${truncateText(filters.medicamentosNote!, 170)}`, margin + 4, currentY + 18.8);
-  }
-
-  currentY += filterBoxH + 4.5;
 
   // --- 2. EXECUTIVE KPI CARDS GRID (2 ROWS OF 4 CARDS) ---
   doc.setFont('helvetica', 'bold');
@@ -814,52 +760,52 @@ export async function generateCompletePDFReport(params: GenerateCompletePDFRepor
   ];
 
   const cardW = (contentWidth - 9) / 4;
-  const cardH = 18.5;
+  const cardH = 16.8;
 
   kpiCards.forEach((card, idx) => {
     const col = idx % 4;
     const row = Math.floor(idx / 4);
     const x = margin + col * (cardW + 3);
-    const y = currentY + row * (cardH + 3);
+    const y = currentY + row * (cardH + 2.5);
 
     doc.setFillColor(255, 255, 255);
     doc.setDrawColor(226, 232, 240);
-    doc.roundedRect(x, y, cardW, cardH, 1.8, 1.8, 'FD');
+    doc.roundedRect(x, y, cardW, cardH, 1.6, 1.6, 'FD');
 
     doc.setFillColor(card.accent[0], card.accent[1], card.accent[2]);
-    doc.rect(x, y, cardW, 1.5, 'F');
+    doc.rect(x, y, cardW, 1.4, 'F');
 
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(6.5);
+    doc.setFontSize(6.3);
     doc.setTextColor(100, 116, 139);
-    doc.text(truncateText(card.title, 38), x + 3, y + 5.3);
+    doc.text(truncateText(card.title, 38), x + 3, y + 4.9);
 
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(10);
+    doc.setFontSize(9.8);
     doc.setTextColor(15, 23, 42);
-    doc.text(truncateText(card.main, 34), x + 3, y + 11.3);
+    doc.text(truncateText(card.main, 34), x + 3, y + 10.4);
 
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(6.8);
+    doc.setFontSize(6.6);
     doc.setTextColor(71, 85, 105);
-    doc.text(truncateText(card.sub, 48), x + 3, y + 15.8);
+    doc.text(truncateText(card.sub, 48), x + 3, y + 14.5);
   });
 
-  currentY += cardH * 2 + 8.5;
+  currentY += cardH * 2 + 6.5;
 
-  // --- 3. VISUAL CHARTS SECTION ---
-  ensureSpace(75);
+  // --- 3. VISUAL CHARTS SECTION (balanced sizing so Page 1 fits Chart 1 and consecutive charts pair cleanly) ---
+  ensureSpace(62);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(9.5);
   doc.setTextColor(15, 23, 42);
   doc.text('2. PAINEL GRÁFICO DE MOVIMENTAÇÃO, ESTOQUE, SETORES E CATEGORIAS', margin, currentY);
-  currentY += 3.5;
+  currentY += 3;
 
-  addChartImage(renderTimelineChartCanvas(timelineData), 80);
-  addChartImage(renderStockStatusChartCanvas(stockStatusSummary), 68);
-  addChartImage(renderSectorChartCanvas(sectorData, isAdmin), 88);
-  addChartImage(renderCategoryChartCanvas(categoryData, isAdmin), 88);
-  addChartImage(renderTopMaterialsChartCanvas(topMaterialsData), 92);
+  addChartImage(renderTimelineChartCanvas(timelineData), 72);
+  addChartImage(renderStockStatusChartCanvas(stockStatusSummary), 66);
+  addChartImage(renderSectorChartCanvas(sectorData, isAdmin), 72);
+  addChartImage(renderCategoryChartCanvas(categoryData, isAdmin), 72);
+  addChartImage(renderTopMaterialsChartCanvas(topMaterialsData), 74);
 
   currentY += 2;
 
@@ -1215,34 +1161,12 @@ export async function generateCompletePDFReport(params: GenerateCompletePDFRepor
     currentY = (doc as any).lastAutoTable.finalY + 7;
   }
 
-  // --- 5. ADD HEADERS & PAGE NUMBERS TO ALL PAGES ---
-  const totalPages = (doc as any).internal.getNumberOfPages();
-  for (let p = 1; p <= totalPages; p++) {
-    doc.setPage(p);
-    if (p > 1) {
-      drawHeader(false);
-    }
-
-    // Footer line & page number
-    doc.setDrawColor(226, 232, 240);
-    doc.setLineWidth(0.3);
-    doc.line(margin, pageHeight - 12, pageWidth - margin, pageHeight - 12);
-
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7.5);
-    doc.setTextColor(100, 116, 139);
-    doc.text(
-      `Relatório Gerencial de Estoque e Indicadores • ${filters.location} • Emitido em ${nowStr}`,
-      margin,
-      pageHeight - 7.5
-    );
-
-    doc.setFont('helvetica', 'bold');
-    doc.setTextColor(30, 41, 59);
-    doc.text(`Página ${p} de ${totalPages}`, pageWidth - margin, pageHeight - 7.5, {
-      align: 'right'
-    });
-  }
+  // --- 5. ADD CONTINUATION HEADERS & PAGE NUMBERS TO ALL PAGES (strictly clear of institutional letterhead) ---
+  drawContinuationAndPageNumbers(doc, lh, {
+    title,
+    rightHeaderText: `${filters.location} • ${filters.periodLabel}`,
+    footerLeftText: `Relatório Gerencial de Estoque e Indicadores • ${filters.location} • Emitido em ${nowStr}`
+  });
 
   const defaultFileName = `Relatorio_Indicadores_${filters.location}_${new Date().toISOString().slice(0, 10)}.pdf`;
   doc.save(fileName || defaultFileName);
@@ -1801,177 +1725,111 @@ export function exportSingleIndicatorPDF(params: SingleIndicatorExportParams): v
     format: 'a4'
   });
 
-  const pageWidth = doc.internal.pageSize.getWidth(); // 297mm
-  const pageHeight = doc.internal.pageSize.getHeight(); // 210mm
-  const margin = 12;
-  const contentWidth = pageWidth - margin * 2; // 273mm
-  const continuationTopMargin = 23;
-  const footerBottomMargin = 16;
+  // Attach institutional letterhead proportionally on Page 1 and every subsequent page
+  const lh = attachLetterheadToDoc(doc, letterheadImage, {
+    sideMargin: 12,
+    continuationHeaderHeight: 11
+  });
+
+  const margin = lh.marginLeft;
+  const contentWidth = lh.contentWidth; // 273mm
+  const continuationTopMargin = lh.continuationTop;
+  const footerBottomMargin = lh.marginBottom;
   const nowStr = new Date().toLocaleString('pt-BR');
 
-  const drawHeader = (isFirstPage: boolean): number => {
-    let y = 8;
-    if (isFirstPage && letterheadImage) {
-      try {
-        const imgFormat = letterheadImage.includes('image/png') ? 'PNG' : 'JPEG';
-        doc.addImage(letterheadImage, imgFormat, margin, 6, contentWidth, 18, undefined, 'FAST');
-        y = 26;
-      } catch {
-        y = 8;
-      }
-    }
-
-    const bannerH = isFirstPage ? 15 : 11;
-    doc.setFillColor(15, 23, 42);
-    doc.roundedRect(margin, y, contentWidth, bannerH, 2, 2, 'F');
-
-    doc.setTextColor(255, 255, 255);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(isFirstPage ? 11.5 : 8.8);
-    doc.text(truncateText(title.toUpperCase(), 112), margin + 4, y + (isFirstPage ? 6.2 : 6.8));
-
-    if (isFirstPage) {
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(7.8);
-      doc.setTextColor(191, 219, 254);
-      const subHeader = groupName
-        ? `${groupName} • Unidade: ${filters.location} • Emitido em: ${nowStr}`
-        : `Unidade: ${filters.location} • Emitido em: ${nowStr}`;
-      doc.text(truncateText(subHeader, 155), margin + 4, y + 11.8);
-    } else {
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(7.5);
-      doc.setTextColor(191, 219, 254);
-      doc.text(truncateText(`${filters.location} • ${filters.periodLabel}`, 65), pageWidth - margin - 4, y + 6.8, {
-        align: 'right'
-      });
-    }
-
-    return y + bannerH + 3.5;
-  };
-
-  let currentY = drawHeader(true);
-
-  // Filters box (wide landscape distribution)
-  const hasMedNote = Boolean(filters.medicamentosNote);
-  const filterBoxH = hasMedNote ? 20.5 : 16;
-  doc.setFillColor(248, 250, 252);
-  doc.setDrawColor(203, 213, 225);
-  doc.roundedRect(margin, currentY, contentWidth, filterBoxH, 2, 2, 'FD');
-
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(7.2);
-  doc.setTextColor(30, 58, 138);
-  doc.text('PERÍODO ANALISADO E FILTROS APLICADOS AO INDICADOR', margin + 4, currentY + 4.5);
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(7.8);
-  doc.setTextColor(30, 41, 59);
-  doc.text(
-    truncateText(
-      `Período: ${filters.periodLabel}  |  Unidade: ${filters.location}  |  Setor: ${filters.sectorFilter}`,
-      165
-    ),
-    margin + 4,
-    currentY + 9.5
-  );
-  doc.text(
-    truncateText(
-      `Categoria: ${filters.categoryFilter}  |  Material: ${filters.materialFilter}`,
-      165
-    ),
-    margin + 4,
-    currentY + 13.8
-  );
-  if (hasMedNote) {
-    doc.setFont('helvetica', 'bold');
-    doc.setTextColor(180, 83, 9);
-    doc.text(`Nota: ${truncateText(filters.medicamentosNote!, 165)}`, margin + 4, currentY + 18.2);
-  }
-  currentY += filterBoxH + 3;
-
-  if (subtitle) {
-    doc.setFont('helvetica', 'italic');
-    doc.setFontSize(8.2);
-    doc.setTextColor(71, 85, 105);
-    const wrappedSub = doc.splitTextToSize(`Metodologia / Detalhamento: ${subtitle}`, contentWidth).slice(0, 2);
-    wrappedSub.forEach((line: string) => {
-      doc.text(line, margin, currentY + 2.5);
-      currentY += 4;
-    });
-    currentY += 1.5;
-  }
+  // Unified light institutional editorial header directly on white background (no dark blocks or filter boxes)
+  let currentY = drawInstitutionalReportHeader(doc, lh, {
+    kicker: groupName
+      ? `${groupName} • Unidade Responsável: ${filters.location}`
+      : `Unidade Responsável: Policlínica de Sobral • ${filters.location}`,
+    emissionText: `Emitido em ${nowStr}`,
+    title,
+    metadata: [
+      { label: 'Período Analisado', value: filters.periodLabel },
+      { label: 'Unidade', value: filters.location },
+      { label: 'Setor', value: filters.sectorFilter },
+      { label: 'Categoria', value: filters.categoryFilter },
+      { label: 'Material', value: filters.materialFilter },
+      ...(filters.generatedBy
+        ? [{ label: 'Responsável pela Emissão', value: filters.generatedBy }]
+        : [{ label: 'Data de Emissão', value: nowStr }])
+    ],
+    metadataColumns: 3,
+    observation: filters.medicamentosNote,
+    observationTone: 'warning',
+    methodology: subtitle
+  });
 
   // KPIs Grid (up to 4 wide cards across 273mm)
   if (kpis && kpis.length > 0) {
     const cols = Math.min(4, Math.max(1, kpis.length));
     const cardW = (contentWidth - (cols - 1) * 3.5) / cols;
-    const cardH = 18.5;
+    const cardH = 17;
 
     kpis.forEach((kpi, idx) => {
       const col = idx % cols;
       const row = Math.floor(idx / cols);
       const x = margin + col * (cardW + 3.5);
-      const y = currentY + row * (cardH + 3);
+      const y = currentY + row * (cardH + 2.5);
 
       doc.setFillColor(255, 255, 255);
       doc.setDrawColor(226, 232, 240);
-      doc.roundedRect(x, y, cardW, cardH, 1.8, 1.8, 'FD');
+      doc.roundedRect(x, y, cardW, cardH, 1.6, 1.6, 'FD');
 
       const accent = kpi.accent || params.accentColor || [37, 99, 235];
       doc.setFillColor(accent[0], accent[1], accent[2]);
-      doc.rect(x, y, cardW, 1.5, 'F');
+      doc.rect(x, y, cardW, 1.4, 'F');
 
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(6.5);
+      doc.setFontSize(6.3);
       doc.setTextColor(100, 116, 139);
-      doc.text(truncateText(kpi.label.toUpperCase(), 42), x + 3.2, y + 5.6);
+      doc.text(truncateText(kpi.label.toUpperCase(), 42), x + 3.2, y + 5.1);
 
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(10.5);
+      doc.setFontSize(10);
       doc.setTextColor(15, 23, 42);
-      doc.text(truncateText(kpi.value, 34), x + 3.2, y + 11.8);
+      doc.text(truncateText(kpi.value, 34), x + 3.2, y + 10.8);
 
       const subText = kpi.subValue || kpi.subvalue || kpi.helper;
       if (subText) {
         doc.setFont('helvetica', 'normal');
-        doc.setFontSize(6.8);
+        doc.setFontSize(6.6);
         doc.setTextColor(71, 85, 105);
-        doc.text(truncateText(subText, 48), x + 3.2, y + 16.2);
+        doc.text(truncateText(subText, 48), x + 3.2, y + 14.9);
       }
     });
 
     const totalRows = Math.ceil(kpis.length / cols);
-    currentY += totalRows * (cardH + 3) + 2.5;
+    currentY += totalRows * (cardH + 2.5) + 2;
   }
 
-  // Chart Canvas — scaled cleanly to landscape printable height and centered horizontally
+  // Chart Canvas — scaled cleanly to landscape printable height strictly above the institutional footer
   const rendered = renderSingleIndicatorChartCanvas(chart);
   const naturalH = (contentWidth * rendered.height) / rendered.width;
-  let remainingSpace = pageHeight - footerBottomMargin - currentY;
+  let remainingSpace = lh.contentBottom - currentY;
 
-  if (remainingSpace < 62) {
+  if (remainingSpace < 54) {
     doc.addPage();
     currentY = continuationTopMargin;
-    remainingSpace = pageHeight - footerBottomMargin - currentY;
+    remainingSpace = lh.contentBottom - currentY;
   }
 
-  const maxChartH = Math.min(remainingSpace - 2, 112);
-  const finalChartH = Math.min(naturalH, Math.max(48, maxChartH));
+  const maxChartH = Math.min(remainingSpace - 2, 102);
+  const finalChartH = Math.min(naturalH, Math.max(46, maxChartH));
   const finalChartW = Math.min(contentWidth, (finalChartH * rendered.width) / rendered.height);
   const chartX = margin + (contentWidth - finalChartW) / 2;
 
   doc.addImage(rendered.dataUrl, 'PNG', chartX, currentY, finalChartW, finalChartH, undefined, 'FAST');
-  currentY += finalChartH + 6;
+  currentY += finalChartH + 5;
 
-  // Optional Table (full landscape width, balanced columns, automatic multi-page headers)
+  // Optional Table (full landscape width, balanced columns, automatic multi-page letterhead & headers)
   if (table && table.rows.length > 0) {
-    if (currentY + 28 > pageHeight - footerBottomMargin) {
+    if (currentY + 26 > lh.contentBottom) {
       doc.addPage();
       currentY = continuationTopMargin;
     }
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(9.5);
+    doc.setFontSize(9.2);
     doc.setTextColor(15, 23, 42);
     doc.text(truncateText(table.title.toUpperCase(), 125), margin, currentY);
     currentY += 3;
@@ -2007,31 +1865,11 @@ export function exportSingleIndicatorPDF(params: SingleIndicatorExportParams): v
     });
   }
 
-  const totalPages = (doc as any).internal.getNumberOfPages();
-  for (let p = 1; p <= totalPages; p++) {
-    doc.setPage(p);
-    if (p > 1) {
-      drawHeader(false);
-    }
-
-    doc.setDrawColor(226, 232, 240);
-    doc.setLineWidth(0.3);
-    doc.line(margin, pageHeight - 11.5, pageWidth - margin, pageHeight - 11.5);
-
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7.5);
-    doc.setTextColor(100, 116, 139);
-    doc.text(
-      `Indicador Individual: ${truncateText(title, 85)} • ${filters.location} • ${nowStr}`,
-      margin,
-      pageHeight - 7
-    );
-    doc.setFont('helvetica', 'bold');
-    doc.setTextColor(30, 41, 59);
-    doc.text(`Página ${p} de ${totalPages}`, pageWidth - margin, pageHeight - 7, {
-      align: 'right'
-    });
-  }
+  drawContinuationAndPageNumbers(doc, lh, {
+    title,
+    rightHeaderText: `${filters.location} • ${filters.periodLabel}`,
+    footerLeftText: `Indicador Individual: ${truncateText(title, 75)} • ${filters.location} • ${nowStr}`
+  });
 
   const safeSlug = title
     .normalize('NFD')
@@ -2117,6 +1955,8 @@ export function printSingleIndicator(params: SingleIndicatorExportParams): void 
     `
       : '';
 
+  const printLh = getPrintLetterheadLayout('landscape', letterheadImage);
+
   const htmlContent = `
     <!DOCTYPE html>
     <html lang="pt-BR">
@@ -2124,75 +1964,110 @@ export function printSingleIndicator(params: SingleIndicatorExportParams): void 
         <meta charset="utf-8" />
         <title>${escapeHtml(title)}</title>
         <style>
-          @page { size: A4 landscape; margin: 10mm 12mm; }
-          * {
-            box-sizing: border-box;
-            -webkit-print-color-adjust: exact !important;
-            print-color-adjust: exact !important;
+          ${printLh.css}
+          .editorial-header {
+            background: transparent;
+            padding: 0 0 7px 0;
+            border-bottom: 1px solid #cbd5e1;
+            position: relative;
+            margin-bottom: 8px;
           }
-          body {
-            font-family: Helvetica, Arial, sans-serif;
-            color: #0f172a;
-            margin: 0;
-            padding: 0;
-            background: #fff;
+          .editorial-header::after {
+            content: '';
+            position: absolute;
+            left: 0;
+            bottom: -1px;
+            width: 32mm;
+            height: 2px;
+            background: #3e99a6;
           }
-          .letterhead { text-align: center; margin-bottom: 8px; }
-          .letterhead img { max-height: 60px; max-width: 100%; object-fit: contain; }
-          .banner {
-            background: #0f172a;
-            color: #fff;
-            padding: 10px 14px;
-            border-radius: 7px;
-            margin-bottom: 10px;
+          .editorial-kicker-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 3px;
           }
-          .banner-title { font-size: 14.5px; font-weight: 900; text-transform: uppercase; }
-          .banner-sub { font-size: 10.5px; color: #bfdbfe; margin-top: 3px; }
-          .filters-box {
-            background: #f8fafc;
-            border: 1px solid #cbd5e1;
-            border-radius: 7px;
-            padding: 8px 12px;
-            margin-bottom: 10px;
-            font-size: 10.5px;
+          .editorial-kicker {
+            font-size: 8.5px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: #3e99a6;
           }
-          .filters-title { font-weight: 800; color: #1e3a8a; margin-bottom: 3px; text-transform: uppercase; }
-          .subtitle { font-size: 10.5px; color: #475569; font-style: italic; margin-bottom: 10px; }
+          .editorial-emission {
+            font-size: 9px;
+            color: #64748b;
+          }
+          .editorial-title {
+            font-size: 16px;
+            font-weight: 800;
+            color: #0e4d64;
+            line-height: 1.2;
+          }
+          .meta-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 6px 14px;
+            padding: 6px 0 8px 0;
+            border-bottom: 1px solid #e2e8f0;
+            margin-bottom: 8px;
+          }
+          .meta-label {
+            font-size: 7.5px;
+            font-weight: 700;
+            text-transform: uppercase;
+            color: #64748b;
+            letter-spacing: 0.03em;
+          }
+          .meta-value {
+            font-size: 10px;
+            color: #1e293b;
+            margin-top: 1px;
+          }
+          .meta-note {
+            border-left: 2px solid #92400e;
+            padding-left: 7px;
+            font-size: 9.5px;
+            color: #92400e;
+            margin: 4px 0 6px 0;
+          }
+          .subtitle { font-size: 9.5px; color: #475569; font-style: italic; margin-bottom: 8px; }
+          .subtitle strong { font-style: normal; color: #0e4d64; }
           .kpi-grid {
             display: grid;
             grid-template-columns: repeat(${Math.min(4, Math.max(1, (kpis || []).length))}, 1fr);
             gap: 8px;
-            margin-bottom: 10px;
+            margin-bottom: 9px;
           }
           .kpi-card {
             border: 1px solid #cbd5e1;
             border-top: 3px solid #2563eb;
             border-radius: 7px;
-            padding: 8px 11px;
+            padding: 7px 10px;
             background: #fff;
             break-inside: avoid;
             page-break-inside: avoid;
           }
-          .kpi-label { font-size: 9.5px; font-weight: 700; color: #64748b; text-transform: uppercase; }
-          .kpi-val { font-size: 15px; font-weight: 900; color: #0f172a; margin-top: 3px; }
-          .kpi-sub { font-size: 9.5px; color: #475569; margin-top: 2px; }
+          .kpi-label { font-size: 9px; font-weight: 700; color: #64748b; text-transform: uppercase; }
+          .kpi-val { font-size: 14px; font-weight: 900; color: #0f172a; margin-top: 3px; }
+          .kpi-sub { font-size: 9px; color: #475569; margin-top: 2px; }
           .chart-wrap {
             text-align: center;
-            margin-top: 6px;
+            margin-top: 4px;
             break-inside: avoid;
             page-break-inside: avoid;
           }
           .chart-wrap img {
             max-width: 100%;
-            max-height: 104mm;
+            max-height: 92mm;
             width: auto;
             height: auto;
             object-fit: contain;
             border-radius: 7px;
           }
-          .table-section { margin-top: 14px; }
+          .table-section { margin-top: 12px; }
           .table-title {
-            font-size: 11.5px;
+            font-size: 11px;
             font-weight: 800;
             color: #0f172a;
             text-transform: uppercase;
@@ -2201,7 +2076,7 @@ export function printSingleIndicator(params: SingleIndicatorExportParams): void 
           .data-table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 10px;
+            font-size: 9.8px;
             table-layout: auto;
           }
           .data-table thead { display: table-header-group; }
@@ -2226,38 +2101,54 @@ export function printSingleIndicator(params: SingleIndicatorExportParams): void 
         </style>
       </head>
       <body>
-        ${
-          letterheadImage
-            ? `<div class="letterhead"><img src="${letterheadImage}" /></div>`
-            : ''
-        }
-        <div class="banner">
-          <div class="banner-title">${escapeHtml(title)}</div>
-          <div class="banner-sub">
-            ${groupName ? `${escapeHtml(groupName)} • ` : ''}Unidade: ${escapeHtml(filters.location)} • Emitido em: ${escapeHtml(nowStr)}
-          </div>
-        </div>
+        ${printLh.backgroundHtml}
+        <table class="print-layout-table">
+          <thead>
+            <tr><td><div class="print-header-spacer"></div></td></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <div class="print-content-shell">
+                  <div class="editorial-header">
+                    <div class="editorial-kicker-row">
+                      <div class="editorial-kicker">${groupName ? `${escapeHtml(groupName)} • ` : ''}Unidade Responsável: ${escapeHtml(filters.location)}</div>
+                      <div class="editorial-emission">Emitido em ${escapeHtml(nowStr)}</div>
+                    </div>
+                    <div class="editorial-title">${escapeHtml(title)}</div>
+                  </div>
 
-        <div class="filters-box">
-          <div class="filters-title">Período e Filtros Aplicados</div>
-          <div><strong>Período:</strong> ${escapeHtml(filters.periodLabel)} &nbsp;|&nbsp; <strong>Unidade:</strong> ${escapeHtml(filters.location)} &nbsp;|&nbsp; <strong>Setor:</strong> ${escapeHtml(filters.sectorFilter)}</div>
-          <div style="margin-top:2px;"><strong>Categoria:</strong> ${escapeHtml(filters.categoryFilter)} &nbsp;|&nbsp; <strong>Material:</strong> ${escapeHtml(filters.materialFilter)}</div>
-          ${filters.medicamentosNote ? `<div style="margin-top:3px;color:#b45309;font-weight:700;"><strong>Nota:</strong> ${escapeHtml(filters.medicamentosNote)}</div>` : ''}
-        </div>
+                  <div class="meta-grid">
+                    <div><div class="meta-label">Período Analisado</div><div class="meta-value">${escapeHtml(filters.periodLabel)}</div></div>
+                    <div><div class="meta-label">Unidade</div><div class="meta-value">${escapeHtml(filters.location)}</div></div>
+                    <div><div class="meta-label">Setor</div><div class="meta-value">${escapeHtml(filters.sectorFilter)}</div></div>
+                    <div><div class="meta-label">Categoria</div><div class="meta-value">${escapeHtml(filters.categoryFilter)}</div></div>
+                    <div><div class="meta-label">Material</div><div class="meta-value">${escapeHtml(filters.materialFilter)}</div></div>
+                    <div><div class="meta-label">Data de Emissão</div><div class="meta-value">${escapeHtml(nowStr)}</div></div>
+                  </div>
+                  ${filters.medicamentosNote ? `<div class="meta-note"><strong>Observação:</strong> ${escapeHtml(filters.medicamentosNote)}</div>` : ''}
 
-        ${
-          subtitle
-            ? `<div class="subtitle"><strong>Metodologia:</strong> ${escapeHtml(subtitle)}</div>`
-            : ''
-        }
+                  ${
+                    subtitle
+                      ? `<div class="subtitle"><strong>Metodologia:</strong> ${escapeHtml(subtitle)}</div>`
+                      : ''
+                  }
 
-        ${kpis && kpis.length > 0 ? `<div class="kpi-grid">${kpisHtml}</div>` : ''}
+                  ${kpis && kpis.length > 0 ? `<div class="kpi-grid">${kpisHtml}</div>` : ''}
 
-        <div class="chart-wrap">
-          <img id="chart-img" src="${rendered.dataUrl}" />
-        </div>
+                  <div class="chart-wrap">
+                    <img id="chart-img" src="${rendered.dataUrl}" />
+                  </div>
 
-        ${tableHtml}
+                  ${tableHtml}
+                </div>
+              </td>
+            </tr>
+          </tbody>
+          <tfoot>
+            <tr><td><div class="print-footer-spacer"></div></td></tr>
+          </tfoot>
+        </table>
       </body>
     </html>
   `;

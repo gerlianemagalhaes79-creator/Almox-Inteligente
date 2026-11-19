@@ -28,6 +28,11 @@ import { ptBR } from 'date-fns/locale';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell, PieChart, Pie } from 'recharts';
 import { Item, Transaction } from '../types';
 import { getCategorizedExitType } from '../utils/exitReasonUtils';
+import {
+  attachLetterheadToDoc,
+  drawContinuationAndPageNumbers,
+  drawInstitutionalReportHeader
+} from '../utils/letterheadLayout';
 
 interface ApuraSUSProducaoReportProps {
   transactions: Transaction[];
@@ -256,45 +261,28 @@ export const ApuraSUSProducaoReport: React.FC<ApuraSUSProducaoReportProps> = ({
   const handleExportPDF = () => {
     try {
       const doc = new jsPDF('p', 'mm', 'a4');
-      const pageWidth = doc.internal.pageSize.getWidth();
-      let startY = 15;
-
-      // Header with Letterhead if available
-      if (letterheadImage) {
-        try {
-          doc.addImage(letterheadImage, 'PNG', 14, 10, pageWidth - 28, 25);
-          startY = 40;
-        } catch {
-          startY = 20;
+      const lh = attachLetterheadToDoc(doc, letterheadImage, {
+        sideMargin: 14,
+        continuationHeaderHeight: 11
+      });
+      const emissionStr = format(new Date(), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR });
+      const tableStartY = drawInstitutionalReportHeader(doc, lh, {
+        kicker: `ApuraSUS • Unidade Responsável: ${inventoryLocation}`,
+        emissionText: `Emitido em ${emissionStr}`,
+        title: `Relatório de Produção Mensal — ${inventoryLocation}`,
+        subtitle: 'Destinado ao ApuraSUS (Sistema de Apuração e Gestão do Custo do SUS)',
+        metadata: [
+          { label: 'Competência / Período', value: `${periodRange.competenceLabel} (${periodRange.label})` },
+          { label: 'Unidade', value: inventoryLocation },
+          { label: 'Setores Atendidos', value: `${productionData.activeSectorsCount} setores` },
+          { label: 'Atendimentos / Baixas', value: `${productionData.totalTransactionsCount} registros` }
+        ],
+        metadataColumns: 2,
+        rightHighlight: {
+          label: 'Total Dispensado no Mês',
+          value: `${productionData.totalGeneralItems.toLocaleString('pt-BR')} itens`
         }
-      }
-
-      // Title & Header Information
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(14);
-      doc.setTextColor(15, 23, 42);
-      doc.text(`RELATÓRIO DE PRODUÇÃO MENSAL - ${inventoryLocation.toUpperCase()}`, 14, startY);
-
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(10);
-      doc.setTextColor(71, 85, 105);
-      doc.text(`Destinado ao ApuraSUS (Sistema de Apuração e Gestão do Custo do SUS)`, 14, startY + 6);
-      doc.text(`Competência: ${periodRange.competenceLabel} (${periodRange.label})`, 14, startY + 11);
-      doc.text(`Emissão: ${format(new Date(), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })}`, 14, startY + 16);
-
-      // Summary Box
-      doc.setFillColor(241, 245, 249);
-      doc.roundedRect(14, startY + 20, pageWidth - 28, 16, 2, 2, 'F');
-
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(11);
-      doc.setTextColor(30, 58, 138);
-      doc.text(`TOTAL GERAL DE ITENS DISPENSADOS NO MÊS: ${productionData.totalGeneralItems.toLocaleString('pt-BR')} itens`, 18, startY + 27);
-
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(9);
-      doc.setTextColor(71, 85, 105);
-      doc.text(`Setores Atendidos: ${productionData.activeSectorsCount} | Atendimentos/Baixas: ${productionData.totalTransactionsCount}`, 18, startY + 32);
+      });
 
       // Main Table: Sectors and Quantities
       const tableData = productionData.sectorsList.map((sec, index) => [
@@ -306,7 +294,7 @@ export const ApuraSUSProducaoReport: React.FC<ApuraSUSProducaoReportProps> = ({
       ]);
 
       autoTable(doc, {
-        startY: startY + 40,
+        startY: tableStartY,
         head: [['#', 'Setor de Destino / Consumidor', 'Quantidade de Itens Recebidos', '% Participação', 'Nº Atendimentos']],
         body: tableData,
         foot: [[
@@ -317,6 +305,8 @@ export const ApuraSUSProducaoReport: React.FC<ApuraSUSProducaoReportProps> = ({
           productionData.totalTransactionsCount.toString()
         ]],
         theme: 'striped',
+        showHead: 'everyPage',
+        margin: { left: 14, right: 14, top: lh.continuationTop, bottom: lh.marginBottom },
         headStyles: {
           fillColor: [30, 58, 138],
           textColor: [255, 255, 255],
@@ -344,19 +334,28 @@ export const ApuraSUSProducaoReport: React.FC<ApuraSUSProducaoReportProps> = ({
         }
       });
 
-      // Signatures
-      const finalY = (doc as any).lastAutoTable.finalY + 25;
-      if (finalY < 265) {
-        doc.setDrawColor(148, 163, 184);
-        doc.line(20, finalY, 90, finalY);
-        doc.line(120, finalY, 190, finalY);
-
-        doc.setFontSize(8);
-        doc.setFont('helvetica', 'normal');
-        doc.setTextColor(71, 85, 105);
-        doc.text('Responsável pelo Almoxarifado', 55, finalY + 4, { align: 'center' });
-        doc.text('Gestão de Custos / ApuraSUS', 155, finalY + 4, { align: 'center' });
+      // Signatures strictly inside safe printable area above institutional footer
+      let finalY = ((doc as any).lastAutoTable?.finalY || tableStartY + 60) + 18;
+      if (finalY + 10 > lh.contentBottom) {
+        doc.addPage();
+        finalY = lh.continuationTop + 18;
       }
+
+      doc.setDrawColor(148, 163, 184);
+      doc.line(20, finalY, 90, finalY);
+      doc.line(120, finalY, 190, finalY);
+
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(71, 85, 105);
+      doc.text('Responsável pelo Almoxarifado', 55, finalY + 4, { align: 'center' });
+      doc.text('Gestão de Custos / ApuraSUS', 155, finalY + 4, { align: 'center' });
+
+      drawContinuationAndPageNumbers(doc, lh, {
+        title: `Relatório de Produção Mensal — ${inventoryLocation}`,
+        rightHeaderText: `Competência: ${periodRange.competenceLabel}`,
+        footerLeftText: `Produção Mensal ApuraSUS • ${inventoryLocation} • ${periodRange.competenceLabel}`
+      });
 
       doc.save(`ApuraSUS_Producao_Mensal_${format(selectedMonthDate, 'yyyy-MM')}.pdf`);
       showToast('Relatório em PDF gerado com sucesso!', 'success');

@@ -29,6 +29,11 @@ import { ptBR } from 'date-fns/locale';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell, PieChart, Pie, Legend } from 'recharts';
 import { Item, Transaction } from '../types';
 import { getCategorizedExitType } from '../utils/exitReasonUtils';
+import {
+  attachLetterheadToDoc,
+  drawContinuationAndPageNumbers,
+  drawInstitutionalReportHeader
+} from '../utils/letterheadLayout';
 
 interface ApuraSUSCustosReportProps {
   transactions: Transaction[];
@@ -391,80 +396,35 @@ export const ApuraSUSCustosReport: React.FC<ApuraSUSCustosReportProps> = ({
       showToast("Gerando Demonstrativo de Custos por Tipo de Item (ApuraSUS)...", "info");
       // @ts-ignore
       const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-      const pageWidth = doc.internal.pageSize.getWidth();
-      const pageHeight = doc.internal.pageSize.getHeight();
-      const margin = 14;
+      const lh = attachLetterheadToDoc(doc, letterheadImage, {
+        sideMargin: 14,
+        continuationHeaderHeight: 11
+      });
+      const margin = lh.marginLeft;
+      const emissionStr = format(new Date(), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR });
+      const topCatText = costData.topCategory
+        ? `${costData.topCategory.category} (${costData.topCategory.percentageOfTotal.toFixed(0)}%)`
+        : 'N/D';
+      const topSecText = costData.topSector
+        ? `${costData.topSector.sector} (${costData.topSector.percentageOfTotal.toFixed(0)}%)`
+        : 'N/D';
 
-      let startY = 16;
-
-      // Letterhead support
-      if (letterheadImage) {
-        try {
-          const formatImg = letterheadImage.includes('image/png') ? 'PNG' : 'JPEG';
-          doc.addImage(letterheadImage, formatImg, margin, 8, pageWidth - (margin * 2), 24, undefined, 'FAST');
-          startY = 36;
-        } catch (e) {
-          console.warn("Could not load letterhead:", e);
+      const tableStartY = drawInstitutionalReportHeader(doc, lh, {
+        kicker: 'ApuraSUS • Unidade Responsável: Policlínica de Sobral',
+        emissionText: `Emitido em ${emissionStr}`,
+        title: 'Demonstrativo de Custo por Tipo de Item e Setores — ApuraSUS',
+        metadata: [
+          { label: 'Competência', value: periodRange.competenceLabel },
+          { label: 'Período', value: periodRange.label },
+          { label: 'Categoria Maior Absorção', value: topCatText },
+          { label: 'Setor Maior Consumo', value: topSecText }
+        ],
+        metadataColumns: 2,
+        rightHighlight: {
+          label: 'Custo Total Dispensado',
+          value: new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(costData.grandTotalCost)
         }
-      }
-
-      // Header Titles
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(13);
-      doc.setTextColor(30, 41, 59);
-      doc.text('DEMONSTRATIVO DE CUSTO POR TIPO DE ITEM E SETORES — APURASUS', pageWidth / 2, startY, { align: 'center' });
-
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(8.5);
-      doc.setTextColor(100, 116, 139);
-      doc.text(
-        `Competência: ${periodRange.competenceLabel} • Período: ${periodRange.label} • Policlínica de Sobral`,
-        pageWidth / 2,
-        startY + 5,
-        { align: 'center' }
-      );
-
-      // KPI Summary Box
-      const kpiY = startY + 8;
-      doc.setFillColor(248, 250, 252);
-      doc.setDrawColor(226, 232, 240);
-      doc.roundedRect(margin, kpiY, pageWidth - (margin * 2), 16, 2, 2, 'FD');
-
-      const colW = (pageWidth - (margin * 2)) / 3;
-
-      doc.setFontSize(7.5);
-      doc.setFont('helvetica', 'bold');
-      doc.setTextColor(71, 85, 105);
-
-      doc.text('CUSTO TOTAL DISPENSADO', margin + colW * 0.5, kpiY + 5, { align: 'center' });
-      doc.setFontSize(11);
-      doc.setTextColor(30, 64, 175);
-      doc.text(
-        new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(costData.grandTotalCost),
-        margin + colW * 0.5,
-        kpiY + 12,
-        { align: 'center' }
-      );
-
-      doc.setFontSize(7.5);
-      doc.setTextColor(71, 85, 105);
-      doc.text('CATEGORIA MAIOR ABSORÇÃO', margin + colW * 1.5, kpiY + 5, { align: 'center' });
-      doc.setFontSize(9);
-      doc.setTextColor(15, 23, 42);
-      const topCatText = costData.topCategory 
-        ? `${costData.topCategory.category} (${costData.topCategory.percentageOfTotal.toFixed(0)}%)` 
-        : 'N/D';
-      doc.text(topCatText, margin + colW * 1.5, kpiY + 12, { align: 'center' });
-
-      doc.setFontSize(7.5);
-      doc.setTextColor(71, 85, 105);
-      doc.text('SETOR MAIOR CONSUMO', margin + colW * 2.5, kpiY + 5, { align: 'center' });
-      doc.setFontSize(9);
-      doc.setTextColor(15, 23, 42);
-      const topSecText = costData.topSector 
-        ? `${costData.topSector.sector} (${costData.topSector.percentageOfTotal.toFixed(0)}%)` 
-        : 'N/D';
-      doc.text(topSecText, margin + colW * 2.5, kpiY + 12, { align: 'center' });
+      });
 
       // Table Construction
       const tableRows: any[] = [];
@@ -503,10 +463,11 @@ export const ApuraSUSCustosReport: React.FC<ApuraSUSCustosReportProps> = ({
       ]);
 
       autoTable(doc, {
-        startY: kpiY + 20,
+        startY: tableStartY,
         head: [['Tipo / Categoria de Item', 'Valor Total (R$)', '% Total', 'Distribuição / Valor por Setor Consumidor']],
         body: tableRows,
-        margin: { left: margin, right: margin, bottom: 26 },
+        showHead: 'everyPage',
+        margin: { left: margin, right: margin, top: lh.continuationTop, bottom: lh.marginBottom },
         theme: 'grid',
         styles: {
           fontSize: 7.5,
@@ -525,36 +486,21 @@ export const ApuraSUSCustosReport: React.FC<ApuraSUSCustosReportProps> = ({
           1: { cellWidth: 28, halign: 'right', fontStyle: 'bold' },
           2: { cellWidth: 16, halign: 'center' },
           3: { cellWidth: 'auto' }
-        },
-        didDrawPage: (data) => {
-          doc.setFontSize(7.5);
-          doc.setTextColor(148, 163, 184);
-          doc.text(
-            `Sistema ApuraSUS • Gestão de Custos • Emissão: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`,
-            margin,
-            pageHeight - 8
-          );
-          doc.text(
-            `Página ${data.pageNumber}`,
-            pageWidth - margin,
-            pageHeight - 8,
-            { align: 'right' }
-          );
         }
       });
 
-      // Signature section on last page
+      // Signature section on last page strictly above institutional footer
       let finalY = (doc as any).lastAutoTable?.finalY || 200;
-      if (finalY > pageHeight - 35) {
+      if (finalY + 26 > lh.contentBottom) {
         doc.addPage();
-        finalY = 20;
+        finalY = lh.continuationTop + 6;
       } else {
         finalY += 10;
       }
 
       const signWidth = 70;
       const sign1X = margin + 10;
-      const sign2X = pageWidth - margin - signWidth - 10;
+      const sign2X = lh.pageWidth - margin - signWidth - 10;
 
       doc.setDrawColor(148, 163, 184);
       doc.setLineWidth(0.5);
@@ -572,6 +518,12 @@ export const ApuraSUSCustosReport: React.FC<ApuraSUSCustosReportProps> = ({
       doc.setTextColor(148, 163, 184);
       doc.text('Aferição de dispensação física', sign1X + (signWidth / 2), finalY + 20, { align: 'center' });
       doc.text('Apropriação contábil por centro de custos', sign2X + (signWidth / 2), finalY + 20, { align: 'center' });
+
+      drawContinuationAndPageNumbers(doc, lh, {
+        title: 'Demonstrativo de Custo por Tipo de Item — ApuraSUS',
+        rightHeaderText: `Competência: ${periodRange.competenceLabel}`,
+        footerLeftText: `Sistema ApuraSUS • Gestão de Custos • Emissão: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`
+      });
 
       doc.save(`ApuraSUS_Demonstrativo_Custos_${format(selectedMonthDate, 'yyyy_MM')}.pdf`);
       showToast("PDF de Custos ApuraSUS gerado com sucesso!", "success");

@@ -103,6 +103,14 @@ import {
   printSingleIndicator,
   SingleIndicatorExportParams
 } from './utils/pdfReportGenerator';
+import {
+  attachLetterheadToDoc,
+  drawContinuationAndPageNumbers,
+  drawInstitutionalReportHeader,
+  preloadLetterheadAsset,
+  LetterheadLayoutMetrics,
+  OFFICIAL_LETTERHEAD_URL
+} from './utils/letterheadLayout';
 import { isMedicamentosCategory } from './utils/medicamentosFilter';
 import { getCategorizedExitType, getExitReasonLabel, getExitReasonBadgeClasses } from './utils/exitReasonUtils';
 import { UserManagementTab } from './components/UserManagementTab';
@@ -5268,8 +5276,8 @@ export default function App() {
         : `Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`;
 
       const startY = drawPDFLetterhead(doc, title, subtitle);
+      const lh: LetterheadLayoutMetrics = (doc as any).__lhLayout;
       const pageWidth = doc.internal.pageSize.width;
-      const pageHeight = doc.internal.pageSize.height;
 
       // Group items by month if sorted by duration
       if (inventorySort === 'duration_asc' || inventorySort === 'duration_desc') {
@@ -5284,13 +5292,13 @@ export default function App() {
         });
 
         const monthGroupsList = Array.from(monthGroupsMap.values());
-        let currentY = startY + 4;
+        let currentY = startY + 2;
 
         monthGroupsList.forEach((mGroup) => {
           // Check if we need page break before new section banner + header row
-          if (currentY > pageHeight - 45) {
+          if (currentY > lh.contentBottom - 26) {
             doc.addPage();
-            currentY = 20;
+            currentY = lh.continuationTop;
           }
 
           // Section Header Banner
@@ -5344,6 +5352,8 @@ export default function App() {
             head: [['Item / Insumo', 'Categoria', 'Estoque Consolidado', 'Consumo/Sem', 'Duração', 'Dura até', 'Mínimo (3 meses)', 'Status']],
             body: tableData,
             theme: 'striped',
+            showHead: 'everyPage',
+            margin: { left: 14, right: 14, top: lh.continuationTop, bottom: lh.marginBottom },
             headStyles: { 
               fillColor: isCurr ? [159, 18, 57] : isInf ? [51, 65, 85] : [28, 25, 23],
               halign: 'center',
@@ -5375,7 +5385,7 @@ export default function App() {
             }
           });
 
-          currentY = (doc as any).lastAutoTable.finalY + 7;
+          currentY = (doc as any).lastAutoTable.finalY + 6;
         });
 
       } else {
@@ -5399,10 +5409,12 @@ export default function App() {
         });
 
         autoTable(doc, {
-          startY: startY + 4,
+          startY: startY + 2,
           head: [['Item / Insumo', 'Categoria', 'Estoque Consolidado', 'Consumo/Sem', 'Duração', 'Dura até', 'Mínimo (3 meses)', 'Status']],
           body: tableData,
           theme: 'striped',
+          showHead: 'everyPage',
+          margin: { left: 14, right: 14, top: lh.continuationTop, bottom: lh.marginBottom },
           headStyles: { fillColor: [28, 25, 23], halign: 'center', fontSize: 8.5 },
           columnStyles: {
             0: { halign: 'left' },
@@ -5429,6 +5441,12 @@ export default function App() {
           }
         });
       }
+
+      drawContinuationAndPageNumbers(doc, lh, {
+        title,
+        rightHeaderText: format(new Date(), 'dd/MM/yyyy HH:mm'),
+        footerLeftText: 'Policlínica de Sobral • Relatório de Estoque Atual'
+      });
       
       // Save PDF
       const dateStr = format(new Date(), 'dd-MM-yyyy');
@@ -5456,6 +5474,7 @@ export default function App() {
       }
 
       let currentY = drawPDFLetterhead(doc, title, subtitle);
+      const lh: LetterheadLayoutMetrics = (doc as any).__lhLayout;
 
       // Collect all active batches for current location for expiry check
       const activeLocationItems = items.filter(
@@ -5486,6 +5505,16 @@ export default function App() {
           return dateA - dateB;
         });
 
+      const finalizeCriticalPdf = (fileName: string, toastMessage: string, toastType: 'success' | 'info' = 'success') => {
+        drawContinuationAndPageNumbers(doc, lh, {
+          title,
+          rightHeaderText: locationLabel,
+          footerLeftText: `Policlínica de Sobral • ${locationLabel}`
+        });
+        doc.save(fileName);
+        showToast(toastMessage, toastType);
+      };
+
       // CASE 1: REPORT EXCLUSIVELY FOR EXPIRY (VALIDADE)
       if (type === 'expiry') {
         if (expiryBatches.length === 0) {
@@ -5500,8 +5529,7 @@ export default function App() {
           doc.text(`Todos os lotes ativos no ${locationLabel} estão em conformidade de validade.`, 14, currentY + 20);
 
           const dateFileStr = format(new Date(), 'dd-MM-yyyy');
-          doc.save(`Relatorio_Criticos_Validade_${inventoryLocation}_${dateFileStr}.pdf`);
-          showToast("Relatório de validade gerado com sucesso!", "info");
+          finalizeCriticalPdf(`Relatorio_Criticos_Validade_${inventoryLocation}_${dateFileStr}.pdf`, "Relatório de validade gerado com sucesso!", "info");
           return;
         }
 
@@ -5535,10 +5563,12 @@ export default function App() {
         });
 
         autoTable(doc, {
-          startY: currentY + 4,
+          startY: currentY + 3,
           head: [['Material / Medicamento', 'Lote', 'Categoria', 'Qtd Atual', 'Data Validade', 'Prazo / Situação', 'Status']],
           body: tableData,
           theme: 'striped',
+          showHead: 'everyPage',
+          margin: { left: 14, right: 14, top: lh.continuationTop, bottom: lh.marginBottom },
           headStyles: { fillColor: [190, 24, 93], halign: 'center', fontStyle: 'bold' }, // Rose-700
           columnStyles: {
             1: { halign: 'center' },
@@ -5562,7 +5592,11 @@ export default function App() {
           }
         });
 
-        const finalY = (doc as any).lastAutoTable ? (doc as any).lastAutoTable.finalY + 10 : currentY + 50;
+        let finalY = (doc as any).lastAutoTable ? (doc as any).lastAutoTable.finalY + 8 : currentY + 50;
+        if (finalY > lh.contentBottom - 4) {
+          doc.addPage();
+          finalY = lh.continuationTop + 4;
+        }
         doc.setFontSize(9);
         doc.setTextColor(30, 41, 59);
         doc.setFont("helvetica", "bold");
@@ -5571,8 +5605,7 @@ export default function App() {
         doc.text(`Total: ${expiryBatches.length} lote(s) com alerta de validade (${expCount} vencido(s) e ${nearCount} próximo(s) ao vencimento)`, 14, finalY);
 
         const dateFileStr = format(new Date(), 'dd-MM-yyyy');
-        doc.save(`Relatorio_Criticos_Validade_${inventoryLocation}_${dateFileStr}.pdf`);
-        showToast("Relatório PDF de validade crítica gerado com sucesso!", "success");
+        finalizeCriticalPdf(`Relatorio_Criticos_Validade_${inventoryLocation}_${dateFileStr}.pdf`, "Relatório PDF de validade crítica gerado com sucesso!", "success");
         return;
       }
 
@@ -5590,8 +5623,7 @@ export default function App() {
           doc.text(`Todos os insumos cadastrados no ${locationLabel} estão acima do estoque mínimo.`, 14, currentY + 20);
 
           const dateFileStr = format(new Date(), 'dd-MM-yyyy');
-          doc.save(`Relatorio_Criticos_Estoque_Baixo_${inventoryLocation}_${dateFileStr}.pdf`);
-          showToast("Relatório gerado: Nenhum item com estoque baixo encontrado.", "info");
+          finalizeCriticalPdf(`Relatorio_Criticos_Estoque_Baixo_${inventoryLocation}_${dateFileStr}.pdf`, "Relatório gerado: Nenhum item com estoque baixo encontrado.", "info");
           return;
         }
 
@@ -5619,10 +5651,12 @@ export default function App() {
         });
 
         autoTable(doc, {
-          startY: currentY + 4,
+          startY: currentY + 3,
           head: [['Material / Medicamento', 'Categoria', 'Estoque Consolidado', 'Estoque Mínimo', 'Déficit (Reposição)', 'Detalhamento dos Lotes', 'Status Crítico']],
           body: tableData,
           theme: 'striped',
+          showHead: 'everyPage',
+          margin: { left: 14, right: 14, top: lh.continuationTop, bottom: lh.marginBottom },
           headStyles: { fillColor: [180, 83, 9], halign: 'center', fontStyle: 'bold' }, // Amber-700
           columnStyles: {
             2: { halign: 'center' },
@@ -5646,15 +5680,18 @@ export default function App() {
           }
         });
 
-        const finalY = (doc as any).lastAutoTable ? (doc as any).lastAutoTable.finalY + 10 : currentY + 50;
+        let finalY = (doc as any).lastAutoTable ? (doc as any).lastAutoTable.finalY + 8 : currentY + 50;
+        if (finalY > lh.contentBottom - 4) {
+          doc.addPage();
+          finalY = lh.continuationTop + 4;
+        }
         doc.setFontSize(9);
         doc.setTextColor(30, 41, 59);
         doc.setFont("helvetica", "bold");
         doc.text(`Total de itens identificados com estoque baixo ou crítico: ${lowStockGroupsList.length}`, 14, finalY);
 
         const dateFileStr = format(new Date(), 'dd-MM-yyyy');
-        doc.save(`Relatorio_Criticos_Estoque_Baixo_${inventoryLocation}_${dateFileStr}.pdf`);
-        showToast("Relatório PDF de estoque baixo gerado com sucesso!", "success");
+        finalizeCriticalPdf(`Relatorio_Criticos_Estoque_Baixo_${inventoryLocation}_${dateFileStr}.pdf`, "Relatório PDF de estoque baixo gerado com sucesso!", "success");
         return;
       }
 
@@ -5671,8 +5708,7 @@ export default function App() {
         doc.text(`Todos os insumos e lotes do ${locationLabel} estão com níveis e validades regulares.`, 14, currentY + 20);
 
         const dateFileStr = format(new Date(), 'dd-MM-yyyy');
-        doc.save(`Relatorio_Criticos_Geral_${inventoryLocation}_${dateFileStr}.pdf`);
-        showToast("Relatório gerado: Estoque 100% regular.", "info");
+        finalizeCriticalPdf(`Relatorio_Criticos_Geral_${inventoryLocation}_${dateFileStr}.pdf`, "Relatório gerado: Estoque 100% regular.", "info");
         return;
       }
 
@@ -5681,7 +5717,7 @@ export default function App() {
         doc.setFontSize(10);
         doc.setTextColor(159, 18, 57);
         doc.setFont("helvetica", "bold");
-        doc.text(`1. CONTROLE DE VALIDADE (${expiryBatches.length} lote(s) requerem atenção)`, 14, currentY + 5);
+        doc.text(`1. CONTROLE DE VALIDADE (${expiryBatches.length} lote(s) requerem atenção)`, 14, currentY + 4);
 
         const expiryTableData = expiryBatches.map(item => {
           const itemExpired = isExpired(item);
@@ -5708,10 +5744,12 @@ export default function App() {
         });
 
         autoTable(doc, {
-          startY: currentY + 8,
+          startY: currentY + 7,
           head: [['Material / Medicamento', 'Lote', 'Categoria', 'Qtd Atual', 'Validade', 'Prazo', 'Status']],
           body: expiryTableData,
           theme: 'striped',
+          showHead: 'everyPage',
+          margin: { left: 14, right: 14, top: lh.continuationTop, bottom: lh.marginBottom },
           headStyles: { fillColor: [190, 24, 93], halign: 'center', fontStyle: 'bold' },
           columnStyles: {
             1: { halign: 'center' },
@@ -5735,14 +5773,14 @@ export default function App() {
           }
         });
 
-        currentY = (doc as any).lastAutoTable ? (doc as any).lastAutoTable.finalY + 10 : currentY + 40;
+        currentY = (doc as any).lastAutoTable ? (doc as any).lastAutoTable.finalY + 8 : currentY + 40;
       }
 
       // Section 2: Estoque Baixo
       if (lowStockGroupsList.length > 0) {
-        if (currentY > 220) {
+        if (currentY > lh.contentBottom - 36) {
           doc.addPage();
-          currentY = 20;
+          currentY = lh.continuationTop;
         }
 
         doc.setFontSize(10);
@@ -5777,6 +5815,8 @@ export default function App() {
           head: [['Material / Medicamento', 'Categoria', 'Estoque Consolidado', 'Estoque Mínimo', 'Déficit (Reposição)', 'Detalhamento dos Lotes', 'Status Crítico']],
           body: lowStockTableData,
           theme: 'striped',
+          showHead: 'everyPage',
+          margin: { left: 14, right: 14, top: lh.continuationTop, bottom: lh.marginBottom },
           headStyles: { fillColor: [180, 83, 9], halign: 'center', fontStyle: 'bold' },
           columnStyles: {
             2: { halign: 'center' },
@@ -5802,8 +5842,7 @@ export default function App() {
       }
 
       const dateFileStr = format(new Date(), 'dd-MM-yyyy');
-      doc.save(`Relatorio_Criticos_Geral_${inventoryLocation}_${dateFileStr}.pdf`);
-      showToast("Relatório PDF completo de itens críticos gerado com sucesso!", "success");
+      finalizeCriticalPdf(`Relatorio_Criticos_Geral_${inventoryLocation}_${dateFileStr}.pdf`, "Relatório PDF completo de itens críticos gerado com sucesso!", "success");
     } catch (error) {
       console.error('Erro ao exportar PDF de itens críticos:', error);
       showToast("Erro ao exportar PDF de itens críticos.", "error");
@@ -5822,8 +5861,8 @@ export default function App() {
       
       const title = 'PLANEJAMENTO DE COMPRAS — ESTIMATIVA DE AQUISIÇÃO';
       let currentY = drawPDFLetterhead(doc, title);
+      const lh: LetterheadLayoutMetrics = (doc as any).__lhLayout;
       const pageWidth = doc.internal.pageSize.width;
-      const pageHeight = doc.internal.pageSize.height;
 
       // Executive Summary Metric Box in PDF
       doc.setFillColor(248, 250, 252); // slate-50
@@ -5929,6 +5968,8 @@ export default function App() {
           head: [['Nº', 'Material / Insumo', 'Categoria', 'Estoque', 'Cons./Sem', 'Duração', 'Demanda', 'QTD A COMPRAR', 'Vlr. Unit. (R$)', 'Total Est. (R$)']],
           body: tableData,
           theme: 'striped',
+          showHead: 'everyPage',
+          margin: { left: 14, right: 14, top: lh.continuationTop, bottom: lh.marginBottom },
           headStyles: {
             fillColor: [15, 23, 42], // Slate-900
             halign: 'center',
@@ -5957,10 +5998,10 @@ export default function App() {
         });
 
         // Add Signature / Dispatch Box
-        let finalY = (doc as any).lastAutoTable.finalY + 14;
-        if (finalY > pageHeight - 35) {
+        let finalY = (doc as any).lastAutoTable.finalY + 12;
+        if (finalY + 14 > lh.contentBottom) {
           doc.addPage();
-          finalY = 25;
+          finalY = lh.continuationTop + 10;
         }
 
         doc.setFontSize(8);
@@ -5973,6 +6014,12 @@ export default function App() {
         doc.setFontSize(7);
         doc.text(`Documento emitido automaticamente pelo Sistema de Gestão de Estoque • ${dateStr}`, pageWidth / 2, finalY + 9.5, { align: 'center' });
       }
+
+      drawContinuationAndPageNumbers(doc, lh, {
+        title,
+        rightHeaderText: `Até ${purchasePlanningSummary.targetPeriodLabel}`,
+        footerLeftText: 'Policlínica de Sobral • Planejamento de Compras'
+      });
 
       const dateFileStr = format(new Date(), 'dd-MM-yyyy');
       doc.save(`Planejamento_Compras_${purchasePlanningSummary.targetPeriodLabel.replace('/', '_')}_${dateFileStr}.pdf`);
@@ -6025,13 +6072,13 @@ export default function App() {
     try {
       // @ts-ignore
       const doc = new jsPDF();
-      const pageWidth = doc.internal.pageSize.width;
       
       const startY = drawPDFLetterhead(
         doc,
         'Catálogo de Materiais em Estoque',
         `Policlínica de Sobral • Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`
       );
+      const lh: LetterheadLayoutMetrics = (doc as any).__lhLayout;
       
       // Filter unique items across all batches and locations
       const uniqueItems: Record<string, { name: string, category: string, supplier: string }> = {};
@@ -6056,10 +6103,12 @@ export default function App() {
       
       // Generate table (NO Stock, NO Batch, NO Expiry)
       autoTable(doc, {
-        startY: startY + 4,
+        startY: startY + 2,
         head: [['Material / Produto', 'Categoria', 'Fornecedor']],
         body: tableData,
         theme: 'striped',
+        showHead: 'everyPage',
+        margin: { left: 14, right: 14, top: lh.continuationTop, bottom: lh.marginBottom },
         headStyles: { fillColor: [28, 25, 23], halign: 'left' }, // #1C1917
         styles: { fontSize: 9, cellPadding: 3.5 },
         columnStyles: {
@@ -6068,20 +6117,12 @@ export default function App() {
           2: { cellWidth: 50 }
         }
       });
-      
-      // Footer on every page
-      const pageCount = (doc as any).internal.getNumberOfPages();
-      for (let i = 1; i <= pageCount; i++) {
-        doc.setPage(i);
-        doc.setFontSize(8);
-        doc.setTextColor(168, 162, 158);
-        doc.text(
-          `Página ${i} de ${pageCount} - Catálogo gerado para consulta administrativa`,
-          pageWidth / 2,
-          doc.internal.pageSize.height - 10,
-          { align: 'center' }
-        );
-      }
+
+      drawContinuationAndPageNumbers(doc, lh, {
+        title: 'Catálogo de Materiais em Estoque',
+        rightHeaderText: format(new Date(), 'dd/MM/yyyy HH:mm'),
+        footerLeftText: 'Catálogo gerado para consulta administrativa'
+      });
       
       const dateStr = format(new Date(), 'dd-MM-yyyy');
       doc.save(`Catalogo_Materiais_${dateStr}.pdf`);
@@ -6107,6 +6148,7 @@ export default function App() {
         'Relatório de Solicitações de Materiais',
         `Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`
       );
+      const lh: LetterheadLayoutMetrics = (doc as any).__lhLayout;
       
       // Determine which requests to export based on current tab
       let requestsToExport = [];
@@ -6136,10 +6178,12 @@ export default function App() {
       
       // Generate table
       autoTable(doc, {
-        startY: startY + 4,
+        startY: startY + 2,
         head: [['Nº', 'Data', 'Setor', 'Status', 'Itens']],
         body: tableData,
         theme: 'striped',
+        showHead: 'everyPage',
+        margin: { left: 14, right: 14, top: lh.continuationTop, bottom: lh.marginBottom },
         headStyles: { fillColor: [28, 25, 23], halign: 'center' }, // #1C1917
         columnStyles: {
           0: { halign: 'center' },
@@ -6148,6 +6192,12 @@ export default function App() {
           4: { halign: 'center' }
         },
         styles: { fontSize: 9, cellPadding: 3 }
+      });
+
+      drawContinuationAndPageNumbers(doc, lh, {
+        title: 'Relatório de Solicitações de Materiais',
+        rightHeaderText: format(new Date(), 'dd/MM/yyyy HH:mm'),
+        footerLeftText: 'Policlínica de Sobral • Solicitações de Materiais'
       });
       
       // Save PDF
@@ -6236,36 +6286,28 @@ export default function App() {
         groupedData[category][itemName].quantity += t.quantity;
       });
 
-      // Logo/Header
-      let currentY = 20;
-      if (letterheadImage) {
-        try {
-          doc.addImage(letterheadImage, 'PNG', 14, currentY, 182, 25);
-          currentY += 30;
-        } catch (e) {
-          currentY += 5;
-        }
-      }
-
-      doc.setFontSize(18);
-      doc.setFont('helvetica', 'bold');
-      doc.setTextColor(28, 25, 23);
-      doc.text('Relatório PCA - Plano Anual de Contratação', 105, currentY, { align: 'center' });
-      currentY += 8;
-      
-      doc.setFontSize(10);
-      doc.setFont('helvetica', 'normal');
-      doc.setTextColor(120, 113, 108);
-      doc.text(`Período de Consumo: ${format(start, 'dd/MM/yyyy')} até ${format(end, 'dd/MM/yyyy')}`, 105, currentY, { align: 'center' });
-      currentY += 5;
-      doc.text(`Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 105, currentY, { align: 'center' });
-      currentY += 15;
+      // Institutional full-page letterhead background (proportional, zero distortion, repeated on all pages)
+      const lh = attachLetterheadToDoc(doc, letterheadImage, {
+        sideMargin: 14,
+        continuationHeaderHeight: 11
+      });
+      const generatedStr = format(new Date(), 'dd/MM/yyyy HH:mm');
+      let currentY = drawInstitutionalReportHeader(doc, lh, {
+        kicker: 'Unidade Responsável: Policlínica de Sobral • Gestão de Almoxarifado',
+        emissionText: `Emitido em ${generatedStr}`,
+        title: 'Relatório PCA — Plano Anual de Contratação',
+        metadata: [
+          { label: 'Período de Consumo', value: `${format(start, 'dd/MM/yyyy')} até ${format(end, 'dd/MM/yyyy')}` },
+          { label: 'Data de Emissão', value: generatedStr }
+        ],
+        metadataColumns: 2
+      });
 
       const categories = Object.keys(groupedData).sort();
       
       if (categories.length === 0) {
-        doc.setFontSize(12);
-        doc.text('Nenhum consumo registrado no período selecionado.', 105, currentY + 20, { align: 'center' });
+        doc.setFontSize(11);
+        doc.text('Nenhum consumo registrado no período selecionado.', 105, currentY + 14, { align: 'center' });
       } else {
         categories.forEach((category) => {
           const itemsInCategory = Object.values(groupedData[category]).sort((a, b) => a.name.localeCompare(b.name));
@@ -6276,30 +6318,31 @@ export default function App() {
             item.unit
           ]);
 
-          if (currentY > 230) {
+          if (currentY > lh.contentBottom - 30) {
             doc.addPage();
-            currentY = 20;
+            currentY = lh.continuationTop;
           }
 
           // Category Header - Modern and Minimalist
-          doc.setFontSize(11);
+          doc.setFontSize(10.5);
           doc.setFont('helvetica', 'bold');
           doc.setTextColor(30, 64, 175); // Dark blue text
           doc.setFillColor(239, 246, 255); // Very light blue background
-          doc.rect(14, currentY, 182, 10, 'F');
+          doc.rect(14, currentY, 182, 9, 'F');
           
           // Thin border for header
           doc.setDrawColor(191, 219, 254);
-          doc.rect(14, currentY, 182, 10, 'S');
+          doc.rect(14, currentY, 182, 9, 'S');
           
-          doc.text(category.toUpperCase(), 18, currentY + 7);
-          currentY += 12;
+          doc.text(category.toUpperCase(), 18, currentY + 6.2);
+          currentY += 10.5;
 
           autoTable(doc, {
             startY: currentY,
             head: [['Material', 'Quantidade Total Consumida', 'Unidade']],
             body: tableData,
             theme: 'grid',
+            showHead: 'everyPage',
             headStyles: { 
               fillColor: [248, 250, 252], 
               textColor: [71, 85, 105], 
@@ -6317,15 +6360,21 @@ export default function App() {
             alternateRowStyles: {
               fillColor: [250, 250, 250]
             },
-            margin: { left: 14, right: 14 },
+            margin: { left: 14, right: 14, top: lh.continuationTop, bottom: lh.marginBottom },
             styles: {
               cellPadding: 3
             }
           });
 
-          currentY = (doc as any).lastAutoTable.finalY + 15;
+          currentY = (doc as any).lastAutoTable.finalY + 9;
         });
       }
+
+      drawContinuationAndPageNumbers(doc, lh, {
+        title: 'Relatório PCA - Plano Anual de Contratação',
+        rightHeaderText: `${format(start, 'dd/MM/yyyy')} a ${format(end, 'dd/MM/yyyy')}`,
+        footerLeftText: 'Policlínica de Sobral • Plano Anual de Contratação (PCA)'
+      });
 
       doc.save(`Relatorio_PCA_${format(new Date(), 'dd_MM_yyyy')}.pdf`);
       showToast("Relatório PCA gerado com sucesso!", "success");
@@ -6540,6 +6589,7 @@ export default function App() {
     if (!quantitativoReportRef.current) return;
     try {
       showToast("Gerando PDF oficial do relatório...", "info");
+      await preloadLetterheadAsset(letterheadImage);
       const element = quantitativoReportRef.current;
       const canvas = await html2canvas(element, {
         scale: 2,
@@ -6547,8 +6597,8 @@ export default function App() {
         logging: false,
         backgroundColor: '#ffffff',
         onclone: (clonedDoc) => {
-          // Hide all UI buttons, tooltips, and edit controls in the cloned document
-          const pdfHideElements = clonedDoc.querySelectorAll('[data-pdf-hide="true"], button');
+          // Hide all UI buttons, tooltips, edit controls, and inline DOM header/footer replaced by official letterhead background
+          const pdfHideElements = clonedDoc.querySelectorAll('[data-pdf-hide="true"], [data-pdf-letterhead-hide="true"], button');
           pdfHideElements.forEach((el) => {
             (el as HTMLElement).style.display = 'none';
           });
@@ -6628,14 +6678,27 @@ export default function App() {
         unit: 'mm',
         format: 'a4'
       });
-      const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pdfHeight = pdf.internal.pageSize.getHeight();
-      
-      const margin = 10;
-      const imgWidth = pdfWidth - margin * 2;
-      const imgHeight = (canvas.height * imgWidth) / canvas.width;
-      
-      pdf.addImage(imgData, 'PNG', margin, margin, imgWidth, Math.min(imgHeight, pdfHeight - margin * 2));
+      const lh = attachLetterheadToDoc(pdf, letterheadImage, {
+        sideMargin: 12,
+        continuationHeaderHeight: 10
+      });
+
+      const availW = lh.contentWidth;
+      const availH = lh.contentBottom - lh.contentTop;
+      const ratio = Math.min(availW / canvas.width, availH / canvas.height);
+      const drawW = canvas.width * ratio;
+      const drawH = canvas.height * ratio;
+      const drawX = lh.marginLeft + (availW - drawW) / 2;
+      const drawY = lh.contentTop + (availH - drawH) / 2;
+
+      pdf.addImage(imgData, 'PNG', drawX, drawY, drawW, drawH, undefined, 'FAST');
+
+      drawContinuationAndPageNumbers(pdf, lh, {
+        title: quantitativoReportData.title,
+        rightHeaderText: format(new Date(), 'dd/MM/yyyy HH:mm'),
+        footerLeftText: 'Policlínica de Sobral • Quantitativo por Setor'
+      });
+
       pdf.save(`Quantitativo_Insumos_Setores_${format(new Date(), 'yyyyMMdd_HHmm')}.pdf`);
       showToast("PDF oficial gerado e baixado com sucesso!", "success");
     } catch (err) {
@@ -6665,38 +6728,24 @@ export default function App() {
     try {
       // @ts-ignore - jsPDF types might not be perfectly aligned with imports
       const doc = new jsPDF();
-      const pageWidth = doc.internal.pageSize.width;
-      
-      // Header
-      doc.setDrawColor(37, 99, 235); // blue-600
-      doc.setLineWidth(1.5);
-      doc.line(14, 15, 24, 15);
-      doc.line(19, 10, 19, 20);
-      
-      doc.setFontSize(16);
-      doc.setTextColor(28, 25, 23);
-      doc.setFont('helvetica', 'bold');
-      doc.text('POLICLÍNICA', 28, 17);
-      
-      doc.setFontSize(8);
-      doc.setFont('helvetica', 'normal');
-      doc.setTextColor(120, 113, 108);
-      doc.text('CONTROLE DE ESTOQUE POR SALA', 28, 22);
-
-      doc.setDrawColor(231, 229, 228);
-      doc.setLineWidth(0.5);
-      doc.line(14, 28, pageWidth - 14, 28);
-      
-      doc.setFontSize(14);
-      doc.setTextColor(28, 25, 23);
-      doc.setFont('helvetica', 'bold');
-      doc.text(`Mapa de Estoque - ${displayRoomName}`, 14, 40);
-      
-      doc.setFontSize(9);
-      doc.setFont('helvetica', 'normal');
-      doc.setTextColor(120, 113, 108);
-      doc.text(`Local Físico Origem: ${roomFilter}`, 14, 46);
-      doc.text(`Emitido em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 14, 52);
+      const lh = attachLetterheadToDoc(doc, letterheadImage, {
+        sideMargin: 14,
+        continuationHeaderHeight: 11
+      });
+      const emissionStr = format(new Date(), 'dd/MM/yyyy HH:mm');
+      let currentY = drawInstitutionalReportHeader(doc, lh, {
+        kicker: 'Unidade Responsável: Policlínica de Sobral • Controle de Estoque por Sala',
+        emissionText: `Emitido em ${emissionStr}`,
+        title: `Mapa de Estoque — ${displayRoomName}`,
+        metadata: [
+          { label: 'Local Físico de Origem', value: roomFilter },
+          {
+            label: 'Categorias Filtradas',
+            value: filteredCategories.length > 0 ? filteredCategories.join(', ') : 'Todas as categorias'
+          }
+        ],
+        metadataColumns: 2
+      });
 
       // Filter items by room and categories
       const roomItems = items.filter(i => {
@@ -6721,7 +6770,7 @@ export default function App() {
       if (roomItems.length === 0) {
         doc.setFontSize(10);
         doc.setTextColor(150, 150, 150);
-        doc.text('NENHUM ITEM ENCONTRADO PARA OS FILTROS SELECIONADOS.', 14, 70);
+        doc.text('NENHUM ITEM ENCONTRADO PARA OS FILTROS SELECIONADOS.', 14, currentY + 8);
       } else {
         const tableData = roomItems.map(item => {
           const daysToExpiry = item.expiry_date && item.expiry_date !== 'Indeterminada' 
@@ -6748,10 +6797,11 @@ export default function App() {
         });
 
         autoTable(doc, {
-          startY: 60,
+          startY: currentY,
           head: [['Produto', 'Lote', 'Categoria', 'Estoque', 'Validade', 'Status (Dias)']],
           body: tableData,
           theme: 'striped',
+          showHead: 'everyPage',
           headStyles: { 
             fillColor: [28, 25, 23],
             textColor: [255, 255, 255],
@@ -6768,9 +6818,15 @@ export default function App() {
             4: { cellWidth: 25 },
             5: { cellWidth: 30 }
           },
-          margin: { horizontal: 14 }
+          margin: { left: 14, right: 14, top: lh.continuationTop, bottom: lh.marginBottom }
         });
       }
+
+      drawContinuationAndPageNumbers(doc, lh, {
+        title: `Mapa de Estoque - ${displayRoomName}`,
+        rightHeaderText: roomFilter,
+        footerLeftText: 'Policlínica de Sobral • Controle de Estoque por Sala'
+      });
       
       const safeRoomName = displayRoomName.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, '-');
       doc.save(`mapa-sala-${safeRoomName}-${format(new Date(), 'yyyy-MM-dd')}.pdf`);
@@ -6856,111 +6912,16 @@ export default function App() {
   }) => {
     try {
       showToast("Gerando Termo de Doação...", "info");
+      await preloadLetterheadAsset(letterheadImage);
 
-      let base64Image = letterheadImage || "";
-      
-      // Se não houver imagem personalizada, tenta carregar a padrão
-      if (!base64Image) {
-        try {
-          base64Image = await getImageDataURL("/official_letterhead.svg");
-        } catch (err) {
-          console.warn("Could not load logo image for Donation Term, using fallback text header:", err);
-        }
-      }
-      
       // @ts-ignore
       const doc = new jsPDF();
       const pageWidth = doc.internal.pageSize.width;
-      const pageHeight = doc.internal.pageSize.height;
       const margin = 20;
-
-      const drawLetterhead = (pdfDoc: any) => {
-        if (base64Image) {
-          try {
-            console.log("[PDF] Desenhando imagem de papel timbrado no Termo de Doação");
-            const format = base64Image.includes('image/png') ? 'PNG' : 'JPEG';
-            pdfDoc.addImage(base64Image, format, 0, 0, pageWidth, pageHeight, undefined, 'FAST');
-            return;
-          } catch (e) {
-            console.error("Error adding letterhead image to Donation Term:", e);
-          }
-        }
-        
-        console.log("[PDF] Usando cabeçalho padrão com 3 logos retangulares expandidos no Termo de Doação");
-        const docLogo = appRectangularLogo || appLogo;
-        const logoWidth = 50;
-        const logoHeight = 16;
-        const logoY = 10;
-        
-        // 1. LOGO ALMOXARIFADO (Left - Rectangular)
-        if (docLogo) {
-          try {
-            const format = docLogo.includes('image/png') ? 'PNG' : 'JPEG';
-            pdfDoc.addImage(docLogo, format, margin, logoY, logoWidth, logoHeight, undefined, 'FAST');
-          } catch (e) {
-            console.error("Error adding docLogo to Donation Term:", e);
-          }
-        } else {
-          pdfDoc.setFillColor(240, 253, 244);
-          pdfDoc.roundedRect(margin, logoY, logoWidth, logoHeight, 2, 2, 'F');
-          pdfDoc.setFontSize(8);
-          pdfDoc.setFont('helvetica', 'bold');
-          pdfDoc.setTextColor(22, 101, 52);
-          pdfDoc.text('ALMOXARIFADO', margin + (logoWidth / 2), logoY + 10, { align: 'center' });
-        }
-
-        // 2. LOGO POLICLÍNICA (Center - Rectangular)
-        const centerX = (pageWidth / 2) - (logoWidth / 2);
-        if (policlinicaLogo) {
-          try {
-            const format = policlinicaLogo.includes('image/png') ? 'PNG' : 'JPEG';
-            pdfDoc.addImage(policlinicaLogo, format, centerX, logoY, logoWidth, logoHeight, undefined, 'FAST');
-          } catch (e) {
-            console.error("Error adding policlinicaLogo to Donation Term:", e);
-          }
-        } else {
-          pdfDoc.setFillColor(240, 249, 255);
-          pdfDoc.roundedRect(centerX, logoY, logoWidth, logoHeight, 2, 2, 'F');
-          pdfDoc.setFontSize(8);
-          pdfDoc.setFont('helvetica', 'bold');
-          pdfDoc.setTextColor(3, 105, 161);
-          pdfDoc.text('POLICLÍNICA DE SOBRAL', centerX + (logoWidth / 2), logoY + 10, { align: 'center' });
-        }
-
-        // 3. LOGO CONSÓRCIO CPSMS (Right - Rectangular)
-        const consorcioWidth = 56;
-        const consorcioHeight = 18;
-        const consorcioY = 9;
-        const rightX = pageWidth - margin - consorcioWidth;
-        if (consorcioLogo) {
-          try {
-            const format = consorcioLogo.includes('image/png') ? 'PNG' : 'JPEG';
-            pdfDoc.addImage(consorcioLogo, format, rightX, consorcioY, consorcioWidth, consorcioHeight, undefined, 'FAST');
-          } catch (e) {
-            console.error("Error adding consorcioLogo to Donation Term:", e);
-          }
-        } else {
-          pdfDoc.setFillColor(255, 247, 237);
-          pdfDoc.roundedRect(rightX, consorcioY, consorcioWidth, consorcioHeight, 2, 2, 'F');
-          pdfDoc.setFontSize(8);
-          pdfDoc.setFont('helvetica', 'bold');
-          pdfDoc.setTextColor(194, 65, 12);
-          pdfDoc.text('CONSÓRCIO CPSMS', rightX + (consorcioWidth / 2), consorcioY + 11, { align: 'center' });
-        }
-
-        pdfDoc.setDrawColor(226, 232, 240);
-        pdfDoc.setLineWidth(0.5);
-        pdfDoc.line(margin, 29, pageWidth - margin, 29);
-
-        // Footer
-        pdfDoc.setFontSize(7.5);
-        pdfDoc.setTextColor(120, 113, 108);
-        pdfDoc.setFont('helvetica', 'normal');
-        const footer1 = 'Policlínica de Sobral. Av. Monsenhor Aloísio Pinto, 481, CEP 62050-255, Sobral-CE';
-        const footer2 = 'Fone: (88) 3614-3156 | Fax: (88) 3614-3245 | cpsms.ce.gov.br';
-        pdfDoc.text(footer1, pageWidth / 2, pageHeight - 12, { align: 'center' });
-        pdfDoc.text(footer2, pageWidth / 2, pageHeight - 8, { align: 'center' });
-      };
+      const lh = attachLetterheadToDoc(doc, letterheadImage, {
+        sideMargin: margin,
+        continuationHeaderHeight: 11
+      });
 
       const formatTitleCase = (str: string) => {
         if (!str) return '';
@@ -6977,37 +6938,23 @@ export default function App() {
       const receivingAddress = (data.receivingUnit.address || '').trim();
       const receivingCNPJ = (data.receivingUnit.cnpj || '').trim();
 
-      drawLetterhead(doc);
-
-      // --- TITLE & DATA DE EMISSÃO BELOW LOGOS ---
-      doc.setFontSize(13);
-      doc.setTextColor(17, 24, 39);
-      doc.setFont('helvetica', 'bold');
-      doc.text('TERMO DE DOAÇÃO DE MATERIAIS E INSUMOS', pageWidth / 2, 35, { align: 'center' });
-      
-      doc.setFontSize(8.5);
-      doc.setFont('helvetica', 'normal');
-      doc.setTextColor(100, 116, 139);
-      doc.text(`Data de Emissão: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, pageWidth / 2, 40, { align: 'center' });
-
-      // --- DOCUMENT METADATA RIGHT-ALIGNED ---
-      doc.setFontSize(8);
-      doc.setTextColor(107, 114, 128);
-      doc.setFont('helvetica', 'normal');
-      doc.text('Código: TERMO-ALMOX', pageWidth - margin, 46, { align: 'right' });
-      doc.text(`Data de Implantação: ${format(new Date(), 'dd/MM/yyyy')}`, pageWidth - margin, 50, { align: 'right' });
-      doc.text(`Última Revisão: ${data.revisionDate || '---'}`, pageWidth - margin, 54, { align: 'right' });
-      
-      if (data.donationNumber) {
-        doc.setFontSize(9);
-        doc.setTextColor(31, 41, 55);
-        doc.setFont('helvetica', 'bold');
-        doc.text(`Termo nº: ${data.donationNumber}`, pageWidth - margin, 59, { align: 'right' });
-      }
-
-      doc.setDrawColor(209, 213, 219);
-      doc.setLineWidth(0.2);
-      doc.line(margin, 63, pageWidth - margin, 63);
+      const donationEmission = format(new Date(), 'dd/MM/yyyy HH:mm');
+      let curY = drawInstitutionalReportHeader(doc, lh, {
+        kicker: `Unidade Responsável: ${donorName} • Código: TERMO-ALMOX`,
+        emissionText: `Emitido em ${donationEmission}`,
+        title: 'Termo de Doação de Materiais e Insumos',
+        metadata: [
+          { label: 'Código do Documento', value: 'TERMO-ALMOX' },
+          { label: 'Data de Implantação', value: format(new Date(), 'dd/MM/yyyy') },
+          { label: 'Última Revisão', value: data.revisionDate || '---' },
+          { label: 'Unidade Destinatária', value: receivingName }
+        ],
+        metadataColumns: 2,
+        rightHighlight: data.donationNumber
+          ? { label: 'Termo nº', value: String(data.donationNumber) }
+          : undefined
+      });
+      curY += 2;
 
       // --- CONTENT ---
       doc.setFontSize(10);
@@ -7020,17 +6967,18 @@ export default function App() {
       
       const textWidth = pageWidth - (margin * 2);
       const textLines = doc.splitTextToSize(donationText, textWidth);
-      doc.text(textLines, margin, 72, { 
+      doc.text(textLines, margin, curY, { 
         align: 'justify', 
         maxWidth: textWidth,
         lineHeightFactor: 1.5 
       });
 
-      const tableStartY = 85 + (textLines.length * 7) + 5;
+      const tableStartY = curY + (textLines.length * 6) + 5;
 
       autoTable(doc, {
         startY: tableStartY,
-        margin: { left: margin, right: margin },
+        margin: { left: margin, right: margin, top: lh.continuationTop, bottom: lh.marginBottom },
+        showHead: 'everyPage',
         head: [['Descrição do Material', 'Qtd Doada', 'Conferência']],
         body: data.items.map(i => [i.product_name, i.quantity.toString(), ' ']),
         theme: 'grid',
@@ -7054,20 +7002,15 @@ export default function App() {
           0: { cellWidth: 'auto' },
           1: { cellWidth: 25, halign: 'center', fontStyle: 'bold' },
           2: { cellWidth: 40, halign: 'center' }
-        },
-        didDrawPage: (data) => {
-          if (data.pageNumber > 1) {
-            drawLetterhead(doc);
-          }
         }
       });
 
       const tableFinalY = (doc as any).lastAutoTable.finalY;
-      let signAreaY = tableFinalY + 15;
+      let signAreaY = tableFinalY + 14;
 
-      if (signAreaY + 50 > pageHeight - 20) {
+      if (signAreaY + 42 > lh.contentBottom) {
         doc.addPage();
-        signAreaY = 40;
+        signAreaY = lh.continuationTop + 8;
       }
 
       doc.setFontSize(10);
@@ -7076,7 +7019,7 @@ export default function App() {
       const formattedDate = format(new Date(data.date), "dd 'de' MMMM 'de' yyyy", { locale: ptBR });
       doc.text(`Sobral-CE, ${formattedDate}.`, pageWidth / 2, signAreaY, { align: 'center' });
 
-      const signY = signAreaY + 25;
+      const signY = signAreaY + 22;
       doc.setDrawColor(156, 163, 175);
       doc.setLineWidth(0.5);
       const signLineW = 75;
@@ -7097,6 +7040,12 @@ export default function App() {
       doc.text('Unidade Receptora', pageWidth - margin - (signLineW / 2), signY + 10, { align: 'center' });
       doc.text('(assinatura e carimbo)', pageWidth - margin - (signLineW / 2), signY + 14, { align: 'center' });
 
+      drawContinuationAndPageNumbers(doc, lh, {
+        title: 'Termo de Doação de Materiais e Insumos',
+        rightHeaderText: data.donationNumber ? `Termo nº ${data.donationNumber}` : format(new Date(data.date), 'dd/MM/yyyy'),
+        footerLeftText: 'Policlínica de Sobral • Termo de Doação'
+      });
+
       doc.save(`Termo_Doacao_${data.receivingUnit.name.replace(/\s+/g, '_')}_${format(new Date(), 'dd-MM-yyyy')}.pdf`);
       showToast("Termo de Doação gerado com sucesso!", "success");
     } catch (error) {
@@ -7106,25 +7055,22 @@ export default function App() {
   };
 
   const drawPDFLetterhead = (doc: any, title?: string, subtitle?: string): number => {
-    const pageWidth = doc.internal.pageSize.width;
-    let startY = 14;
+    const lh = attachLetterheadToDoc(doc, letterheadImage, {
+      sideMargin: 14,
+      continuationHeaderHeight: 11
+    });
+    (doc as any).__lhLayout = lh;
 
-    if (letterheadImage) {
-      try {
-        const format = letterheadImage.includes('image/png') ? 'PNG' : 'JPEG';
-        doc.addImage(letterheadImage, format, 14, 8, pageWidth - 28, 28, undefined, 'FAST');
-        startY = 40;
-      } catch (e) {
-        console.warn("Could not render letterheadImage on PDF report:", e);
-      }
-    } else {
-      // Perfectly aligned 3-logo horizontal header row (homogeneous rectangular logos)
+    const pageWidth = doc.internal.pageSize.width;
+    let startY = lh.contentTop + 3;
+
+    if (!lh.hasLetterhead) {
+      // Fallback 3-logo horizontal header row only if no institutional letterhead is available
       const docLogo = appRectangularLogo || appLogo;
       const logoWidth = 50;
       const logoHeight = 16;
       const logoY = 10;
       
-      // 1. LEFT LOGO: Logo Almoxarifado / Sistema (Rectangular)
       if (docLogo) {
         try {
           const format = docLogo.includes('image/png') ? 'PNG' : 'JPEG';
@@ -7141,7 +7087,6 @@ export default function App() {
         doc.text('ALMOXARIFADO', 14 + (logoWidth / 2), logoY + 10, { align: 'center' });
       }
 
-      // 2. CENTER LOGO: Logo da Policlínica (Rectangular)
       const centerX = (pageWidth / 2) - (logoWidth / 2);
       if (policlinicaLogo) {
         try {
@@ -7159,7 +7104,6 @@ export default function App() {
         doc.text('POLICLÍNICA DE SOBRAL', centerX + (logoWidth / 2), logoY + 10, { align: 'center' });
       }
 
-      // 3. RIGHT LOGO: Logo do Consórcio CPSMS (Rectangular)
       const consorcioWidth = 56;
       const consorcioHeight = 18;
       const consorcioY = 9;
@@ -7180,7 +7124,6 @@ export default function App() {
         doc.text('CONSÓRCIO CPSMS', rightX + (consorcioWidth / 2), consorcioY + 11, { align: 'center' });
       }
 
-      // Divider Line
       doc.setDrawColor(226, 232, 240);
       doc.setLineWidth(0.5);
       doc.line(14, 29, pageWidth - 14, 29);
@@ -7188,35 +7131,31 @@ export default function App() {
       startY = 35;
     }
 
-    if (title) {
-      doc.setFontSize(13);
-      doc.setFont('helvetica', 'bold');
-      doc.setTextColor(28, 25, 23);
-      doc.text(title, pageWidth / 2, startY, { align: 'center' });
-      startY += 5;
+    const headerStartY = !lh.hasLetterhead ? 34 : lh.contentTop + 1;
+    const emissionText = `Emitido em ${format(new Date(), 'dd/MM/yyyy HH:mm')}`;
+
+    if (title || subtitle) {
+      return drawInstitutionalReportHeader(doc, lh, {
+        kicker: 'Unidade Responsável: Policlínica de Sobral • Gestão de Almoxarifado',
+        emissionText,
+        title: title || 'Relatório Administrativo Institucional',
+        subtitle: subtitle || undefined,
+        startY: headerStartY
+      });
     }
 
-    doc.setFontSize(8.5);
-    doc.setFont('helvetica', 'normal');
-    doc.setTextColor(100, 116, 139);
-    doc.text(`Data de Emissão: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, pageWidth / 2, startY, { align: 'center' });
-    startY += 7;
-
-    if (subtitle) {
-      doc.setFontSize(8.5);
-      doc.setFont('helvetica', 'normal');
-      doc.setTextColor(120, 113, 108);
-      doc.text(subtitle, pageWidth / 2, startY, { align: 'center' });
-      startY += 7;
-    }
-
-    return startY;
+    return headerStartY + 2;
   };
 
   const [appLogo, setAppLogo] = useState<string | null>(null);
   const [appRectangularLogo, setAppRectangularLogo] = useState<string | null>(null);
   const [policlinicaLogo, setPoliclinicaLogo] = useState<string | null>(null);
   const [consorcioLogo, setConsorcioLogo] = useState<string | null>(null);
+
+  // Preload official institutional letterhead (and any custom letterhead) into cache for synchronous PDF exports
+  useEffect(() => {
+    void preloadLetterheadAsset(letterheadImage);
+  }, [letterheadImage]);
 
   // Load app logo & letterhead from localStorage & Firestore on mount
   useEffect(() => {
@@ -7603,129 +7542,33 @@ export default function App() {
   }) => {
     try {
       showToast("Gerando Recibo...", "info");
+      await preloadLetterheadAsset(letterheadImage);
       
       // @ts-ignore
       const doc = new jsPDF();
       const pageWidth = doc.internal.pageSize.width;
-      const pageHeight = doc.internal.pageSize.height;
       const margin = 14;
+      const lh = attachLetterheadToDoc(doc, letterheadImage, {
+        sideMargin: margin,
+        continuationHeaderHeight: 11
+      });
 
-      const drawLetterhead = (pdfDoc: any) => {
-        const docLogo = appRectangularLogo || appLogo;
-        const logoWidth = 50;
-        const logoHeight = 16;
-        const logoY = 10;
-        
-        // 1. LOGO ALMOXARIFADO (Left - Rectangular)
-        if (docLogo) {
-          try {
-            const format = docLogo.includes('image/png') ? 'PNG' : 'JPEG';
-            pdfDoc.addImage(docLogo, format, margin, logoY, logoWidth, logoHeight, undefined, 'FAST');
-          } catch (e) {
-            console.error("Error adding logo to Delivery Receipt:", e);
-          }
-        } else {
-          pdfDoc.setFillColor(240, 253, 244);
-          pdfDoc.roundedRect(margin, logoY, logoWidth, logoHeight, 2, 2, 'F');
-          pdfDoc.setFontSize(8);
-          pdfDoc.setFont('helvetica', 'bold');
-          pdfDoc.setTextColor(22, 101, 52);
-          pdfDoc.text('ALMOXARIFADO', margin + (logoWidth / 2), logoY + 10, { align: 'center' });
-        }
-
-        // 2. LOGO POLICLÍNICA (Center - Rectangular)
-        const centerX = (pageWidth / 2) - (logoWidth / 2);
-        if (policlinicaLogo) {
-          try {
-            const format = policlinicaLogo.includes('image/png') ? 'PNG' : 'JPEG';
-            pdfDoc.addImage(policlinicaLogo, format, centerX, logoY, logoWidth, logoHeight, undefined, 'FAST');
-          } catch (e) {
-            console.error("Error adding policlinicaLogo to Delivery Receipt:", e);
-          }
-        } else {
-          pdfDoc.setFillColor(240, 249, 255);
-          pdfDoc.roundedRect(centerX, logoY, logoWidth, logoHeight, 2, 2, 'F');
-          pdfDoc.setFontSize(8);
-          pdfDoc.setFont('helvetica', 'bold');
-          pdfDoc.setTextColor(3, 105, 161);
-          pdfDoc.text('POLICLÍNICA DE SOBRAL', centerX + (logoWidth / 2), logoY + 10, { align: 'center' });
-        }
-
-        // 3. LOGO CONSÓRCIO CPSMS (Right - Rectangular)
-        const consorcioWidth = 56;
-        const consorcioHeight = 18;
-        const consorcioY = 9;
-        const rightX = pageWidth - margin - consorcioWidth;
-        if (consorcioLogo) {
-          try {
-            const format = consorcioLogo.includes('image/png') ? 'PNG' : 'JPEG';
-            pdfDoc.addImage(consorcioLogo, format, rightX, consorcioY, consorcioWidth, consorcioHeight, undefined, 'FAST');
-          } catch (e) {
-            console.error("Error adding consorcioLogo to Delivery Receipt:", e);
-          }
-        } else {
-          pdfDoc.setFillColor(255, 247, 237);
-          pdfDoc.roundedRect(rightX, consorcioY, consorcioWidth, consorcioHeight, 2, 2, 'F');
-          pdfDoc.setFontSize(8);
-          pdfDoc.setFont('helvetica', 'bold');
-          pdfDoc.setTextColor(194, 65, 12);
-          pdfDoc.text('CONSÓRCIO CPSMS', rightX + (consorcioWidth / 2), consorcioY + 11, { align: 'center' });
-        }
-
-        pdfDoc.setDrawColor(226, 232, 240);
-        pdfDoc.setLineWidth(0.5);
-        pdfDoc.line(margin, 29, pageWidth - margin, 29);
-
-        // Footer
-        pdfDoc.setFontSize(7.5);
-        pdfDoc.setTextColor(120, 113, 108);
-        pdfDoc.setFont('helvetica', 'normal');
-        const footer1 = 'Policlínica de Sobral. Av. Monsenhor Aloísio Pinto, 481, CEP 62050-255, Sobral-CE';
-        const footer2 = 'Fone: (88) 3614-3156 | Fax: (88) 3614-3245 | cpsms.ce.gov.br';
-        pdfDoc.text(footer1, pageWidth / 2, pageHeight - 12, { align: 'center' });
-        pdfDoc.text(footer2, pageWidth / 2, pageHeight - 8, { align: 'center' });
-      };
-
-      drawLetterhead(doc);
-      
-      // Document Title & Emission Date directly below logos
-      doc.setFontSize(13);
-      doc.setTextColor(28, 25, 23);
-      doc.setFont('helvetica', 'bold');
-      doc.text('RECIBO DE ENTREGA DE MATERIAL', pageWidth / 2, 35, { align: 'center' });
-      
-      doc.setFontSize(8.5);
-      doc.setFont('helvetica', 'normal');
-      doc.setTextColor(100, 116, 139);
-      doc.text(`Data de Emissão: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, pageWidth / 2, 40, { align: 'center' });
-
-      // Stylized blue separator
-      doc.setDrawColor(0, 139, 190);
-      doc.setLineWidth(0.5);
-      doc.line(14, 44, pageWidth - 14, 44);
-
-      // Info Card
-      doc.setFillColor(248, 250, 252);
-      doc.roundedRect(14, 48, pageWidth - 28, 20, 2, 2, 'F');
-      
-      doc.setFontSize(9);
-      doc.setTextColor(71, 85, 105);
-      doc.setFont('helvetica', 'bold');
-      doc.text('SETOR DESTINO:', 19, 60);
-      doc.text('REFERÊNCIA:', 19, 68);
-      
-      doc.setTextColor(30, 41, 59);
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(11);
-      doc.text(data.sector.toUpperCase(), 52, 60);
-      
-      doc.setFontSize(9);
-      doc.setFont('helvetica', 'normal');
-      doc.text(data.requestId ? `Solicitação #${data.requestId.slice(-5).toUpperCase()}` : 'Baixa Direta no Sistema', 52, 68);
-      
-      doc.text('DATA DA SAÍDA:', pageWidth - 80, 68);
-      doc.setFont('helvetica', 'bold');
-      doc.text(format(new Date(data.date), 'dd/MM/yyyy'), pageWidth - 50, 68);
+      const receiptEmission = format(new Date(), 'dd/MM/yyyy HH:mm');
+      const curY = drawInstitutionalReportHeader(doc, lh, {
+        kicker: 'Unidade Responsável: Policlínica de Sobral • Comprovante de Movimentação',
+        emissionText: `Emitido em ${receiptEmission}`,
+        title: 'Recibo de Entrega de Material',
+        metadata: [
+          { label: 'Setor de Destino', value: data.sector },
+          {
+            label: 'Referência',
+            value: data.requestId ? `Solicitação #${data.requestId.slice(-5).toUpperCase()}` : 'Baixa Direta no Sistema'
+          },
+          { label: 'Data da Saída', value: format(new Date(data.date), 'dd/MM/yyyy') },
+          { label: 'Data de Emissão', value: receiptEmission }
+        ],
+        metadataColumns: 2
+      });
 
       // Materials Table
       const tableData = data.items.map(i => [
@@ -7735,7 +7578,9 @@ export default function App() {
       ]);
       
       autoTable(doc, {
-        startY: 80,
+        startY: curY,
+        margin: { left: margin, right: margin, top: lh.continuationTop, bottom: lh.marginBottom },
+        showHead: 'everyPage',
         head: [['DESCRIÇÃO DO MATERIAL', 'QTD ENTREGUE', 'CONFERÊNCIA']],
         body: tableData,
         theme: 'grid',
@@ -7759,15 +7604,14 @@ export default function App() {
         },
         alternateRowStyles: {
           fillColor: [252, 252, 252]
-        },
-        didDrawPage: (data) => {
-          if (data.pageNumber > 1) {
-            drawLetterhead(doc);
-          }
         }
       });
 
-      const finalY = (doc as any).lastAutoTable.finalY + 35;
+      let finalY = (doc as any).lastAutoTable.finalY + 22;
+      if (finalY + 28 > lh.contentBottom) {
+        doc.addPage();
+        finalY = lh.continuationTop + 18;
+      }
       
       // Signature Section
       doc.setDrawColor(100, 100, 100);
@@ -7793,18 +7637,13 @@ export default function App() {
       // Disclaimer
       doc.setFontSize(8);
       doc.setTextColor(100, 100, 100);
-      doc.text('Confirmo o recebimento dos materiais acima relacionados para uso exclusivo no setor designado.', pageWidth/2, finalY + 25, { align: 'center' });
+      doc.text('Confirmo o recebimento dos materiais acima relacionados para uso exclusivo no setor designado.', pageWidth/2, finalY + 20, { align: 'center' });
 
-      // Footer (Institutional Address from model)
-      doc.setFontSize(7);
-      doc.setTextColor(120, 113, 108);
-      doc.setDrawColor(226, 232, 240);
-      doc.line(14, pageHeight - 20, pageWidth - 14, pageHeight - 20);
-      
-      const footerLine1 = 'Policlínica de Sobral. Av. Monsenhor Aloísio Pinto, 481, Dom Expedito CEP 62050-255, Sobral Ceará.';
-      const footerLine2 = 'Fone: (88) 3614-3156 . Fax: (88) 3614-3245';
-      doc.text(footerLine1, pageWidth / 2, pageHeight - 12, { align: 'center' });
-      doc.text(footerLine2, pageWidth / 2, pageHeight - 8, { align: 'center' });
+      drawContinuationAndPageNumbers(doc, lh, {
+        title: 'Recibo de Entrega de Material',
+        rightHeaderText: `Setor: ${data.sector}`,
+        footerLeftText: 'Policlínica de Sobral • Recibo de Entrega de Material'
+      });
 
       const fileName = `RECIBO-${data.sector.toUpperCase().replace(/ /g, '-')}-${format(new Date(), 'ddMMyy-HHmm')}.pdf`;
       doc.save(fileName);
@@ -7825,152 +7664,45 @@ export default function App() {
   }) => {
     try {
       showToast("Gerando Termo de Descarte...", "info");
-
-      let base64Image = letterheadImage || "";
-      if (!base64Image) {
-        try {
-          base64Image = await getImageDataURL("/official_letterhead.svg");
-        } catch (err) {
-          console.warn("Could not load logo image for Disposal Term, using fallback text header:", err);
-        }
-      }
+      await preloadLetterheadAsset(letterheadImage);
 
       // @ts-ignore
       const doc = new jsPDF();
       const pageWidth = doc.internal.pageSize.width;
-      const pageHeight = doc.internal.pageSize.height;
       const margin = 20;
-
-      const drawLetterhead = (pdfDoc: any) => {
-        if (base64Image) {
-          try {
-            const format = base64Image.includes('image/png') ? 'PNG' : 'JPEG';
-            pdfDoc.addImage(base64Image, format, 0, 0, pageWidth, pageHeight, undefined, 'FAST');
-            return;
-          } catch (e) {
-            console.error("Error adding letterhead image to Disposal Term:", e);
-          }
-        }
-
-        const docLogo = appRectangularLogo || appLogo;
-        const logoWidth = 50;
-        const logoHeight = 16;
-        const logoY = 10;
-
-        if (docLogo) {
-          try {
-            const format = docLogo.includes('image/png') ? 'PNG' : 'JPEG';
-            pdfDoc.addImage(docLogo, format, margin, logoY, logoWidth, logoHeight, undefined, 'FAST');
-          } catch (e) {
-            console.error("Error adding docLogo:", e);
-          }
-        } else {
-          pdfDoc.setFillColor(240, 253, 244);
-          pdfDoc.roundedRect(margin, logoY, logoWidth, logoHeight, 2, 2, 'F');
-          pdfDoc.setFontSize(8);
-          pdfDoc.setFont('helvetica', 'bold');
-          pdfDoc.setTextColor(22, 101, 52);
-          pdfDoc.text('ALMOXARIFADO', margin + (logoWidth / 2), logoY + 10, { align: 'center' });
-        }
-
-        const centerX = (pageWidth / 2) - (logoWidth / 2);
-        if (policlinicaLogo) {
-          try {
-            const format = policlinicaLogo.includes('image/png') ? 'PNG' : 'JPEG';
-            pdfDoc.addImage(policlinicaLogo, format, centerX, logoY, logoWidth, logoHeight, undefined, 'FAST');
-          } catch (e) {
-            console.error("Error adding policlinicaLogo:", e);
-          }
-        } else {
-          pdfDoc.setFillColor(240, 249, 255);
-          pdfDoc.roundedRect(centerX, logoY, logoWidth, logoHeight, 2, 2, 'F');
-          pdfDoc.setFontSize(8);
-          pdfDoc.setFont('helvetica', 'bold');
-          pdfDoc.setTextColor(3, 105, 161);
-          pdfDoc.text('POLICLÍNICA DE SOBRAL', centerX + (logoWidth / 2), logoY + 10, { align: 'center' });
-        }
-
-        const consorcioWidth = 56;
-        const consorcioHeight = 18;
-        const consorcioY = 9;
-        const rightX = pageWidth - margin - consorcioWidth;
-        if (consorcioLogo) {
-          try {
-            const format = consorcioLogo.includes('image/png') ? 'PNG' : 'JPEG';
-            pdfDoc.addImage(consorcioLogo, format, rightX, consorcioY, consorcioWidth, consorcioHeight, undefined, 'FAST');
-          } catch (e) {
-            console.error("Error adding consorcioLogo:", e);
-          }
-        } else {
-          pdfDoc.setFillColor(255, 247, 237);
-          pdfDoc.roundedRect(rightX, consorcioY, consorcioWidth, consorcioHeight, 2, 2, 'F');
-          pdfDoc.setFontSize(8);
-          pdfDoc.setFont('helvetica', 'bold');
-          pdfDoc.setTextColor(194, 65, 12);
-          pdfDoc.text('CONSÓRCIO CPSMS', rightX + (consorcioWidth / 2), consorcioY + 11, { align: 'center' });
-        }
-
-        pdfDoc.setDrawColor(226, 232, 240);
-        pdfDoc.setLineWidth(0.5);
-        pdfDoc.line(margin, 29, pageWidth - margin, 29);
-
-        // Footer
-        pdfDoc.setFontSize(7.5);
-        pdfDoc.setTextColor(120, 113, 108);
-        pdfDoc.setFont('helvetica', 'normal');
-        const footer1 = 'Policlínica de Sobral. Av. Monsenhor Aloísio Pinto, 481, CEP 62050-255, Sobral-CE';
-        const footer2 = 'Fone: (88) 3614-3156 | Fax: (88) 3614-3245 | cpsms.ce.gov.br';
-        pdfDoc.text(footer1, pageWidth / 2, pageHeight - 12, { align: 'center' });
-        pdfDoc.text(footer2, pageWidth / 2, pageHeight - 8, { align: 'center' });
-      };
-
-      drawLetterhead(doc);
+      const lh = attachLetterheadToDoc(doc, letterheadImage, {
+        sideMargin: margin,
+        continuationHeaderHeight: 11
+      });
 
       const isVencido = data.reason === 'vencido' || !data.reason;
       const title = isVencido 
         ? 'TERMO DE BAIXA E DESCARTE POR VENCIMENTO (DESPERDÍCIO)' 
         : 'TERMO DE BAIXA POR PERDA / AVARIA';
 
-      doc.setFontSize(12);
-      doc.setTextColor(159, 18, 57); // rose-800
-      doc.setFont('helvetica', 'bold');
-      doc.text(title, pageWidth / 2, 38, { align: 'center' });
-
-      // Info box
-      doc.setFillColor(254, 242, 242); // rose-50
-      doc.roundedRect(margin, 43, pageWidth - (margin * 2), 26, 3, 3, 'F');
-      doc.setDrawColor(254, 205, 211); // rose-200
-      doc.setLineWidth(0.5);
-      doc.roundedRect(margin, 43, pageWidth - (margin * 2), 26, 3, 3, 'S');
-
-      doc.setFontSize(8.5);
-      doc.setTextColor(30, 41, 59);
-      doc.setFont('helvetica', 'bold');
-      doc.text(`DATA / HORA DA BAIXA:`, margin + 5, 50);
-      doc.setFont('helvetica', 'normal');
-      doc.text(`${format(new Date(data.date), 'dd/MM/yyyy HH:mm')}`, margin + 48, 50);
-
-      doc.setFont('helvetica', 'bold');
-      doc.text(`LOCAL DE ORIGEM:`, margin + 105, 50);
-      doc.setFont('helvetica', 'normal');
-      doc.text(`${data.location || 'Almoxarifado'}`, margin + 138, 50);
-
-      doc.setFont('helvetica', 'bold');
-      doc.text(`RESPONSÁVEL:`, margin + 5, 57);
-      doc.setFont('helvetica', 'normal');
-      doc.text(`${data.responsible || 'Responsável pelo Estoque'}`, margin + 33, 57);
-
-      doc.setFont('helvetica', 'bold');
-      doc.text(`TIPO DE BAIXA:`, margin + 105, 57);
-      doc.setFont('helvetica', 'normal');
-      doc.setTextColor(190, 18, 60);
-      doc.text(`${isVencido ? 'DESCARTE / VENCIMENTO (DESPERDÍCIO)' : 'PERDA / AVARIA'}`, margin + 133, 57);
-
-      doc.setTextColor(30, 41, 59);
-      doc.setFont('helvetica', 'bold');
-      doc.text(`DESTINAÇÃO:`, margin + 5, 64);
-      doc.setFont('helvetica', 'normal');
-      doc.text(`Inutilização e Descarte Conforme Normas Sanitárias (NÃO computado como consumo de setor)`, margin + 30, 64);
+      const disposalTitle = isVencido
+        ? 'Termo de Baixa e Descarte por Vencimento (Desperdício)'
+        : 'Termo de Baixa por Perda / Avaria';
+      const disposalEmission = format(new Date(), 'dd/MM/yyyy HH:mm');
+      let curY = drawInstitutionalReportHeader(doc, lh, {
+        kicker: `Unidade Responsável: Policlínica de Sobral • ${data.location || 'Almoxarifado'}`,
+        emissionText: `Emitido em ${disposalEmission}`,
+        title: disposalTitle,
+        metadata: [
+          { label: 'Data / Hora da Baixa', value: format(new Date(data.date), 'dd/MM/yyyy HH:mm') },
+          { label: 'Local de Origem', value: data.location || 'Almoxarifado' },
+          { label: 'Responsável', value: data.responsible || 'Responsável pelo Estoque' },
+          {
+            label: 'Tipo de Baixa',
+            value: isVencido ? 'Descarte / Vencimento (Desperdício)' : 'Perda / Avaria',
+            valueColor: [185, 28, 28]
+          }
+        ],
+        metadataColumns: 2,
+        observation:
+          'Destinação: Inutilização e descarte conforme normas sanitárias (não computado como consumo de setor).',
+        observationTone: 'warning'
+      });
 
       // Items Table
       const tableData = data.items.map((item, idx) => {
@@ -7985,9 +7717,10 @@ export default function App() {
         ];
       });
 
-      // @ts-ignore
-      doc.autoTable({
-        startY: 73,
+      autoTable(doc, {
+        startY: curY,
+        margin: { left: margin, right: margin, top: lh.continuationTop, bottom: lh.marginBottom },
+        showHead: 'everyPage',
         head: [['#', 'MATERIAL / DESCRIÇÃO', 'LOTE', 'VALIDADE', 'CATEGORIA', 'QTD DESCARTADA']],
         body: tableData,
         theme: 'grid',
@@ -8013,16 +7746,16 @@ export default function App() {
           5: { cellWidth: 28, halign: 'center', fontStyle: 'bold' }
         },
         alternateRowStyles: {
-          fillColor: [254, 242, 242, 0.3]
-        },
-        didDrawPage: (pageData: any) => {
-          if (pageData.pageNumber > 1) {
-            drawLetterhead(doc);
-          }
+          fillColor: [254, 242, 242]
         }
       });
 
-      const finalY = (doc as any).lastAutoTable.finalY + 8;
+      let finalY = (doc as any).lastAutoTable.finalY + 8;
+      const estimatedFooterBlockH = (data.justification ? 18 : 6) + 38;
+      if (finalY + estimatedFooterBlockH > lh.contentBottom) {
+        doc.addPage();
+        finalY = lh.continuationTop + 6;
+      }
 
       // Justification Box if provided
       if (data.justification) {
@@ -8048,7 +7781,7 @@ export default function App() {
       doc.text(splitDecl, margin, textY);
 
       // Signatures
-      const signY = textY + 26;
+      const signY = textY + 24;
       const signLineWidth = 65;
       
       doc.setDrawColor(148, 163, 184);
@@ -8068,6 +7801,12 @@ export default function App() {
       doc.text(data.responsible || 'Responsável', margin + (signLineWidth / 2), signY + 8, { align: 'center' });
       doc.text('Policlínica de Sobral', pageWidth - margin - (signLineWidth / 2), signY + 8, { align: 'center' });
 
+      drawContinuationAndPageNumbers(doc, lh, {
+        title,
+        rightHeaderText: format(new Date(data.date), 'dd/MM/yyyy HH:mm'),
+        footerLeftText: 'Policlínica de Sobral • Termo de Baixa e Descarte'
+      });
+
       const fileName = `TERMO-DESCARTE-${format(new Date(data.date), 'ddMMyy-HHmm')}.pdf`;
       doc.save(fileName);
       showToast("Termo de Descarte gerado com sucesso!", "success");
@@ -8082,53 +7821,33 @@ export default function App() {
     try {
       const doc = new jsPDF();
       const pageWidth = doc.internal.pageSize.width;
-      
-      // Minimalist Header (No heavy boxes)
-      // Simulated Logo / Icon (Simple and clean)
-      doc.setDrawColor(225, 29, 72); // rose-600 color for medical accent
-      doc.setLineWidth(1.5);
-      doc.line(14, 15, 24, 15); // Horizontal line of a plus
-      doc.line(19, 10, 19, 20); // Vertical line of a plus
-      
-      doc.setFontSize(16);
-      doc.setTextColor(28, 25, 23); // dark stone
-      doc.setFont('helvetica', 'bold');
-      doc.text('POLICLÍNICA', 28, 17);
-      
-      doc.setFontSize(8);
-      doc.setFont('helvetica', 'normal');
-      doc.setTextColor(120, 113, 108);
-      doc.text('GESTÃO DE ALMOXARIFADO E FARMÁCIA', 28, 22);
-
-      doc.setDrawColor(231, 229, 228); // light border
-      doc.setLineWidth(0.5);
-      doc.line(14, 28, pageWidth - 14, 28);
-      
-      // Title and Date
-      doc.setFontSize(14);
-      doc.setTextColor(28, 25, 23);
-      doc.setFont('helvetica', 'bold');
-      doc.text('Relatório de Consumo por Setor', 14, 40);
-      
-      doc.setFontSize(9);
-      doc.setFont('helvetica', 'normal');
-      doc.setTextColor(120, 113, 108);
-      doc.text(`Período: ${format(parseISO(reportRange.start), 'dd/MM/yyyy')} a ${format(parseISO(reportRange.end), 'dd/MM/yyyy')}`, 14, 46);
-      doc.text(`Emitido em: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 14, 51);
-      
-      // Summary Box (Minimalist) - Only for Admin
-      if (isAdmin) {
-        const totalValue = reportData.consumptionReport.reduce((sum, i) => sum + i.totalValue, 0);
-        doc.setFillColor(250, 250, 249); // stone-50
-        doc.roundedRect(pageWidth - 85, 35, 71, 18, 2, 2, 'F');
-        doc.setFontSize(8);
-        doc.setTextColor(120, 113, 108);
-        doc.text('VALOR TOTAL CONSUMIDO', pageWidth - 80, 42);
-        doc.setFontSize(11);
-        doc.setTextColor(28, 25, 23);
-        doc.setFont('helvetica', 'bold');
-        doc.text(new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalValue), pageWidth - 80, 49);
-      }
+      const lh = attachLetterheadToDoc(doc, letterheadImage, {
+        sideMargin: 14,
+        continuationHeaderHeight: 11
+      });
+      const totalValue = isAdmin
+        ? reportData.consumptionReport.reduce((sum, i) => sum + i.totalValue, 0)
+        : 0;
+      const emissionStr = format(new Date(), 'dd/MM/yyyy HH:mm');
+      const tableStartY = drawInstitutionalReportHeader(doc, lh, {
+        kicker: 'Unidade Responsável: Policlínica de Sobral • Gestão de Almoxarifado',
+        emissionText: `Emitido em ${emissionStr}`,
+        title: 'Relatório de Consumo por Setor',
+        metadata: [
+          {
+            label: 'Período Analisado',
+            value: `${format(parseISO(reportRange.start), 'dd/MM/yyyy')} a ${format(parseISO(reportRange.end), 'dd/MM/yyyy')}`
+          },
+          { label: 'Data de Emissão', value: emissionStr }
+        ],
+        metadataColumns: 2,
+        rightHighlight: isAdmin
+          ? {
+              label: 'Valor Total Consumido',
+              value: new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalValue)
+            }
+          : undefined
+      });
 
       // Table Data
       const tableData: any[] = [];
@@ -8181,7 +7900,9 @@ export default function App() {
       if (isAdmin) headers.push('Total (R$)');
 
       autoTable(doc, {
-        startY: 60,
+        startY: tableStartY,
+        margin: { left: 14, right: 14, top: lh.continuationTop, bottom: lh.marginBottom },
+        showHead: 'everyPage',
         head: [headers],
         body: tableData,
         theme: 'plain', 
@@ -8213,12 +7934,13 @@ export default function App() {
             data.cell.styles.lineWidth = { bottom: 0.5 };
             data.cell.styles.lineColor = [28, 25, 23];
           }
-        },
-        didDrawPage: (data) => {
-          doc.setFontSize(7);
-          doc.setTextColor(168, 162, 158);
-          doc.text(`Documento emitido pelo Sistema de Gestão Hospitalar - Página ${doc.getNumberOfPages()}`, 14, doc.internal.pageSize.height - 10);
         }
+      });
+
+      drawContinuationAndPageNumbers(doc, lh, {
+        title: 'Relatório de Consumo por Setor',
+        rightHeaderText: `${format(parseISO(reportRange.start), 'dd/MM/yyyy')} a ${format(parseISO(reportRange.end), 'dd/MM/yyyy')}`,
+        footerLeftText: 'Policlínica de Sobral • Gestão de Almoxarifado e Farmácia'
       });
       
       const fileName = `Relatorio_Consumo_Policlinica_${format(new Date(), 'dd-MM-yyyy')}.pdf`;
@@ -14291,10 +14013,10 @@ export default function App() {
                       className="bg-white w-full max-w-[1120px] p-8 sm:p-12 shadow-2xl rounded-xl border border-slate-300 text-slate-900 space-y-6 relative font-sans shrink-0"
                       style={{ minWidth: '920px' }}
                     >
-                      {/* Document Header - Timbrado Image Only */}
-                      <div className="pb-4 border-b-2 border-slate-200 flex justify-center items-center min-h-[70px]">
+                      {/* Document Header - Timbrado Image Only (replaced by full-page PDF letterhead on export) */}
+                      <div data-pdf-letterhead-hide="true" className="pb-4 border-b-2 border-slate-200 flex justify-center items-center min-h-[70px]">
                         <img 
-                          src={letterheadImage || "/official_letterhead.svg"} 
+                          src={letterheadImage || OFFICIAL_LETTERHEAD_URL} 
                           alt="Papel Timbrado Oficial" 
                           className="w-full max-h-24 object-contain" 
                           onError={(e) => {
@@ -14450,8 +14172,8 @@ export default function App() {
                         )}
                       </div>
 
-                      {/* Official Document Footer */}
-                      <div className="pt-4 border-t border-slate-200 text-center text-[10px] font-bold space-y-0.5" style={{ color: '#64748b' }}>
+                      {/* Official Document Footer (replaced by full-page PDF letterhead footer on export) */}
+                      <div data-pdf-letterhead-hide="true" className="pt-4 border-t border-slate-200 text-center text-[10px] font-bold space-y-0.5" style={{ color: '#64748b' }}>
                         <p>
                           Policlínica de Sobral. Av. Monsenhor Aloísio Pinto, 481, Dom Expedito CEP 62050-255, Sobral Ceará.
                         </p>
@@ -14591,49 +14313,40 @@ export default function App() {
                         </div>
 
                         <div className="bg-slate-200/70 p-4 sm:p-6 rounded-3xl border border-slate-300/80 flex justify-center shadow-inner">
-                          {/* A4 Sheet Container */}
-                          <div className="bg-white w-full max-w-[480px] aspect-[1/1.414] rounded-lg shadow-xl border border-slate-300 p-4 sm:p-6 flex flex-col justify-between relative overflow-hidden">
-                            {/* Top Letterhead Area */}
-                            <div className="w-full h-16 sm:h-20 bg-slate-50 border border-dashed border-slate-200 rounded-md flex items-center justify-center overflow-hidden relative">
-                              {letterheadImage ? (
-                                <img 
-                                  src={letterheadImage} 
-                                  alt="Papel Timbrado" 
-                                  className="w-full h-full object-contain"
-                                />
-                              ) : (
-                                <div className="text-center p-2">
-                                  <p className="text-xs font-extrabold text-slate-400 uppercase tracking-wider">
-                                    Cabeçalho do Timbrado Oficial
-                                  </p>
-                                  <p className="text-[10px] text-slate-300">Nenhuma imagem anexada ainda</p>
-                                </div>
-                              )}
-                            </div>
+                          {/* A4 Sheet Container with full-page proportional institutional letterhead background */}
+                          <div className="bg-white w-full max-w-[480px] aspect-[1/1.414] rounded-lg shadow-xl border border-slate-300 relative overflow-hidden flex flex-col">
+                            {/* Full-page Letterhead Background (zero distortion) */}
+                            <img
+                              src={letterheadImage || OFFICIAL_LETTERHEAD_URL}
+                              alt="Papel Timbrado Institucional"
+                              className="absolute inset-0 w-full h-full object-contain pointer-events-none select-none"
+                            />
 
-                            {/* Simulated Report Body Content */}
-                            <div className="my-4 space-y-3 flex-1 opacity-70">
-                              <div className="h-4 bg-slate-800 rounded-md w-3/4" />
-                              <div className="h-2 bg-slate-200 rounded w-1/2" />
-                              
-                              <div className="space-y-1.5 pt-3">
-                                <div className="h-6 bg-slate-100 rounded-md border border-slate-200 w-full flex items-center px-2">
-                                  <div className="h-2 bg-slate-300 rounded w-1/4" />
-                                </div>
-                                <div className="h-5 bg-slate-50 rounded-md border border-slate-100 w-full flex items-center px-2">
-                                  <div className="h-2 bg-slate-200 rounded w-1/3" />
-                                </div>
-                                <div className="h-5 bg-slate-50 rounded-md border border-slate-100 w-full flex items-center px-2">
-                                  <div className="h-2 bg-slate-200 rounded w-1/2" />
-                                </div>
-                                <div className="h-5 bg-slate-50 rounded-md border border-slate-100 w-full flex items-center px-2">
-                                  <div className="h-2 bg-slate-200 rounded w-2/3" />
+                            {/* Simulated Report Body Content strictly inside printable area between header and footer */}
+                            <div className="relative z-10 flex-1 flex flex-col justify-between pt-[13%] pb-[13%] px-[8%]">
+                              <div className="space-y-3 opacity-80">
+                                <div className="h-3.5 bg-slate-800 rounded-md w-3/4 mx-auto" />
+                                <div className="h-2 bg-slate-300 rounded w-1/2 mx-auto" />
+                                
+                                <div className="space-y-1.5 pt-3">
+                                  <div className="h-6 bg-slate-100/90 rounded-md border border-slate-200 w-full flex items-center px-2">
+                                    <div className="h-2 bg-slate-400 rounded w-1/4" />
+                                  </div>
+                                  <div className="h-5 bg-white/85 rounded-md border border-slate-200/80 w-full flex items-center px-2">
+                                    <div className="h-2 bg-slate-300 rounded w-1/3" />
+                                  </div>
+                                  <div className="h-5 bg-slate-50/85 rounded-md border border-slate-200/80 w-full flex items-center px-2">
+                                    <div className="h-2 bg-slate-300 rounded w-1/2" />
+                                  </div>
+                                  <div className="h-5 bg-white/85 rounded-md border border-slate-200/80 w-full flex items-center px-2">
+                                    <div className="h-2 bg-slate-300 rounded w-2/3" />
+                                  </div>
                                 </div>
                               </div>
                             </div>
 
-                            {/* Footer Indicator */}
-                            <div className="pt-2 border-t border-slate-100 flex justify-between items-center text-[8px] text-slate-400">
+                            {/* Page Indicator strictly below institutional footer */}
+                            <div className="relative z-10 px-[8%] pb-1.5 flex justify-between items-center text-[7px] font-bold text-slate-500">
                               <span>Relatório Oficial do Sistema</span>
                               <span>Página 1 de 1</span>
                             </div>

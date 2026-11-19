@@ -51,6 +51,13 @@ import { Item, UserProfile, Transaction, InventoryCompletion, InventoryCategoryS
 import { doc, updateDoc, addDoc, collection, serverTimestamp, setDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { isMedicamentosCategory } from '../utils/medicamentosFilter';
+import {
+  attachLetterheadToDoc,
+  drawContinuationAndPageNumbers,
+  drawInstitutionalReportHeader,
+  getPrintLetterheadLayout,
+  preloadLetterheadAsset
+} from '../utils/letterheadLayout';
 
 export interface BalancoReportProps {
   items: Item[];
@@ -186,6 +193,10 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
   const [localIncludeMedicamentos, setLocalIncludeMedicamentos] = useState<boolean>(false);
   const includeMedicamentos =
     propIncludeMedicamentos !== undefined ? propIncludeMedicamentos : localIncludeMedicamentos;
+
+  React.useEffect(() => {
+    void preloadLetterheadAsset(letterheadImage);
+  }, [letterheadImage]);
 
   const handleToggleIncludeMedicamentos = (val: boolean) => {
     setLocalIncludeMedicamentos(val);
@@ -1278,78 +1289,35 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
         format: 'a4'
       });
 
-      const pageWidth = doc.internal.pageSize.getWidth();
-      let startY = 14;
-
-      // Header with custom letterhead if present
-      if (letterheadImage) {
-        try {
-          doc.addImage(letterheadImage, 'PNG', 14, 8, pageWidth - 28, 26);
-          startY = 38;
-        } catch {
-          startY = 16;
-        }
-      } else {
-        // Clinical Government Header
-        doc.setFillColor(30, 58, 138); // blue-900
-        doc.rect(14, 10, 4, 18, 'F');
-
-        doc.setFont('helvetica', 'bold');
-        doc.setFontSize(14);
-        doc.setTextColor(15, 23, 42);
-        doc.text('POLICLÍNICA REGIONAL BERNARDO FÉLIX DA SILVA', 22, 16);
-
-        doc.setFont('helvetica', 'bold');
-        doc.setFontSize(11);
-        doc.setTextColor(37, 99, 235);
-        doc.text('RELATÓRIO DE BALANÇO E INVENTÁRIO FÍSICO DE ESTOQUE', 22, 22);
-
-        doc.setFont('helvetica', 'normal');
-        doc.setFontSize(9);
-        doc.setTextColor(100, 116, 139);
-        doc.text('Setor de Gestão de Insumos, Almoxarifado Central e Farmácia Hospitalar', 22, 27);
-
-        startY = 34;
-      }
-
-      // Metadata Info Box
-      doc.setFillColor(248, 250, 252);
-      doc.setDrawColor(226, 232, 240);
-      doc.roundedRect(14, startY, pageWidth - 28, 16, 2, 2, 'FD');
-
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(8.5);
-      doc.setTextColor(30, 41, 59);
-
-      const categoryLabel = selectedCategory === 'all' ? 'TODOS OS TIPOS DE MATERIAL' : selectedCategory.toUpperCase();
-      const locationLabel = selectedLocation === 'all' ? 'TODAS AS UNIDADES' : selectedLocation.toUpperCase();
+      const lh = attachLetterheadToDoc(doc, letterheadImage, {
+        sideMargin: 14,
+        continuationHeaderHeight: 10
+      });
+      const pageWidth = lh.pageWidth;
+      const categoryLabel = selectedCategory === 'all' ? 'Todos os Tipos de Material' : selectedCategory;
+      const locationLabel = selectedLocation === 'all' ? 'Todas as Unidades' : selectedLocation;
       const dateStr = format(new Date(), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR });
 
-      doc.text(`TIPO DE MATERIAL:`, 18, startY + 6);
-      doc.setFont('helvetica', 'normal');
-      doc.text(categoryLabel, 55, startY + 6);
-
-      doc.setFont('helvetica', 'bold');
-      doc.text(`LOCALIZAÇÃO:`, 18, startY + 12);
-      doc.setFont('helvetica', 'normal');
-      doc.text(locationLabel, 55, startY + 12);
-
-      doc.setFont('helvetica', 'bold');
-      doc.text(`EMISSÃO:`, 150, startY + 6);
-      doc.setFont('helvetica', 'normal');
-      doc.text(dateStr, 175, startY + 6);
-
-      doc.setFont('helvetica', 'bold');
-      doc.text(`TOTAL LOTES:`, 150, startY + 12);
-      doc.setFont('helvetica', 'normal');
-      doc.text(`${stats.totalBatches} lotes (${stats.totalUnits.toLocaleString('pt-BR')} unidades no sistema)`, 175, startY + 12);
-
-      if (withValues) {
-        doc.setFont('helvetica', 'bold');
-        doc.text(`VALOR TOTAL:`, 230, startY + 6);
-        doc.setFont('helvetica', 'normal');
-        doc.text(new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(stats.totalValue), 255, startY + 6);
-      }
+      const tableStartY = drawInstitutionalReportHeader(doc, lh, {
+        kicker: 'Unidade Responsável: Policlínica Regional Bernardo Félix da Silva • Gestão de Insumos e Almoxarifado',
+        emissionText: `Emitido em ${dateStr}`,
+        title: 'Relatório de Balanço e Inventário Físico de Estoque',
+        metadata: [
+          { label: 'Tipo de Material', value: categoryLabel },
+          { label: 'Localização', value: locationLabel },
+          {
+            label: 'Total de Lotes',
+            value: `${stats.totalBatches} lotes (${stats.totalUnits.toLocaleString('pt-BR')} unidades)`
+          }
+        ],
+        metadataColumns: 3,
+        rightHighlight: withValues
+          ? {
+              label: 'Valor Total em Estoque',
+              value: new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(stats.totalValue)
+            }
+          : undefined
+      });
 
       // Table Setup
       const headColumns = withValues ? [
@@ -1401,10 +1369,11 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
       });
 
       autoTable(doc, {
-        startY: startY + 20,
+        startY: tableStartY,
         head: headColumns,
         body: bodyRows,
         theme: 'grid',
+        showHead: 'everyPage',
         styles: {
           fontSize: 7.5,
           cellPadding: 2,
@@ -1460,18 +1429,17 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
             }
           }
         },
-        margin: { left: 14, right: 14 }
+        margin: { left: 14, right: 14, top: lh.continuationTop, bottom: lh.marginBottom }
       });
 
       // Signatures section at bottom of document
       const lastTableY = (doc as any).lastAutoTable.finalY || 150;
-      const pageHeight = doc.internal.pageSize.getHeight();
       
-      // If table ended too low, add page for signatures
-      let signatureY = lastTableY + 16;
-      if (signatureY + 30 > pageHeight) {
+      // If table ended too low for the signature block, break safely inside usable area
+      let signatureY = lastTableY + 12;
+      if (signatureY + 26 > lh.contentBottom) {
         doc.addPage();
-        signatureY = 35;
+        signatureY = lh.continuationTop + 6;
       }
 
       // Responsibilities statement
@@ -1486,7 +1454,7 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
       );
 
       // Signature Lines
-      const lineY = signatureY + 16;
+      const lineY = signatureY + 15;
       doc.setDrawColor(148, 163, 184);
       doc.setLineWidth(0.5);
 
@@ -1523,20 +1491,11 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
       doc.setTextColor(100, 116, 139);
       doc.text('Visto de Homologação', 235, lineY + 7.5, { align: 'center' });
 
-      // Footer numbering
-      const totalPages = doc.getNumberOfPages();
-      for (let i = 1; i <= totalPages; i++) {
-        doc.setPage(i);
-        doc.setFontSize(7);
-        doc.setFont('helvetica', 'normal');
-        doc.setTextColor(148, 163, 184);
-        doc.text(
-          `Policlínica Regional Bernardo Félix da Silva • Folha de Balanço de Estoque • Página ${i} de ${totalPages}`,
-          pageWidth / 2,
-          pageHeight - 6,
-          { align: 'center' }
-        );
-      }
+      drawContinuationAndPageNumbers(doc, lh, {
+        title: 'Relatório de Balanço e Inventário Físico de Estoque',
+        rightHeaderText: `${categoryLabel} • ${dateStr}`,
+        footerLeftText: 'Policlínica Regional Bernardo Félix da Silva • Folha de Balanço de Estoque'
+      });
 
       const fileName = `Balanco_Estoque_${selectedCategory.replace(/\s+/g, '_')}_${format(new Date(), 'yyyy-MM-dd')}.pdf`;
       doc.save(fileName);
@@ -1640,79 +1599,15 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
         format: 'a4'
       });
 
-      const pageWidth = doc.internal.pageSize.getWidth();
-      const pageHeight = doc.internal.pageSize.getHeight();
-      let startY = 14;
-
-      // Header with custom letterhead if present
-      if (letterheadImage) {
-        try {
-          doc.addImage(letterheadImage, 'PNG', 14, 8, pageWidth - 28, 26);
-          startY = 38;
-        } catch {
-          startY = 16;
-        }
-      } else {
-        // Clinical Government Header
-        doc.setFillColor(180, 83, 9); // amber-700
-        doc.rect(14, 10, 4, 18, 'F');
-
-        doc.setFont('helvetica', 'bold');
-        doc.setFontSize(14);
-        doc.setTextColor(15, 23, 42);
-        doc.text('POLICLÍNICA REGIONAL BERNARDO FÉLIX DA SILVA', 22, 16);
-
-        doc.setFont('helvetica', 'bold');
-        doc.setFontSize(11);
-        doc.setTextColor(190, 18, 60); // rose-700
-        doc.text('RELATÓRIO OFICIAL DE DIVERGÊNCIAS DE ESTOQUE E INVENTÁRIO FÍSICO', 22, 22);
-
-        doc.setFont('helvetica', 'normal');
-        doc.setFontSize(9);
-        doc.setTextColor(100, 116, 139);
-        doc.text('Termo de Apuração de Sobras e Faltas • Almoxarifado Central e Farmácia Hospitalar', 22, 27);
-
-        startY = 34;
-      }
-
-      // Metadata Info Box
-      doc.setFillColor(254, 252, 232); // amber-50
-      doc.setDrawColor(251, 191, 36); // amber-400
-      doc.roundedRect(14, startY, pageWidth - 28, 20, 2, 2, 'FD');
-
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(8.5);
-      doc.setTextColor(30, 41, 59);
-
-      const categoryLabel = selectedCategory === 'all' ? 'TODOS OS TIPOS DE MATERIAL' : selectedCategory.toUpperCase();
-      const locationLabel = (selectedLocation === 'all' ? inventoryLocation : selectedLocation).toUpperCase();
+      const lh = attachLetterheadToDoc(doc, letterheadImage, {
+        sideMargin: 14,
+        continuationHeaderHeight: 10
+      });
+      const pageWidth = lh.pageWidth;
+      const categoryLabel = selectedCategory === 'all' ? 'Todos os Tipos de Material' : selectedCategory;
+      const locationLabel = selectedLocation === 'all' ? inventoryLocation : selectedLocation;
       const dateStr = format(new Date(), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR });
       const userStr = currentUser?.displayName || currentUser?.email || auth.currentUser?.displayName || auth.currentUser?.email || 'Almoxarifado Central';
-
-      doc.text(`TIPO DE MATERIAL:`, 18, startY + 6);
-      doc.setFont('helvetica', 'normal');
-      doc.text(categoryLabel, 55, startY + 6);
-
-      doc.setFont('helvetica', 'bold');
-      doc.text(`LOCALIZAÇÃO:`, 18, startY + 12);
-      doc.setFont('helvetica', 'normal');
-      doc.text(locationLabel, 55, startY + 12);
-
-      doc.setFont('helvetica', 'bold');
-      doc.text(`RESPONSÁVEL:`, 18, startY + 17);
-      doc.setFont('helvetica', 'normal');
-      doc.text(userStr, 55, startY + 17);
-
-      doc.setFont('helvetica', 'bold');
-      doc.text(`EMISSÃO:`, 160, startY + 6);
-      doc.setFont('helvetica', 'normal');
-      doc.text(dateStr, 185, startY + 6);
-
-      doc.setFont('helvetica', 'bold');
-      doc.text(`TOTAL DIVERGÊNCIAS:`, 160, startY + 12);
-      doc.setFont('helvetica', 'bold');
-      doc.setTextColor(190, 18, 60); // rose-700
-      doc.text(`${divergentList.length} lotes com divergência`, 205, startY + 12);
 
       // Financial impact totals
       let totalSurplusUnits = 0;
@@ -1733,17 +1628,28 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
       const netQty = totalSurplusUnits - totalDeficitUnits;
       const netValue = totalSurplusValue - totalDeficitValue;
 
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(8);
-      doc.setTextColor(30, 41, 59);
-      doc.text(`IMPACTO LÍQUIDO:`, 160, startY + 17);
-      doc.setFont('helvetica', 'bold');
-      if (netValue >= 0) {
-        doc.setTextColor(21, 128, 61);
-      } else {
-        doc.setTextColor(190, 18, 60);
-      }
-      doc.text(`${netQty > 0 ? '+' : ''}${netQty} un. (${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(netValue)})`, 200, startY + 17);
+      const divergencesTableStartY = drawInstitutionalReportHeader(doc, lh, {
+        kicker: 'Unidade Responsável: Policlínica Regional Bernardo Félix da Silva • Termo de Apuração de Sobras e Faltas',
+        emissionText: `Emitido em ${dateStr}`,
+        title: 'Relatório Oficial de Divergências de Estoque e Inventário Físico',
+        metadata: [
+          { label: 'Tipo de Material', value: categoryLabel },
+          { label: 'Localização', value: locationLabel },
+          { label: 'Responsável', value: userStr },
+          {
+            label: 'Total de Divergências',
+            value: `${divergentList.length} lotes com divergência`,
+            valueColor: [185, 28, 28]
+          },
+          {
+            label: 'Impacto Líquido',
+            value: `${netQty > 0 ? '+' : ''}${netQty} un. (${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(netValue)})`,
+            valueColor: netValue >= 0 ? [21, 128, 61] : [185, 28, 28]
+          },
+          { label: 'Data de Emissão', value: dateStr }
+        ],
+        metadataColumns: 3
+      });
 
       // Table columns
       const headColumns = [[
@@ -1795,10 +1701,11 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
       });
 
       autoTable(doc, {
-        startY: startY + 24,
+        startY: divergencesTableStartY,
         head: headColumns,
         body: bodyRows,
         theme: 'grid',
+        showHead: 'everyPage',
         styles: {
           fontSize: 7.5,
           cellPadding: 2,
@@ -1850,14 +1757,14 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
             }
           }
         },
-        margin: { left: 14, right: 14 }
+        margin: { left: 14, right: 14, top: lh.continuationTop, bottom: lh.marginBottom }
       });
 
       // Summary block & Signatures
       let finalY = (doc as any).lastAutoTable?.finalY || 140;
-      if (finalY > pageHeight - 50) {
+      if (finalY + 38 > lh.contentBottom) {
         doc.addPage();
-        finalY = 20;
+        finalY = lh.continuationTop + 4;
       } else {
         finalY += 8;
       }
@@ -1923,20 +1830,11 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
       doc.setTextColor(100, 116, 139);
       doc.text('Homologação e Autorização de Ajuste', 240, sigY + 7.5, { align: 'center' });
 
-      // Footer numbering
-      const totalPages = doc.getNumberOfPages();
-      for (let i = 1; i <= totalPages; i++) {
-        doc.setPage(i);
-        doc.setFontSize(7);
-        doc.setFont('helvetica', 'normal');
-        doc.setTextColor(148, 163, 184);
-        doc.text(
-          `Policlínica Regional Bernardo Félix da Silva • Relatório de Divergências de Estoque • Página ${i} de ${totalPages}`,
-          pageWidth / 2,
-          pageHeight - 6,
-          { align: 'center' }
-        );
-      }
+      drawContinuationAndPageNumbers(doc, lh, {
+        title: 'Relatório Oficial de Divergências de Estoque',
+        rightHeaderText: `${categoryLabel} • ${dateStr}`,
+        footerLeftText: 'Policlínica Regional Bernardo Félix da Silva • Relatório de Divergências de Estoque'
+      });
 
       const fileName = `Divergencias_Estoque_${selectedCategory.replace(/\s+/g, '_')}_${format(new Date(), 'yyyy-MM-dd')}.pdf`;
       doc.save(fileName);
@@ -1993,6 +1891,8 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
     printFrame.style.border = '0';
     document.body.appendChild(printFrame);
 
+    const printLh = getPrintLetterheadLayout('landscape', letterheadImage);
+
     const docHtml = `
       <!DOCTYPE html>
       <html>
@@ -2000,141 +1900,148 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
         <title>Documento Oficial de Divergências de Estoque</title>
         <meta charset="utf-8" />
         <style>
-          @page { size: A4 landscape; margin: 12mm; }
-          * { box-sizing: border-box; }
-          body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #0f172a; margin: 0; padding: 12px; font-size: 11px; }
-          .header-box { border-bottom: 2px solid #b45309; padding-bottom: 10px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
-          .inst-title { font-size: 15px; font-weight: 900; color: #1e3a8a; margin: 0; }
-          .doc-title { font-size: 13px; font-weight: 800; color: #b45309; margin: 2px 0; }
-          .doc-sub { font-size: 9.5px; color: #64748b; margin: 0; }
-          .meta-box { background: #fefce8; border: 1px solid #fde047; border-radius: 6px; padding: 8px 12px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; font-size: 10px; }
+          ${printLh.css}
+          body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #0f172a; font-size: 11px; }
+          .header-box { border-bottom: 2px solid #b45309; padding-bottom: 8px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+          .inst-title { font-size: 13px; font-weight: 900; color: #1e3a8a; margin: 0; }
+          .doc-title { font-size: 12px; font-weight: 800; color: #b45309; margin: 2px 0; }
+          .doc-sub { font-size: 9px; color: #64748b; margin: 0; }
+          .meta-box { background: #fefce8; border: 1px solid #fde047; border-radius: 6px; padding: 7px 10px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 10px; font-size: 9.5px; }
           .meta-item b { color: #334155; }
-          .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
-          .kpi-card { border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 10px; background: #f8fafc; }
+          .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 10px; }
+          .kpi-card { border: 1px solid #e2e8f0; border-radius: 6px; padding: 5px 9px; background: #f8fafc; }
           .kpi-card.surplus { border-left: 4px solid #16a34a; }
           .kpi-card.deficit { border-left: 4px solid #dc2626; }
           .kpi-card.net { border-left: 4px solid #b45309; }
-          .kpi-label { font-size: 9px; font-weight: 800; color: #64748b; text-transform: uppercase; }
-          .kpi-val { font-size: 13px; font-weight: 900; color: #0f172a; margin-top: 2px; }
-          table { width: 100%; border-collapse: collapse; margin-bottom: 14px; font-size: 9.5px; }
-          th { background: #b45309; color: #ffffff; font-weight: 800; text-align: left; padding: 5px 6px; border: 1px solid #92400e; }
-          td { padding: 4.5px 6px; border: 1px solid #cbd5e1; }
-          tr:nth-child(even) { background: #fffbeb; }
+          .kpi-label { font-size: 8.5px; font-weight: 800; color: #64748b; text-transform: uppercase; }
+          .kpi-val { font-size: 12px; font-weight: 900; color: #0f172a; margin-top: 2px; }
+          table.data-table { width: 100%; border-collapse: collapse; margin-bottom: 12px; font-size: 9px; }
+          table.data-table thead { display: table-header-group; }
+          table.data-table tr { break-inside: avoid; page-break-inside: avoid; }
+          table.data-table th { background: #b45309; color: #ffffff; font-weight: 800; text-align: left; padding: 5px 6px; border: 1px solid #92400e; }
+          table.data-table td { padding: 4px 6px; border: 1px solid #cbd5e1; }
+          table.data-table tbody tr:nth-child(even) { background: #fffbeb; }
           .center { text-align: center; }
           .right { text-align: right; }
           .badge-surplus { color: #15803d; font-weight: 800; }
           .badge-deficit { color: #be123c; font-weight: 800; }
-          .term-box { background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px 10px; font-size: 9px; color: #475569; margin-bottom: 16px; line-height: 1.4; }
-          .sig-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; text-align: center; margin-top: 20px; }
+          .term-box { background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px 10px; font-size: 9px; color: #475569; margin-bottom: 14px; line-height: 1.4; break-inside: avoid; }
+          .sig-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; text-align: center; margin-top: 16px; break-inside: avoid; }
           .sig-line { border-top: 1px solid #94a3b8; padding-top: 4px; font-size: 9.5px; font-weight: 800; }
           .sig-sub { font-size: 8px; color: #64748b; }
-          .footer-note { font-size: 8px; color: #94a3b8; text-align: center; margin-top: 14px; }
         </style>
       </head>
       <body>
-        <div class="header-box">
-          <div>
-            <div class="inst-title">POLICLÍNICA REGIONAL BERNARDO FÉLIX DA SILVA</div>
-            <div class="doc-title">TERMO E RELATÓRIO OFICIAL DE DIVERGÊNCIAS DE ESTOQUE</div>
-            <div class="doc-sub">Apuração de Sobras, Faltas e Quebras Físicas • Almoxarifado Central e Farmácia Hospitalar</div>
-          </div>
-          <div style="text-align: right;">
-            <div style="font-weight: 900; font-size: 11px; color: #b45309;">${termoNum}</div>
-            <div style="font-size: 9px; color: #64748b;">Emissão: ${dateStr}</div>
-          </div>
-        </div>
-
-        <div class="meta-box">
-          <div class="meta-item"><b>Setor / Local:</b> ${locationLabel}</div>
-          <div class="meta-item"><b>Categoria:</b> ${categoryLabel}</div>
-          <div class="meta-item"><b>Responsável:</b> ${userStr}</div>
-          <div class="meta-item"><b>Finalidade:</b> Regularização e Balanço</div>
-        </div>
-
-        <div class="kpi-row">
-          <div class="kpi-card">
-            <div class="kpi-label">Lotes com Divergência</div>
-            <div class="kpi-val">${list.length} lotes</div>
-          </div>
-          <div class="kpi-card surplus">
-            <div class="kpi-label">Sobras Físicas</div>
-            <div class="kpi-val" style="color: #15803d;">+${totalSurplusUnits} un <span style="font-size: 10px; font-weight: normal;">(${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalSurplusVal)})</span></div>
-          </div>
-          <div class="kpi-card deficit">
-            <div class="kpi-label">Faltas Físicas</div>
-            <div class="kpi-val" style="color: #be123c;">-${totalDeficitUnits} un <span style="font-size: 10px; font-weight: normal;">(${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalDeficitVal)})</span></div>
-          </div>
-          <div class="kpi-card net">
-            <div class="kpi-label">Impacto Financeiro Líquido</div>
-            <div class="kpi-val" style="color: ${netVal >= 0 ? '#15803d' : '#be123c'};">${netUnits > 0 ? '+' : ''}${netUnits} un <span style="font-size: 10px; font-weight: normal;">(${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(netVal)})</span></div>
-          </div>
-        </div>
-
-        <table>
-          <thead>
-            <tr>
-              <th style="width: 25px;" class="center">#</th>
-              <th>Material / Descrição</th>
-              <th style="width: 100px;">Categoria</th>
-              <th style="width: 70px;" class="center">Lote</th>
-              <th style="width: 70px;" class="center">Validade</th>
-              <th style="width: 35px;" class="center">Und.</th>
-              <th style="width: 60px;" class="right">Qtd. Sistema</th>
-              <th style="width: 60px;" class="right">Qtd. Física</th>
-              <th style="width: 75px;" class="center">Divergência</th>
-              <th style="width: 65px;" class="right">Vlr. Unit.</th>
-              <th style="width: 75px;" class="right">Impacto</th>
-              <th style="width: 120px;">Parecer / Causa</th>
-            </tr>
-          </thead>
+        ${printLh.backgroundHtml}
+        <table class="print-layout-table">
+          <thead><tr><td><div class="print-header-spacer"></div></td></tr></thead>
           <tbody>
-            ${list.map((d, i) => {
-              const diffStr = d.diff > 0 ? `+${d.diff} (Sobra)` : `${d.diff} (Falta)`;
-              const badgeClass = d.diff > 0 ? 'badge-surplus' : 'badge-deficit';
-              const impactStr = `${d.impact >= 0 ? '+' : ''}${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(d.impact)}`;
-              return `
-                <tr>
-                  <td class="center" style="font-weight: 800; color: #64748b;">${i + 1}</td>
-                  <td><strong>${d.item.name || 'Sem nome'}</strong></td>
-                  <td>${d.item.category || 'Geral'}</td>
-                  <td class="center font-mono">${d.item.batch_number || 'S/ Lote'}</td>
-                  <td class="center">${formatSafeDate(d.item.expiry_date)}</td>
-                  <td class="center">${d.item.unit_measure || 'UN'}</td>
-                  <td class="right">${d.systemQty}</td>
-                  <td class="right" style="font-weight: 800; color: #1e40af;">${d.physicalQty}</td>
-                  <td class="center ${badgeClass}">${diffStr}</td>
-                  <td class="right">${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(d.item.unit_price || 0)}</td>
-                  <td class="right ${badgeClass}">${impactStr}</td>
-                  <td style="font-style: italic; color: #475569;">${d.reason || (d.diff > 0 ? 'Sobra de contagem' : 'Falta de contagem')}</td>
-                </tr>
-              `;
-            }).join('')}
+            <tr>
+              <td class="print-body-cell">
+                <div class="header-box">
+                  <div>
+                    <div class="inst-title">POLICLÍNICA REGIONAL BERNARDO FÉLIX DA SILVA</div>
+                    <div class="doc-title">TERMO E RELATÓRIO OFICIAL DE DIVERGÊNCIAS DE ESTOQUE</div>
+                    <div class="doc-sub">Apuração de Sobras, Faltas e Quebras Físicas • Almoxarifado Central e Farmácia Hospitalar</div>
+                  </div>
+                  <div style="text-align: right;">
+                    <div style="font-weight: 900; font-size: 11px; color: #b45309;">${termoNum}</div>
+                    <div style="font-size: 9px; color: #64748b;">Emissão: ${dateStr}</div>
+                  </div>
+                </div>
+
+                <div class="meta-box">
+                  <div class="meta-item"><b>Setor / Local:</b> ${locationLabel}</div>
+                  <div class="meta-item"><b>Categoria:</b> ${categoryLabel}</div>
+                  <div class="meta-item"><b>Responsável:</b> ${userStr}</div>
+                  <div class="meta-item"><b>Finalidade:</b> Regularização e Balanço</div>
+                </div>
+
+                <div class="kpi-row">
+                  <div class="kpi-card">
+                    <div class="kpi-label">Lotes com Divergência</div>
+                    <div class="kpi-val">${list.length} lotes</div>
+                  </div>
+                  <div class="kpi-card surplus">
+                    <div class="kpi-label">Sobras Físicas</div>
+                    <div class="kpi-val" style="color: #15803d;">+${totalSurplusUnits} un <span style="font-size: 10px; font-weight: normal;">(${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalSurplusVal)})</span></div>
+                  </div>
+                  <div class="kpi-card deficit">
+                    <div class="kpi-label">Faltas Físicas</div>
+                    <div class="kpi-val" style="color: #be123c;">-${totalDeficitUnits} un <span style="font-size: 10px; font-weight: normal;">(${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalDeficitVal)})</span></div>
+                  </div>
+                  <div class="kpi-card net">
+                    <div class="kpi-label">Impacto Financeiro Líquido</div>
+                    <div class="kpi-val" style="color: ${netVal >= 0 ? '#15803d' : '#be123c'};">${netUnits > 0 ? '+' : ''}${netUnits} un <span style="font-size: 10px; font-weight: normal;">(${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(netVal)})</span></div>
+                  </div>
+                </div>
+
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th style="width: 25px;" class="center">#</th>
+                      <th>Material / Descrição</th>
+                      <th style="width: 100px;">Categoria</th>
+                      <th style="width: 70px;" class="center">Lote</th>
+                      <th style="width: 70px;" class="center">Validade</th>
+                      <th style="width: 35px;" class="center">Und.</th>
+                      <th style="width: 60px;" class="right">Qtd. Sistema</th>
+                      <th style="width: 60px;" class="right">Qtd. Física</th>
+                      <th style="width: 75px;" class="center">Divergência</th>
+                      <th style="width: 65px;" class="right">Vlr. Unit.</th>
+                      <th style="width: 75px;" class="right">Impacto</th>
+                      <th style="width: 120px;">Parecer / Causa</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${list.map((d, i) => {
+                      const diffStr = d.diff > 0 ? `+${d.diff} (Sobra)` : `${d.diff} (Falta)`;
+                      const badgeClass = d.diff > 0 ? 'badge-surplus' : 'badge-deficit';
+                      const impactStr = `${d.impact >= 0 ? '+' : ''}${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(d.impact)}`;
+                      return `
+                        <tr>
+                          <td class="center" style="font-weight: 800; color: #64748b;">${i + 1}</td>
+                          <td><strong>${d.item.name || 'Sem nome'}</strong></td>
+                          <td>${d.item.category || 'Geral'}</td>
+                          <td class="center font-mono">${d.item.batch_number || 'S/ Lote'}</td>
+                          <td class="center">${formatSafeDate(d.item.expiry_date)}</td>
+                          <td class="center">${d.item.unit_measure || 'UN'}</td>
+                          <td class="right">${d.systemQty}</td>
+                          <td class="right" style="font-weight: 800; color: #1e40af;">${d.physicalQty}</td>
+                          <td class="center ${badgeClass}">${diffStr}</td>
+                          <td class="right">${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(d.item.unit_price || 0)}</td>
+                          <td class="right ${badgeClass}">${impactStr}</td>
+                          <td style="font-style: italic; color: #475569;">${d.reason || (d.diff > 0 ? 'Sobra de contagem' : 'Falta de contagem')}</td>
+                        </tr>
+                      `;
+                    }).join('')}
+                  </tbody>
+                </table>
+
+                <div class="term-box">
+                  <strong>TERMO DE CONFERÊNCIA E REGULARIZAÇÃO DE DIVERGÊNCIAS:</strong>
+                  Declaramos para os devidos fins de controle institucional, inventário patrimonial e prestação de contas aos órgãos de auditoria que as divergências quantitativas e financeiras discriminadas neste documento foram apuradas in loco nesta data e submetidas às providências de ajuste e regularização no sistema.
+                </div>
+
+                <div class="sig-row">
+                  <div>
+                    <div class="sig-line">Conferente / Responsável pela Contagem</div>
+                    <div class="sig-sub">Nome e Matrícula</div>
+                  </div>
+                  <div>
+                    <div class="sig-line">Responsável pelo Almoxarifado / Farmácia</div>
+                    <div class="sig-sub">Carimbo e Assinatura</div>
+                  </div>
+                  <div>
+                    <div class="sig-line">Direção Administrativa / Auditoria Interna</div>
+                    <div class="sig-sub">Visto e Homologação</div>
+                  </div>
+                </div>
+              </td>
+            </tr>
           </tbody>
+          <tfoot><tr><td><div class="print-footer-spacer"></div></td></tr></tfoot>
         </table>
-
-        <div class="term-box">
-          <strong>TERMO DE CONFERÊNCIA E REGULARIZAÇÃO DE DIVERGÊNCIAS:</strong>
-          Declaramos para os devidos fins de controle institucional, inventário patrimonial e prestação de contas aos órgãos de auditoria que as divergências quantitativas e financeiras discriminadas neste documento foram apuradas in loco nesta data e submetidas às providências de ajuste e regularização no sistema.
-        </div>
-
-        <div class="sig-row">
-          <div>
-            <div class="sig-line">Conferente / Responsável pela Contagem</div>
-            <div class="sig-sub">Nome e Matrícula</div>
-          </div>
-          <div>
-            <div class="sig-line">Responsável pelo Almoxarifado / Farmácia</div>
-            <div class="sig-sub">Carimbo e Assinatura</div>
-          </div>
-          <div>
-            <div class="sig-line">Direção Administrativa / Auditoria Interna</div>
-            <div class="sig-sub">Visto e Homologação</div>
-          </div>
-        </div>
-
-        <div class="footer-note">
-          Documento emitido eletronicamente pelo Sistema de Almoxarifado • Policlínica Regional Bernardo Félix da Silva - Sobral/CE
-        </div>
       </body>
       </html>
     `;
@@ -2362,6 +2269,8 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
     const itemsWith = Number(completion?.itemsWithDivergence) || 0;
     const divergencesList = Array.isArray(completion?.divergences) ? completion.divergences : [];
 
+    const printLh = getPrintLetterheadLayout('portrait', letterheadImage);
+
     const docHtml = `
       <!DOCTYPE html>
       <html>
@@ -2369,189 +2278,166 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
         <title>Relatório de Conclusão de Inventário - ${catName}</title>
         <meta charset="utf-8" />
         <style>
-          @page { size: A4 portrait; margin: 12mm 15mm; }
-          * { box-sizing: border-box; }
-          body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #0f172a; margin: 0; padding: 15px; font-size: 11px; }
-          .header { border-bottom: 2px solid #0f172a; padding-bottom: 12px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: flex-start; }
-          .inst-title { font-size: 14px; font-weight: 900; color: #1e3a8a; margin: 0; text-transform: uppercase; }
-          .doc-title { font-size: 16px; font-weight: 900; color: #0f172a; margin: 4px 0 2px 0; text-transform: uppercase; letter-spacing: -0.5px; }
-          .doc-sub { font-size: 10px; color: #64748b; margin: 0; }
+          ${printLh.css}
+          body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #0f172a; font-size: 11px; }
+          .header { border-bottom: 2px solid #0f172a; padding-bottom: 10px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: flex-start; }
+          .inst-title { font-size: 13px; font-weight: 900; color: #1e3a8a; margin: 0; text-transform: uppercase; }
+          .doc-title { font-size: 15px; font-weight: 900; color: #0f172a; margin: 3px 0 2px 0; text-transform: uppercase; letter-spacing: -0.4px; }
+          .doc-sub { font-size: 9.5px; color: #64748b; margin: 0; }
           .badge-status { display: inline-block; padding: 4px 10px; background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; border-radius: 9999px; font-weight: 800; font-size: 10px; }
-          
-          .meta-grid { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 14px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 18px; font-size: 11px; }
+          .meta-grid { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px 12px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 14px; font-size: 10.5px; }
           .meta-item strong { color: #475569; font-weight: 700; margin-right: 4px; }
           .meta-item span { color: #0f172a; font-weight: 800; }
-
-          .kpi-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 18px; }
-          .kpi-box { border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; text-align: center; background: #ffffff; }
-          .kpi-val { font-size: 18px; font-weight: 900; color: #0f172a; }
-          .kpi-lbl { font-size: 9px; font-weight: 800; text-transform: uppercase; color: #64748b; margin-top: 2px; }
-
-          .section-title { font-size: 12px; font-weight: 900; text-transform: uppercase; color: #0f172a; margin: 16px 0 8px 0; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; display: flex; align-items: center; justify-content: space-between; }
-          
-          table { width: 100%; border-collapse: collapse; margin-bottom: 18px; font-size: 10px; }
-          th { background: #f1f5f9; color: #334155; font-weight: 800; text-align: left; padding: 7px 8px; border: 1px solid #cbd5e1; text-transform: uppercase; font-size: 9px; }
-          td { padding: 6px 8px; border: 1px solid #cbd5e1; }
-          tr:nth-child(even) { background: #f8fafc; }
+          .kpi-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 14px; }
+          .kpi-box { border: 1px solid #cbd5e1; border-radius: 8px; padding: 9px; text-align: center; background: #ffffff; }
+          .kpi-val { font-size: 17px; font-weight: 900; color: #0f172a; }
+          .kpi-lbl { font-size: 8.5px; font-weight: 800; text-transform: uppercase; color: #64748b; margin-top: 2px; }
+          .section-title { font-size: 11.5px; font-weight: 900; text-transform: uppercase; color: #0f172a; margin: 14px 0 8px 0; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; display: flex; align-items: center; justify-content: space-between; }
+          table.data-table { width: 100%; border-collapse: collapse; margin-bottom: 16px; font-size: 9.5px; }
+          table.data-table thead { display: table-header-group; }
+          table.data-table tr { break-inside: avoid; page-break-inside: avoid; }
+          table.data-table th { background: #f1f5f9; color: #334155; font-weight: 800; text-align: left; padding: 6px 8px; border: 1px solid #cbd5e1; text-transform: uppercase; font-size: 8.5px; }
+          table.data-table td { padding: 5.5px 8px; border: 1px solid #cbd5e1; }
+          table.data-table tbody tr:nth-child(even) { background: #f8fafc; }
           .text-center { text-align: center; }
           .text-right { text-align: right; }
           .diff-pos { color: #16a34a; font-weight: 800; }
           .diff-neg { color: #dc2626; font-weight: 800; }
-          
-          .no-divergences-box { background: #ecfdf5; border: 1.5px solid #10b981; border-radius: 8px; padding: 16px; text-align: center; margin-bottom: 20px; }
-          .no-divergences-text { font-size: 13px; font-weight: 900; color: #065f46; letter-spacing: -0.2px; }
-          .no-divergences-sub { font-size: 10px; color: #047857; margin-top: 3px; }
-
-          .conclusion-statement { background: #f8fafc; border-left: 4px solid #10b981; padding: 10px 14px; font-size: 10.5px; font-style: italic; color: #334155; margin-bottom: 25px; line-height: 1.5; border-radius: 0 6px 6px 0; }
-          
-          .sig-container { margin-top: 30px; display: grid; grid-template-columns: 2fr 1fr; gap: 30px; }
-          .sig-line { border-top: 1px solid #475569; padding-top: 5px; font-size: 10px; }
+          .no-divergences-box { background: #ecfdf5; border: 1.5px solid #10b981; border-radius: 8px; padding: 14px; text-align: center; margin-bottom: 16px; }
+          .no-divergences-text { font-size: 12px; font-weight: 900; color: #065f46; }
+          .no-divergences-sub { font-size: 9.5px; color: #047857; margin-top: 3px; }
+          .conclusion-statement { background: #f8fafc; border-left: 4px solid #10b981; padding: 9px 12px; font-size: 10px; font-style: italic; color: #334155; margin-bottom: 20px; line-height: 1.45; border-radius: 0 6px 6px 0; break-inside: avoid; }
+          .sig-container { margin-top: 24px; display: grid; grid-template-columns: 2fr 1fr; gap: 28px; break-inside: avoid; }
+          .sig-line { border-top: 1px solid #475569; padding-top: 5px; font-size: 9.5px; }
           .sig-label { font-weight: 800; color: #0f172a; }
-          .sig-sub { color: #64748b; font-size: 9px; }
-
-          .footer-note { font-size: 8.5px; color: #94a3b8; text-align: center; margin-top: 25px; border-top: 1px dashed #e2e8f0; padding-top: 8px; }
+          .sig-sub { color: #64748b; font-size: 8.5px; }
         </style>
       </head>
       <body>
-        <div class="header">
-          <div>
-            <div class="inst-title">Policlínica Regional Bernardo Félix da Silva</div>
-            <div class="doc-title">Relatório de Conclusão de Inventário</div>
-            <div class="doc-sub">Consórcio Público de Saúde da Microrregião de Sobral (CPSMS) • Almoxarifado Central e Farmácia</div>
-          </div>
-          <div style="text-align: right;">
-            <span class="badge-status">🟢 INVENTÁRIO CONCLUÍDO</span>
-          </div>
-        </div>
+        ${printLh.backgroundHtml}
+        <table class="print-layout-table">
+          <thead><tr><td><div class="print-header-spacer"></div></td></tr></thead>
+          <tbody>
+            <tr>
+              <td class="print-body-cell">
+                <div class="header">
+                  <div>
+                    <div class="inst-title">Policlínica Regional Bernardo Félix da Silva</div>
+                    <div class="doc-title">Relatório de Conclusão de Inventário</div>
+                    <div class="doc-sub">Consórcio Público de Saúde da Microrregião de Sobral (CPSMS) • Almoxarifado Central e Farmácia</div>
+                  </div>
+                  <div style="text-align: right;">
+                    <span class="badge-status">INVENTÁRIO CONCLUÍDO</span>
+                  </div>
+                </div>
 
-        <div class="meta-grid">
-          <div class="meta-item"><strong>Tipo de material:</strong> <span>${catName}</span></div>
-          <div class="meta-item"><strong>Data e hora da conclusão:</strong> <span>${compDate} às ${compTime}</span></div>
-          <div class="meta-item"><strong>Responsável:</strong> <span>${compResp}</span></div>
-          <div class="meta-item"><strong>Local / Setor:</strong> <span>${compLoc}</span></div>
-        </div>
+                <div class="meta-grid">
+                  <div class="meta-item"><strong>Tipo de material:</strong> <span>${catName}</span></div>
+                  <div class="meta-item"><strong>Data e hora da conclusão:</strong> <span>${compDate} às ${compTime}</span></div>
+                  <div class="meta-item"><strong>Responsável:</strong> <span>${compResp}</span></div>
+                  <div class="meta-item"><strong>Local / Setor:</strong> <span>${compLoc}</span></div>
+                </div>
 
-        <div class="kpi-row">
-          <div class="kpi-box">
-            <div class="kpi-val">${totalChecked}</div>
-            <div class="kpi-lbl">Quantidade de itens conferidos</div>
-          </div>
-          <div class="kpi-box" style="border-top: 3px solid #10b981;">
-            <div class="kpi-val" style="color: #059669;">${itemsWithout}</div>
-            <div class="kpi-lbl">Quantidade sem divergência</div>
-          </div>
-          <div class="kpi-box" style="border-top: 3px solid ${itemsWith > 0 ? '#e11d48' : '#cbd5e1'};">
-            <div class="kpi-val" style="color: ${itemsWith > 0 ? '#e11d48' : '#059669'};">${itemsWith}</div>
-            <div class="kpi-lbl">Quantidade com divergência</div>
-          </div>
-        </div>
+                <div class="kpi-row">
+                  <div class="kpi-box">
+                    <div class="kpi-val">${totalChecked}</div>
+                    <div class="kpi-lbl">Quantidade de itens conferidos</div>
+                  </div>
+                  <div class="kpi-box" style="border-top: 3px solid #10b981;">
+                    <div class="kpi-val" style="color: #059669;">${itemsWithout}</div>
+                    <div class="kpi-lbl">Quantidade sem divergência</div>
+                  </div>
+                  <div class="kpi-box" style="border-top: 3px solid ${itemsWith > 0 ? '#e11d48' : '#cbd5e1'};">
+                    <div class="kpi-val" style="color: ${itemsWith > 0 ? '#e11d48' : '#059669'};">${itemsWith}</div>
+                    <div class="kpi-lbl">Quantidade com divergência</div>
+                  </div>
+                </div>
 
-        <div class="section-title">
-          <span>Divergências Encontradas</span>
-          <span style="font-size: 10px; font-weight: normal; color: #64748b;">${divergencesList.length} apurada(s)</span>
-        </div>
+                <div class="section-title">
+                  <span>Divergências Encontradas</span>
+                  <span style="font-size: 10px; font-weight: normal; color: #64748b;">${divergencesList.length} apurada(s)</span>
+                </div>
 
-        ${divergencesList.length === 0 ? `
-          <div class="no-divergences-box">
-            <div class="no-divergences-text">✓ NÃO FORAM IDENTIFICADAS DIVERGÊNCIAS NA CONFERÊNCIA.</div>
-            <div class="no-divergences-sub">Todos os itens e lotes conferidos coincidem exatamente com o saldo físico registrado no sistema.</div>
-          </div>
-        ` : `
-          <table>
-            <thead>
-              <tr>
-                <th style="width: 25px;" class="text-center">#</th>
-                <th>Material</th>
-                <th style="width: 100px;" class="text-center">Código / Lote</th>
-                <th style="width: 75px;" class="text-right">Qtd. Sistema</th>
-                <th style="width: 80px;" class="text-right">Qtd. Encontrada</th>
-                <th style="width: 85px;" class="text-center">Diferença</th>
-                <th style="width: 130px;">Observação</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${divergencesList.map((d, i) => `
-                <tr>
-                  <td class="text-center" style="font-weight: 800; color: #64748b;">${i + 1}</td>
-                  <td><strong>${d.name || 'Sem nome'}</strong></td>
-                  <td class="text-center" style="font-family: monospace;">${d.code || 'S/ Lote'}</td>
-                  <td class="text-right font-mono">${d.systemQty ?? 0} ${d.unit || 'UN'}</td>
-                  <td class="text-right font-mono" style="font-weight: 800; color: #1e40af;">${d.physicalQty ?? 0} ${d.unit || 'UN'}</td>
-                  <td class="text-center ${(d.difference ?? 0) > 0 ? 'diff-pos' : 'diff-neg'}">
-                    ${(d.difference ?? 0) > 0 ? `+${d.difference} (Sobra)` : `${d.difference ?? 0} (Falta)`}
-                  </td>
-                  <td style="font-style: italic; color: #475569;">${d.observation || ((d.difference ?? 0) > 0 ? 'Sobra física' : 'Falta física')}</td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        `}
+                ${divergencesList.length === 0 ? `
+                  <div class="no-divergences-box">
+                    <div class="no-divergences-text">✓ NÃO FORAM IDENTIFICADAS DIVERGÊNCIAS NA CONFERÊNCIA.</div>
+                    <div class="no-divergences-sub">Todos os itens e lotes conferidos coincidem exatamente com o saldo físico registrado no sistema.</div>
+                  </div>
+                ` : `
+                  <table class="data-table">
+                    <thead>
+                      <tr>
+                        <th style="width: 25px;" class="text-center">#</th>
+                        <th>Material</th>
+                        <th style="width: 100px;" class="text-center">Código / Lote</th>
+                        <th style="width: 75px;" class="text-right">Qtd. Sistema</th>
+                        <th style="width: 80px;" class="text-right">Qtd. Encontrada</th>
+                        <th style="width: 85px;" class="text-center">Diferença</th>
+                        <th style="width: 130px;">Observação</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${divergencesList.map((d, i) => `
+                        <tr>
+                          <td class="text-center" style="font-weight: 800; color: #64748b;">${i + 1}</td>
+                          <td><strong>${d.name || 'Sem nome'}</strong></td>
+                          <td class="text-center" style="font-family: monospace;">${d.code || 'S/ Lote'}</td>
+                          <td class="text-right font-mono">${d.systemQty ?? 0} ${d.unit || 'UN'}</td>
+                          <td class="text-right font-mono" style="font-weight: 800; color: #1e40af;">${d.physicalQty ?? 0} ${d.unit || 'UN'}</td>
+                          <td class="text-center ${(d.difference ?? 0) > 0 ? 'diff-pos' : 'diff-neg'}">
+                            ${(d.difference ?? 0) > 0 ? `+${d.difference} (Sobra)` : `${d.difference ?? 0} (Falta)`}
+                          </td>
+                          <td style="font-style: italic; color: #475569;">${d.observation || ((d.difference ?? 0) > 0 ? 'Sobra física' : 'Falta física')}</td>
+                        </tr>
+                      `).join('')}
+                    </tbody>
+                  </table>
+                `}
 
-        <div class="conclusion-statement">
-          “Inventário concluído em ${compDate} às ${compTime}, permanecendo registradas neste relatório as divergências identificadas durante a conferência.”
-        </div>
+                <div class="conclusion-statement">
+                  “Inventário concluído em ${compDate} às ${compTime}, permanecendo registradas neste relatório as divergências identificadas durante a conferência.”
+                </div>
 
-        <div class="sig-container">
-          <div>
-            <div class="sig-line">
-              <div class="sig-label">Responsável pelo inventário: ${compResp}</div>
-              <div class="sig-sub">Conferência Física In Loco • Almoxarifado / Farmácia</div>
-            </div>
-          </div>
-          <div>
-            <div class="sig-line">
-              <div class="sig-label">Assinatura / Visto: _______________________</div>
-              <div class="sig-sub">Data: ${compDate}</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="footer-note">
-          Documento emitido eletronicamente pelo Sistema de Almoxarifado • Policlínica Regional Bernardo Félix da Silva - Sobral/CE
-        </div>
-
-        <script>
-          window.onload = function() {
-            setTimeout(function() {
-              window.focus();
-              try { window.print(); } catch(e) {}
-            }, 300);
-          };
-        </script>
+                <div class="sig-container">
+                  <div>
+                    <div class="sig-line">
+                      <div class="sig-label">Responsável pelo inventário: ${compResp}</div>
+                      <div class="sig-sub">Conferência Física In Loco • Almoxarifado / Farmácia</div>
+                    </div>
+                  </div>
+                  <div>
+                    <div class="sig-line">
+                      <div class="sig-label">Assinatura / Visto: _______________________</div>
+                      <div class="sig-sub">Data: ${compDate}</div>
+                    </div>
+                  </div>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+          <tfoot><tr><td><div class="print-footer-spacer"></div></td></tr></tfoot>
+        </table>
       </body>
       </html>
     `;
 
-    // Try popup window first (preferred for print/save-as-pdf dialogs)
-    let printWin: Window | null = null;
-    try {
-      printWin = window.open('', '_blank');
-    } catch {}
-
-    if (printWin) {
-      printWin.document.write(docHtml);
-      printWin.document.close();
-      printWin.focus();
-      return;
-    }
-
-    // Fallback: styled hidden iframe
+    // Use hidden iframe for reliable printing inside iFrames without popup blocking
     const printFrame = document.createElement('iframe');
     printFrame.style.position = 'fixed';
     printFrame.style.right = '0';
     printFrame.style.bottom = '0';
-    printFrame.style.width = '1px';
-    printFrame.style.height = '1px';
-    printFrame.style.opacity = '0.01';
+    printFrame.style.width = '0';
+    printFrame.style.height = '0';
     printFrame.style.border = '0';
-    printFrame.style.pointerEvents = 'none';
     document.body.appendChild(printFrame);
 
+    printFrame.contentDocument?.open();
     printFrame.contentDocument?.write(docHtml);
     printFrame.contentDocument?.close();
-    printFrame.contentWindow?.focus();
+
     setTimeout(() => {
       try {
+        printFrame.contentWindow?.focus();
         printFrame.contentWindow?.print();
       } catch (e) {
         console.error("Print error:", e);
@@ -2561,7 +2447,7 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
           document.body.removeChild(printFrame);
         }
       }, 4000);
-    }, 400);
+    }, 450);
   };
 
   // Export completion report to PDF via jsPDF with multi-tier download fallbacks
@@ -2585,76 +2471,30 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
         format: 'a4'
       });
 
+      const lh = attachLetterheadToDoc(doc, letterheadImage, {
+        sideMargin: 14,
+        continuationHeaderHeight: 11
+      });
       const pageWidth = doc.internal.pageSize.getWidth();
-      const pageHeight = doc.internal.pageSize.getHeight();
-      let startY = 15;
-
-      // Header
-      doc.setFillColor(15, 23, 42);
-      doc.rect(14, 12, 3, 14, 'F');
-
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(13);
-      doc.setTextColor(15, 23, 42);
-      doc.text('POLICLÍNICA REGIONAL BERNARDO FÉLIX DA SILVA', 20, 17);
-
-      doc.setFontSize(11);
-      doc.setTextColor(5, 150, 105);
-      doc.text('RELATÓRIO DE CONCLUSÃO DE INVENTÁRIO', 20, 23);
-
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(8.5);
-      doc.setTextColor(100, 116, 139);
-      doc.text('Consórcio Público de Saúde da Microrregião de Sobral (CPSMS)', 20, 27);
-
-      startY = 33;
-
-      // Meta box
-      doc.setFillColor(248, 250, 252);
-      doc.setDrawColor(226, 232, 240);
-      doc.roundedRect(14, startY, pageWidth - 28, 26, 2, 2, 'FD');
-
-      doc.setFontSize(8.5);
-      doc.setFont('helvetica', 'bold');
-      doc.setTextColor(51, 65, 85);
-      doc.text('TIPO DE MATERIAL:', 18, startY + 6);
-      doc.setFont('helvetica', 'normal');
-      doc.text(catName, 55, startY + 6);
-
-      doc.setFont('helvetica', 'bold');
-      doc.text('DATA E HORA:', 18, startY + 12);
-      doc.setFont('helvetica', 'normal');
-      doc.text(`${compDate} às ${compTime}`, 55, startY + 12);
-
-      doc.setFont('helvetica', 'bold');
-      doc.text('RESPONSÁVEL:', 18, startY + 18);
-      doc.setFont('helvetica', 'normal');
-      doc.text(compResp, 55, startY + 18);
-
-      doc.setFont('helvetica', 'bold');
-      doc.text('STATUS:', 115, startY + 6);
-      doc.setFont('helvetica', 'bold');
-      doc.setTextColor(5, 150, 105);
-      doc.text('CONCLUÍDO', 135, startY + 6);
-
-      doc.setFont('helvetica', 'bold');
-      doc.setTextColor(51, 65, 85);
-      doc.text('ITENS CONFERIDOS:', 115, startY + 12);
-      doc.setFont('helvetica', 'normal');
-      doc.text(`${totalChecked} itens`, 150, startY + 12);
-
-      doc.setFont('helvetica', 'bold');
-      doc.text('DIVERGÊNCIAS:', 115, startY + 18);
-      doc.setFont('helvetica', 'bold');
-      if (itemsWith > 0) {
-        doc.setTextColor(225, 29, 72);
-        doc.text(`${itemsWith} com divergência`, 145, startY + 18);
-      } else {
-        doc.setTextColor(5, 150, 105);
-        doc.text('0 (100% sem divergência)', 145, startY + 18);
-      }
-
-      startY += 32;
+      let startY = drawInstitutionalReportHeader(doc, lh, {
+        kicker: 'Unidade Responsável: Policlínica Regional Bernardo Félix da Silva • Consórcio CPSMS',
+        emissionText: `${compDate} às ${compTime}`,
+        title: 'Relatório de Conclusão de Inventário',
+        metadata: [
+          { label: 'Tipo de Material', value: catName },
+          { label: 'Status', value: 'Concluído', valueColor: [5, 150, 105] },
+          { label: 'Data e Hora', value: `${compDate} às ${compTime}` },
+          { label: 'Itens Conferidos', value: `${totalChecked} itens` },
+          { label: 'Responsável', value: compResp },
+          {
+            label: 'Divergências',
+            value: itemsWith > 0 ? `${itemsWith} com divergência` : '0 (100% sem divergência)',
+            valueColor: itemsWith > 0 ? [185, 28, 28] : [5, 150, 105]
+          }
+        ],
+        metadataColumns: 2
+      });
+      startY += 2;
 
       // Section title
       doc.setFont('helvetica', 'bold');
@@ -2688,18 +2528,19 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
           head: head,
           body: body,
           theme: 'grid',
+          showHead: 'everyPage',
           styles: { fontSize: 8, cellPadding: 2.5 },
           headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold' },
-          margin: { left: 14, right: 14 }
+          margin: { left: 14, right: 14, top: lh.continuationTop, bottom: lh.marginBottom }
         });
 
         startY = (doc as any).lastAutoTable?.finalY + 8 || startY + 40;
       }
 
       // Check if we need a new page for conclusion and signatures
-      if (startY + 45 > pageHeight) {
+      if (startY + 32 > lh.contentBottom) {
         doc.addPage();
-        startY = 20;
+        startY = lh.continuationTop + 6;
       }
 
       // Conclusion Statement
@@ -2738,6 +2579,12 @@ export const BalancoReport: React.FC<BalancoReportProps> = ({
       doc.setFontSize(7);
       doc.setTextColor(100, 116, 139);
       doc.text(`Data: ${compDate}`, 115, startY + 8);
+
+      drawContinuationAndPageNumbers(doc, lh, {
+        title: 'Relatório de Conclusão de Inventário',
+        rightHeaderText: `${catName} • ${compDate}`,
+        footerLeftText: 'Policlínica Regional Bernardo Félix da Silva • Conclusão de Inventário'
+      });
 
       const cleanCat = catName.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9]/g, '_');
       const cleanDate = compDate.replace(/[^a-zA-Z0-9]/g, '-');
