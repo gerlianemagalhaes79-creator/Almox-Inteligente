@@ -1218,6 +1218,7 @@ export interface SingleIndicatorChartConfig {
   seriesAColor?: string;
   seriesBName?: string;
   seriesBColor?: string;
+  allowZeroChart?: boolean;
   data: SingleIndicatorChartPoint[];
 }
 
@@ -1307,7 +1308,11 @@ export function renderSingleIndicatorChartCanvas(chart: SingleIndicatorChartConf
   ctx.textAlign = 'left';
   ctx.fillText(truncateText(chart.title, hasRightLegend ? 72 : 105), 24, 30, hasRightLegend ? W - 380 : W - 48);
 
-  if (!items || items.length === 0 || items.every(d => (d.value || 0) === 0 && (d.secondaryValue || 0) === 0)) {
+  if (
+    !items ||
+    items.length === 0 ||
+    (!chart.allowZeroChart && items.every(d => (d.value || 0) === 0 && (d.secondaryValue || 0) === 0))
+  ) {
     drawRoundRect(ctx, 24, 48, W - 48, H - 68, 8, '#f8fafc', '#e2e8f0');
     ctx.fillStyle = '#64748b';
     ctx.font = 'bold 12.5px Helvetica, Arial, sans-serif';

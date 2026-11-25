@@ -50,7 +50,8 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  Legend
+  Legend,
+  LabelList
 } from 'recharts';
 import * as XLSX from 'xlsx';
 import { Item, Transaction, MaterialRequest, RequestItem, UserProfile } from '../types';
@@ -102,6 +103,36 @@ const CHART_PALETTE = [
   '#0d9488',
   '#ea580c',
   '#475569'
+];
+
+const MONTH_NAMES_PT = [
+  'Janeiro',
+  'Fevereiro',
+  'Março',
+  'Abril',
+  'Maio',
+  'Junho',
+  'Julho',
+  'Agosto',
+  'Setembro',
+  'Outubro',
+  'Novembro',
+  'Dezembro'
+];
+
+const MONTH_SHORT_NAMES_PT = [
+  'Jan',
+  'Fev',
+  'Mar',
+  'Abr',
+  'Mai',
+  'Jun',
+  'Jul',
+  'Ago',
+  'Set',
+  'Out',
+  'Nov',
+  'Dez'
 ];
 
 const parseRecordDate = (dateStr?: string | null): Date | null => {
@@ -1954,6 +1985,73 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
     const totalDonatedOutUnits = donationExits.reduce((acc, r) => acc + r.qty, 0);
     const totalDonatedOutValue = donationExits.reduce((acc, r) => acc + r.finValue, 0);
 
+    // Distribuição mensal real das saídas exclusivamente por doação no período selecionado
+    // Sem estimativas, médias ou rateios: meses sem movimentação exibem exatamente zero (0)
+    const startYear = dateInterval.start.getFullYear();
+    const startMonth = dateInterval.start.getMonth();
+    const endYear = dateInterval.end.getFullYear();
+    const endMonth = dateInterval.end.getMonth();
+    const spansMultipleYears = startYear !== endYear;
+
+    type MonthlyDonationBucket = {
+      key: string;
+      year: number;
+      monthIndex: number;
+      monthName: string;
+      shortLabel: string;
+      label: string;
+      units: number;
+      exitsCount: number;
+      estimatedValue: number;
+    };
+
+    const monthlyDonationExits: MonthlyDonationBucket[] = [];
+    const monthlyBucketMap = new Map<string, MonthlyDonationBucket>();
+
+    let cursorYear = startYear;
+    let cursorMonth = startMonth;
+    let guard = 0;
+    while (
+      (cursorYear < endYear || (cursorYear === endYear && cursorMonth <= endMonth)) &&
+      guard < 120
+    ) {
+      const key = `${cursorYear}-${String(cursorMonth + 1).padStart(2, '0')}`;
+      const monthName = MONTH_NAMES_PT[cursorMonth];
+      const shortName = MONTH_SHORT_NAMES_PT[cursorMonth];
+      const bucket: MonthlyDonationBucket = {
+        key,
+        year: cursorYear,
+        monthIndex: cursorMonth,
+        monthName,
+        shortLabel: spansMultipleYears ? `${shortName}/${String(cursorYear).slice(-2)}` : shortName,
+        label: spansMultipleYears ? `${monthName}/${cursorYear}` : monthName,
+        units: 0,
+        exitsCount: 0,
+        estimatedValue: 0
+      };
+      monthlyDonationExits.push(bucket);
+      monthlyBucketMap.set(key, bucket);
+
+      cursorMonth += 1;
+      if (cursorMonth > 11) {
+        cursorMonth = 0;
+        cursorYear += 1;
+      }
+      guard += 1;
+    }
+
+    donationExits.forEach(entry => {
+      const parsed = parseRecordDate(entry.tx.date);
+      if (!parsed) return;
+      const key = `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}`;
+      const bucket = monthlyBucketMap.get(key);
+      if (bucket) {
+        bucket.units += entry.qty;
+        bucket.exitsCount += 1;
+        bucket.estimatedValue += entry.finValue;
+      }
+    });
+
     // Baixas estritamente por Validade / Vencimento
     const totalExpiredExitUnits = expiryOnlyExits.reduce((acc, r) => acc + r.qty, 0);
     const totalExpiredExitValue = expiryOnlyExits.reduce((acc, r) => acc + r.finValue, 0);
@@ -2063,6 +2161,7 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
       totalDonatedOutUnits,
       totalDonatedOutValue,
       totalDonatedOutCount: donationExits.length,
+      monthlyDonationExits,
       totalExpiredExitUnits,
       totalExpiredExitValue,
       totalExpiredExitCount: expiryOnlyExits.length,
@@ -2089,7 +2188,7 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
       filteredAllWriteOffExits,
       filteredStock
     };
-  }, [periodTransactions, locationItems, donationSearchTerm]);
+  }, [periodTransactions, locationItems, donationSearchTerm, dateInterval]);
 
   // Export current indicators summary to Excel
   const handleExportExcel = () => {
@@ -7191,23 +7290,49 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                   {renderIndicatorActions(
                     {
                       indicatorTitle: 'Materiais Doados para Outras Unidades (Saídas por Doação)',
-                      indicatorSubtitle: 'Saídas exclusivas com motivo doação (exclui dispensações internas)',
+                      indicatorSubtitle: `Distribuição mensal e consolidado de saídas exclusivas com motivo DOAÇÃO (${dateInterval.label})`,
                       groupName: 'Doações e Baixas',
-                      explanation: 'Contabiliza exclusivamente as saídas com termo de doação para unidades externas.',
+                      explanation:
+                        'Contabiliza exclusivamente os registros reais de saída cujo motivo é DOAÇÃO para outras unidades, mantendo a exclusão de dispensações internas. Meses sem saídas por doação apresentam valor zero (sem estimativas ou rateios).',
                       kpis: [
                         { label: 'Unidades Doadas', value: `${donationsMetrics.totalDonatedOutUnits.toLocaleString('pt-BR')} un`, tone: 'indigo' },
                         { label: 'Valor Estimado', value: formatCurrency(donationsMetrics.totalDonatedOutValue), tone: 'blue' },
-                        { label: 'Termos de Doação', value: `${donationsMetrics.totalDonatedOutCount} saídas`, tone: 'slate' }
+                        { label: 'Saídas / Termos de Doação', value: `${donationsMetrics.totalDonatedOutCount} saídas`, tone: 'slate' }
                       ],
                       chart: {
-                        type: 'horizontalBar',
-                        title: 'Principais Itens Doados no Período (Unidades)',
+                        type: 'verticalBar',
+                        title: `Unidades Doadas por Mês — ${dateInterval.label}`,
+                        unit: 'un',
                         valueFormatter: 'integer',
-                        data: donationsMetrics.filteredExits.slice(0, 8).map(e => ({
-                          label: e.tx.item_name,
-                          value: e.qty,
+                        allowZeroChart: true,
+                        data: donationsMetrics.monthlyDonationExits.map(m => ({
+                          label: m.label,
+                          value: m.units,
                           color: '#4f46e5'
                         }))
+                      },
+                      table: {
+                        title: 'Distribuição Mensal das Saídas por Doação',
+                        headers: [
+                          'Mês',
+                          'Quantidade de Unidades Doadas',
+                          'Quantidade de Saídas / Termos de Doação',
+                          'Valor Estimado das Doações'
+                        ],
+                        rows: [
+                          ...donationsMetrics.monthlyDonationExits.map(m => [
+                            m.label,
+                            `${m.units.toLocaleString('pt-BR')} un`,
+                            m.exitsCount.toLocaleString('pt-BR'),
+                            formatCurrency(m.estimatedValue)
+                          ]),
+                          [
+                            'Total do Período',
+                            `${donationsMetrics.totalDonatedOutUnits.toLocaleString('pt-BR')} un`,
+                            donationsMetrics.totalDonatedOutCount.toLocaleString('pt-BR'),
+                            formatCurrency(donationsMetrics.totalDonatedOutValue)
+                          ]
+                        ]
                       }
                     },
                     true
@@ -7228,18 +7353,14 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                 <div className="h-20 w-full pt-1">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart
-                      data={
-                        donationsMetrics.filteredExits.length > 0
-                          ? donationsMetrics.filteredExits.slice(0, 4).map(e => ({
-                              name: e.tx.item_name.slice(0, 8),
-                              un: e.qty
-                            }))
-                          : [{ name: 'Sem dados', un: 0 }]
-                      }
+                      data={donationsMetrics.monthlyDonationExits.map(m => ({
+                        name: m.shortLabel,
+                        un: m.units
+                      }))}
                       margin={{ top: 2, right: 2, left: -26, bottom: 0 }}
                     >
                       <XAxis dataKey="name" tick={{ fontSize: 8, fill: '#64748b' }} axisLine={false} tickLine={false} />
-                      <YAxis tick={{ fontSize: 8, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fontSize: 8, fill: '#94a3b8' }} axisLine={false} tickLine={false} allowDecimals={false} />
                       <Tooltip formatter={(val: any) => [`${Number(val || 0).toLocaleString('pt-BR')} un`, 'Doado']} contentStyle={{ borderRadius: '8px', fontSize: '10px', fontWeight: 700 }} />
                       <Bar dataKey="un" fill="#4f46e5" radius={[4, 4, 0, 0]} maxBarSize={18} />
                     </BarChart>
@@ -7450,6 +7571,266 @@ export const IndicadoresReport: React.FC<IndicadoresReportProps> = ({
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Distribuição Mensal — Materiais Doados para Outras Unidades (Saídas por Doação) */}
+          <div className="bg-white rounded-3xl border border-indigo-100/90 shadow-sm overflow-hidden relative">
+            <div className="h-1.5 w-full bg-gradient-to-r from-indigo-600 via-blue-700 to-indigo-900" />
+            <div className="p-6 space-y-6">
+              <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 pb-4 border-b border-slate-100">
+                <div>
+                  <h3 className="text-base font-black text-slate-900">
+                    Materiais Doados para Outras Unidades (Saídas por Doação) — Distribuição Mensal
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium mt-0.5">
+                    Registros reais de saída com motivo <span className="font-bold text-indigo-700">DOAÇÃO</span> no período ({dateInterval.label}), excluindo dispensações internas. Meses sem movimentação exibem exatamente zero.
+                  </p>
+                </div>
+                {renderIndicatorActions({
+                  indicatorTitle: 'Materiais Doados para Outras Unidades (Saídas por Doação)',
+                  indicatorSubtitle: `Distribuição mensal e consolidado de saídas exclusivas por DOAÇÃO (${dateInterval.label})`,
+                  groupName: 'Doações e Baixas',
+                  explanation:
+                    'Contabiliza exclusivamente as saídas reais registradas com motivo DOAÇÃO para outras unidades, preservando a exclusão de dispensações internas e os filtros aplicados. A soma mensal equivale exatamente aos indicadores consolidados do período.',
+                  kpis: [
+                    {
+                      label: 'Total de Unidades Doadas',
+                      value: `${donationsMetrics.totalDonatedOutUnits.toLocaleString('pt-BR')} un`,
+                      tone: 'indigo'
+                    },
+                    {
+                      label: 'Valor Estimado das Doações',
+                      value: formatCurrency(donationsMetrics.totalDonatedOutValue),
+                      tone: 'blue'
+                    },
+                    {
+                      label: 'Saídas / Termos de Doação',
+                      value: `${donationsMetrics.totalDonatedOutCount.toLocaleString('pt-BR')} saídas`,
+                      tone: 'slate'
+                    }
+                  ],
+                  chart: {
+                    type: 'verticalBar',
+                    title: `Unidades Doadas por Mês — ${dateInterval.label}`,
+                    unit: 'un',
+                    valueFormatter: 'integer',
+                    allowZeroChart: true,
+                    data: donationsMetrics.monthlyDonationExits.map(m => ({
+                      label: m.label,
+                      value: m.units,
+                      color: '#4f46e5'
+                    }))
+                  },
+                  table: {
+                    title: 'Detalhamento Mensal das Saídas por Doação',
+                    headers: [
+                      'Mês',
+                      'Quantidade de Unidades Doadas',
+                      'Quantidade de Saídas / Termos de Doação',
+                      'Valor Estimado das Doações'
+                    ],
+                    rows: [
+                      ...donationsMetrics.monthlyDonationExits.map(m => [
+                        m.label,
+                        `${m.units.toLocaleString('pt-BR')} un`,
+                        m.exitsCount.toLocaleString('pt-BR'),
+                        formatCurrency(m.estimatedValue)
+                      ]),
+                      [
+                        'Total do Período',
+                        `${donationsMetrics.totalDonatedOutUnits.toLocaleString('pt-BR')} un`,
+                        donationsMetrics.totalDonatedOutCount.toLocaleString('pt-BR'),
+                        formatCurrency(donationsMetrics.totalDonatedOutValue)
+                      ]
+                    ]
+                  }
+                })}
+              </div>
+
+              {/* Indicadores Consolidados do Período */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="rounded-2xl bg-indigo-50/70 border border-indigo-100 p-4">
+                  <p className="text-[11px] font-black text-indigo-700 uppercase tracking-wider">
+                    Quantidade Total de Unidades Doadas
+                  </p>
+                  <p className="text-2xl font-black text-slate-900 mt-1">
+                    {donationsMetrics.totalDonatedOutUnits.toLocaleString('pt-BR')}{' '}
+                    <span className="text-xs font-bold text-slate-500">un</span>
+                  </p>
+                </div>
+                <div className="rounded-2xl bg-blue-50/70 border border-blue-100 p-4">
+                  <p className="text-[11px] font-black text-blue-700 uppercase tracking-wider">
+                    Valor Estimado das Doações
+                  </p>
+                  <p className="text-2xl font-black text-slate-900 mt-1">
+                    {formatCurrency(donationsMetrics.totalDonatedOutValue)}
+                  </p>
+                </div>
+                <div className="rounded-2xl bg-slate-50 border border-slate-200/80 p-4">
+                  <p className="text-[11px] font-black text-slate-600 uppercase tracking-wider">
+                    Saídas / Termos de Doação
+                  </p>
+                  <p className="text-2xl font-black text-slate-900 mt-1">
+                    {donationsMetrics.totalDonatedOutCount.toLocaleString('pt-BR')}{' '}
+                    <span className="text-xs font-bold text-slate-500">
+                      {donationsMetrics.totalDonatedOutCount === 1 ? 'saída' : 'saídas'}
+                    </span>
+                  </p>
+                </div>
+              </div>
+
+              {/* Gráfico Mensal de Unidades Doadas (com valores numéricos exatos visíveis) */}
+              <div className="rounded-2xl bg-slate-50/70 border border-slate-100 p-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+                  <p className="text-xs font-black text-slate-700 uppercase tracking-wider">
+                    Quantidade de Unidades Doadas por Mês ({dateInterval.label})
+                  </p>
+                  <span className="text-[11px] font-bold text-indigo-700">
+                    Soma mensal: {donationsMetrics.totalDonatedOutUnits.toLocaleString('pt-BR')} un
+                  </span>
+                </div>
+                <div className="h-72 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={donationsMetrics.monthlyDonationExits}
+                      margin={{ top: 28, right: 16, left: 4, bottom: 8 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                      <XAxis
+                        dataKey={donationsMetrics.monthlyDonationExits.length > 8 ? 'shortLabel' : 'label'}
+                        tick={{ fontSize: 11, fontWeight: 700, fill: '#334155' }}
+                        axisLine={{ stroke: '#cbd5e1' }}
+                        tickLine={false}
+                        interval={0}
+                      />
+                      <YAxis
+                        tick={{ fontSize: 10, fill: '#64748b' }}
+                        allowDecimals={false}
+                        domain={[0, (dataMax: number) => (dataMax > 0 ? Math.ceil(dataMax * 1.18) : 5)]}
+                        axisLine={false}
+                        tickLine={false}
+                      />
+                      <Tooltip
+                        cursor={{ fill: '#eef2ff' }}
+                        contentStyle={{
+                          borderRadius: '12px',
+                          borderColor: '#c7d2fe',
+                          fontSize: '12px',
+                          fontWeight: 700
+                        }}
+                        labelFormatter={(_label: any, payload: any) =>
+                          payload?.[0]?.payload?.label || _label
+                        }
+                        formatter={(_value: any, _name: any, item: any) => {
+                          const row = item?.payload;
+                          if (!row) return [`${Number(_value || 0).toLocaleString('pt-BR')} un`, 'Unidades Doadas'];
+                          return [
+                            `${row.units.toLocaleString('pt-BR')} un • ${row.exitsCount.toLocaleString('pt-BR')} ${row.exitsCount === 1 ? 'saída' : 'saídas'} • ${formatCurrency(row.estimatedValue)}`,
+                            'Doações no Mês'
+                          ];
+                        }}
+                      />
+                      <Bar
+                        dataKey="units"
+                        name="Unidades Doadas"
+                        fill="#4f46e5"
+                        radius={[8, 8, 0, 0]}
+                        maxBarSize={56}
+                      >
+                        {donationsMetrics.monthlyDonationExits.map(entry => (
+                          <Cell
+                            key={entry.key}
+                            fill={entry.units > 0 ? '#4f46e5' : '#cbd5e1'}
+                          />
+                        ))}
+                        <LabelList
+                          dataKey="units"
+                          position="top"
+                          content={(props: any) => {
+                            const { x = 0, y = 0, width = 0, value = 0 } = props || {};
+                            const numVal = Number(value || 0);
+                            const labelText = `${numVal.toLocaleString('pt-BR')} un`;
+                            return (
+                              <text
+                                x={Number(x) + Number(width) / 2}
+                                y={Number(y) - 8}
+                                textAnchor="middle"
+                                fill={numVal > 0 ? '#1e1b4b' : '#64748b'}
+                                fontSize={11}
+                                fontWeight={800}
+                              >
+                                {labelText}
+                              </text>
+                            );
+                          }}
+                        />
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              {/* Tabela Mensal Consolidada abaixo do gráfico */}
+              <div className="overflow-x-auto rounded-2xl border border-slate-200/90">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200">
+                      <th className="py-3 px-4 text-[11px] font-black text-slate-600 uppercase tracking-wider">
+                        Mês
+                      </th>
+                      <th className="py-3 px-4 text-[11px] font-black text-slate-600 uppercase tracking-wider text-right">
+                        Quantidade de Unidades Doadas
+                      </th>
+                      <th className="py-3 px-4 text-[11px] font-black text-slate-600 uppercase tracking-wider text-right">
+                        Quantidade de Saídas / Termos de Doação
+                      </th>
+                      <th className="py-3 px-4 text-[11px] font-black text-slate-600 uppercase tracking-wider text-right">
+                        Valor Estimado das Doações
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {donationsMetrics.monthlyDonationExits.map(monthRow => (
+                      <tr
+                        key={monthRow.key}
+                        className={`transition-colors ${
+                          monthRow.units > 0 ? 'hover:bg-indigo-50/40' : 'bg-slate-50/40 text-slate-500'
+                        }`}
+                      >
+                        <td className="py-3 px-4 text-xs font-extrabold text-slate-800">
+                          {monthRow.label}
+                        </td>
+                        <td className="py-3 px-4 text-xs font-black text-right tabular-nums text-indigo-700">
+                          {monthRow.units.toLocaleString('pt-BR')} un
+                        </td>
+                        <td className="py-3 px-4 text-xs font-bold text-right tabular-nums text-slate-700">
+                          {monthRow.exitsCount.toLocaleString('pt-BR')}
+                        </td>
+                        <td className="py-3 px-4 text-xs font-black text-right tabular-nums text-slate-900">
+                          {formatCurrency(monthRow.estimatedValue)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="bg-indigo-50/80 border-t-2 border-indigo-200">
+                      <td className="py-3.5 px-4 text-xs font-black uppercase tracking-wider text-indigo-950">
+                        Total do Período
+                      </td>
+                      <td className="py-3.5 px-4 text-xs font-black text-right tabular-nums text-indigo-900">
+                        {donationsMetrics.totalDonatedOutUnits.toLocaleString('pt-BR')} un
+                      </td>
+                      <td className="py-3.5 px-4 text-xs font-black text-right tabular-nums text-indigo-900">
+                        {donationsMetrics.totalDonatedOutCount.toLocaleString('pt-BR')}
+                      </td>
+                      <td className="py-3.5 px-4 text-xs font-black text-right tabular-nums text-indigo-950">
+                        {formatCurrency(donationsMetrics.totalDonatedOutValue)}
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
               </div>
             </div>
           </div>
