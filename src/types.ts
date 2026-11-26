@@ -200,3 +200,88 @@ export interface InventoryCompletion {
   location?: string;
   notes?: string;
 }
+
+export type PurchasePlanStatus =
+  | 'RASCUNHO'
+  | 'ENVIADO'
+  | 'EMPENHADO'
+  | 'PARCIAL'
+  | 'CONCLUIDO'
+  | 'CANCELADO';
+
+export type PurchasePlanModality =
+  | 'ATA_CONTRATO'
+  | 'LICITACAO'
+  | 'COMPRA_EXTRA'
+  | 'DISPENSA'
+  | 'GERAL';
+
+export interface PurchasePlanLineItem {
+  materialKey: string;
+  name: string;
+  category: string;
+  supplier: string;
+  unit_measure: string;
+  origin: 'contract' | 'extra' | 'donation';
+  abcClass: 'A' | 'B' | 'C';
+  currentPhysicalStock: number;
+  usableStock: number;
+  expiringBeforeConsumption: number;
+  monthlyConsumption: number;
+  coverageDays: number | null;
+  suggestedQty: number;
+  plannedQty: number;
+  receivedQty: number;
+  unitPrice: number;
+  estimatedTotal: number;
+  orderDeadline?: string;
+  note?: string;
+}
+
+export interface PurchasePlan {
+  id: string;
+  code: string;
+  title: string;
+  status: PurchasePlanStatus;
+  modality: PurchasePlanModality;
+  location: 'Almoxarifado' | 'Farmácia' | 'all';
+  targetPeriodLabel: string;
+  targetMonth: number;
+  targetYear: number;
+  historyWindowDays: number;
+  leadTimeDays: number;
+  safetyOption: string;
+  budgetCap?: number | null;
+  protocolNumber?: string;
+  notes?: string;
+  items: PurchasePlanLineItem[];
+  totalItems: number;
+  totalUnits: number;
+  totalEstimatedCost: number;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+  createdByEmail: string;
+}
+
+export type PurchaseExclusionReason =
+  | 'COMPRA_OCASIONAL'
+  | 'SUBSTITUIDO'
+  | 'DESCONTINUADO'
+  | 'OUTRO';
+
+export interface PurchasePlanningExclusion {
+  id: string;
+  materialKey: string;
+  materialName: string;
+  category?: string;
+  location: 'Almoxarifado' | 'Farmácia' | 'all';
+  reason: PurchaseExclusionReason;
+  replacedBy?: string;
+  note?: string;
+  excludedAt: string;
+  excludedBy: string;
+  excludedByEmail: string;
+}
+
+

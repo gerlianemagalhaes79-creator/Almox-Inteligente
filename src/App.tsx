@@ -97,6 +97,7 @@ import { ApuraSUSCustosReport } from './components/ApuraSUSCustosReport';
 import { BalancoReport } from './components/BalancoReport';
 import { IndicadoresReport } from './components/IndicadoresReport';
 import { MonthlySectorConsumptionReport } from './components/MonthlySectorConsumptionReport';
+import { PurchasePlanningTab } from './components/PurchasePlanningTab';
 import {
   generateCompletePDFReport,
   exportSingleIndicatorPDF,
@@ -518,7 +519,7 @@ export default function App() {
   const [isEditingQuantitativoAnalysis, setIsEditingQuantitativoAnalysis] = useState(false);
   const quantitativoReportRef = useRef<HTMLDivElement>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'inventory' | 'history' | 'requests' | 'admin-devolutions' | 'reports' | 'my-requests' | 'new-request' | 'devolution' | 'users' | 'trash' | 'leader-stats'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'inventory' | 'history' | 'requests' | 'admin-devolutions' | 'reports' | 'purchase-planning' | 'my-requests' | 'new-request' | 'devolution' | 'users' | 'trash' | 'leader-stats'>('dashboard');
   const leaderStatistics = useMemo(() => {
     if (userProfile?.role !== 'LÍDER' && userProfile?.role !== 'SETOR') return { topRequested: [], topDelivered: [] };
 
@@ -9300,17 +9301,17 @@ export default function App() {
                 <Package className="w-12 h-12" />
               </div>
             )}
-            <div className="mb-4 text-center">
-              <h1 className="text-2xl font-black tracking-tight text-slate-900 uppercase leading-tight">
-                Policlínica
+            <div className="mb-3 text-center">
+              <p className="text-[11px] font-black text-slate-500 uppercase tracking-widest">
+                Policlínica de Sobral
+              </p>
+              <h1 className="text-3xl font-black tracking-[0.14em] text-blue-900 uppercase leading-none mt-1.5">
+                GEPAM
               </h1>
-              <h2 className="text-sm font-black text-blue-700 uppercase tracking-wider mt-0.5">
-                de Sobral
-              </h2>
             </div>
-            <div className="h-0.5 w-12 bg-blue-100 mx-auto mb-4 rounded-full" />
-            <p className="text-slate-500 text-[10px] font-black uppercase tracking-widest bg-blue-50 border border-blue-100/80 px-3 py-1 rounded-full w-fit mx-auto">
-              Almoxarifado Inteligente
+            <div className="h-0.5 w-12 bg-blue-200 mx-auto mb-3 rounded-full" />
+            <p className="text-slate-600 text-[10px] font-extrabold uppercase tracking-wider leading-relaxed max-w-[260px] mx-auto">
+              Gestão Estratégica, Planejamento e Administração de Materiais
             </p>
           </div>
 
@@ -9356,9 +9357,9 @@ export default function App() {
               <Package className="w-5 h-5" />
             </div>
           )}
-          <div className="flex items-baseline gap-1.5">
-            <h1 className="font-black text-lg tracking-tight text-white">Policlínica</h1>
-            <span className="text-[10px] font-black text-blue-300 tracking-wider uppercase">Almoxarifado</span>
+          <div className="flex flex-col leading-tight">
+            <h1 className="font-black text-base tracking-[0.1em] text-white leading-none">GEPAM</h1>
+            <span className="text-[9px] font-bold text-blue-300 tracking-wider uppercase mt-0.5">Policlínica • Almoxarifado</span>
           </div>
         </div>
         <button 
@@ -9391,10 +9392,13 @@ export default function App() {
                 <Package className="w-6 h-6" />
               </div>
             )}
-            <div className="flex flex-col">
-              <h1 className="font-black text-xl tracking-tight text-slate-900 leading-none">Policlínica</h1>
-              <span className="text-[10px] font-black text-blue-700 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-md uppercase tracking-widest leading-none block w-fit mt-1">
-                Almoxarifado
+            <div
+              className="flex flex-col"
+              title="GEPAM — Gestão Estratégica, Planejamento e Administração de Materiais"
+            >
+              <h1 className="font-black text-xl tracking-[0.08em] text-blue-950 leading-none">GEPAM</h1>
+              <span className="text-[9px] font-black text-blue-700 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-md uppercase tracking-wider leading-none block w-fit mt-1.5">
+                Policlínica • Almoxarifado
               </span>
             </div>
           </div>
@@ -9517,6 +9521,20 @@ export default function App() {
                   </button>
 
                   <button 
+                    onClick={() => { setActiveTab('purchase-planning'); setIsMobileMenuOpen(false); }}
+                    className={`group flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all duration-200 text-xs ${
+                      activeTab === 'purchase-planning' 
+                        ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white font-extrabold shadow-md shadow-blue-600/20' 
+                        : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50/80 font-bold'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <ShoppingCart size={18} className={activeTab === 'purchase-planning' ? 'text-white' : 'text-slate-400 group-hover:text-blue-600 transition-colors'} />
+                      <span>Planejamento de Compras</span>
+                    </div>
+                  </button>
+
+                  <button 
                     onClick={() => { setActiveTab('users'); setIsMobileMenuOpen(false); }}
                     className={`group flex items-center justify-between px-3.5 py-2.5 rounded-2xl transition-all duration-200 text-xs ${
                       activeTab === 'users' 
@@ -9631,6 +9649,15 @@ export default function App() {
           >
             <Settings size={18} className="text-slate-400" /> Configurações
           </button>
+
+          <div className="pt-2.5 mt-1 border-t border-slate-100 px-2 text-center">
+            <p className="text-[10px] font-black tracking-[0.14em] text-blue-900 uppercase leading-none">
+              GEPAM
+            </p>
+            <p className="text-[9px] font-semibold text-slate-400 leading-tight mt-1">
+              Gestão Estratégica, Planejamento e Administração de Materiais
+            </p>
+          </div>
         </div>
       </aside>
 
@@ -9651,6 +9678,8 @@ export default function App() {
               {activeTab === 'devolution' && `Devolução de Materiais - ${selectedSector || ''}`}
               {editingRequest && ' - Editando Solicitação'}
               {activeTab === 'reports' && 'Relatórios e Análises'}
+              {activeTab === 'purchase-planning' && 'Planejamento de Compras'}
+              {activeTab === 'users' && 'Gerenciamento de Usuários'}
               {activeTab === 'leader-stats' && 'Estatísticas do Almoxarifado'}
             </h2>
             <div className="flex flex-wrap items-center gap-2.5 sm:gap-4 mt-1.5 text-xs text-slate-500 font-medium">
@@ -14357,6 +14386,22 @@ export default function App() {
                   </div>
                 </div>
               )}
+            </div>
+          )}
+
+          {activeTab === 'purchase-planning' && isAdmin && (
+            <div key="purchase-planning" className="space-y-8">
+              <PurchasePlanningTab
+                items={items}
+                transactions={transactions}
+                requests={requests}
+                allRequestItems={allRequestItems}
+                inventoryLocation={inventoryLocation}
+                letterheadImage={letterheadImage}
+                userProfile={userProfile}
+                showToast={showToast}
+                isAdmin={isAdmin}
+              />
             </div>
           )}
 

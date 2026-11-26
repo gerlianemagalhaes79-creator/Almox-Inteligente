@@ -147,6 +147,62 @@
         "location": { "type": "string" }
       },
       "required": ["category", "status", "responsible"]
+    },
+    "PurchasePlan": {
+      "title": "PurchasePlan",
+      "description": "Saved purchase planning order with status tracking and in-transit items",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "maxLength": 40 },
+        "title": { "type": "string", "maxLength": 160 },
+        "status": {
+          "type": "string",
+          "enum": ["RASCUNHO", "ENVIADO", "EMPENHADO", "PARCIAL", "CONCLUIDO", "CANCELADO"]
+        },
+        "modality": {
+          "type": "string",
+          "enum": ["ATA_CONTRATO", "LICITACAO", "COMPRA_EXTRA", "DISPENSA", "GERAL"]
+        },
+        "location": { "type": "string", "enum": ["Almoxarifado", "Farmácia", "all"] },
+        "targetPeriodLabel": { "type": "string", "maxLength": 60 },
+        "targetMonth": { "type": "number" },
+        "targetYear": { "type": "number" },
+        "historyWindowDays": { "type": "number" },
+        "leadTimeDays": { "type": "number" },
+        "safetyOption": { "type": "string", "maxLength": 40 },
+        "protocolNumber": { "type": "string", "maxLength": 80 },
+        "notes": { "type": "string", "maxLength": 2000 },
+        "items": { "type": "array" },
+        "totalItems": { "type": "number" },
+        "totalUnits": { "type": "number" },
+        "totalEstimatedCost": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "createdBy": { "type": "string", "maxLength": 120 },
+        "createdByEmail": { "type": "string", "maxLength": 150 }
+      },
+      "required": ["code", "title", "status", "modality", "location", "items", "totalItems", "totalUnits", "totalEstimatedCost", "createdAt", "updatedAt", "createdBy", "createdByEmail"]
+    },
+    "PurchasePlanningExclusion": {
+      "title": "PurchasePlanningExclusion",
+      "description": "Material permanently excluded from purchase planning (occasional purchase, replaced, or discontinued) without altering inventory or history",
+      "type": "object",
+      "properties": {
+        "materialKey": { "type": "string", "maxLength": 200 },
+        "materialName": { "type": "string", "maxLength": 200 },
+        "category": { "type": "string", "maxLength": 120 },
+        "location": { "type": "string", "enum": ["Almoxarifado", "Farmácia", "all"] },
+        "reason": {
+          "type": "string",
+          "enum": ["COMPRA_OCASIONAL", "SUBSTITUIDO", "DESCONTINUADO", "OUTRO"]
+        },
+        "replacedBy": { "type": "string", "maxLength": 200 },
+        "note": { "type": "string", "maxLength": 500 },
+        "excludedAt": { "type": "string", "format": "date-time" },
+        "excludedBy": { "type": "string", "maxLength": 120 },
+        "excludedByEmail": { "type": "string", "maxLength": 150 }
+      },
+      "required": ["materialKey", "materialName", "location", "reason", "excludedAt", "excludedBy", "excludedByEmail"]
     }
   },
   "firestore": {
@@ -189,6 +245,14 @@
     "/inventory_completions": {
       "schema": "InventoryCompletion",
       "description": "Collection of inventory completion and audit records"
+    },
+    "/purchase_plans": {
+      "schema": "PurchasePlan",
+      "description": "Collection of saved purchase plans and active procurement orders"
+    },
+    "/purchase_planning_exclusions": {
+      "schema": "PurchasePlanningExclusion",
+      "description": "Materials hidden from purchase planning and risk alerts (occasional, replaced, or discontinued)"
     }
   }
 }

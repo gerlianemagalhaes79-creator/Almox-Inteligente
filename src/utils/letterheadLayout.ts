@@ -1307,16 +1307,18 @@ export function drawContinuationAndPageNumbers(
       doc.line(marginLeft, pageNumberY - 4.2, pageWidth - marginRight, pageNumberY - 4.2);
     }
 
-    if (options.footerLeftText) {
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(6.8);
-      doc.setTextColor(...INSTITUTIONAL_COLORS.slate);
-      doc.text(
-        truncate(options.footerLeftText, isLandscape ? 115 : 70),
-        marginLeft,
-        pageNumberY
-      );
-    }
+    const rawFooterLeft = (options.footerLeftText || 'Policlínica de Sobral').trim();
+    const brandedFooterLeft = /^GEPAM\b/i.test(rawFooterLeft)
+      ? rawFooterLeft
+      : `GEPAM  •  ${rawFooterLeft}`;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(6.8);
+    doc.setTextColor(...INSTITUTIONAL_COLORS.slate);
+    doc.text(
+      truncate(brandedFooterLeft, isLandscape ? 120 : 72),
+      marginLeft,
+      pageNumberY
+    );
 
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(7.2);

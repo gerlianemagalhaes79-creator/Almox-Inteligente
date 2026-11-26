@@ -44,6 +44,47 @@ service cloud.firestore {
              data.read is bool;
     }
 
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidPurchasePlan(data) {
+      return data.keys().hasAll(['code', 'title', 'status', 'modality', 'location', 'items', 'totalItems', 'totalUnits', 'totalEstimatedCost', 'createdAt', 'updatedAt', 'createdBy', 'createdByEmail']) &&
+             data.keys().hasOnly(['code', 'title', 'status', 'modality', 'location', 'targetPeriodLabel', 'targetMonth', 'targetYear', 'historyWindowDays', 'leadTimeDays', 'safetyOption', 'budgetCap', 'protocolNumber', 'notes', 'items', 'totalItems', 'totalUnits', 'totalEstimatedCost', 'createdAt', 'updatedAt', 'createdBy', 'createdByEmail']) &&
+             data.code is string && data.code.size() >= 1 && data.code.size() <= 40 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+             data.status in ['RASCUNHO', 'ENVIADO', 'EMPENHADO', 'PARCIAL', 'CONCLUIDO', 'CANCELADO'] &&
+             data.modality in ['ATA_CONTRATO', 'LICITACAO', 'COMPRA_EXTRA', 'DISPENSA', 'GERAL'] &&
+             data.location in ['Almoxarifado', 'Farmácia', 'all'] &&
+             data.items is list && data.items.size() <= 500 &&
+             data.totalItems is number && data.totalItems >= 0 &&
+             data.totalUnits is number && data.totalUnits >= 0 &&
+             data.totalEstimatedCost is number && data.totalEstimatedCost >= 0 &&
+             data.createdAt is string && data.createdAt.size() <= 60 &&
+             data.updatedAt is string && data.updatedAt.size() <= 60 &&
+             data.createdBy is string && data.createdBy.size() <= 120 &&
+             data.createdByEmail is string && data.createdByEmail.size() <= 150 &&
+             (!('targetPeriodLabel' in data) || (data.targetPeriodLabel is string && data.targetPeriodLabel.size() <= 60)) &&
+             (!('protocolNumber' in data) || (data.protocolNumber is string && data.protocolNumber.size() <= 80)) &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 2000)) &&
+             (!('budgetCap' in data) || data.budgetCap == null || (data.budgetCap is number && data.budgetCap >= 0));
+    }
+
+    function isValidPurchaseExclusion(data) {
+      return data.keys().hasAll(['materialKey', 'materialName', 'location', 'reason', 'excludedAt', 'excludedBy', 'excludedByEmail']) &&
+             data.keys().hasOnly(['materialKey', 'materialName', 'category', 'location', 'reason', 'replacedBy', 'note', 'excludedAt', 'excludedBy', 'excludedByEmail']) &&
+             data.materialKey is string && data.materialKey.size() >= 1 && data.materialKey.size() <= 200 &&
+             data.materialName is string && data.materialName.size() >= 1 && data.materialName.size() <= 200 &&
+             data.location in ['Almoxarifado', 'Farmácia', 'all'] &&
+             data.reason in ['COMPRA_OCASIONAL', 'SUBSTITUIDO', 'DESCONTINUADO', 'OUTRO'] &&
+             data.excludedAt is string && data.excludedAt.size() <= 60 &&
+             data.excludedBy is string && data.excludedBy.size() <= 120 &&
+             data.excludedByEmail is string && data.excludedByEmail.size() <= 150 &&
+             (!('category' in data) || (data.category is string && data.category.size() <= 120)) &&
+             (!('replacedBy' in data) || (data.replacedBy is string && data.replacedBy.size() <= 200)) &&
+             (!('note' in data) || (data.note is string && data.note.size() <= 500));
+    }
+
     match /items/{itemId} {
       allow read: if isAuthenticated();
       allow create: if isAdmin() || (isPharmacyUser() && request.resource.data.location == 'Farmácia');
@@ -120,6 +161,22 @@ service cloud.firestore {
       allow read: if isAuthenticated();
       allow create, update: if isAuthenticated();
       allow delete: if isAdmin();
+    }
+
+    match /purchase_plans/{planId} {
+      allow get: if isAuthenticated() && isValidId(planId);
+      allow list: if isAuthenticated();
+      allow create: if isAdmin() && isValidId(planId) && isValidPurchasePlan(request.resource.data);
+      allow update: if isAdmin() && isValidId(planId) && isValidPurchasePlan(request.resource.data);
+      allow delete: if isAdmin() && isValidId(planId);
+    }
+
+    match /purchase_planning_exclusions/{exclusionId} {
+      allow get: if isAuthenticated() && isValidId(exclusionId);
+      allow list: if isAuthenticated();
+      allow create: if isAdmin() && isValidId(exclusionId) && isValidPurchaseExclusion(request.resource.data);
+      allow update: if isAdmin() && isValidId(exclusionId) && isValidPurchaseExclusion(request.resource.data);
+      allow delete: if isAdmin() && isValidId(exclusionId);
     }
   }
 }
