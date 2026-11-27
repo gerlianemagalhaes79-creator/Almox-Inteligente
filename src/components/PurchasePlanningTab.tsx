@@ -10,17 +10,14 @@ import {
   ChevronDown,
   ChevronUp,
   Clock,
-  DollarSign,
   Download,
   Eye,
   EyeOff,
   FileSpreadsheet,
   FileText,
-  Filter,
   FolderKanban,
   Layers,
   Minus,
-  Package,
   Plus,
   RotateCcw,
   Save,
@@ -28,9 +25,7 @@ import {
   ShieldAlert,
   ShoppingCart,
   SlidersHorizontal,
-  Sparkles,
   Trash2,
-  Truck,
   X
 } from 'lucide-react';
 import {
@@ -353,18 +348,15 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
   // Navigation sub-tab
   const [subTab, setSubTab] = useState<PlanningSubTab>('analysis');
 
-  // Engine parameters
-  const [planningLocation, setPlanningLocation] = useState<'Almoxarifado' | 'Farmácia' | 'all'>(
-    inventoryLocation
-  );
+  // Engine parameters (always Almoxarifado; Medicamentos excluded)
+  const planningLocation = 'Almoxarifado' as const;
+  const leadTimeDays = 0;
+  const deductExpiring = false;
+  const deductInTransit = false;
   const [targetMonth, setTargetMonth] = useState<number>(defaultTarget.month);
   const [targetYear, setTargetYear] = useState<number>(defaultTarget.year);
   const [historyWindowDays, setHistoryWindowDays] = useState<90 | 180 | 365>(90);
-  const [leadTimeDays, setLeadTimeDays] = useState<number>(30);
   const [safetyOption, setSafetyOption] = useState<SafetyOption>('margin_10');
-  const [deductExpiring, setDeductExpiring] = useState<boolean>(true);
-  const [deductInTransit, setDeductInTransit] = useState<boolean>(true);
-  const [includeMedicamentos, setIncludeMedicamentos] = useState<boolean>(false);
 
   // Filters & view options
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -384,7 +376,6 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
   const [manualQtyMap, setManualQtyMap] = useState<Record<string, number>>({});
   const [itemNotesMap, setItemNotesMap] = useState<Record<string, string>>({});
   const [expandedNoteKey, setExpandedNoteKey] = useState<string | null>(null);
-  const [budgetCapInput, setBudgetCapInput] = useState<string>('');
 
   // Saved purchase plans (Firestore)
   const [savedPlans, setSavedPlans] = useState<PurchasePlan[]>([]);
@@ -413,14 +404,8 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
   } | null>(null);
   const [excludeReason, setExcludeReason] = useState<PurchaseExclusionReason>('COMPRA_OCASIONAL');
   const [excludeReplacedBy, setExcludeReplacedBy] = useState<string>('');
-  const [excludeScope, setExcludeScope] = useState<'Almoxarifado' | 'Farmácia' | 'all'>('all');
   const [excludeNote, setExcludeNote] = useState<string>('');
   const [savingExclusion, setSavingExclusion] = useState<boolean>(false);
-
-  // Sync default location when parent toggles location
-  useEffect(() => {
-    setPlanningLocation(inventoryLocation);
-  }, [inventoryLocation]);
 
   // Firestore real-time listener for purchase_plans
   useEffect(() => {
@@ -469,29 +454,17 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
     return () => unsubscribe();
   }, []);
 
-  // Active excluded material keys for the currently selected planningLocation
+  // Active excluded material keys for Almoxarifado
   const activeExcludedKeys = useMemo(() => {
     const set = new Set<string>();
     exclusions.forEach(ex => {
-      const applies =
-        ex.location === 'all' ||
-        planningLocation === 'all' ||
-        ex.location === planningLocation;
+      const applies = ex.location === 'all' || ex.location === planningLocation;
       if (applies && ex.materialKey) {
         set.add(ex.materialKey);
       }
     });
     return set;
-  }, [exclusions, planningLocation]);
-
-  const parsedBudgetCap = useMemo(() => {
-    const cleaned = budgetCapInput
-      .replace(/[^\d,.-]/g, '')
-      .replace(/\./g, '')
-      .replace(',', '.');
-    const num = Number(cleaned);
-    return Number.isFinite(num) && num > 0 ? num : null;
-  }, [budgetCapInput]);
+  }, [exclusions]);
 
   // Core procurement analysis engine
   const analysis = useMemo(() => {
@@ -509,18 +482,12 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
       todayStart.getTime() - Math.floor(historyWindowDays / 2) * 24 * 60 * 60 * 1000
     );
 
-    // 1. Filter active items by location & medicamentos setting
+    // 1. Filter active items strictly for Almoxarifado and exclude Medicamentos
     const activeItems = items.filter(item => {
       if (item.deletedAt) return false;
       const loc = item.location || 'Almoxarifado';
-      if (planningLocation !== 'all' && loc !== planningLocation) return false;
-      if (
-        planningLocation === 'Almoxarifado' &&
-        !includeMedicamentos &&
-        isMedicamentosCategory(item.category)
-      ) {
-        return false;
-      }
+      if (loc !== planningLocation) return false;
+      if (isMedicamentosCategory(item.category)) return false;
       return true;
     });
 
@@ -588,7 +555,7 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
       if (tx.deletedAt) return;
       if (tx.type !== 'exit' || tx.isReturn) return;
       const loc = tx.location || 'Almoxarifado';
-      if (planningLocation !== 'all' && loc !== planningLocation) return;
+      if (loc !== planningLocation) return;
 
       // Exclude non-consumption exits strictly
       if (tx.exitReason === 'troca') return;
@@ -662,10 +629,7 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
 
     savedPlans.forEach(plan => {
       if (!STATUS_META[plan.status]?.countsInTransit) return;
-      const locMatches =
-        plan.location === 'all' ||
-        planningLocation === 'all' ||
-        plan.location === planningLocation;
+      const locMatches = plan.location === 'all' || plan.location === planningLocation;
       if (!locMatches) return;
 
       (plan.items || []).forEach(line => {
@@ -832,31 +796,22 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
 
       const coverageDays =
         dailyRate > 0 ? Math.floor((effectiveStock + effectiveInTransit) / dailyRate) : null;
-      const daysUntilDeadline = coverageDays !== null ? coverageDays - leadTimeDays : null;
+      const daysUntilDeadline = coverageDays;
 
       const repressedDemandUnits = repressedUnitsByKey.get(mat.materialKey) || 0;
       const repressedRequestsCount = repressedReqSetByKey.get(mat.materialKey)?.size || 0;
 
       let orderDeadlineLabel = 'Sob demanda';
-      if (effectiveStock === 0 && (dailyRate > 0 || repressedDemandUnits > 0)) {
-        orderDeadlineLabel = 'Imediato (Zerado)';
-      } else if (daysUntilDeadline !== null) {
-        if (daysUntilDeadline <= 0) {
-          orderDeadlineLabel = 'Pedir Hoje!';
-        } else if (daysUntilDeadline <= 365) {
-          const deadlineDate = new Date(
-            todayStart.getTime() + daysUntilDeadline * 24 * 60 * 60 * 1000
-          );
-          orderDeadlineLabel = formatDateBR(deadlineDate);
-        } else {
-          orderDeadlineLabel = '> 1 ano';
-        }
+      if (effectiveStock === 0 && dailyRate > 0) {
+        orderDeadlineLabel = 'Zerado';
+      } else if (coverageDays !== null) {
+        orderDeadlineLabel = `${coverageDays} dias`;
       }
 
       let urgency: UrgencyLevel = 'SEGURO';
-      if (effectiveStock === 0 && (dailyRate > 0 || repressedDemandUnits > 0)) {
+      if (effectiveStock === 0 && dailyRate > 0) {
         urgency = 'ZERADO';
-      } else if (coverageDays !== null && coverageDays <= leadTimeDays && suggestedQty > 0) {
+      } else if (coverageDays !== null && coverageDays <= 30 && suggestedQty > 0) {
         urgency = 'URGENTE';
       } else if (suggestedQty > 0) {
         urgency = 'PROGRAMAR';
@@ -982,15 +937,10 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
     requests,
     allRequestItems,
     savedPlans,
-    planningLocation,
     targetMonth,
     targetYear,
     historyWindowDays,
-    leadTimeDays,
     safetyOption,
-    deductExpiring,
-    deductInTransit,
-    includeMedicamentos,
     manualQtyMap,
     itemNotesMap,
     activeExcludedKeys
@@ -1131,57 +1081,6 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
     setSelectedKeys(new Set(filteredItems.filter(i => i.plannedQty > 0).map(i => i.materialKey)));
   };
 
-  const selectOnlyUrgent = () => {
-    setHasUserInteractedSelection(true);
-    setSelectedKeys(
-      new Set(
-        analysis.allAnalyzed
-          .filter(i => (i.urgency === 'ZERADO' || i.urgency === 'URGENTE') && i.plannedQty > 0)
-          .map(i => i.materialKey)
-      )
-    );
-  };
-
-  const selectPrioritizedByBudget = () => {
-    if (!parsedBudgetCap) {
-      showToast('Informe um teto orçamentário em R$ para priorizar automaticamente.', 'error');
-      return;
-    }
-    const urgencyRank: Record<UrgencyLevel, number> = {
-      ZERADO: 0,
-      URGENTE: 1,
-      PROGRAMAR: 2,
-      SEGURO: 3
-    };
-    const abcRank: Record<'A' | 'B' | 'C', number> = { A: 0, B: 1, C: 2 };
-    const candidates = filteredItems
-      .filter(i => i.plannedQty > 0)
-      .sort((a, b) => {
-        if (urgencyRank[a.urgency] !== urgencyRank[b.urgency]) {
-          return urgencyRank[a.urgency] - urgencyRank[b.urgency];
-        }
-        if (abcRank[a.abcClass] !== abcRank[b.abcClass]) {
-          return abcRank[a.abcClass] - abcRank[b.abcClass];
-        }
-        return (a.coverageDays ?? 9999) - (b.coverageDays ?? 9999);
-      });
-
-    let runningCost = 0;
-    const picked = new Set<string>();
-    candidates.forEach(item => {
-      if (item.estimatedTotal === 0 || runningCost + item.estimatedTotal <= parsedBudgetCap) {
-        picked.add(item.materialKey);
-        runningCost += item.estimatedTotal;
-      }
-    });
-    setHasUserInteractedSelection(true);
-    setSelectedKeys(picked);
-    showToast(
-      `${picked.size} itens priorizados dentro do teto de ${formatCurrency(parsedBudgetCap)} (${formatCurrency(runningCost)}).`,
-      'success'
-    );
-  };
-
   const clearSelection = () => {
     setHasUserInteractedSelection(true);
     setSelectedKeys(new Set());
@@ -1244,13 +1143,7 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
         ? `${plan.title} • ${MODALITY_LABELS[plan.modality] || plan.modality}`
         : `Cobertura projetada até ${analysis.targetPeriodLabel} (${analysis.horizonDays} dias) • Base de consumo real de ${historyWindowDays} dias`;
 
-      const locLabel = plan
-        ? plan.location === 'all'
-          ? 'Almoxarifado + Farmácia (Consolidado)'
-          : plan.location
-        : planningLocation === 'all'
-          ? 'Almoxarifado + Farmácia (Consolidado)'
-          : planningLocation;
+      const locLabel = 'Almoxarifado';
 
       const startY = drawInstitutionalReportHeader(doc, layout, {
         kicker: `POLICLÍNICA DE SOBRAL • ${locLabel.toUpperCase()}`,
@@ -1266,8 +1159,8 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
           { label: 'Horizonte Alvo', value: plan ? plan.targetPeriodLabel : analysis.targetPeriodLabel },
           { label: 'Unidade / Estoque', value: locLabel },
           {
-            label: 'Lead Time (Prazo)',
-            value: `${plan ? plan.leadTimeDays : leadTimeDays} dias`
+            label: 'Base de Consumo',
+            value: `Últimos ${plan ? plan.historyWindowDays : historyWindowDays} dias`
           },
           {
             label: 'Itens / Unidades',
@@ -1291,7 +1184,7 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
             : plan?.notes || undefined,
         observationTone: missingPriceCount > 0 ? 'warning' : 'info',
         methodology:
-          'Metodologia: consumo médio baseado exclusivamente em saídas reais de consumo interno (excluindo doações, trocas, perdas e baixas por vencimento), com desconto automático de lotes vencidos ou que expiram antes do consumo e dedução de pedidos já em trânsito.'
+          'Metodologia: consumo médio do Almoxarifado baseado exclusivamente em saídas reais de consumo interno dos setores (excluindo medicamentos, doações, trocas, perdas e baixas por vencimento).'
       });
 
       const head = [
@@ -1301,32 +1194,24 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
           'Categoria',
           'Fornecedor / Origem',
           'ABC',
-          'Est. Útil',
+          'Estoque Atual',
           'Cons./Mês',
           'Cobert.',
-          'Prazo Pedir',
           'Qtd. Comprar',
           'Vlr. Unit.',
           'Vlr. Estimado',
-          'Justificativa Técnica'
+          'Observação'
         ]
       ];
 
       const body = rowsSource.map((item: any, idx: number) => {
-        const usable = item.usableStock ?? 0;
-        const expiring = item.expiringBeforeConsumption ?? 0;
+        const currentStock = Math.max(
+          0,
+          (item.currentPhysicalStock ?? item.physicalStock ?? 0) - (item.expiredStock ?? 0)
+        );
         const monthly = item.monthlyConsumption ?? item.monthlyRate ?? 0;
         const covDays = item.coverageDays;
-        const deadline = item.orderDeadline || item.orderDeadlineLabel || '—';
         const originText = ORIGIN_LABELS[item.origin as 'contract' | 'extra' | 'donation'] || 'Contrato';
-        const autoJust = [
-          expiring > 0 ? `${expiring} un vencem no período` : '',
-          item.repressedDemandUnits > 0 ? `Dem. reprimida: ${item.repressedDemandUnits} un` : '',
-          item.inTransitUnits > 0 ? `Em trânsito: ${item.inTransitUnits} un` : '',
-          item.note ? item.note : ''
-        ]
-          .filter(Boolean)
-          .join(' | ');
 
         return [
           String(idx + 1),
@@ -1334,14 +1219,13 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
           item.category || '—',
           `${item.supplier || 'Diversos'}\n[${originText}]`,
           item.abcClass || 'C',
-          `${usable.toLocaleString('pt-BR')} un`,
+          `${currentStock.toLocaleString('pt-BR')} un`,
           `${monthly.toFixed(1)}`,
           covDays !== null && covDays !== undefined ? `${covDays} d` : '—',
-          deadline,
           `${item.plannedQty.toLocaleString('pt-BR')} un`,
           item.unitPrice > 0 ? formatCurrency(item.unitPrice) : 'S/ preço',
           item.unitPrice > 0 ? formatCurrency(item.estimatedTotal) : '—',
-          autoJust || 'Reposição programada'
+          item.note || 'Reposição programada'
         ];
       });
 
@@ -1356,7 +1240,7 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
           right: layout.marginRight
         },
         styles: {
-          fontSize: 7.2,
+          fontSize: 7.4,
           cellPadding: 2,
           lineColor: [226, 232, 240],
           lineWidth: 0.2,
@@ -1367,24 +1251,23 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
           fillColor: [15, 76, 129],
           textColor: [255, 255, 255],
           fontStyle: 'bold',
-          fontSize: 7.2,
+          fontSize: 7.4,
           halign: 'center'
         },
         alternateRowStyles: { fillColor: [248, 250, 252] },
         columnStyles: {
           0: { halign: 'center', cellWidth: 7 },
-          1: { halign: 'left', cellWidth: 46 },
-          2: { halign: 'left', cellWidth: 24 },
-          3: { halign: 'left', cellWidth: 32 },
+          1: { halign: 'left', cellWidth: 52 },
+          2: { halign: 'left', cellWidth: 26 },
+          3: { halign: 'left', cellWidth: 36 },
           4: { halign: 'center', cellWidth: 9 },
-          5: { halign: 'right', cellWidth: 16 },
-          6: { halign: 'right', cellWidth: 15 },
-          7: { halign: 'center', cellWidth: 13 },
-          8: { halign: 'center', cellWidth: 20 },
-          9: { halign: 'right', cellWidth: 19, fontStyle: 'bold', textColor: [30, 58, 138] },
-          10: { halign: 'right', cellWidth: 17 },
-          11: { halign: 'right', cellWidth: 21, fontStyle: 'bold' },
-          12: { halign: 'left' }
+          5: { halign: 'right', cellWidth: 18 },
+          6: { halign: 'right', cellWidth: 16 },
+          7: { halign: 'center', cellWidth: 14 },
+          8: { halign: 'right', cellWidth: 20, fontStyle: 'bold', textColor: [30, 58, 138] },
+          9: { halign: 'right', cellWidth: 18 },
+          10: { halign: 'right', cellWidth: 22, fontStyle: 'bold' },
+          11: { halign: 'left' }
         }
       });
 
@@ -1461,13 +1344,12 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
         Fornecedor: item.supplier,
         Origem: ORIGIN_LABELS[item.origin as 'contract' | 'extra' | 'donation'] || 'Contrato',
         'Curva ABC': item.abcClass,
-        'Estoque Físico': item.currentPhysicalStock ?? item.physicalStock ?? 0,
-        'Estoque Útil Real': item.usableStock ?? 0,
-        'Vencendo Antes do Consumo': item.expiringBeforeConsumption ?? 0,
+        'Estoque Atual': Math.max(
+          0,
+          (item.currentPhysicalStock ?? item.physicalStock ?? 0) - (item.expiredStock ?? 0)
+        ),
         'Consumo Mensal Real': Number((item.monthlyConsumption ?? item.monthlyRate ?? 0).toFixed(2)),
         'Cobertura (Dias)': item.coverageDays ?? 'S/ consumo',
-        'Data Limite p/ Pedir': item.orderDeadline || item.orderDeadlineLabel || '—',
-        'Em Trânsito': item.inTransitUnits ?? 0,
         'Qtd. Sugerida': item.suggestedQty ?? item.plannedQty,
         'Qtd. a Comprar': item.plannedQty,
         'Preço Unitário (R$)': Number((item.unitPrice || 0).toFixed(2)),
@@ -1548,8 +1430,7 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
       showToast('Selecione ao menos um item com quantidade maior que zero para salvar o plano.', 'error');
       return;
     }
-    const locTag = planningLocation === 'all' ? 'Consolidado' : planningLocation;
-    setNewPlanTitle(`Compra ${locTag} — Cobertura até ${analysis.targetPeriodLabel}`);
+    setNewPlanTitle(`Compra Almoxarifado — Cobertura até ${analysis.targetPeriodLabel}`);
     setNewPlanModality(originFilter === 'extra' ? 'COMPRA_EXTRA' : 'ATA_CONTRATO');
     setNewPlanStatus('ENVIADO');
     setNewPlanProtocol('');
@@ -1588,8 +1469,8 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
         origin: item.origin,
         abcClass: item.abcClass,
         currentPhysicalStock: item.physicalStock,
-        usableStock: item.usableStock,
-        expiringBeforeConsumption: item.expiringBeforeConsumption,
+        usableStock: Math.max(0, item.physicalStock - item.expiredStock),
+        expiringBeforeConsumption: 0,
         monthlyConsumption: Number(item.monthlyRate.toFixed(2)),
         coverageDays: item.coverageDays,
         suggestedQty: item.suggestedQty,
@@ -1613,7 +1494,7 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
         historyWindowDays,
         leadTimeDays,
         safetyOption,
-        budgetCap: parsedBudgetCap,
+        budgetCap: null,
         protocolNumber: newPlanProtocol.trim().slice(0, 80),
         notes: newPlanNotes.trim().slice(0, 2000),
         items: lineItems,
@@ -1630,14 +1511,7 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
 
       await addDoc(collection(db, 'purchase_plans'), payload);
       setShowSaveModal(false);
-      showToast(
-        `Plano ${code} salvo com sucesso! ${
-          STATUS_META[newPlanStatus].countsInTransit
-            ? 'Os itens agora constam como Em Trânsito.'
-            : 'Salvo como rascunho.'
-        }`,
-        'success'
-      );
+      showToast(`Plano ${code} salvo com sucesso!`, 'success');
       setSubTab('plans');
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, 'purchase_plans');
@@ -1716,7 +1590,6 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
     setItemToExclude(item);
     setExcludeReason('COMPRA_OCASIONAL');
     setExcludeReplacedBy('');
-    setExcludeScope(planningLocation);
     setExcludeNote('');
   };
 
@@ -1729,7 +1602,7 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
         materialKey: itemToExclude.materialKey.slice(0, 200),
         materialName: itemToExclude.name.slice(0, 200),
         category: (itemToExclude.category || 'Sem Categoria').slice(0, 120),
-        location: excludeScope,
+        location: planningLocation,
         reason: excludeReason,
         replacedBy:
           excludeReason === 'SUBSTITUIDO' ? excludeReplacedBy.trim().slice(0, 200) : '',
@@ -1820,12 +1693,6 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
     analysis.expiringRiskItems.length +
     analysis.repressedRiskItems.length;
 
-  const budgetUsagePct =
-    parsedBudgetCap && parsedBudgetCap > 0
-      ? Math.min(100, Math.round((selectedSummary.totalCost / parsedBudgetCap) * 100))
-      : 0;
-  const isOverBudget = parsedBudgetCap !== null && selectedSummary.totalCost > parsedBudgetCap;
-
   const renderUrgencyBadge = (urgency: UrgencyLevel) => {
     if (urgency === 'ZERADO') {
       return (
@@ -1908,7 +1775,7 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
                 </span>
               </div>
               <p className="text-xs text-slate-500 font-medium mt-1">
-                Cálculo com estoque útil real (desconto de validades), consumo exclusivo de setores, lead time, demanda reprimida e controle de pedidos em trânsito.
+                Planejamento de reposição do Almoxarifado baseado no consumo real dos setores, com ajuste de quantidades e exportação em PDF e Excel.
               </p>
             </div>
           </div>
@@ -2017,13 +1884,13 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
       {/* ===================================================================== */}
       {subTab === 'analysis' && (
         <div className="space-y-6">
-          {/* Parameters Configuration Panel */}
-          <div className="bg-white rounded-3xl border border-slate-200/90 shadow-sm p-5 sm:p-6 space-y-5">
+          {/* Parameters Configuration Panel — Clean & Focused */}
+          <div className="bg-white rounded-3xl border border-slate-200/90 shadow-sm p-5 sm:p-6 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100">
               <div className="flex items-center gap-2">
                 <Calendar size={16} className="text-indigo-600" />
                 <h4 className="text-sm font-black text-slate-800">
-                  Parâmetros do Cálculo e Horizonte de Cobertura
+                  Parâmetros do Cálculo — Almoxarifado
                 </h4>
               </div>
               <span className="text-[11px] font-bold text-slate-500">
@@ -2031,24 +1898,7 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
               </span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3.5">
-              <div>
-                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-wider mb-1">
-                  Unidade / Estoque
-                </label>
-                <select
-                  value={planningLocation}
-                  onChange={e =>
-                    setPlanningLocation(e.target.value as 'Almoxarifado' | 'Farmácia' | 'all')
-                  }
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
-                >
-                  <option value="Almoxarifado">Almoxarifado</option>
-                  <option value="Farmácia">Farmácia</option>
-                  <option value="all">Consolidado (Ambos)</option>
-                </select>
-              </div>
-
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
               <div>
                 <label className="block text-[10px] font-black text-slate-500 uppercase tracking-wider mb-1">
                   Cobrir Até (Mês)
@@ -2103,23 +1953,6 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
 
               <div>
                 <label className="block text-[10px] font-black text-slate-500 uppercase tracking-wider mb-1">
-                  Lead Time (Prazo Compra)
-                </label>
-                <select
-                  value={leadTimeDays}
-                  onChange={e => setLeadTimeDays(Number(e.target.value))}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
-                >
-                  <option value={15}>15 dias (Ata rápida)</option>
-                  <option value={30}>30 dias (Padrão)</option>
-                  <option value={45}>45 dias (CPSMS)</option>
-                  <option value={60}>60 dias (Licitação)</option>
-                  <option value={90}>90 dias (Processo longo)</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-wider mb-1">
                   Margem de Segurança
                 </label>
                 <select
@@ -2135,122 +1968,10 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
                 </select>
               </div>
             </div>
-
-            {/* Smart Calculation Toggles + Optional Budget Cap */}
-            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pt-3 border-t border-slate-100">
-              <div className="flex flex-wrap items-center gap-4">
-                <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={deductExpiring}
-                    onChange={e => setDeductExpiring(e.target.checked)}
-                    className="w-4 h-4 rounded text-indigo-600 border-slate-300 focus:ring-indigo-500 cursor-pointer"
-                  />
-                  <span>Descontar lotes que vencem antes do consumo</span>
-                </label>
-
-                <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={deductInTransit}
-                    onChange={e => setDeductInTransit(e.target.checked)}
-                    className="w-4 h-4 rounded text-indigo-600 border-slate-300 focus:ring-indigo-500 cursor-pointer"
-                  />
-                  <span>Descontar pedidos Em Trânsito ({analysis.totalInTransitUnits.toLocaleString('pt-BR')} un)</span>
-                </label>
-
-                {planningLocation === 'Almoxarifado' && (
-                  <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={includeMedicamentos}
-                      onChange={e => setIncludeMedicamentos(e.target.checked)}
-                      className="w-4 h-4 rounded text-indigo-600 border-slate-300 focus:ring-indigo-500 cursor-pointer"
-                    />
-                    <span>Incluir Medicamentos</span>
-                  </label>
-                )}
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5">
-                  <DollarSign size={14} className="text-emerald-600 shrink-0" />
-                  <span className="text-[11px] font-extrabold text-slate-500 whitespace-nowrap">
-                    Teto Orçamentário (R$):
-                  </span>
-                  <input
-                    type="text"
-                    value={budgetCapInput}
-                    onChange={e => setBudgetCapInput(e.target.value)}
-                    placeholder="Opcional (ex: 50000)"
-                    className="w-28 bg-transparent text-xs font-black text-slate-900 focus:outline-none"
-                  />
-                  {budgetCapInput && (
-                    <button
-                      type="button"
-                      onClick={() => setBudgetCapInput('')}
-                      className="text-slate-400 hover:text-slate-600 cursor-pointer"
-                      title="Limpar teto"
-                    >
-                      <X size={13} />
-                    </button>
-                  )}
-                </div>
-                {parsedBudgetCap && (
-                  <button
-                    type="button"
-                    onClick={selectPrioritizedByBudget}
-                    className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer shadow-sm"
-                    title="Seleciona automaticamente itens Zerados, Urgentes e Curva A até atingir o teto"
-                  >
-                    <Sparkles size={13} />
-                    Priorizar até o Teto
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Budget Gauge when Teto Orçamentário is defined */}
-            {parsedBudgetCap && (
-              <div
-                className={`rounded-2xl p-3.5 border ${
-                  isOverBudget
-                    ? 'bg-rose-50/70 border-rose-200'
-                    : 'bg-emerald-50/60 border-emerald-200'
-                }`}
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2 text-xs mb-1.5">
-                  <span className="font-extrabold text-slate-800">
-                    Orçamento Selecionado:{' '}
-                    <strong className={isOverBudget ? 'text-rose-700' : 'text-emerald-700'}>
-                      {formatCurrency(selectedSummary.totalCost)}
-                    </strong>{' '}
-                    de <strong>{formatCurrency(parsedBudgetCap)}</strong>
-                  </span>
-                  <span
-                    className={`font-black text-xs ${
-                      isOverBudget ? 'text-rose-700' : 'text-emerald-700'
-                    }`}
-                  >
-                    {isOverBudget
-                      ? `Excedeu em ${formatCurrency(selectedSummary.totalCost - parsedBudgetCap)}`
-                      : `Saldo disponível: ${formatCurrency(parsedBudgetCap - selectedSummary.totalCost)} (${budgetUsagePct}%)`}
-                  </span>
-                </div>
-                <div className="w-full h-2.5 bg-white/90 rounded-full overflow-hidden border border-slate-200/70">
-                  <div
-                    className={`h-full transition-all duration-300 ${
-                      isOverBudget ? 'bg-rose-600' : 'bg-emerald-600'
-                    }`}
-                    style={{ width: `${budgetUsagePct}%` }}
-                  />
-                </div>
-              </div>
-            )}
           </div>
 
-          {/* 6 KPI Summary Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3.5">
+          {/* 3 Clean Summary KPI Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
             <div className="bg-white rounded-2xl border border-slate-200/90 p-4 shadow-2xs">
               <p className="text-[10px] font-black uppercase tracking-wider text-slate-500">
                 Selecionados p/ Compra
@@ -2262,7 +1983,7 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
                 </span>
               </p>
               <p className="text-[11px] font-bold text-slate-500 mt-1">
-                {selectedSummary.totalUnits.toLocaleString('pt-BR')} unidades
+                {selectedSummary.totalUnits.toLocaleString('pt-BR')} unidades a adquirir
               </p>
             </div>
 
@@ -2284,54 +2005,15 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
               </p>
             </div>
 
-            <div className="bg-white rounded-2xl border border-rose-100 p-4 shadow-2xs">
-              <p className="text-[10px] font-black uppercase tracking-wider text-rose-700">
-                Urgentes / Zerados
+            <div className="bg-white rounded-2xl border border-slate-200/90 p-4 shadow-2xs">
+              <p className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+                Horizonte de Cobertura
               </p>
-              <p className="text-2xl font-black text-rose-700 mt-1">
-                {analysis.urgentRiskItems.length}
-              </p>
-              <p className="text-[11px] font-bold text-slate-500 mt-1">
-                Cobertura ≤ {leadTimeDays} dias
-              </p>
-            </div>
-
-            <div className="bg-white rounded-2xl border border-amber-100 p-4 shadow-2xs">
-              <p className="text-[10px] font-black uppercase tracking-wider text-amber-700">
-                Vencem no Horizonte
-              </p>
-              <p className="text-2xl font-black text-amber-700 mt-1">
-                {analysis.totalExpiringUnits.toLocaleString('pt-BR')}
-                <span className="text-xs font-bold text-amber-600/80 ml-1">un</span>
+              <p className="text-xl font-black text-slate-900 mt-1">
+                Até {analysis.targetPeriodLabel}
               </p>
               <p className="text-[11px] font-bold text-slate-500 mt-1">
-                {formatCurrency(analysis.totalExpiringRiskValue)} em risco
-              </p>
-            </div>
-
-            <div className="bg-white rounded-2xl border border-purple-100 p-4 shadow-2xs">
-              <p className="text-[10px] font-black uppercase tracking-wider text-purple-700">
-                Demanda Reprimida
-              </p>
-              <p className="text-2xl font-black text-purple-700 mt-1">
-                {analysis.repressedRiskItems.length}
-                <span className="text-xs font-bold text-purple-500 ml-1">itens</span>
-              </p>
-              <p className="text-[11px] font-bold text-slate-500 mt-1">
-                Pedidos não atendidos
-              </p>
-            </div>
-
-            <div className="bg-white rounded-2xl border border-teal-100 p-4 shadow-2xs">
-              <p className="text-[10px] font-black uppercase tracking-wider text-teal-700">
-                Em Trânsito (Pedidos)
-              </p>
-              <p className="text-2xl font-black text-teal-700 mt-1">
-                {analysis.totalInTransitUnits.toLocaleString('pt-BR')}
-                <span className="text-xs font-bold text-teal-600 ml-1">un</span>
-              </p>
-              <p className="text-[11px] font-bold text-slate-500 mt-1">
-                {openPlansCount} {openPlansCount === 1 ? 'plano aberto' : 'planos abertos'}
+                {analysis.horizonDays} dias (~{analysis.horizonMonths} meses) • Base {historyWindowDays}d
               </p>
             </div>
           </div>
@@ -2359,9 +2041,6 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
                 className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 cursor-pointer"
               >
                 <option value="deficit">Apenas com Necessidade de Compra</option>
-                <option value="urgent">Urgentes / Zerados (≤ Lead Time)</option>
-                <option value="expiring">Com Lotes Vencendo no Período</option>
-                <option value="repressed">Com Demanda Reprimida</option>
                 <option value="no_price">Com Déficit e Sem Preço</option>
                 <option value="all">Todos os Materiais ({analysis.allAnalyzed.length})</option>
               </select>
@@ -2451,7 +2130,7 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
                   onChange={e => setSortBy(e.target.value as SortMode)}
                   className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-[11px] font-extrabold text-slate-700 cursor-pointer"
                 >
-                  <option value="urgency">Ordenar: Urgência / Menor Cobertura</option>
+                  <option value="urgency">Ordenar: Menor Cobertura</option>
                   <option value="cost_desc">Ordenar: Maior Valor Estimado</option>
                   <option value="qty_desc">Ordenar: Maior Qtd. a Comprar</option>
                   <option value="name_asc">Ordenar: A–Z</option>
@@ -2464,13 +2143,6 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
                     className="px-2.5 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-[11px] font-extrabold cursor-pointer transition-colors"
                   >
                     Selecionar Filtrados
-                  </button>
-                  <button
-                    type="button"
-                    onClick={selectOnlyUrgent}
-                    className="px-2.5 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 text-[11px] font-extrabold cursor-pointer transition-colors"
-                  >
-                    Só Urgentes
                   </button>
                   {selectedKeys.size > 0 && (
                     <button
@@ -2566,16 +2238,13 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
                               Material / Classificação
                             </th>
                             <th className="py-3 px-3 text-[10px] font-black text-slate-500 uppercase tracking-wider text-right">
-                              Est. Útil Real
+                              Estoque Atual
                             </th>
                             <th className="py-3 px-3 text-[10px] font-black text-slate-500 uppercase tracking-wider text-right">
                               Consumo Real
                             </th>
                             <th className="py-3 px-3 text-[10px] font-black text-slate-500 uppercase tracking-wider text-center">
-                              Cobertura / Prazo
-                            </th>
-                            <th className="py-3 px-3 text-[10px] font-black text-slate-500 uppercase tracking-wider text-center">
-                              Em Trânsito
+                              Cobertura
                             </th>
                             <th className="py-3 px-3 text-[10px] font-black text-slate-500 uppercase tracking-wider text-center min-w-[145px]">
                               Qtd. a Comprar
@@ -2589,6 +2258,7 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
                           {group.items.map(item => {
                             const isSelected = selectedKeys.has(item.materialKey);
                             const isNoteOpen = expandedNoteKey === item.materialKey;
+                            const availableStock = Math.max(0, item.physicalStock - item.expiredStock);
                             return (
                               <React.Fragment key={item.materialKey}>
                                 <tr
@@ -2644,17 +2314,8 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
                                           Fornecedor: {item.supplier} • {item.unit_measure}
                                         </p>
 
-                                        {/* Contextual Intelligence Alerts */}
+                                        {/* Contextual Actions */}
                                         <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
-                                          {item.repressedDemandUnits > 0 && (
-                                            <span
-                                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 text-[10px] font-extrabold"
-                                              title={`${item.repressedRequestsCount} requisição(ões) não atendidas integralmente nos últimos ${historyWindowDays} dias`}
-                                            >
-                                              <AlertTriangle size={10} />
-                                              Dem. reprimida: {item.repressedDemandUnits} un
-                                            </span>
-                                          )}
                                           {item.missingPrice && item.plannedQty > 0 && (
                                             <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 text-[10px] font-extrabold">
                                               Sem preço cadastrado
@@ -2692,21 +2353,8 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
 
                                   <td className="py-3 px-3 text-right align-top">
                                     <p className="text-xs font-black text-slate-900 tabular-nums">
-                                      {item.usableStock.toLocaleString('pt-BR')} un
+                                      {availableStock.toLocaleString('pt-BR')} un
                                     </p>
-                                    {item.physicalStock !== item.usableStock && (
-                                      <p className="text-[10px] font-bold text-slate-400 tabular-nums">
-                                        Físico: {item.physicalStock.toLocaleString('pt-BR')}
-                                      </p>
-                                    )}
-                                    {item.expiringBeforeConsumption > 0 && (
-                                      <p
-                                        className="text-[10px] font-extrabold text-amber-700 mt-0.5"
-                                        title={`Lote vencendo em ${formatDateBR(item.earliestExpiringDate)} antes do consumo previsto`}
-                                      >
-                                        -{item.expiringBeforeConsumption.toLocaleString('pt-BR')} vencem
-                                      </p>
-                                    )}
                                     {item.expiredStock > 0 && (
                                       <p className="text-[10px] font-extrabold text-rose-600">
                                         -{item.expiredStock.toLocaleString('pt-BR')} vencidos
@@ -2734,33 +2382,7 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
                                           ? `${item.coverageDays} dias`
                                           : 'Sem saída'}
                                       </span>
-                                      <span
-                                        className={`text-[10px] font-bold ${
-                                          item.daysUntilDeadline !== null &&
-                                          item.daysUntilDeadline <= 0
-                                            ? 'text-rose-700'
-                                            : 'text-slate-500'
-                                        }`}
-                                      >
-                                        {item.orderDeadlineLabel}
-                                      </span>
                                     </div>
-                                  </td>
-
-                                  <td className="py-3 px-3 text-center align-top">
-                                    {item.inTransitUnits > 0 ? (
-                                      <div className="inline-flex flex-col items-center">
-                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-teal-50 text-teal-800 border border-teal-200 text-[11px] font-black tabular-nums">
-                                          <Truck size={11} />
-                                          {item.inTransitUnits.toLocaleString('pt-BR')}
-                                        </span>
-                                        <span className="text-[9px] font-bold text-slate-400 mt-0.5">
-                                          {item.inTransitPlans.join(', ')}
-                                        </span>
-                                      </div>
-                                    ) : (
-                                      <span className="text-xs font-bold text-slate-300">—</span>
-                                    )}
                                   </td>
 
                                   <td className="py-3 px-3 text-center align-top">
@@ -2814,7 +2436,7 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
 
                                 {isNoteOpen && (
                                   <tr className="bg-indigo-50/40">
-                                    <td colSpan={8} className="px-4 py-2.5">
+                                    <td colSpan={7} className="px-4 py-2.5">
                                       <div className="flex items-center gap-2">
                                         <span className="text-[11px] font-extrabold text-indigo-800 shrink-0">
                                           Justificativa / Obs. do item:
@@ -2867,9 +2489,7 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
                 Acompanhamento de Planos e Pedidos de Compra
               </h4>
               <p className="text-xs text-slate-500 font-medium mt-0.5">
-                Planos com status <strong>Enviado</strong>, <strong>Empenhado</strong> ou{' '}
-                <strong>Recebido Parcial</strong> são contabilizados automaticamente como{' '}
-                <strong className="text-teal-700">Em Trânsito</strong> para evitar compras duplicadas.
+                Histórico de planos e pedidos salvos do Almoxarifado, com acompanhamento de status, recebimento e exportação.
               </p>
             </div>
 
@@ -2877,7 +2497,7 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
               {(
                 [
                   { id: 'ALL', label: `Todos (${savedPlans.length})` },
-                  { id: 'OPEN', label: `Em Trânsito (${openPlansCount})` },
+                  { id: 'OPEN', label: `Em Aberto (${openPlansCount})` },
                   { id: 'RASCUNHO', label: 'Rascunhos' },
                   { id: 'CONCLUIDO', label: 'Concluídos' }
                 ] as { id: 'ALL' | 'OPEN' | PurchasePlanStatus; label: string }[]
@@ -3182,7 +2802,7 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
                     1. Ruptura Crítica e Compras Urgentes ({analysis.urgentRiskItems.length} itens)
                   </h4>
                   <p className="text-xs text-rose-800/80 font-medium">
-                    Materiais zerados ou cuja cobertura útil atual é menor ou igual ao prazo de reposição ({leadTimeDays} dias).
+                    Materiais zerados ou cuja cobertura atual está igual ou abaixo de 30 dias.
                   </p>
                 </div>
               </div>
@@ -3192,7 +2812,7 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
                   onClick={() =>
                     jumpToAnalysisWithItems(
                       analysis.urgentRiskItems.map(i => i.materialKey),
-                      'urgent'
+                      'deficit'
                     )
                   }
                   className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-extrabold cursor-pointer shrink-0"
@@ -3204,7 +2824,7 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
 
             {analysis.urgentRiskItems.length === 0 ? (
               <div className="p-6 text-center text-xs font-bold text-emerald-700">
-                Nenhum item em ruptura ou abaixo do prazo de entrega ({leadTimeDays} dias).
+                Nenhum item em ruptura ou com cobertura abaixo de 30 dias.
               </div>
             ) : (
               <div className="overflow-x-auto">
@@ -3668,9 +3288,9 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
                     onChange={e => setNewPlanStatus(e.target.value as PurchasePlanStatus)}
                     className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-xs font-bold text-slate-800 bg-slate-50 cursor-pointer"
                   >
-                    <option value="ENVIADO">Enviado p/ Compras (Conta Em Trânsito)</option>
-                    <option value="EMPENHADO">Aprovado / Empenhado (Conta Em Trânsito)</option>
-                    <option value="RASCUNHO">Rascunho (Não conta Em Trânsito)</option>
+                    <option value="ENVIADO">Enviado p/ Compras</option>
+                    <option value="EMPENHADO">Aprovado / Empenhado</option>
+                    <option value="RASCUNHO">Rascunho</option>
                   </select>
                 </div>
               </div>
@@ -3841,23 +3461,6 @@ export const PurchasePlanningTab: React.FC<PurchasePlanningTabProps> = ({
                   </datalist>
                 </div>
               )}
-
-              <div>
-                <label className="block text-[11px] font-black text-slate-600 uppercase tracking-wider mb-1">
-                  Aplicar exclusão em
-                </label>
-                <select
-                  value={excludeScope}
-                  onChange={e =>
-                    setExcludeScope(e.target.value as 'Almoxarifado' | 'Farmácia' | 'all')
-                  }
-                  className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-xs font-bold text-slate-800 bg-slate-50 cursor-pointer"
-                >
-                  <option value="all">Todos os Estoques (Almoxarifado e Farmácia)</option>
-                  <option value="Almoxarifado">Apenas no Almoxarifado</option>
-                  <option value="Farmácia">Apenas na Farmácia</option>
-                </select>
-              </div>
 
               <div>
                 <label className="block text-[11px] font-black text-slate-600 uppercase tracking-wider mb-1">

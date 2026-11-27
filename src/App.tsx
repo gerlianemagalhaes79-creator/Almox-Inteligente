@@ -49,6 +49,7 @@ import {
   ArrowLeft,
   Layers,
   Eye,
+  EyeOff,
   MapPin,
   Building2
 } from 'lucide-react';
@@ -554,6 +555,24 @@ export default function App() {
   const [showTransactionModal, setShowTransactionModal] = useState<{show: boolean, type: 'entry' | 'exit', item?: Item}>({ show: false, type: 'entry' });
   const [transactionMinStock, setTransactionMinStock] = useState<number>(NaN);
   const [showDetailModal, setShowDetailModal] = useState<{show: boolean, type: 'low_stock' | 'expiry' | 'all_alerts', items: (Item | ItemGroup)[]}>({ show: false, type: 'low_stock', items: [] });
+  const [dismissedAlerts, setDismissedAlerts] = useState<Array<{
+    id: string;
+    alertType?: 'low_stock' | 'expired' | 'near_expiry';
+    itemName?: string;
+    itemId?: string;
+    batchNumber?: string;
+    category?: string;
+    location?: string;
+    reason?: string;
+    dismissedAt?: string;
+    dismissedBy?: string;
+  }>>([]);
+  const [alertModalTab, setAlertModalTab] = useState<'all' | 'expired' | 'low_stock' | 'near_expiry' | 'silenced'>('all');
+  const [alertModalSearch, setAlertModalSearch] = useState('');
+  const [editingAlertExpiry, setEditingAlertExpiry] = useState<{ itemId: string; value: string } | null>(null);
+  const [editingAlertCategory, setEditingAlertCategory] = useState<{ key: string; value: string } | null>(null);
+  const [alertActionBusyKey, setAlertActionBusyKey] = useState<string | null>(null);
+  const [confirmSilenceAllZero, setConfirmSilenceAllZero] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState<{show: boolean, transactionId?: string}>({ show: false });
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [settingsTab, setSettingsTab] = useState<'logo' | 'tools' | 'info'>('logo');
@@ -585,6 +604,8 @@ export default function App() {
   const [showDeletedHistory, setShowDeletedHistory] = useState(false);
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [inventorySort, setInventorySort] = useState<'name_asc' | 'name_desc' | 'duration_asc' | 'duration_desc'>('name_asc');
+  const [inventoryQuickStatus, setInventoryQuickStatus] = useState<'all' | 'zero' | 'low' | 'near_expiry'>('all');
+  const [inventoryDensity, setInventoryDensity] = useState<'comfortable' | 'compact'>('comfortable');
   const [inventoryLocation, setInventoryLocation] = useState<'Almoxarifado' | 'Farmácia'>('Almoxarifado');
 
   const isAdmin = userProfile?.role === 'ADMIN' || 
@@ -1024,24 +1045,6 @@ export default function App() {
   const [isUpdatingCategory, setIsUpdatingCategory] = useState(false);
   const [showCriticalReportModal, setShowCriticalReportModal] = useState(false);
   const [criticalReportFilter, setCriticalReportFilter] = useState<'all' | 'low_stock' | 'expiry'>('all');
-  
-  // Purchase Planning States
-  const [showPurchasePlanningModal, setShowPurchasePlanningModal] = useState(false);
-  const [planningTargetMonth, setPlanningTargetMonth] = useState<number>(() => {
-    // Default to April (index 3)
-    return 3;
-  });
-  const [planningTargetYear, setPlanningTargetYear] = useState<number>(() => {
-    const now = new Date();
-    // If we are currently past April (month > 3), default to next year's April
-    return now.getMonth() >= 3 ? now.getFullYear() + 1 : now.getFullYear();
-  });
-  const [planningSafetyOption, setPlanningSafetyOption] = useState<'standard_8w' | 'none' | 'margin_10' | 'margin_20'>('standard_8w');
-  const [planningLocation, setPlanningLocation] = useState<'Almoxarifado' | 'Farmácia' | 'all'>('Almoxarifado');
-  const [planningCategory, setPlanningCategory] = useState<string>('all');
-  const [planningOnlyWithDeficit, setPlanningOnlyWithDeficit] = useState<boolean>(true);
-  const [planningSearch, setPlanningSearch] = useState<string>('');
-  const [planningSort, setPlanningSort] = useState<'deficit_desc' | 'cost_desc' | 'cost_asc' | 'name_asc' | 'duration_asc'>('deficit_desc');
   const [showItemExitsModal, setShowItemExitsModal] = useState<{
     show: boolean;
     materialName: string;
@@ -1741,11 +1744,21 @@ export default function App() {
       handleFirestoreError(error, OperationType.LIST, 'request_items');
     });
 
+    const unsubscribeDismissedAlerts = onSnapshot(collection(db, 'dismissed_stock_alerts'), (snapshot) => {
+      const records = snapshot.docs
+        .map(d => ({ id: d.id, ...(d.data() as any) }))
+        .filter(d => d.id.startsWith('alert_low_') || d.id.startsWith('alert_exp_'));
+      setDismissedAlerts(records);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'dismissed_stock_alerts');
+    });
+
     return () => {
       unsubscribeItems();
       unsubscribeTrans();
       unsubscribeRequests();
       unsubscribeReqItems();
+      unsubscribeDismissedAlerts();
     };
   }, [user]);
 
@@ -1790,7 +1803,13 @@ export default function App() {
 
     const runRetroactiveStockCheck = async () => {
       try {
-        const activeItems = items.filter(i => !i.deletedAt);
+        const activeItems = items.filter(i => {
+          if (i.deletedAt) return false;
+          if ((i.location || 'Almoxarifado') === 'Almoxarifado' && isMedicamentosCategory(i.category)) {
+            return false;
+          }
+          return true;
+        });
         const groupedByName: { [key: string]: { name: string, totalQty: number } } = {};
         
         activeItems.forEach(item => {
@@ -5854,221 +5873,6 @@ export default function App() {
     handleExportCriticalReportPDF('low_stock');
   };
 
-  const handleExportPurchasePlanningPDF = () => {
-    try {
-      // @ts-ignore
-      const doc = new jsPDF();
-      const dateStr = format(new Date(), 'dd/MM/yyyy HH:mm');
-      
-      const title = 'PLANEJAMENTO DE COMPRAS — ESTIMATIVA DE AQUISIÇÃO';
-      let currentY = drawPDFLetterhead(doc, title);
-      const lh: LetterheadLayoutMetrics = (doc as any).__lhLayout;
-      const pageWidth = doc.internal.pageSize.width;
-
-      // Executive Summary Metric Box in PDF
-      doc.setFillColor(248, 250, 252); // slate-50
-      doc.roundedRect(14, currentY, pageWidth - 28, 22, 2, 2, 'F');
-      doc.setDrawColor(203, 213, 225);
-      doc.roundedRect(14, currentY, pageWidth - 28, 22, 2, 2, 'S');
-
-      // Metric 1: Cobertura
-      doc.setFontSize(7);
-      doc.setFont('helvetica', 'bold');
-      doc.setTextColor(100, 116, 139);
-      doc.text('PERÍODO DE COBERTURA', 18, currentY + 6.5);
-      doc.setFontSize(10.5);
-      doc.setFont('helvetica', 'bold');
-      doc.setTextColor(15, 23, 42);
-      doc.text(`Até ${purchasePlanningSummary.targetPeriodLabel}`, 18, currentY + 13.5);
-      doc.setFontSize(7);
-      doc.setFont('helvetica', 'normal');
-      doc.setTextColor(71, 85, 105);
-      doc.text(`${purchasePlanningSummary.totalTargetWeeks} sem (~${purchasePlanningSummary.totalTargetMonths} meses)`, 18, currentY + 18.5);
-
-      // Metric 2: Itens com Déficit
-      doc.setFontSize(7);
-      doc.setFont('helvetica', 'bold');
-      doc.setTextColor(100, 116, 139);
-      doc.text('ITENS A COMPRAR', 66, currentY + 6.5);
-      doc.setFontSize(10.5);
-      doc.setFont('helvetica', 'bold');
-      doc.setTextColor(225, 29, 72); // rose-600
-      doc.text(`${purchasePlanningSummary.totalItemsWithDeficit} de ${purchasePlanningSummary.totalAnalyzed} itens`, 66, currentY + 13.5);
-      doc.setFontSize(7);
-      doc.setFont('helvetica', 'normal');
-      doc.setTextColor(71, 85, 105);
-      doc.text('Com necessidade de reposição', 66, currentY + 18.5);
-
-      // Metric 3: Volume de Unidades
-      doc.setFontSize(7);
-      doc.setFont('helvetica', 'bold');
-      doc.setTextColor(100, 116, 139);
-      doc.text('VOLUME FÍSICO TOTAL', 116, currentY + 6.5);
-      doc.setFontSize(10.5);
-      doc.setFont('helvetica', 'bold');
-      doc.setTextColor(30, 58, 138); // blue-900
-      doc.text(`${purchasePlanningSummary.totalUnitsToBuy.toLocaleString('pt-BR')} un`, 116, currentY + 13.5);
-      doc.setFontSize(7);
-      doc.setFont('helvetica', 'normal');
-      doc.setTextColor(71, 85, 105);
-      doc.text('Quantidade total a adquirir', 116, currentY + 18.5);
-
-      // Metric 4: Custo Financeiro Estimado
-      doc.setFontSize(7);
-      doc.setFont('helvetica', 'bold');
-      doc.setTextColor(100, 116, 139);
-      doc.text('VALOR ESTIMADO GLOBAL', 160, currentY + 6.5);
-      doc.setFontSize(10.5);
-      doc.setFont('helvetica', 'bold');
-      doc.setTextColor(16, 185, 129); // emerald-600
-      doc.text(
-        new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 }).format(purchasePlanningSummary.totalEstimatedFinancialCost),
-        160,
-        currentY + 13.5
-      );
-      doc.setFontSize(7);
-      doc.setFont('helvetica', 'normal');
-      doc.setTextColor(71, 85, 105);
-      doc.text('Preços unitários médios', 160, currentY + 18.5);
-
-      currentY += 26;
-
-      // Table data
-      const itemsToExport = planningOnlyWithDeficit 
-        ? purchasePlanningSummary.allItems.filter(i => i.quantityToBuy > 0)
-        : purchasePlanningSummary.allItems;
-
-      if (itemsToExport.length === 0) {
-        doc.setFontSize(9.5);
-        doc.setTextColor(71, 85, 105);
-        doc.text('Nenhum item com necessidade de compra encontrado para os filtros selecionados.', 14, currentY + 10);
-      } else {
-        const tableData = itemsToExport.map((item, idx) => {
-          const unit = item.unit_measure ? ` ${item.unit_measure}` : '';
-          const weeklyStr = item.weeklyRate > 0 ? `${item.weeklyRate.toFixed(1)}` : '0.0';
-          const duraStr = item.durationWeeks === 'infinite' ? '∞' : `${item.durationWeeks.toFixed(1)} sem`;
-          const unitPriceStr = item.unitPrice > 0 ? item.unitPrice.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '---';
-          const totalCostStr = item.totalEstimatedCost > 0 ? item.totalEstimatedCost.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '---';
-
-          return [
-            (idx + 1).toString(),
-            item.name,
-            item.category || 'Geral',
-            `${item.currentStock}${unit}`,
-            weeklyStr,
-            duraStr,
-            `${item.periodDemand}${unit}`,
-            `${item.quantityToBuy}${unit}`,
-            unitPriceStr,
-            totalCostStr
-          ];
-        });
-
-        autoTable(doc, {
-          startY: currentY,
-          head: [['Nº', 'Material / Insumo', 'Categoria', 'Estoque', 'Cons./Sem', 'Duração', 'Demanda', 'QTD A COMPRAR', 'Vlr. Unit. (R$)', 'Total Est. (R$)']],
-          body: tableData,
-          theme: 'striped',
-          showHead: 'everyPage',
-          margin: { left: 14, right: 14, top: lh.continuationTop, bottom: lh.marginBottom },
-          headStyles: {
-            fillColor: [15, 23, 42], // Slate-900
-            halign: 'center',
-            fontSize: 7.5,
-            fontStyle: 'bold'
-          },
-          columnStyles: {
-            0: { halign: 'center', cellWidth: 8 },
-            1: { halign: 'left', cellWidth: 'auto' },
-            2: { halign: 'left', cellWidth: 24 },
-            3: { halign: 'center', cellWidth: 16 },
-            4: { halign: 'center', cellWidth: 14 },
-            5: { halign: 'center', cellWidth: 16 },
-            6: { halign: 'center', cellWidth: 16 },
-            7: { halign: 'center', cellWidth: 20, fontStyle: 'bold', textColor: [225, 29, 72] },
-            8: { halign: 'right', cellWidth: 18 },
-            9: { halign: 'right', cellWidth: 22, fontStyle: 'bold' }
-          },
-          styles: { fontSize: 7.5, cellPadding: 2 },
-          didParseCell: function(data) {
-            if (data.section === 'body' && data.column.index === 7) {
-              data.cell.styles.textColor = [190, 18, 60];
-              data.cell.styles.fontStyle = 'bold';
-            }
-          }
-        });
-
-        // Add Signature / Dispatch Box
-        let finalY = (doc as any).lastAutoTable.finalY + 12;
-        if (finalY + 14 > lh.contentBottom) {
-          doc.addPage();
-          finalY = lh.continuationTop + 10;
-        }
-
-        doc.setFontSize(8);
-        doc.setTextColor(71, 85, 105);
-        doc.text('________________________________________________________', pageWidth / 2, finalY, { align: 'center' });
-        doc.setFont('helvetica', 'bold');
-        doc.setTextColor(15, 23, 42);
-        doc.text('Responsável pelo Planejamento de Compras / Almoxarifado', pageWidth / 2, finalY + 5, { align: 'center' });
-        doc.setFont('helvetica', 'normal');
-        doc.setFontSize(7);
-        doc.text(`Documento emitido automaticamente pelo Sistema de Gestão de Estoque • ${dateStr}`, pageWidth / 2, finalY + 9.5, { align: 'center' });
-      }
-
-      drawContinuationAndPageNumbers(doc, lh, {
-        title,
-        rightHeaderText: `Até ${purchasePlanningSummary.targetPeriodLabel}`,
-        footerLeftText: 'Policlínica de Sobral • Planejamento de Compras'
-      });
-
-      const dateFileStr = format(new Date(), 'dd-MM-yyyy');
-      doc.save(`Planejamento_Compras_${purchasePlanningSummary.targetPeriodLabel.replace('/', '_')}_${dateFileStr}.pdf`);
-      showToast("PDF de Planejamento de Compras gerado com sucesso!", "success");
-    } catch (error) {
-      console.error('Erro ao gerar PDF de compras:', error);
-      showToast("Erro ao exportar PDF de Planejamento de Compras.", "error");
-    }
-  };
-
-  const handleExportPurchasePlanningExcel = () => {
-    try {
-      const itemsToExport = planningOnlyWithDeficit
-        ? purchasePlanningSummary.allItems.filter(i => i.quantityToBuy > 0)
-        : purchasePlanningSummary.allItems;
-
-      const excelData = itemsToExport.map((item, idx) => ({
-        'Nº': idx + 1,
-        'Item / Insumo': item.name,
-        'Categoria': item.category || 'Geral',
-        'Unidade': item.unit_measure || 'UN',
-        'Estoque Atual (Saldo)': item.currentStock,
-        'Consumo Semanal Médio': item.weeklyRate > 0 ? Number(item.weeklyRate.toFixed(2)) : 0,
-        'Consumo Mensal Médio': item.monthlyRate > 0 ? Number(item.monthlyRate.toFixed(2)) : 0,
-        'Duração do Estoque Atual (Semanas)': item.durationWeeks === 'infinite' ? '∞' : Number(item.durationWeeks.toFixed(1)),
-        'Previsão de Término Atual': item.durationMonthInfo.monthYear,
-        [`Demanda Prevista até ${purchasePlanningSummary.targetPeriodLabel}`]: item.periodDemand,
-        'Estoque de Segurança': item.safetyStock,
-        'Necessidade Total Período': item.totalRequired,
-        'QUANTIDADE A COMPRAR': item.quantityToBuy,
-        'Preço Unitário Estimado (R$)': item.unitPrice > 0 ? item.unitPrice : 0,
-        'Custo Total Estimado (R$)': item.totalEstimatedCost > 0 ? item.totalEstimatedCost : 0,
-        'Status': item.quantityToBuy > 0 ? 'COMPRA NECESSÁRIA' : 'ESTOQUE ATENDE ATÉ O PERÍODO'
-      }));
-
-      const ws = XLSX.utils.json_to_sheet(excelData);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, "Planejamento Compras");
-      
-      const dateFileStr = format(new Date(), 'dd-MM-yyyy');
-      XLSX.writeFile(wb, `Planejamento_Compras_${purchasePlanningSummary.targetPeriodLabel.replace('/', '_')}_${dateFileStr}.xlsx`);
-      showToast("Planilha de compras exportada com sucesso!", "success");
-    } catch (error) {
-      console.error('Erro ao exportar Excel de compras:', error);
-      showToast("Erro ao exportar planilha Excel.", "error");
-    }
-  };
-
   const handleExportMaterialsCatalogPDF = () => {
     try {
       // @ts-ignore
@@ -8920,198 +8724,6 @@ export default function App() {
       .slice(0, 12);
   }, [items, inventoryLocation, distribViewMode]);
 
-  // Purchase Planning Engine (Must be declared before any conditional returns)
-  const purchasePlanningSummary = useMemo(() => {
-    const now = new Date();
-    
-    // Target Date calculation (last day of the chosen target month in target year)
-    const targetDate = new Date(planningTargetYear, planningTargetMonth + 1, 0, 23, 59, 59);
-    const diffTime = targetDate.getTime() - now.getTime();
-    const diffDays = Math.max(1, Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
-    const totalTargetWeeks = Math.max(0.5, Number((diffDays / 7).toFixed(1)));
-    const totalTargetMonths = Math.max(0.1, Number((totalTargetWeeks / 4.33).toFixed(1)));
-
-    const monthNames = [
-      'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
-      'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
-    ];
-    const targetMonthName = monthNames[planningTargetMonth] || 'Abril';
-    const targetPeriodLabel = `${targetMonthName}/${planningTargetYear}`;
-
-    // Filter items based on planning location and deletedAt
-    const filteredActiveItems = items.filter(i => {
-      if (i.deletedAt) return false;
-      if (planningLocation === 'all') return true;
-      return (i.location || 'Almoxarifado') === planningLocation;
-    });
-
-    // Group items by material identifier
-    const groupedByName: Record<string, {
-      material_id: string;
-      material_code?: string;
-      name: string;
-      category: string;
-      supplier: string;
-      unit_measure: string;
-      total_quantity: number;
-      batches: Item[];
-    }> = {};
-
-    filteredActiveItems.forEach(i => {
-      const matId = getMaterialIdentifier(i);
-      const key = matId.key;
-      if (!groupedByName[key]) {
-        groupedByName[key] = {
-          material_id: i.material_id || matId.key,
-          material_code: i.material_code || i.code || matId.code,
-          name: (i.name || '').trim(),
-          category: i.category || 'Geral',
-          supplier: i.supplier || 'Diversos',
-          unit_measure: i.unit_measure || 'UN',
-          total_quantity: 0,
-          batches: []
-        };
-      }
-      groupedByName[key].total_quantity += (Number(i.quantity) || 0);
-      groupedByName[key].batches.push(i);
-      if (i.unit_measure) groupedByName[key].unit_measure = i.unit_measure;
-      if (i.category) groupedByName[key].category = i.category;
-    });
-
-    const calculatedItems: PurchasePlanningItem[] = Object.values(groupedByName).map(group => {
-      const currentStock = group.total_quantity;
-      const weeklyRate = weeklyExitRates[normalizeString(group.name)] || weeklyExitRates[group.name] || 0;
-      const monthlyRate = weeklyRate * 4.33;
-      
-      const durationWeeks = weeklyRate > 0 ? (currentStock / weeklyRate) : 'infinite';
-      const durationMonthInfo = getDurationMonthInfo(durationWeeks);
-
-      const periodDemand = Math.ceil(weeklyRate * totalTargetWeeks);
-      
-      let safetyStock = 0;
-      if (planningSafetyOption === 'standard_8w') {
-        safetyStock = Math.ceil(weeklyRate * 8);
-      } else if (planningSafetyOption === 'margin_10') {
-        safetyStock = Math.ceil(periodDemand * 0.10);
-      } else if (planningSafetyOption === 'margin_20') {
-        safetyStock = Math.ceil(periodDemand * 0.20);
-      } else {
-        safetyStock = 0;
-      }
-
-      const totalRequired = periodDemand + safetyStock;
-      const quantityToBuy = Math.max(0, totalRequired - currentStock);
-
-      // Determine unit price from most recent batch with price > 0, or average
-      let unitPrice = 0;
-      const batchesWithPrice = group.batches.filter(b => (Number(b.unit_price) || 0) > 0);
-      if (batchesWithPrice.length > 0) {
-        unitPrice = Number(batchesWithPrice[batchesWithPrice.length - 1].unit_price) || 0;
-      }
-
-      const totalEstimatedCost = quantityToBuy * unitPrice;
-      const willCoverTarget = durationWeeks === 'infinite' || durationWeeks >= totalTargetWeeks;
-
-      let status: PurchasePlanningItem['status'] = 'COBRE_TOTAL';
-      if (currentStock === 0 && weeklyRate > 0) {
-        status = 'ZERADO_SEM_ESTOQUE';
-      } else if (quantityToBuy > 0 && durationWeeks !== 'infinite' && durationWeeks <= 4) {
-        status = 'DEFICIT_CRITICO';
-      } else if (quantityToBuy > 0) {
-        status = 'DEFICIT_MODERADO';
-      } else {
-        status = 'COBRE_TOTAL';
-      }
-
-      return {
-        name: group.name,
-        category: group.category,
-        supplier: group.supplier,
-        unit_measure: group.unit_measure,
-        currentStock,
-        weeklyRate,
-        monthlyRate,
-        durationWeeks,
-        durationMonthInfo,
-        periodDemand,
-        safetyStock,
-        totalRequired,
-        quantityToBuy,
-        unitPrice,
-        totalEstimatedCost,
-        willCoverTarget,
-        status
-      };
-    });
-
-    // Filter by category and search first
-    const filteredByCategoryAndSearch = calculatedItems.filter(item => {
-      if (planningCategory !== 'all' && item.category !== planningCategory) return false;
-      if (planningSearch.trim()) {
-        const search = normalizeString(planningSearch);
-        const matchName = normalizeString(item.name).includes(search);
-        const matchCat = normalizeString(item.category).includes(search);
-        if (!matchName && !matchCat) return false;
-      }
-      return true;
-    });
-
-    // Filter by deficit-only for the active display
-    const filtered = filteredByCategoryAndSearch.filter(item => {
-      if (planningOnlyWithDeficit && item.quantityToBuy <= 0) return false;
-      return true;
-    });
-
-    // Sorting
-    filtered.sort((a, b) => {
-      if (planningSort === 'deficit_desc') {
-        return b.quantityToBuy - a.quantityToBuy;
-      } else if (planningSort === 'cost_desc') {
-        return b.totalEstimatedCost - a.totalEstimatedCost;
-      } else if (planningSort === 'cost_asc') {
-        return a.totalEstimatedCost - b.totalEstimatedCost;
-      } else if (planningSort === 'name_asc') {
-        return a.name.localeCompare(b.name);
-      } else if (planningSort === 'duration_asc') {
-        const durA = a.durationWeeks === 'infinite' ? 999999 : a.durationWeeks;
-        const durB = b.durationWeeks === 'infinite' ? 999999 : b.durationWeeks;
-        return durA - durB;
-      }
-      return 0;
-    });
-
-    // Metrics calculated based on the chosen category/filters
-    const totalItemsWithDeficit = filteredByCategoryAndSearch.filter(i => i.quantityToBuy > 0).length;
-    const totalUnitsToBuy = filteredByCategoryAndSearch.reduce((acc, i) => acc + i.quantityToBuy, 0);
-    const totalEstimatedFinancialCost = filteredByCategoryAndSearch.reduce((acc, i) => acc + i.totalEstimatedCost, 0);
-    const totalAnalyzed = filteredByCategoryAndSearch.length;
-
-    return {
-      targetDate,
-      totalTargetWeeks,
-      totalTargetMonths,
-      targetMonthName,
-      targetPeriodLabel,
-      items: filtered,
-      allItems: filteredByCategoryAndSearch,
-      totalAnalyzed,
-      totalItemsWithDeficit,
-      totalUnitsToBuy,
-      totalEstimatedFinancialCost
-    };
-  }, [
-    items,
-    weeklyExitRates,
-    planningTargetMonth,
-    planningTargetYear,
-    planningSafetyOption,
-    planningLocation,
-    planningCategory,
-    planningOnlyWithDeficit,
-    planningSearch,
-    planningSort
-  ]);
-
   const isExpired = (item: Item) => {
     if (item.quantity <= 0) return false;
     const dateStr = item.expiry_date;
@@ -9213,18 +8825,213 @@ export default function App() {
       }, {} as Record<string, ItemGroup>);
   }, [items, inventoryLocation, weeklyExitRates, monthlyExitRates]);
 
+  const getLowStockDismissId = useCallback((name: string, loc: 'Almoxarifado' | 'Farmácia') => {
+    const locTag = loc === 'Farmácia' ? 'farm' : 'almox';
+    return `alert_low_${locTag}_${getSafeDocId(name)}`;
+  }, []);
+
+  const getExpiryDismissId = useCallback((itemId: string) => {
+    return `alert_exp_${itemId}`;
+  }, []);
+
+  const dismissedAlertIdsSet = useMemo(() => {
+    return new Set(dismissedAlerts.map(d => d.id));
+  }, [dismissedAlerts]);
+
+  const dismissedAlertsForLocation = useMemo(() => {
+    return dismissedAlerts
+      .filter(d => !d.location || d.location === inventoryLocation)
+      .sort((a, b) => (b.dismissedAt || '').localeCompare(a.dismissedAt || ''));
+  }, [dismissedAlerts, inventoryLocation]);
+
   // REGRA PRINCIPAL:
   // Alertas de estoque baixo são avaliados EXCLUSIVAMENTE pelo estoque total consolidado do material!
-  // Se um lote específico tiver pouco saldo, mas outros lotes suprirem o material, NÃO gera alerta de estoque baixo.
-  const lowStockItems = useMemo(() => {
-    return Object.values(groupedItems).filter(group => 
-      group.total_quantity <= group.min_quantity
-    );
-  }, [groupedItems]);
+  // No Almoxarifado, medicamentos são automaticamente excluídos dos alertas (não é estoque de medicamentos).
+  // Alertas silenciados pelo administrador também são ocultados (e podem ser reativados na aba Silenciados).
+  const autoExcludedMedAlertsCount = useMemo(() => {
+    if (inventoryLocation !== 'Almoxarifado') return 0;
+    const medLow = Object.values(groupedItems).filter(
+      group => isMedicamentosCategory(group.category) && group.total_quantity <= group.min_quantity
+    ).length;
+    const medExp = items.filter(
+      i => !i.deletedAt && (i.location || 'Almoxarifado') === 'Almoxarifado' && isMedicamentosCategory(i.category) && (isExpired(i) || isNearExpiry(i))
+    ).length;
+    return medLow + medExp;
+  }, [groupedItems, items, inventoryLocation]);
 
-  const expiredItems = items.filter(i => !i.deletedAt && (i.location || 'Almoxarifado') === inventoryLocation && isExpired(i));
-  const nearExpiryItems = items.filter(i => !i.deletedAt && (i.location || 'Almoxarifado') === inventoryLocation && isNearExpiry(i));
+  const lowStockItems = useMemo(() => {
+    return Object.values(groupedItems).filter(group => {
+      if (inventoryLocation === 'Almoxarifado' && isMedicamentosCategory(group.category)) return false;
+      if (dismissedAlertIdsSet.has(getLowStockDismissId(group.name, inventoryLocation))) return false;
+      return group.total_quantity <= group.min_quantity;
+    });
+  }, [groupedItems, inventoryLocation, dismissedAlertIdsSet, getLowStockDismissId]);
+
+  const expiredItems = useMemo(() => {
+    return items.filter(i => {
+      if (i.deletedAt) return false;
+      if ((i.location || 'Almoxarifado') !== inventoryLocation) return false;
+      if (inventoryLocation === 'Almoxarifado' && isMedicamentosCategory(i.category)) return false;
+      if (dismissedAlertIdsSet.has(getExpiryDismissId(i.id))) return false;
+      return isExpired(i);
+    });
+  }, [items, inventoryLocation, dismissedAlertIdsSet, getExpiryDismissId]);
+
+  const nearExpiryItems = useMemo(() => {
+    return items.filter(i => {
+      if (i.deletedAt) return false;
+      if ((i.location || 'Almoxarifado') !== inventoryLocation) return false;
+      if (inventoryLocation === 'Almoxarifado' && isMedicamentosCategory(i.category)) return false;
+      if (dismissedAlertIdsSet.has(getExpiryDismissId(i.id))) return false;
+      return isNearExpiry(i);
+    });
+  }, [items, inventoryLocation, dismissedAlertIdsSet, getExpiryDismissId]);
+
   const totalAlertsCount = lowStockItems.length + expiredItems.length + nearExpiryItems.length;
+
+  const handleSilenceAlert = async (params: {
+    alertType: 'low_stock' | 'expired' | 'near_expiry';
+    itemName: string;
+    itemId?: string;
+    batchNumber?: string | null;
+    category?: string | null;
+    reason?: string;
+  }) => {
+    if (!isAdmin) return;
+    const docId =
+      params.alertType === 'low_stock'
+        ? getLowStockDismissId(params.itemName, inventoryLocation)
+        : getExpiryDismissId(params.itemId || getSafeDocId(params.itemName));
+    setAlertActionBusyKey(docId);
+    try {
+      await setDoc(doc(db, 'dismissed_stock_alerts', docId), {
+        alertType: params.alertType,
+        itemName: params.itemName,
+        itemId: params.itemId || '',
+        batchNumber: params.batchNumber || '',
+        category: params.category || 'Geral',
+        location: inventoryLocation,
+        reason: params.reason || (params.alertType === 'low_stock' ? 'Sem necessidade de estoque / resolvido' : 'Ciente / resolvido'),
+        dismissedAt: new Date().toISOString(),
+        dismissedBy: userProfile?.name || user?.email || 'Administrador'
+      });
+      showToast(`Alerta de "${params.itemName}" silenciado.`, 'success');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `dismissed_stock_alerts/${docId}`);
+      showToast('Erro ao silenciar alerta.', 'error');
+    } finally {
+      setAlertActionBusyKey(null);
+    }
+  };
+
+  const handleRestoreSilencedAlert = async (docId: string, itemName?: string) => {
+    if (!isAdmin) return;
+    setAlertActionBusyKey(docId);
+    try {
+      await deleteDoc(doc(db, 'dismissed_stock_alerts', docId));
+      showToast(`Alerta de "${itemName || 'item'}" reativado.`, 'success');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `dismissed_stock_alerts/${docId}`);
+      showToast('Erro ao reativar alerta.', 'error');
+    } finally {
+      setAlertActionBusyKey(null);
+    }
+  };
+
+  const handleQuickRecategorizeFromAlert = async (
+    materialName: string,
+    batchesToUpdate: Item[],
+    newCategory: string
+  ) => {
+    if (!isAdmin || !newCategory.trim()) return;
+    const busyId = `cat_${normalizeString(materialName)}`;
+    setAlertActionBusyKey(busyId);
+    try {
+      const targetBatches =
+        batchesToUpdate.length > 0
+          ? batchesToUpdate
+          : items.filter(
+              i =>
+                !i.deletedAt &&
+                (i.location || 'Almoxarifado') === inventoryLocation &&
+                normalizeString(i.name) === normalizeString(materialName)
+            );
+
+      const batch = writeBatch(db);
+      targetBatches.forEach(b => {
+        batch.update(doc(db, 'items', b.id), { category: newCategory.trim() });
+      });
+      await batch.commit();
+      setEditingAlertCategory(null);
+      if (inventoryLocation === 'Almoxarifado' && isMedicamentosCategory(newCategory)) {
+        showToast(`"${materialName}" alterado para Medicamentos e removido dos alertas do Almoxarifado.`, 'success');
+      } else {
+        showToast(`Categoria de "${materialName}" alterada para ${newCategory.trim()}.`, 'success');
+      }
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, 'items');
+      showToast('Erro ao alterar categoria do material.', 'error');
+    } finally {
+      setAlertActionBusyKey(null);
+    }
+  };
+
+  const handleQuickUpdateExpiryFromAlert = async (item: Item, newExpiryValue: string) => {
+    if (!isAdmin) return;
+    const busyId = `exp_${item.id}`;
+    setAlertActionBusyKey(busyId);
+    try {
+      const normalizedVal = newExpiryValue.trim() || 'Indeterminada';
+      await updateDoc(doc(db, 'items', item.id), {
+        expiry_date: normalizedVal
+      });
+      setEditingAlertExpiry(null);
+      showToast(`Validade de "${item.name}" atualizada para ${normalizedVal === 'Indeterminada' ? 'Indeterminada' : new Date(normalizedVal + 'T00:00:00').toLocaleDateString('pt-BR')}.`, 'success');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `items/${item.id}`);
+      showToast('Erro ao atualizar data de validade.', 'error');
+    } finally {
+      setAlertActionBusyKey(null);
+    }
+  };
+
+  const handleSilenceAllZeroStockAlerts = async () => {
+    if (!isAdmin) return;
+    const zeroGroups = lowStockItems.filter(g => g.total_quantity <= 0);
+    if (zeroGroups.length === 0) return;
+    setAlertActionBusyKey('bulk_zero');
+    try {
+      const nowIso = new Date().toISOString();
+      const byName = userProfile?.name || user?.email || 'Administrador';
+      const chunks: ItemGroup[][] = [];
+      for (let i = 0; i < zeroGroups.length; i += 400) {
+        chunks.push(zeroGroups.slice(i, i + 400));
+      }
+      for (const chunk of chunks) {
+        const batch = writeBatch(db);
+        chunk.forEach(g => {
+          const docId = getLowStockDismissId(g.name, inventoryLocation);
+          batch.set(doc(db, 'dismissed_stock_alerts', docId), {
+            alertType: 'low_stock',
+            itemName: g.name,
+            category: g.category || 'Geral',
+            location: inventoryLocation,
+            reason: 'Zerados silenciados em lote',
+            dismissedAt: nowIso,
+            dismissedBy: byName
+          });
+        });
+        await batch.commit();
+      }
+      setConfirmSilenceAllZero(false);
+      showToast(`${zeroGroups.length} alertas de itens zerados foram silenciados (você pode reativá-los em Silenciados).`, 'success');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, 'dismissed_stock_alerts');
+      showToast('Erro ao silenciar itens zerados.', 'error');
+    } finally {
+      setAlertActionBusyKey(null);
+    }
+  };
   const totalVolume = items
     .filter(i => !i.deletedAt && (i.location || 'Almoxarifado') === inventoryLocation)
     .reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
@@ -9954,11 +9761,16 @@ export default function App() {
 
                 {/* Card 4: Nível Crítico / Alertas */}
                 <div 
-                  onClick={() => totalAlertsCount > 0 && setShowDetailModal({ 
-                    show: true, 
-                    type: 'all_alerts', 
-                    items: [...expiredItems, ...lowStockItems, ...nearExpiryItems] as any 
-                  })}
+                  onClick={() => {
+                    setAlertModalTab(totalAlertsCount === 0 && dismissedAlertsForLocation.length > 0 ? 'silenced' : 'all');
+                    setAlertModalSearch('');
+                    setConfirmSilenceAllZero(false);
+                    setShowDetailModal({ 
+                      show: true, 
+                      type: 'all_alerts', 
+                      items: [...expiredItems, ...lowStockItems, ...nearExpiryItems] as any 
+                    });
+                  }}
                   className={`bg-white rounded-2xl border transition-all duration-200 overflow-hidden group cursor-pointer relative ${
                     totalAlertsCount > 0
                       ? 'border-amber-200 shadow-xs hover:border-amber-400 hover:shadow-md'
@@ -10115,13 +9927,29 @@ export default function App() {
                         </p>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={() => {
+                          setAlertModalTab(totalAlertsCount === 0 && dismissedAlertsForLocation.length > 0 ? 'silenced' : 'all');
+                          setAlertModalSearch('');
+                          setConfirmSilenceAllZero(false);
+                          setShowDetailModal({
+                            show: true,
+                            type: 'all_alerts',
+                            items: [...expiredItems, ...lowStockItems, ...nearExpiryItems] as any
+                          });
+                        }}
+                        className="px-2.5 py-1 bg-white/10 hover:bg-white/20 text-white border border-white/20 rounded-xl text-[11px] font-extrabold transition-all flex items-center gap-1 shadow-xs cursor-pointer"
+                        title="Gerenciar, alterar categoria, corrigir validade ou silenciar alertas"
+                      >
+                        <Edit2 size={12} /> Gerenciar
+                      </button>
                       <button
                         onClick={() => setShowCriticalReportModal(true)}
-                        className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-400/40 rounded-xl text-[11px] font-extrabold transition-all flex items-center gap-1 shadow-xs"
+                        className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-400/40 rounded-xl text-[11px] font-extrabold transition-all flex items-center gap-1 shadow-xs cursor-pointer"
                         title="Escolher e Imprimir Relatório PDF (Validade / Estoque Baixo / Geral)"
                       >
-                        <Printer size={13} /> Relatório PDF
+                        <Printer size={13} /> PDF
                       </button>
                       <span className="px-2.5 py-1 rounded-full text-xs font-black bg-amber-500/20 text-amber-300 border border-amber-400/30">
                         {totalAlertsCount}
@@ -10137,12 +9965,24 @@ export default function App() {
                         <p className="text-xs text-slate-500 max-w-xs mx-auto">
                           Nenhum insumo apresentou nível crítico de reposição, vencimento ultrapassado ou data de expiração próxima.
                         </p>
+                        {dismissedAlertsForLocation.length > 0 && (
+                          <button
+                            onClick={() => {
+                              setAlertModalTab('silenced');
+                              setAlertModalSearch('');
+                              setShowDetailModal({ show: true, type: 'all_alerts', items: [] });
+                            }}
+                            className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-colors cursor-pointer"
+                          >
+                            <EyeOff size={13} /> Ver {dismissedAlertsForLocation.length} alerta{dismissedAlertsForLocation.length > 1 ? 's' : ''} silenciado{dismissedAlertsForLocation.length > 1 ? 's' : ''}
+                          </button>
+                        )}
                       </div>
                     )}
 
                     {/* Expired Items - High Urgency Red */}
                     {expiredItems.map(item => (
-                      <div key={`expired-${item.id}`} className="flex items-center justify-between p-3.5 bg-rose-50/90 rounded-2xl border border-rose-200 hover:bg-rose-100/80 transition-all duration-200">
+                      <div key={`expired-${item.id}`} className="flex items-center justify-between gap-2 p-3.5 bg-rose-50/90 rounded-2xl border border-rose-200 hover:bg-rose-100/80 transition-all duration-200">
                         <div className="flex items-center gap-3 min-w-0 flex-1">
                           <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 border bg-rose-100 text-rose-700 border-rose-300 font-black">
                             <Calendar size={16} />
@@ -10150,26 +9990,36 @@ export default function App() {
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-1.5">
                               <p className="font-extrabold text-xs text-slate-900 truncate leading-tight">{item.name}</p>
-                              <span className="text-[9px] font-black uppercase px-1.5 py-0.2 rounded bg-rose-200 text-rose-800 border border-rose-300">Vencido</span>
+                              <span className="text-[9px] font-black uppercase px-1.5 py-0.2 rounded bg-rose-200 text-rose-800 border border-rose-300 shrink-0">Vencido</span>
                             </div>
                             <p className="text-[10px] font-bold mt-0.5 text-rose-700">
                               Expirou em: {new Date(item.expiry_date!).toLocaleDateString('pt-BR')} ({item.quantity} un em estoque)
                             </p>
                           </div>
                         </div>
-                        <button 
-                          onClick={() => setShowTransactionModal({ show: true, type: 'exit', item })}
-                          className="px-3 py-1.5 rounded-xl text-xs font-bold bg-rose-600 text-white hover:bg-rose-700 transition-all shadow-sm shrink-0 ml-2"
-                        >
-                          Retirar por Desperdício
-                        </button>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button 
+                            onClick={() => setShowTransactionModal({ show: true, type: 'exit', item })}
+                            className="px-2.5 py-1.5 rounded-xl text-xs font-bold bg-rose-600 text-white hover:bg-rose-700 transition-all shadow-sm cursor-pointer"
+                          >
+                            Baixar
+                          </button>
+                          <button
+                            onClick={() => handleSilenceAlert({ alertType: 'expired', itemName: item.name, itemId: item.id, batchNumber: item.batch_number, category: item.category })}
+                            disabled={alertActionBusyKey === getExpiryDismissId(item.id)}
+                            className="p-1.5 rounded-xl bg-white/80 hover:bg-rose-200/70 text-rose-700 border border-rose-200 transition-colors cursor-pointer"
+                            title="Silenciar este alerta"
+                          >
+                            <EyeOff size={14} />
+                          </button>
+                        </div>
                       </div>
                     ))}
 
                     {/* Low Stock Items (Consolidated Material) */}
                     {lowStockItems.map(group => (
-                      <div key={`low-${group.material_id || group.name}`} className="flex items-center justify-between p-3.5 bg-amber-50/50 rounded-2xl border border-amber-200/60 hover:bg-amber-50 transition-all duration-200">
-                        <div className="flex items-center gap-3 min-w-0">
+                      <div key={`low-${group.material_id || group.name}`} className="flex items-center justify-between gap-2 p-3.5 bg-amber-50/50 rounded-2xl border border-amber-200/60 hover:bg-amber-50 transition-all duration-200">
+                        <div className="flex items-center gap-3 min-w-0 flex-1">
                           <div className="w-10 h-10 bg-amber-100 text-amber-900 rounded-xl flex flex-col items-center justify-center font-black text-xs shrink-0 border border-amber-200">
                             <span>{group.total_quantity}</span>
                             <span className="text-[7px] text-amber-700 font-bold uppercase leading-none">Total</span>
@@ -10189,18 +10039,28 @@ export default function App() {
                             </p>
                           </div>
                         </div>
-                        <button 
-                          onClick={() => setShowTransactionModal({ show: true, type: 'entry', item: group.batches[0] || { name: group.name, category: group.category } as any })}
-                          className="bg-gradient-to-r from-amber-600 to-amber-700 text-white px-3 py-1.5 rounded-xl text-xs font-bold hover:from-amber-700 hover:to-amber-800 transition-all shadow-sm shrink-0 ml-2"
-                        >
-                          Repor
-                        </button>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button 
+                            onClick={() => setShowTransactionModal({ show: true, type: 'entry', item: group.batches[0] || { name: group.name, category: group.category } as any })}
+                            className="bg-gradient-to-r from-amber-600 to-amber-700 text-white px-2.5 py-1.5 rounded-xl text-xs font-bold hover:from-amber-700 hover:to-amber-800 transition-all shadow-sm cursor-pointer"
+                          >
+                            Repor
+                          </button>
+                          <button
+                            onClick={() => handleSilenceAlert({ alertType: 'low_stock', itemName: group.name, category: group.category })}
+                            disabled={alertActionBusyKey === getLowStockDismissId(group.name, inventoryLocation)}
+                            className="p-1.5 rounded-xl bg-white hover:bg-amber-100 text-amber-800 border border-amber-200 transition-colors cursor-pointer"
+                            title="Silenciar alerta deste material"
+                          >
+                            <EyeOff size={14} />
+                          </button>
+                        </div>
                       </div>
                     ))}
 
                     {/* Near Expiry Items */}
                     {nearExpiryItems.map(item => (
-                      <div key={`exp-${item.id}`} className="flex items-center justify-between p-3.5 bg-sky-50/60 rounded-2xl border border-sky-200/80 hover:bg-sky-50 transition-all duration-200">
+                      <div key={`exp-${item.id}`} className="flex items-center justify-between gap-2 p-3.5 bg-sky-50/60 rounded-2xl border border-sky-200/80 hover:bg-sky-50 transition-all duration-200">
                         <div className="flex items-center gap-3 min-w-0 flex-1">
                           <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 border bg-sky-100 text-sky-800 border-sky-200">
                             <Calendar size={16} />
@@ -10208,19 +10068,29 @@ export default function App() {
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-1.5">
                               <p className="font-extrabold text-xs text-slate-900 truncate leading-tight">{item.name}</p>
-                              <span className="text-[9px] font-black uppercase px-1.5 py-0.2 rounded bg-sky-200 text-sky-900">Próx. Vencer</span>
+                              <span className="text-[9px] font-black uppercase px-1.5 py-0.2 rounded bg-sky-200 text-sky-900 shrink-0">Próx. Vencer</span>
                             </div>
                             <p className="text-[10px] font-bold mt-0.5 text-sky-800">
                               Vence em: {new Date(item.expiry_date!).toLocaleDateString('pt-BR')} ({item.quantity} un)
                             </p>
                           </div>
                         </div>
-                        <button 
-                          onClick={() => setShowTransactionModal({ show: true, type: 'exit', item })}
-                          className="px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-800 text-white hover:bg-slate-900 transition-all shadow-sm shrink-0 ml-2"
-                        >
-                          Retirar
-                        </button>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button 
+                            onClick={() => setShowTransactionModal({ show: true, type: 'exit', item })}
+                            className="px-2.5 py-1.5 rounded-xl text-xs font-bold bg-slate-800 text-white hover:bg-slate-900 transition-all shadow-sm cursor-pointer"
+                          >
+                            Retirar
+                          </button>
+                          <button
+                            onClick={() => handleSilenceAlert({ alertType: 'near_expiry', itemName: item.name, itemId: item.id, batchNumber: item.batch_number, category: item.category })}
+                            disabled={alertActionBusyKey === getExpiryDismissId(item.id)}
+                            className="p-1.5 rounded-xl bg-white hover:bg-sky-100 text-sky-800 border border-sky-200 transition-colors cursor-pointer"
+                            title="Silenciar este alerta"
+                          >
+                            <EyeOff size={14} />
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -10310,30 +10180,152 @@ export default function App() {
             </div>
           )}
 
-          {activeTab === 'inventory' && isAdmin && (
+          {activeTab === 'inventory' && isAdmin && (() => {
+            const zeroCount = groupedArray.filter(g => g.total_quantity <= 0).length;
+            const lowCount = groupedArray.filter(g => g.total_quantity > 0 && g.total_quantity <= (g.min_quantity || 0)).length;
+            const nearExpiryCount = groupedArray.filter(g =>
+              g.batches.some(b => (b.quantity || 0) > 0 && b.expiry_date && b.expiry_date !== 'Indeterminada' && isNearExpiry(b))
+            ).length;
+
+            const displayGroups = groupedArray.filter(g => {
+              if (inventoryQuickStatus === 'zero') return g.total_quantity <= 0;
+              if (inventoryQuickStatus === 'low') return g.total_quantity > 0 && g.total_quantity <= (g.min_quantity || 0);
+              if (inventoryQuickStatus === 'near_expiry') {
+                return g.batches.some(b => (b.quantity || 0) > 0 && b.expiry_date && b.expiry_date !== 'Indeterminada' && isNearExpiry(b));
+              }
+              return true;
+            });
+
+            const displayVolume = displayGroups.reduce((acc, g) => acc + (Number(g.total_quantity) || 0), 0);
+            const cellPy = inventoryDensity === 'compact' ? 'py-2' : 'py-3.5';
+
+            return (
             <div key="inventory" className="space-y-4">
-              {/* Desktop Inventory Management Toolbar */}
-              <div className="bg-white p-4 sm:p-5 rounded-3xl border border-slate-200/90 shadow-xs space-y-4">
+              {/* Quick Health Summary Strip (1-Click Status Filters) */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setInventoryQuickStatus('all')}
+                  className={`text-left p-4 rounded-2xl border transition-all cursor-pointer bg-white ${
+                    inventoryQuickStatus === 'all'
+                      ? 'border-blue-400 ring-2 ring-blue-500/15 shadow-xs'
+                      : 'border-slate-200/90 hover:border-blue-200'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+                      Total de Materiais
+                    </span>
+                    <span className="w-2 h-2 rounded-full bg-blue-600" />
+                  </div>
+                  <div className="flex items-baseline gap-2 mt-1.5">
+                    <span className="text-2xl font-black text-slate-900 tabular-nums">
+                      {groupedArray.length}
+                    </span>
+                    <span className="text-[11px] font-bold text-slate-400 tabular-nums">
+                      {totalVolume.toLocaleString('pt-BR')} un
+                    </span>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setInventoryQuickStatus(inventoryQuickStatus === 'zero' ? 'all' : 'zero')}
+                  className={`text-left p-4 rounded-2xl border transition-all cursor-pointer bg-white ${
+                    inventoryQuickStatus === 'zero'
+                      ? 'border-rose-400 ring-2 ring-rose-500/15 shadow-xs bg-rose-50/30'
+                      : 'border-slate-200/90 hover:border-rose-200'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-rose-700">
+                      Zerados / Ruptura
+                    </span>
+                    <span className={`w-2 h-2 rounded-full ${zeroCount > 0 ? 'bg-rose-500' : 'bg-slate-300'}`} />
+                  </div>
+                  <div className="flex items-baseline justify-between gap-2 mt-1.5">
+                    <span className={`text-2xl font-black tabular-nums ${zeroCount > 0 ? 'text-rose-700' : 'text-slate-400'}`}>
+                      {zeroCount}
+                    </span>
+                    <span className="text-[10px] font-bold text-slate-400">
+                      {inventoryQuickStatus === 'zero' ? 'Filtro ativo' : 'Filtrar'}
+                    </span>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setInventoryQuickStatus(inventoryQuickStatus === 'low' ? 'all' : 'low')}
+                  className={`text-left p-4 rounded-2xl border transition-all cursor-pointer bg-white ${
+                    inventoryQuickStatus === 'low'
+                      ? 'border-amber-400 ring-2 ring-amber-500/15 shadow-xs bg-amber-50/30'
+                      : 'border-slate-200/90 hover:border-amber-200'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-amber-700">
+                      Estoque Baixo
+                    </span>
+                    <span className={`w-2 h-2 rounded-full ${lowCount > 0 ? 'bg-amber-500' : 'bg-slate-300'}`} />
+                  </div>
+                  <div className="flex items-baseline justify-between gap-2 mt-1.5">
+                    <span className={`text-2xl font-black tabular-nums ${lowCount > 0 ? 'text-amber-700' : 'text-slate-400'}`}>
+                      {lowCount}
+                    </span>
+                    <span className="text-[10px] font-bold text-slate-400">
+                      {inventoryQuickStatus === 'low' ? 'Filtro ativo' : 'Filtrar'}
+                    </span>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setInventoryQuickStatus(inventoryQuickStatus === 'near_expiry' ? 'all' : 'near_expiry')}
+                  className={`text-left p-4 rounded-2xl border transition-all cursor-pointer bg-white ${
+                    inventoryQuickStatus === 'near_expiry'
+                      ? 'border-indigo-400 ring-2 ring-indigo-500/15 shadow-xs bg-indigo-50/30'
+                      : 'border-slate-200/90 hover:border-indigo-200'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-indigo-700">
+                      Validade Próxima
+                    </span>
+                    <span className={`w-2 h-2 rounded-full ${nearExpiryCount > 0 ? 'bg-indigo-500' : 'bg-slate-300'}`} />
+                  </div>
+                  <div className="flex items-baseline justify-between gap-2 mt-1.5">
+                    <span className={`text-2xl font-black tabular-nums ${nearExpiryCount > 0 ? 'text-indigo-700' : 'text-slate-400'}`}>
+                      {nearExpiryCount}
+                    </span>
+                    <span className="text-[10px] font-bold text-slate-400">
+                      {inventoryQuickStatus === 'near_expiry' ? 'Filtro ativo' : 'Filtrar'}
+                    </span>
+                  </div>
+                </button>
+              </div>
+
+              {/* Clean Inventory Management Toolbar */}
+              <div className="bg-white p-4 sm:p-5 rounded-3xl border border-slate-200/90 shadow-2xs space-y-3.5">
                 {/* Row 1: Locations & Quick Actions */}
-                <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-3 pb-3 border-b border-slate-100">
+                <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-3 pb-3.5 border-b border-slate-100">
                   {isAdmin ? (
-                    <div className="flex items-center gap-2 bg-slate-100/90 p-1.5 rounded-2xl border border-slate-200/80">
+                    <div className="flex items-center gap-1.5 bg-slate-100/90 p-1 rounded-2xl border border-slate-200/80">
                       <button 
                         onClick={() => setInventoryLocation('Almoxarifado')}
-                        className={`px-5 py-2 rounded-xl text-xs font-black transition-all duration-200 flex items-center gap-2 cursor-pointer ${
+                        className={`px-4 py-2 rounded-xl text-xs font-extrabold transition-all duration-200 flex items-center gap-2 cursor-pointer ${
                           inventoryLocation === 'Almoxarifado' 
-                            ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-md shadow-blue-600/20' 
-                            : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/70'
+                            ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-sm' 
+                            : 'text-slate-600 hover:text-slate-900 hover:bg-white/70'
                         }`}
                       >
                         <Package size={15} /> Almoxarifado Geral
                       </button>
                       <button 
                         onClick={() => setInventoryLocation('Farmácia')}
-                        className={`px-5 py-2 rounded-xl text-xs font-black transition-all duration-200 flex items-center gap-2 cursor-pointer ${
+                        className={`px-4 py-2 rounded-xl text-xs font-extrabold transition-all duration-200 flex items-center gap-2 cursor-pointer ${
                           inventoryLocation === 'Farmácia' 
-                            ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-md shadow-blue-600/20' 
-                            : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/70'
+                            ? 'bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white shadow-sm' 
+                            : 'text-slate-600 hover:text-slate-900 hover:bg-white/70'
                         }`}
                       >
                         <Users size={15} /> Estoque Farmácia
@@ -10357,7 +10349,7 @@ export default function App() {
                     {inventoryLocation === 'Farmácia' && (
                       <button 
                         onClick={() => setActiveTab('new-request')}
-                        className="px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white font-black text-xs rounded-xl shadow-xs transition-all flex items-center gap-2 cursor-pointer"
+                        className="px-3.5 py-2 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white font-extrabold text-xs rounded-xl shadow-xs transition-all flex items-center gap-1.5 cursor-pointer"
                         title="Solicitar novos medicamentos ao Almoxarifado Geral"
                       >
                         <Plus size={15} /> Solicitar ao Almoxarifado
@@ -10368,55 +10360,55 @@ export default function App() {
                         setActiveTab('reports');
                         setReportsTab('balanco');
                       }}
-                      className="px-4 py-2 bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white rounded-xl text-xs font-black flex items-center gap-1.5 hover:from-blue-800 hover:to-indigo-950 transition-all shadow-xs cursor-pointer"
+                      className="px-3.5 py-2 bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200/80 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer"
                       title="Realizar Balanço e Inventário Físico"
                     >
                       <ClipboardList size={15} /> Balanço de Estoque
                     </button>
                     <button 
                       onClick={handleExportInventory}
-                      className="px-3 py-2 bg-white border border-slate-200 text-slate-700 hover:text-emerald-700 hover:border-emerald-300 hover:bg-emerald-50/50 rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 cursor-pointer"
+                      className="px-3 py-2 bg-white border border-slate-200 text-slate-700 hover:text-emerald-700 hover:border-emerald-300 hover:bg-emerald-50/50 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
                       title="Exportar Planilha Excel"
                     >
-                      <Download size={15} /> <span className="hidden sm:inline">Excel</span>
+                      <Download size={14} /> <span className="hidden sm:inline">Excel</span>
                     </button>
                     <button 
                       onClick={handleExportInventoryPDF}
-                      className="px-3 py-2 bg-white border border-slate-200 text-rose-600 hover:text-rose-700 hover:border-rose-300 hover:bg-rose-50 rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 cursor-pointer"
+                      className="px-3 py-2 bg-white border border-slate-200 text-rose-600 hover:text-rose-700 hover:border-rose-300 hover:bg-rose-50 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
                       title="Baixar Relatório PDF de Todo Estoque"
                     >
-                      <Printer size={15} /> <span className="hidden sm:inline">PDF</span>
+                      <Printer size={14} /> <span className="hidden sm:inline">PDF</span>
                     </button>
                   </div>
                 </div>
 
-                {/* Row 2: Wide Search Bar & Granular Filters for Desktop */}
-                <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
-                  <div className="relative flex-1 min-w-[280px] max-w-xl">
-                    <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={17} />
+                {/* Row 2: Wide Search Bar, Filters & Density Toggle */}
+                <div className="flex flex-col xl:flex-row items-stretch xl:items-center justify-between gap-3">
+                  <div className="relative flex-1 min-w-[240px]">
+                    <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
                     <input 
                       type="text" 
                       placeholder="Buscar por nome, código, lote ou fornecedor..."
-                      className="w-full pl-10 pr-9 py-2.5 bg-slate-50 hover:bg-white focus:bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all shadow-inner"
+                      className="w-full pl-10 pr-9 py-2 bg-slate-50 hover:bg-white focus:bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
                       value={searchTerm}
                       onChange={(e) => setSearchTerm(e.target.value)}
                     />
                     {searchTerm && (
                       <button
                         onClick={() => setSearchTerm('')}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 rounded-full"
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 rounded-full cursor-pointer"
                         title="Limpar busca"
                       >
-                        <X size={15} />
+                        <X size={14} />
                       </button>
                     )}
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
-                    <div className="flex items-center gap-1.5 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200 shadow-2xs hover:border-blue-300 transition-all">
-                      <Filter size={14} className="text-blue-600 shrink-0" />
+                    <div className="flex items-center gap-1.5 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200 hover:border-blue-300 transition-all">
+                      <Filter size={13} className="text-blue-600 shrink-0" />
                       <select 
-                        className="text-xs font-bold text-slate-700 focus:outline-none bg-transparent cursor-pointer"
+                        className="text-xs font-bold text-slate-700 focus:outline-none bg-transparent cursor-pointer max-w-[160px]"
                         value={categoryFilter}
                         onChange={e => setCategoryFilter(e.target.value)}
                       >
@@ -10427,22 +10419,21 @@ export default function App() {
                       </select>
                     </div>
 
-                    <div className="flex items-center gap-1.5 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200 shadow-2xs hover:border-blue-300 transition-all">
-                      <TrendingUp size={14} className="text-blue-600 shrink-0" />
+                    <div className="flex items-center gap-1.5 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200 hover:border-blue-300 transition-all">
+                      <TrendingUp size={13} className="text-blue-600 shrink-0" />
                       <select 
                         className="text-xs font-bold text-slate-700 focus:outline-none bg-transparent cursor-pointer"
                         value={inventorySort}
                         onChange={e => setInventorySort(e.target.value as any)}
                       >
-                        <option value="name_asc">Ordem: A-Z (Nome)</option>
-                        <option value="name_desc">Ordem: Z-A (Nome)</option>
-                        <option value="duration_asc">Duração: Menor para Maior</option>
-                        <option value="duration_desc">Duração: Maior para Menor</option>
+                        <option value="name_asc">Ordem: A–Z</option>
+                        <option value="name_desc">Ordem: Z–A</option>
+                        <option value="duration_asc">Duração: Menor → Maior</option>
+                        <option value="duration_desc">Duração: Maior → Menor</option>
                       </select>
                     </div>
 
-                    <div className="flex items-center gap-1.5 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200 shadow-2xs hover:border-blue-300 transition-all">
-                      <Filter size={14} className="text-blue-600 shrink-0" />
+                    <div className="flex items-center gap-1.5 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200 hover:border-blue-300 transition-all">
                       <select 
                         className="text-xs font-bold text-slate-700 focus:outline-none bg-transparent cursor-pointer"
                         value={originFilter}
@@ -10455,639 +10446,775 @@ export default function App() {
                       </select>
                     </div>
 
-                    <span className="text-[11px] font-black text-slate-500 bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 whitespace-nowrap ml-auto lg:ml-0">
-                      {groupedArray.length} {groupedArray.length === 1 ? 'material' : 'materiais'}
-                    </span>
+                    {/* Visual Density Switcher */}
+                    <div className="inline-flex items-center bg-slate-100 p-0.5 rounded-xl border border-slate-200/80" title="Alternar espaçamento das linhas">
+                      <button
+                        type="button"
+                        onClick={() => setInventoryDensity('comfortable')}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-extrabold transition-all cursor-pointer ${
+                          inventoryDensity === 'comfortable'
+                            ? 'bg-white text-blue-800 shadow-2xs'
+                            : 'text-slate-500 hover:text-slate-800'
+                        }`}
+                      >
+                        Confortável
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setInventoryDensity('compact')}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-extrabold transition-all cursor-pointer ${
+                          inventoryDensity === 'compact'
+                            ? 'bg-white text-blue-800 shadow-2xs'
+                            : 'text-slate-500 hover:text-slate-800'
+                        }`}
+                      >
+                        Compacto
+                      </button>
+                    </div>
+
+                    {inventoryQuickStatus !== 'all' && (
+                      <button
+                        type="button"
+                        onClick={() => setInventoryQuickStatus('all')}
+                        className="px-2.5 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-700 text-[11px] font-extrabold flex items-center gap-1 cursor-pointer transition-colors"
+                      >
+                        <X size={12} /> Mostrar todos
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
 
-              <div className="bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden">
-                <div className="overflow-x-auto max-h-[75vh]">
-                  <table className="w-full text-left border-collapse min-w-[1000px]">
-                <thead className="sticky top-0 z-10 shadow-xs">
-                  <tr className="bg-gradient-to-r from-slate-900 via-blue-950 to-slate-900 text-white">
-                    <th className="px-6 py-4 font-black text-xs text-blue-200/90 uppercase tracking-wider">Item / Insumo</th>
-                    <th className="px-6 py-4 font-black text-xs text-blue-200/90 uppercase tracking-wider">Categoria {isAdmin && '/ Fornecedor'}</th>
-                    {isAdmin && <th className="px-6 py-4 font-black text-xs text-blue-200/90 uppercase tracking-wider">Origem</th>}
-                    <th className="px-6 py-4 font-black text-xs text-blue-200/90 uppercase tracking-wider">{isAdmin ? 'Preço Un.' : '---'}</th>
-                    <th className="px-6 py-4 font-black text-xs text-blue-200/90 uppercase tracking-wider text-center">Quantidade</th>
-                    <th className="px-6 py-4 font-black text-xs text-blue-200/90 uppercase tracking-wider">Mínimo</th>
-                    <th className="px-6 py-4 font-black text-xs text-blue-200/90 uppercase tracking-wider text-center">Duração</th>
-                    <th className="px-6 py-4 font-black text-xs text-blue-200/90 uppercase tracking-wider">Status Crítico</th>
-                    <th className="px-6 py-4 font-black text-xs text-blue-200/90 uppercase tracking-wider text-right">Ações</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-blue-50/80">
-                  {groupedArray.map((group, index) => {
-                    const currentMonthInfo = getDurationMonthInfo(group.durationWeeks);
-                    const prevMonthInfo = index > 0 ? getDurationMonthInfo(groupedArray[index - 1].durationWeeks) : null;
-                    const isNewMonthSection = (inventorySort === 'duration_asc' || inventorySort === 'duration_desc') && (index === 0 || currentMonthInfo.key !== prevMonthInfo?.key);
+              {/* Clean Light Institutional Inventory Table */}
+              <div className="bg-white rounded-3xl border border-slate-200/90 shadow-2xs overflow-hidden">
+                <div className="overflow-x-auto max-h-[74vh]">
+                  <table className="w-full text-left border-collapse min-w-[880px]">
+                    <thead className="sticky top-0 z-10 bg-slate-50/95 backdrop-blur-xs border-b border-slate-200">
+                      <tr>
+                        <th className="px-5 py-3.5 font-black text-[11px] text-slate-500 uppercase tracking-wider">Material / Insumo</th>
+                        <th className="px-4 py-3.5 font-black text-[11px] text-slate-500 uppercase tracking-wider">Categoria {isAdmin && '• Fornecedor'}</th>
+                        <th className="px-4 py-3.5 font-black text-[11px] text-slate-500 uppercase tracking-wider text-right">{isAdmin ? 'Preço Un.' : '—'}</th>
+                        <th className="px-4 py-3.5 font-black text-[11px] text-slate-500 uppercase tracking-wider min-w-[165px]">Saldo / Mínimo</th>
+                        <th className="px-4 py-3.5 font-black text-[11px] text-slate-500 uppercase tracking-wider text-center">Duração</th>
+                        <th className="px-4 py-3.5 font-black text-[11px] text-slate-500 uppercase tracking-wider">Situação</th>
+                        <th className="px-5 py-3.5 font-black text-[11px] text-slate-500 uppercase tracking-wider text-right">Ações</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {displayGroups.map((group, index) => {
+                        const currentMonthInfo = getDurationMonthInfo(group.durationWeeks);
+                        const prevMonthInfo = index > 0 ? getDurationMonthInfo(displayGroups[index - 1].durationWeeks) : null;
+                        const isNewMonthSection =
+                          (inventorySort === 'duration_asc' || inventorySort === 'duration_desc') &&
+                          (index === 0 || currentMonthInfo.key !== prevMonthInfo?.key);
 
-                    return (
-                    <React.Fragment key={group.name}>
-                      {isNewMonthSection && (
-                        <tr className="bg-slate-100/95 border-y-2 border-slate-300">
-                          <td colSpan={isAdmin ? 9 : 8} className="px-6 py-2.5">
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-2.5">
-                                <div className={`p-1.5 rounded-lg ${
-                                  currentMonthInfo.isCurrentMonth ? 'bg-rose-100 text-rose-700' :
-                                  currentMonthInfo.isInfinite ? 'bg-slate-200 text-slate-700' :
-                                  'bg-blue-100 text-blue-800'
-                                }`}>
-                                  <Calendar size={14} />
+                        // Resolve latest non-zero unit price for consolidated row
+                        const pricedBatches = group.batches.filter(b => (Number(b.unit_price) || 0) > 0);
+                        const latestUnitPrice = pricedBatches.length > 0 ? Number(pricedBatches[pricedBatches.length - 1].unit_price) : 0;
+
+                        // Resolve origin badge(s)
+                        const originSet = new Set(group.batches.map(b => b.origin));
+                        const singleOrigin = originSet.size === 1 ? Array.from(originSet)[0] : null;
+
+                        // Check if any active batch is near expiry
+                        const hasNearExpiryBatch = group.batches.some(
+                          b => (b.quantity || 0) > 0 && b.expiry_date && b.expiry_date !== 'Indeterminada' && isNearExpiry(b)
+                        );
+
+                        // Visual stock level progress bar (0..100%)
+                        const minRef = Math.max(1, Number(group.min_quantity) || 0);
+                        const levelPct =
+                          group.total_quantity <= 0
+                            ? 0
+                            : Math.min(100, Math.round((group.total_quantity / (minRef * 2)) * 100));
+                        const barColor =
+                          group.total_quantity <= 0
+                            ? 'bg-rose-500'
+                            : group.total_quantity <= (group.min_quantity || 0)
+                              ? 'bg-amber-500'
+                              : 'bg-emerald-500';
+
+                        const isExpanded = expandedItems.has(group.name);
+
+                        return (
+                        <React.Fragment key={group.name}>
+                          {isNewMonthSection && (
+                            <tr className="bg-slate-100/80 border-y border-slate-200">
+                              <td colSpan={7} className="px-5 py-2">
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-2">
+                                    <Calendar size={13} className={currentMonthInfo.isCurrentMonth ? 'text-rose-600' : 'text-blue-700'} />
+                                    <span className={`text-[11px] font-black uppercase tracking-wide ${
+                                      currentMonthInfo.isCurrentMonth ? 'text-rose-700' :
+                                      currentMonthInfo.isInfinite ? 'text-slate-600' :
+                                      'text-slate-800'
+                                    }`}>
+                                      {currentMonthInfo.sectionTitle}
+                                    </span>
+                                    <span className="text-[10px] font-bold text-slate-400">
+                                      ({displayGroups.filter(g => getDurationMonthInfo(g.durationWeeks).key === currentMonthInfo.key).length})
+                                    </span>
+                                  </div>
+                                  {currentMonthInfo.isCurrentMonth && (
+                                    <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-200">
+                                      Esgota este Mês
+                                    </span>
+                                  )}
                                 </div>
-                                <div className="flex items-center gap-2">
-                                  <span className={`text-xs font-black uppercase tracking-wide ${
-                                    currentMonthInfo.isCurrentMonth ? 'text-rose-700' :
-                                    currentMonthInfo.isInfinite ? 'text-slate-700' :
-                                    'text-slate-900'
-                                  }`}>
-                                    {currentMonthInfo.sectionTitle}
-                                  </span>
-                                  <span className="text-[10px] font-bold text-slate-500">
-                                    ({groupedArray.filter(g => getDurationMonthInfo(g.durationWeeks).key === currentMonthInfo.key).length} {groupedArray.filter(g => getDurationMonthInfo(g.durationWeeks).key === currentMonthInfo.key).length === 1 ? 'item' : 'itens'})
-                                  </span>
+                              </td>
+                            </tr>
+                          )}
+
+                          <tr 
+                            className={`transition-colors cursor-pointer group/row ${
+                              isExpanded
+                                ? 'bg-blue-50/40'
+                                : index % 2 === 1
+                                  ? 'bg-slate-50/35 hover:bg-blue-50/35'
+                                  : 'bg-white hover:bg-blue-50/35'
+                            }`}
+                            onClick={() => toggleExpand(group.name)}
+                          >
+                            {/* 1. Material / Insumo */}
+                            <td className={`px-5 ${cellPy}`}>
+                              <div className="flex items-start gap-2.5">
+                                <div className={`mt-0.5 p-1 rounded-lg text-slate-400 group-hover/row:bg-blue-100/80 group-hover/row:text-blue-700 transition-all shrink-0 ${isExpanded ? 'rotate-90 bg-blue-100 text-blue-700' : 'bg-slate-100/80'}`}>
+                                  <ChevronRight size={14} />
                                 </div>
-                              </div>
-                              {currentMonthInfo.isCurrentMonth && (
-                                <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-rose-600 text-white animate-pulse">
-                                  Esgota este Mês
-                                </span>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                      <tr 
-                        className="bg-white hover:bg-blue-50/40 transition-all cursor-pointer group/row"
-                        onClick={() => toggleExpand(group.name)}
-                      >
-                        <td className="px-6 py-4.5">
-                          <div className="flex items-center gap-3">
-                            <div className={`p-1.5 rounded-lg bg-slate-100 text-slate-500 group-hover/row:bg-blue-100 group-hover/row:text-blue-700 transition-all ${expandedItems.has(group.name) ? 'rotate-90 bg-blue-100 text-blue-700' : ''}`}>
-                              <ChevronRight size={16} />
-                            </div>
-                            {isAdmin && editingMaterialName?.oldName === group.name ? (
-                              <div className="flex flex-col gap-2 p-3 bg-slate-50 border border-slate-200 rounded-2xl shadow-sm" onClick={(e) => e.stopPropagation()}>
-                                <div className="flex items-center gap-2">
-                                  <input 
-                                    type="text" 
-                                    value={editingMaterialName.newName}
-                                    onChange={(e) => setEditingMaterialName({ ...editingMaterialName, newName: e.target.value })}
-                                    className="px-3 py-1 bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 font-bold text-sm text-slate-900"
-                                    autoFocus
-                                  />
-                                  <button 
-                                    onClick={handleUpdateMaterialName}
-                                    className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-xl"
-                                    title="Salvar"
-                                  >
-                                    <Check size={18} />
-                                  </button>
-                                  <button 
-                                    onClick={() => setEditingMaterialName(null)}
-                                    className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-xl"
-                                    title="Cancelar"
-                                  >
-                                    <X size={18} />
-                                  </button>
-                                </div>
-                                {group.category === 'Medicamentos' && (
-                                  <div className="flex flex-col gap-1 bg-white p-2 rounded-xl border border-slate-200">
-                                    <div className="flex flex-wrap gap-1 items-center">
-                                      <span className="text-[8px] font-black text-slate-500 uppercase tracking-wider mr-1">Unidades:</span>
-                                      {['mg', 'mcg', 'UI', 'g', 'ml', '%'].map(unit => (
-                                        <button
-                                          key={unit}
-                                          type="button"
-                                          onClick={() => {
-                                            let currentName = editingMaterialName.newName.trim();
-                                            if (currentName) {
-                                              if (!currentName.endsWith(' ')) {
-                                                currentName += ' ';
-                                              }
-                                              currentName += unit;
-                                              setEditingMaterialName({ ...editingMaterialName, newName: currentName });
-                                            }
-                                          }}
-                                          className="px-1.5 py-0.5 bg-slate-100 hover:bg-blue-700 hover:text-white text-slate-700 rounded text-[9px] font-bold transition-all uppercase"
+                                {isAdmin && editingMaterialName?.oldName === group.name ? (
+                                  <div className="flex flex-col gap-2 p-2.5 bg-slate-50 border border-slate-200 rounded-2xl shadow-xs" onClick={(e) => e.stopPropagation()}>
+                                    <div className="flex items-center gap-1.5">
+                                      <input 
+                                        type="text" 
+                                        value={editingMaterialName.newName}
+                                        onChange={(e) => setEditingMaterialName({ ...editingMaterialName, newName: e.target.value })}
+                                        className="px-3 py-1 bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 font-bold text-xs text-slate-900"
+                                        autoFocus
+                                      />
+                                      <button 
+                                        onClick={handleUpdateMaterialName}
+                                        className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-xl cursor-pointer"
+                                        title="Salvar"
+                                      >
+                                        <Check size={16} />
+                                      </button>
+                                      <button 
+                                        onClick={() => setEditingMaterialName(null)}
+                                        className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-xl cursor-pointer"
+                                        title="Cancelar"
+                                      >
+                                        <X size={16} />
+                                      </button>
+                                    </div>
+                                    {group.category === 'Medicamentos' && (
+                                      <div className="flex flex-col gap-1 bg-white p-2 rounded-xl border border-slate-200">
+                                        <div className="flex flex-wrap gap-1 items-center">
+                                          <span className="text-[8px] font-black text-slate-500 uppercase tracking-wider mr-1">Unidades:</span>
+                                          {['mg', 'mcg', 'UI', 'g', 'ml', '%'].map(unit => (
+                                            <button
+                                              key={unit}
+                                              type="button"
+                                              onClick={() => {
+                                                let currentName = editingMaterialName.newName.trim();
+                                                if (currentName) {
+                                                  if (!currentName.endsWith(' ')) {
+                                                    currentName += ' ';
+                                                  }
+                                                  currentName += unit;
+                                                  setEditingMaterialName({ ...editingMaterialName, newName: currentName });
+                                                }
+                                              }}
+                                              className="px-1.5 py-0.5 bg-slate-100 hover:bg-blue-700 hover:text-white text-slate-700 rounded text-[9px] font-bold transition-all uppercase cursor-pointer"
+                                            >
+                                              +{unit}
+                                            </button>
+                                          ))}
+                                        </div>
+                                        <div className="flex flex-wrap gap-1 items-center">
+                                          <span className="text-[8px] font-black text-slate-500 uppercase tracking-wider mr-1">Dosagem:</span>
+                                          {['500 mg', '1000 mg', '1000 UI', '5000 UI', '10.000 UI', '50.000 UI'].map(dose => (
+                                            <button
+                                              key={dose}
+                                              type="button"
+                                              onClick={() => {
+                                                let currentName = editingMaterialName.newName.trim();
+                                                if (currentName) {
+                                                  if (!currentName.endsWith(' ')) {
+                                                    currentName += ' ';
+                                                  }
+                                                  currentName += dose;
+                                                  setEditingMaterialName({ ...editingMaterialName, newName: currentName });
+                                                }
+                                              }}
+                                              className="px-1.5 py-0.5 bg-emerald-50 hover:bg-emerald-600 hover:text-white text-emerald-700 rounded text-[9px] font-bold transition-all uppercase cursor-pointer"
+                                            >
+                                              +{dose}
+                                            </button>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-1.5 group/name flex-wrap">
+                                      <p className="font-extrabold text-[13px] text-slate-900 group-hover/row:text-blue-800 transition-colors leading-snug">
+                                        {group.name}
+                                      </p>
+                                      {isAdmin && (
+                                        <button 
+                                          onClick={(e) => { e.stopPropagation(); setEditingMaterialName({ oldName: group.name, newName: group.name }); }}
+                                          className="opacity-0 group-hover/row:opacity-100 p-1 text-slate-400 hover:text-blue-700 rounded-md transition-all cursor-pointer"
+                                          title="Editar Nome do Material"
                                         >
-                                          +{unit}
+                                          <Edit2 size={12} />
                                         </button>
+                                      )}
+                                    </div>
+                                    <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                                      <span className="font-mono text-[10px] font-bold text-slate-400" title={`Código: ${group.material_code || group.material_id}`}>
+                                        {group.material_code || group.material_id}
+                                      </span>
+                                      {group.unit_measure && (
+                                        <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 uppercase">
+                                          {group.unit_measure}
+                                        </span>
+                                      )}
+                                      {isAdmin && (
+                                        <span className={`text-[9px] font-extrabold px-1.5 py-0.5 rounded ${
+                                          singleOrigin === 'contract'
+                                            ? 'bg-blue-50 text-blue-700'
+                                            : singleOrigin === 'donation'
+                                              ? 'bg-emerald-50 text-emerald-700'
+                                              : singleOrigin === 'extra'
+                                                ? 'bg-indigo-50 text-indigo-700'
+                                                : 'bg-slate-100 text-slate-600'
+                                        }`}>
+                                          {singleOrigin === 'contract'
+                                            ? 'Contrato'
+                                            : singleOrigin === 'donation'
+                                              ? 'Doação'
+                                              : singleOrigin === 'extra'
+                                                ? 'Extra'
+                                                : 'Misto'}
+                                        </span>
+                                      )}
+                                      {Array.from(new Set(group.batches.map(b => b.medication_type).filter(Boolean))).map(type => (
+                                        <span key={type} className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 uppercase">
+                                          {type}
+                                        </span>
                                       ))}
                                     </div>
-                                    <div className="flex flex-wrap gap-1 items-center">
-                                      <span className="text-[8px] font-black text-slate-500 uppercase tracking-wider mr-1">Dosagem:</span>
-                                      {['500 mg', '1000 mg', '1000 UI', '5000 UI', '10.000 UI', '50.000 UI'].map(dose => (
-                                        <button
-                                          key={dose}
-                                          type="button"
-                                          onClick={() => {
-                                            let currentName = editingMaterialName.newName.trim();
-                                            if (currentName) {
-                                              if (!currentName.endsWith(' ')) {
-                                                currentName += ' ';
-                                              }
-                                              currentName += dose;
-                                              setEditingMaterialName({ ...editingMaterialName, newName: currentName });
-                                            }
-                                          }}
-                                          className="px-1.5 py-0.5 bg-emerald-50 hover:bg-emerald-600 hover:text-white text-emerald-700 rounded text-[9px] font-bold transition-all uppercase"
-                                        >
-                                          +{dose}
-                                        </button>
-                                      ))}
-                                    </div>
+                                    {group.batches[0]?.description && inventoryDensity === 'comfortable' && (
+                                      <p className="text-[10px] text-slate-400 italic mt-0.5 line-clamp-1">{group.batches[0].description}</p>
+                                    )}
                                   </div>
                                 )}
                               </div>
-                            ) : (
-                              <div className="flex flex-col">
-                                <div className="flex items-center gap-2 group/name flex-wrap">
-                                  <span className="font-mono text-[10px] font-black px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200" title={`Código de identificação consolidada do material: ${group.material_code || group.material_id}`}>
-                                    {group.material_code || group.material_id}
-                                  </span>
-                                  <p className="font-extrabold text-sm text-slate-900 group-hover/row:text-blue-700 transition-colors">{group.name}</p>
-                                  
-                                  {/* Eye button to view all exits of this material */}
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setShowItemExitsModal({ show: true, materialName: group.name, batchNumber: null });
-                                    }}
-                                    className="p-1 text-blue-600 hover:text-blue-800 hover:bg-blue-100 bg-blue-50/80 rounded-lg transition-all border border-blue-200/80 shadow-2xs flex items-center gap-1 cursor-pointer"
-                                    title={`Ver todas as saídas de ${group.name} (setor, quantidades, lotes e datas)`}
-                                  >
-                                    <Eye size={15} />
-                                    <span className="text-[10px] font-extrabold">Saídas</span>
-                                  </button>
+                            </td>
 
-                                  {group.unit_measure && (
-                                    <span className="text-[9px] font-black px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200/80 uppercase tracking-wider">
-                                      {group.unit_measure}
-                                    </span>
+                            {/* 2. Categoria / Fornecedor */}
+                            <td className={`px-4 ${cellPy}`} onClick={(e) => e.stopPropagation()}>
+                              {isAdmin && editingCategory?.name === group.name && !editingCategory?.itemId ? (
+                                <div className="flex flex-col gap-1.5 bg-indigo-50/90 p-2.5 border border-indigo-200 rounded-2xl shadow-md min-w-[200px]">
+                                  <label className="text-[10px] font-black text-indigo-900 uppercase tracking-wider">Nova Categoria:</label>
+                                  <select 
+                                    value={editingCategory.currentCategory === '__NEW__' ? '__NEW__' : editingCategory.currentCategory}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      if (val === '__NEW__') {
+                                        setEditingCategory({ ...editingCategory, currentCategory: '__NEW__' });
+                                      } else {
+                                        setEditingCategory({ ...editingCategory, currentCategory: val });
+                                      }
+                                    }}
+                                    className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-xl text-xs font-extrabold text-slate-800 focus:ring-2 focus:ring-indigo-500"
+                                  >
+                                    {categories.map(cat => (
+                                      <option key={`cat-select-${cat}`} value={cat}>{cat}</option>
+                                    ))}
+                                    <option value="__NEW__">+ Cadastrar Nova Categoria...</option>
+                                  </select>
+
+                                  {editingCategory.currentCategory === '__NEW__' && (
+                                    <input 
+                                      type="text"
+                                      placeholder="Digite a nova categoria"
+                                      value={customNewCategory}
+                                      onChange={(e) => setCustomNewCategory(e.target.value)}
+                                      className="w-full px-2.5 py-1 bg-white border border-indigo-300 rounded-xl text-xs font-extrabold text-indigo-900 focus:ring-2 focus:ring-indigo-500"
+                                      autoFocus
+                                    />
                                   )}
-                                  {Array.from(new Set(group.batches.map(b => b.medication_type).filter(Boolean))).map(type => (
-                                    <span key={type} className="text-[9px] font-black px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-100/80 uppercase tracking-wider">
-                                      {type}
-                                    </span>
-                                  ))}
+
+                                  <div className="flex items-center gap-1.5 mt-1">
+                                    <button 
+                                      onClick={() => handleUpdateCategory()}
+                                      className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-1 cursor-pointer"
+                                      title="Salvar Categoria"
+                                    >
+                                      <Check size={14} /> Salvar
+                                    </button>
+                                    <button 
+                                      onClick={() => { setEditingCategory(null); setCustomNewCategory(''); }}
+                                      className="py-1.5 px-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl font-bold text-xs transition-all cursor-pointer"
+                                      title="Cancelar"
+                                    >
+                                      <X size={14} />
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="flex items-start gap-1 group/cat">
+                                  <div className="min-w-0">
+                                    <p className="text-xs font-bold text-slate-800 truncate max-w-[175px]">{group.category || '—'}</p>
+                                    {isAdmin && (
+                                      <p className="text-[11px] font-medium text-slate-400 truncate max-w-[175px] mt-0.5">
+                                        {group.supplier || '—'}
+                                      </p>
+                                    )}
+                                  </div>
                                   {isAdmin && (
                                     <button 
-                                      onClick={(e) => { e.stopPropagation(); setEditingMaterialName({ oldName: group.name, newName: group.name }); }}
-                                      className="opacity-0 group-hover/name:opacity-100 p-1 text-slate-400 hover:text-blue-700 transition-all"
-                                      title="Editar Nome do Material"
-                                    >
-                                      <Edit2 size={14} />
-                                    </button>
-                                  )}
-                                </div>
-                                {group.batches[0]?.description && (
-                                  <p className="text-[10px] text-slate-400 italic mt-0.5 line-clamp-1">{group.batches[0].description}</p>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-6 py-4.5" onClick={(e) => e.stopPropagation()}>
-                          {isAdmin && editingCategory?.name === group.name && !editingCategory?.itemId ? (
-                            <div className="flex flex-col gap-1.5 bg-indigo-50/90 p-2.5 border border-indigo-200 rounded-2xl shadow-md min-w-[210px]">
-                              <label className="text-[10px] font-black text-indigo-900 uppercase tracking-wider">Nova Categoria:</label>
-                              <select 
-                                value={editingCategory.currentCategory === '__NEW__' ? '__NEW__' : editingCategory.currentCategory}
-                                onChange={(e) => {
-                                  const val = e.target.value;
-                                  if (val === '__NEW__') {
-                                    setEditingCategory({ ...editingCategory, currentCategory: '__NEW__' });
-                                  } else {
-                                    setEditingCategory({ ...editingCategory, currentCategory: val });
-                                  }
-                                }}
-                                className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-xl text-xs font-extrabold text-slate-800 focus:ring-2 focus:ring-indigo-500"
-                              >
-                                {categories.map(cat => (
-                                  <option key={`cat-select-${cat}`} value={cat}>{cat}</option>
-                                ))}
-                                <option value="__NEW__">+ Cadastrar Nova Categoria...</option>
-                              </select>
-
-                              {editingCategory.currentCategory === '__NEW__' && (
-                                <input 
-                                  type="text"
-                                  placeholder="Digite a nova categoria"
-                                  value={customNewCategory}
-                                  onChange={(e) => setCustomNewCategory(e.target.value)}
-                                  className="w-full px-2.5 py-1 bg-white border border-indigo-300 rounded-xl text-xs font-extrabold text-indigo-900 focus:ring-2 focus:ring-indigo-500"
-                                  autoFocus
-                                />
-                              )}
-
-                              <div className="flex items-center gap-1.5 mt-1">
-                                <button 
-                                  onClick={() => handleUpdateCategory()}
-                                  className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs transition-all flex items-center justify-center gap-1 shadow-xs"
-                                  title="Salvar Categoria"
-                                >
-                                  <Check size={14} /> Salvar
-                                </button>
-                                <button 
-                                  onClick={() => { setEditingCategory(null); setCustomNewCategory(''); }}
-                                  className="py-1.5 px-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl font-bold text-xs transition-all"
-                                  title="Cancelar"
-                                >
-                                  <X size={14} />
-                                </button>
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="flex items-center gap-1.5 group/cat">
-                              <div>
-                                <p className="text-xs font-bold text-slate-800">{group.category || '---'}</p>
-                                {isAdmin && <p className="text-[10px] font-medium text-slate-400 mt-0.5">{group.supplier || '---'}</p>}
-                              </div>
-                              {isAdmin && (
-                                <button 
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setEditingCategory({ name: group.name, currentCategory: group.category || categories[0] || 'Expediente' });
-                                    setCustomNewCategory('');
-                                  }}
-                                  className="opacity-0 group-hover/cat:opacity-100 p-1 text-slate-400 hover:text-indigo-700 hover:bg-indigo-50 rounded-lg transition-all"
-                                  title="Alterar Categoria deste Material"
-                                >
-                                  <Edit2 size={13} />
-                                </button>
-                              )}
-                            </div>
-                          )}
-                        </td>
-                        <td className="px-6 py-4.5">
-                          {isAdmin ? (
-                            (() => {
-                              const origins = new Set(group.batches.map(b => b.origin));
-                              if (origins.size === 1) {
-                                const origin = Array.from(origins)[0];
-                                return (
-                                  <span className={`text-[10px] font-extrabold px-2.5 py-1 rounded-md border ${
-                                    origin === 'contract' ? 'bg-blue-50 text-blue-700 border-blue-200/80' : 
-                                    origin === 'donation' ? 'bg-emerald-50 text-emerald-700 border-emerald-200/80' : 
-                                    'bg-indigo-50 text-indigo-700 border-indigo-200/80'
-                                  }`}>
-                                    {origin === 'contract' ? 'Contrato' : origin === 'donation' ? 'Doação' : 'Extra'}
-                                  </span>
-                                );
-                              }
-                              return (
-                                <span className="text-[10px] font-extrabold px-2.5 py-1 rounded-md bg-slate-100 text-slate-600 border border-slate-200 uppercase">
-                                  {group.batches.length} Lotes
-                                </span>
-                              );
-                            })()
-                          ) : (
-                            <span className="text-xs text-slate-300">---</span>
-                          )}
-                        </td>
-                        <td className="px-6 py-4.5 font-semibold text-slate-600 text-xs">---</td>
-                        <td className="px-6 py-4.5">
-                          <div className="flex flex-col items-center justify-center bg-slate-50/90 rounded-2xl py-1.5 px-3 border border-slate-200/80 min-w-[95px]">
-                            <span className={`text-base font-black ${group.total_quantity <= (group.min_quantity || 0) ? 'text-amber-600' : 'text-slate-900'}`}>
-                              {group.total_quantity}
-                            </span>
-                            <span className="text-[8px] font-black text-slate-500 uppercase tracking-wider">Estoque Consolidado</span>
-                            <span className="text-[9px] font-bold text-blue-700">
-                              ({group.batches.length} {group.batches.length === 1 ? 'lote' : 'lotes'})
-                            </span>
-                          </div>
-                        </td>
-                        <td className="px-6 py-4.5 text-xs font-semibold text-slate-600">
-                          <div className="flex flex-col">
-                            <span className="flex items-center gap-1 font-bold text-slate-800">
-                              {group.min_quantity !== undefined && !isNaN(group.min_quantity) ? group.min_quantity : '---'}
-                              <TrendingUp size={12} className="text-blue-600" />
-                            </span>
-                            {group.isDynamicMin ? (
-                              <span className="text-[9px] text-blue-600 font-bold" title="Estoque mínimo dinâmico baseado na média dos últimos 3 meses">
-                                (Média 3 meses)
-                              </span>
-                            ) : (
-                              <span className="text-[9px] text-slate-400 font-medium" title="Estoque mínimo inicial até consolidar saídas">
-                                (Inicial)
-                              </span>
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-6 py-4.5">
-                          <div className={`flex flex-col items-center justify-center py-1.5 px-2.5 rounded-xl border ${
-                            group.durationWeeks === 'infinite' ? 'bg-blue-50 border-blue-200 text-blue-700' :
-                            group.durationWeeks <= 4 ? 'bg-rose-50 border-rose-200 text-rose-700' :
-                            group.durationWeeks <= 8 ? 'bg-amber-50 border-amber-200 text-amber-700' :
-                            'bg-emerald-50 border-emerald-200 text-emerald-700'
-                          }`}>
-                            <span className="text-xs font-black">
-                              {group.durationWeeks === 'infinite' ? '∞' : `${group.durationWeeks.toFixed(1)} sem`}
-                            </span>
-                            {group.durationWeeks !== 'infinite' && (
-                              <span className={`text-[9px] font-extrabold mt-0.5 tracking-tight ${
-                                currentMonthInfo.isCurrentMonth ? 'text-rose-700 font-black' : 'text-slate-600'
-                              }`}>
-                                Até {currentMonthInfo.shortMonthYear}
-                              </span>
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-6 py-4.5 text-xs">
-                          {group.total_quantity <= 0 ? (
-                            <span className="font-black uppercase tracking-tight text-[10px] px-2 py-0.5 rounded-md border bg-rose-100 text-rose-800 border-rose-300">
-                              Zerado / Ruptura
-                            </span>
-                          ) : group.total_quantity <= group.min_quantity ? (
-                            <span className="font-black uppercase tracking-tight text-[10px] px-2 py-0.5 rounded-md border bg-amber-100 text-amber-900 border-amber-300">
-                              Estoque Baixo
-                            </span>
-                          ) : (
-                            <span className="font-bold uppercase tracking-tight text-[10px] px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200">
-                              Normal
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-6 py-4.5 text-right">
-                          <div className="flex items-center justify-end gap-2">
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setShowItemExitsModal({ show: true, materialName: group.name, batchNumber: null });
-                              }}
-                              className="px-2.5 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200/80 rounded-xl text-xs font-bold transition-all flex items-center gap-1 cursor-pointer shadow-2xs"
-                              title={`Consultar histórico de saídas de ${group.name}`}
-                            >
-                              <Eye size={14} />
-                              <span className="hidden sm:inline">Saídas</span>
-                            </button>
-                            <div className="flex flex-col items-end gap-0.5">
-                              <button className="text-xs font-extrabold text-blue-700 group-hover/row:text-blue-900 uppercase tracking-wider flex items-center gap-1">
-                                {expandedItems.has(group.name) ? 'Recolher' : 'Ver Lotes'}
-                              </button>
-                              <span className="text-[10px] text-slate-400 font-medium">
-                                {group.batches.length} {group.batches.length === 1 ? 'lote' : 'lotes'}
-                              </span>
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
-                      
-                      {expandedItems.has(group.name) && (
-                        <tr className="bg-blue-50/50 border-l-4 border-blue-600">
-                          <td colSpan={isAdmin ? 9 : 8} className="px-8 py-2">
-                            <div className="flex items-center justify-between text-xs">
-                              <span className="font-extrabold text-blue-950 flex items-center gap-1.5">
-                                <Layers size={14} className="text-blue-600" />
-                                Detalhamento dos Lotes de <strong>{group.name}</strong> ({group.batches.length} {group.batches.length === 1 ? 'lote cadastrado' : 'lotes cadastrados'})
-                              </span>
-                              <span className="text-[11px] font-bold text-blue-800 bg-blue-100/90 px-2.5 py-0.5 rounded-lg border border-blue-200">
-                                Saldo Consolidado: <strong>{group.total_quantity} un</strong>
-                              </span>
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-
-                      {expandedItems.has(group.name) && group.batches.map(item => (
-                        <tr key={item.id} className="bg-slate-50/70 hover:bg-blue-50/50 transition-all border-l-4 border-blue-600">
-                          <td className="px-12 py-3.5">
-                            <div className="flex items-center gap-2">
-                              <p className="text-xs font-mono font-bold text-slate-800">Lote: {item.batch_number || '---'}</p>
-                              {item.unit_measure && (
-                                <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-amber-100/80 text-amber-900 border border-amber-200 uppercase tracking-wide">
-                                  {item.unit_measure}
-                                </span>
-                              )}
-                              {item.medication_type && (
-                                <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-slate-200/80 text-slate-700 border border-slate-300/60 uppercase tracking-wide">
-                                  {item.medication_type}
-                                </span>
-                              )}
-                            </div>
-                            {item.description && <p className="text-[10px] text-slate-400 italic mt-0.5">{item.description}</p>}
-                          </td>
-                          <td className="px-6 py-3.5">
-                            {isAdmin ? (
-                              <p className="text-xs text-slate-600 font-medium">{item.supplier || '---'}</p>
-                            ) : (
-                              <p className="text-xs text-slate-400">---</p>
-                            )}
-                          </td>
-                          <td className="px-6 py-3.5">
-                            {isAdmin ? (
-                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${item.origin === 'contract' ? 'bg-blue-100 text-blue-800' : item.origin === 'donation' ? 'bg-emerald-100 text-emerald-800' : 'bg-indigo-100 text-indigo-800'}`}>
-                                {item.origin === 'contract' ? 'Contrato' : item.origin === 'donation' ? 'Doação' : 'Extra'}
-                              </span>
-                            ) : (
-                              <span className="text-xs text-slate-300">---</span>
-                            )}
-                          </td>
-                          <td className="px-6 py-3.5 text-xs text-slate-700 font-medium">
-                            {isAdmin ? (
-                              editingPrice?.id === item.id ? (
-                                <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                                  <input 
-                                    type="number" 
-                                    step="0.01"
-                                    value={editingPrice.price}
-                                    onChange={(e) => setEditingPrice({ ...editingPrice, price: parseFloat(e.target.value) || 0 })}
-                                    className="w-24 px-2 py-1 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 font-bold text-xs"
-                                    autoFocus
-                                  />
-                                  <button 
-                                    onClick={handleUpdatePrice}
-                                    className="p-1 text-emerald-600 hover:bg-emerald-50 rounded-md"
-                                    title="Salvar"
-                                  >
-                                    <Check size={14} />
-                                  </button>
-                                  <button 
-                                    onClick={() => setEditingPrice(null)}
-                                    className="p-1 text-rose-600 hover:bg-rose-50 rounded-md"
-                                    title="Cancelar"
-                                  >
-                                    <X size={14} />
-                                  </button>
-                                </div>
-                              ) : (
-                                <div className="flex items-center gap-2 group/price">
-                                  <span className="font-bold text-slate-900">{new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.unit_price)}</span>
-                                  <button 
-                                    onClick={(e) => { e.stopPropagation(); setEditingPrice({ id: item.id, price: item.unit_price }); }}
-                                    className="opacity-0 group-hover/price:opacity-100 p-1 text-slate-400 hover:text-blue-700 transition-all"
-                                    title="Editar Preço"
-                                  >
-                                    <Edit2 size={12} />
-                                  </button>
-                                </div>
-                              )
-                            ) : (
-                              '---'
-                            )}
-                          </td>
-                          <td className="px-6 py-3.5 text-center">
-                            {isAdmin ? (
-                              editingQuantity?.id === item.id ? (
-                                <div className="flex items-center justify-center gap-2" onClick={(e) => e.stopPropagation()}>
-                                  <input 
-                                    type="number" 
-                                    min="0"
-                                    value={editingQuantity.quantity}
-                                    onChange={(e) => setEditingQuantity({ ...editingQuantity, quantity: parseInt(e.target.value) || 0 })}
-                                    className="w-20 px-2 py-1 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 font-bold text-xs"
-                                    autoFocus
-                                  />
-                                  <button 
-                                    onClick={handleUpdateQuantity}
-                                    className="p-1 text-emerald-600 hover:bg-emerald-50 rounded-md"
-                                    title="Salvar"
-                                  >
-                                    <Check size={14} />
-                                  </button>
-                                  <button 
-                                    onClick={() => setEditingQuantity(null)}
-                                    className="p-1 text-rose-600 hover:bg-rose-50 rounded-md"
-                                    title="Cancelar"
-                                  >
-                                    <X size={14} />
-                                  </button>
-                                </div>
-                              ) : (
-                                <div className="flex flex-col items-center group/qty">
-                                  <div className="flex items-center gap-1.5">
-                                    <span className={`text-sm font-black ${(item.quantity || 0) === 0 ? 'text-slate-400 italic' : 'text-slate-800'}`}>
-                                      {item.quantity} un
-                                    </span>
-                                    <button 
-                                      onClick={(e) => { e.stopPropagation(); setEditingQuantity({ id: item.id, quantity: item.quantity }); }}
-                                      className="opacity-0 group-hover/qty:opacity-100 p-1 text-slate-400 hover:text-blue-700 transition-all"
-                                      title="Editar Quantidade deste Lote"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setEditingCategory({ name: group.name, currentCategory: group.category || categories[0] || 'Expediente' });
+                                        setCustomNewCategory('');
+                                      }}
+                                      className="opacity-0 group-hover/row:opacity-100 p-1 text-slate-400 hover:text-indigo-700 hover:bg-indigo-50 rounded-lg transition-all cursor-pointer shrink-0"
+                                      title="Alterar Categoria deste Material"
                                     >
                                       <Edit2 size={12} />
                                     </button>
+                                  )}
+                                </div>
+                              )}
+                            </td>
+
+                            {/* 3. Preço Unitário */}
+                            <td className={`px-4 ${cellPy} text-right`}>
+                              {isAdmin ? (
+                                <span className={`text-xs font-bold tabular-nums ${latestUnitPrice > 0 ? 'text-slate-700' : 'text-slate-300'}`}>
+                                  {latestUnitPrice > 0
+                                    ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(latestUnitPrice)
+                                    : '—'}
+                                </span>
+                              ) : (
+                                <span className="text-xs text-slate-300">—</span>
+                              )}
+                            </td>
+
+                            {/* 4. Saldo Consolidado + Mínimo + Barra de Nível */}
+                            <td className={`px-4 ${cellPy}`}>
+                              <div className="space-y-1 max-w-[175px]">
+                                <div className="flex items-baseline justify-between gap-2">
+                                  <div className="flex items-baseline gap-1">
+                                    <span className={`text-sm font-black tabular-nums ${
+                                      group.total_quantity <= 0
+                                        ? 'text-rose-700'
+                                        : group.total_quantity <= (group.min_quantity || 0)
+                                          ? 'text-amber-700'
+                                          : 'text-slate-900'
+                                    }`}>
+                                      {group.total_quantity.toLocaleString('pt-BR')}
+                                    </span>
+                                    <span className="text-[10px] font-bold text-slate-400">un</span>
                                   </div>
-                                  <span className="text-[8px] font-bold text-slate-400 uppercase">
-                                    {(item.quantity || 0) === 0 ? 'Lote Esgotado' : 'Saldo deste Lote'}
+                                  <span
+                                    className="text-[10px] font-bold text-slate-400 tabular-nums"
+                                    title={group.isDynamicMin ? 'Mínimo dinâmico (média 3 meses)' : 'Estoque mínimo inicial'}
+                                  >
+                                    Mín: {group.min_quantity !== undefined && !isNaN(group.min_quantity) ? group.min_quantity : '—'}
                                   </span>
                                 </div>
-                              )
-                            ) : (
-                              <div className="flex flex-col items-center">
-                                <span className={`text-sm font-black ${(item.quantity || 0) === 0 ? 'text-slate-400 italic' : 'text-slate-800'}`}>
-                                  {item.quantity} un
-                                </span>
-                                <span className="text-[8px] font-bold text-slate-400 uppercase">
-                                  {(item.quantity || 0) === 0 ? 'Lote Esgotado' : 'Saldo deste Lote'}
-                                </span>
+                                <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                                  <div
+                                    className={`h-full rounded-full transition-all ${barColor}`}
+                                    style={{ width: `${levelPct}%` }}
+                                  />
+                                </div>
+                                <div className="flex items-center justify-between text-[10px]">
+                                  <span className="font-semibold text-slate-400">
+                                    {group.batches.length} {group.batches.length === 1 ? 'lote' : 'lotes'}
+                                  </span>
+                                  {group.isDynamicMin && (
+                                    <span className="text-[9px] font-bold text-blue-600/80">Média 3m</span>
+                                  )}
+                                </div>
                               </div>
-                            )}
+                            </td>
+
+                            {/* 5. Duração */}
+                            <td className={`px-4 ${cellPy} text-center`}>
+                              <div className="inline-flex flex-col items-center">
+                                <span className={`text-xs font-black tabular-nums ${
+                                  group.durationWeeks === 'infinite' ? 'text-blue-700' :
+                                  group.durationWeeks <= 4 ? 'text-rose-700' :
+                                  group.durationWeeks <= 8 ? 'text-amber-700' :
+                                  'text-emerald-700'
+                                }`}>
+                                  {group.durationWeeks === 'infinite' ? '∞' : `${group.durationWeeks.toFixed(1)} sem`}
+                                </span>
+                                {group.durationWeeks !== 'infinite' && (
+                                  <span className={`text-[10px] font-semibold ${
+                                    currentMonthInfo.isCurrentMonth ? 'text-rose-600 font-bold' : 'text-slate-400'
+                                  }`}>
+                                    Até {currentMonthInfo.shortMonthYear}
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+
+                            {/* 6. Situação (Minimalist Status Dot + Label) */}
+                            <td className={`px-4 ${cellPy}`}>
+                              <div className="flex flex-col items-start gap-1">
+                                {group.total_quantity <= 0 ? (
+                                  <span className="inline-flex items-center gap-1.5 text-[11px] font-extrabold text-rose-700">
+                                    <span className="w-2 h-2 rounded-full bg-rose-500" />
+                                    Zerado
+                                  </span>
+                                ) : group.total_quantity <= group.min_quantity ? (
+                                  <span className="inline-flex items-center gap-1.5 text-[11px] font-extrabold text-amber-700">
+                                    <span className="w-2 h-2 rounded-full bg-amber-500" />
+                                    Estoque Baixo
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-700">
+                                    <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                                    Normal
+                                  </span>
+                                )}
+                                {hasNearExpiryBatch && (
+                                  <span className="text-[9px] font-extrabold text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded">
+                                    Validade próxima
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+
+                            {/* 7. Ações */}
+                            <td className={`px-5 ${cellPy} text-right`}>
+                              <div className="flex items-center justify-end gap-2">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setShowItemExitsModal({ show: true, materialName: group.name, batchNumber: null });
+                                  }}
+                                  className="px-2.5 py-1.5 bg-slate-100 hover:bg-blue-50 text-slate-600 hover:text-blue-700 border border-slate-200/80 hover:border-blue-200 rounded-xl text-[11px] font-bold transition-all flex items-center gap-1 cursor-pointer"
+                                  title={`Consultar histórico de saídas de ${group.name}`}
+                                >
+                                  <Eye size={13} />
+                                  <span className="hidden sm:inline">Saídas</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    toggleExpand(group.name);
+                                  }}
+                                  className={`px-2.5 py-1.5 rounded-xl text-[11px] font-extrabold transition-all cursor-pointer ${
+                                    isExpanded
+                                      ? 'bg-blue-700 text-white'
+                                      : 'bg-blue-50 hover:bg-blue-100 text-blue-700'
+                                  }`}
+                                >
+                                  {isExpanded ? 'Recolher' : 'Lotes'}
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+
+                          {/* Expanded Batches: Clean Indented Subpanel */}
+                          {isExpanded && (
+                            <tr className="bg-slate-50/80">
+                              <td colSpan={7} className="px-4 sm:px-6 py-3.5">
+                                <div className="rounded-2xl border border-blue-200/80 bg-white overflow-hidden shadow-2xs">
+                                  <div className="px-4 py-2.5 bg-blue-50/60 border-b border-blue-100 flex flex-wrap items-center justify-between gap-2">
+                                    <span className="text-xs font-extrabold text-blue-950 flex items-center gap-1.5">
+                                      <Layers size={13} className="text-blue-600" />
+                                      Lotes de <strong>{group.name}</strong> ({group.batches.length} {group.batches.length === 1 ? 'lote' : 'lotes'})
+                                    </span>
+                                    <span className="text-[11px] font-extrabold text-blue-800">
+                                      Saldo Consolidado: {group.total_quantity.toLocaleString('pt-BR')} un
+                                    </span>
+                                  </div>
+
+                                  <div className="overflow-x-auto">
+                                    <table className="w-full text-left border-collapse">
+                                      <thead>
+                                        <tr className="bg-slate-50/90 border-b border-slate-100 text-[10px] font-black text-slate-400 uppercase tracking-wider">
+                                          <th className="px-4 py-2">Lote</th>
+                                          <th className="px-3 py-2 text-center">Validade</th>
+                                          <th className="px-3 py-2">Fornecedor</th>
+                                          <th className="px-3 py-2 text-center">Origem</th>
+                                          <th className="px-3 py-2 text-right">Preço Un.</th>
+                                          <th className="px-3 py-2 text-center">Saldo do Lote</th>
+                                          <th className="px-4 py-2 text-right">Ações</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-slate-100">
+                                        {group.batches.map(item => (
+                                          <tr key={item.id} className="hover:bg-slate-50/80 transition-colors">
+                                            <td className="px-4 py-2.5">
+                                              <div className="flex items-center gap-1.5 flex-wrap">
+                                                <span className="text-xs font-mono font-bold text-slate-800">
+                                                  {item.batch_number || 'Sem lote'}
+                                                </span>
+                                                {item.unit_measure && (
+                                                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 uppercase">
+                                                    {item.unit_measure}
+                                                  </span>
+                                                )}
+                                                {item.medication_type && (
+                                                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 uppercase">
+                                                    {item.medication_type}
+                                                  </span>
+                                                )}
+                                              </div>
+                                              {item.description && (
+                                                <p className="text-[10px] text-slate-400 italic mt-0.5">{item.description}</p>
+                                              )}
+                                            </td>
+
+                                            <td className="px-3 py-2.5 text-center">
+                                              {item.expiry_date ? (
+                                                <span className={`text-xs font-bold tabular-nums ${
+                                                  item.expiry_date === 'Indeterminada'
+                                                    ? 'text-blue-700'
+                                                    : isNearExpiry(item)
+                                                      ? 'text-rose-600 font-black'
+                                                      : 'text-slate-700'
+                                                }`}>
+                                                  {item.expiry_date === 'Indeterminada'
+                                                    ? 'Indeterminada'
+                                                    : new Date(item.expiry_date).toLocaleDateString('pt-BR')}
+                                                </span>
+                                              ) : (
+                                                <span className="text-slate-400 text-xs italic">N/A</span>
+                                              )}
+                                            </td>
+
+                                            <td className="px-3 py-2.5 text-xs text-slate-600 font-medium">
+                                              {isAdmin ? (item.supplier || '—') : '—'}
+                                            </td>
+
+                                            <td className="px-3 py-2.5 text-center">
+                                              {isAdmin ? (
+                                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${
+                                                  item.origin === 'contract'
+                                                    ? 'bg-blue-50 text-blue-700'
+                                                    : item.origin === 'donation'
+                                                      ? 'bg-emerald-50 text-emerald-700'
+                                                      : 'bg-indigo-50 text-indigo-700'
+                                                }`}>
+                                                  {item.origin === 'contract' ? 'Contrato' : item.origin === 'donation' ? 'Doação' : 'Extra'}
+                                                </span>
+                                              ) : (
+                                                <span className="text-xs text-slate-300">—</span>
+                                              )}
+                                            </td>
+
+                                            <td className="px-3 py-2.5 text-right text-xs">
+                                              {isAdmin ? (
+                                                editingPrice?.id === item.id ? (
+                                                  <div className="flex items-center justify-end gap-1.5" onClick={(e) => e.stopPropagation()}>
+                                                    <input 
+                                                      type="number" 
+                                                      step="0.01"
+                                                      value={editingPrice.price}
+                                                      onChange={(e) => setEditingPrice({ ...editingPrice, price: parseFloat(e.target.value) || 0 })}
+                                                      className="w-24 px-2 py-1 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 font-bold text-xs text-right"
+                                                      autoFocus
+                                                    />
+                                                    <button 
+                                                      onClick={handleUpdatePrice}
+                                                      className="p-1 text-emerald-600 hover:bg-emerald-50 rounded-md cursor-pointer"
+                                                      title="Salvar"
+                                                    >
+                                                      <Check size={14} />
+                                                    </button>
+                                                    <button 
+                                                      onClick={() => setEditingPrice(null)}
+                                                      className="p-1 text-rose-600 hover:bg-rose-50 rounded-md cursor-pointer"
+                                                      title="Cancelar"
+                                                    >
+                                                      <X size={14} />
+                                                    </button>
+                                                  </div>
+                                                ) : (
+                                                  <div className="inline-flex items-center gap-1.5 group/price">
+                                                    <span className="font-bold text-slate-800 tabular-nums">
+                                                      {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(item.unit_price)}
+                                                    </span>
+                                                    <button 
+                                                      onClick={(e) => { e.stopPropagation(); setEditingPrice({ id: item.id, price: item.unit_price }); }}
+                                                      className="opacity-0 group-hover/price:opacity-100 p-1 text-slate-400 hover:text-blue-700 transition-all cursor-pointer"
+                                                      title="Editar Preço"
+                                                    >
+                                                      <Edit2 size={12} />
+                                                    </button>
+                                                  </div>
+                                                )
+                                              ) : (
+                                                '—'
+                                              )}
+                                            </td>
+
+                                            <td className="px-3 py-2.5 text-center">
+                                              {isAdmin ? (
+                                                editingQuantity?.id === item.id ? (
+                                                  <div className="flex items-center justify-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                                                    <input 
+                                                      type="number" 
+                                                      min="0"
+                                                      value={editingQuantity.quantity}
+                                                      onChange={(e) => setEditingQuantity({ ...editingQuantity, quantity: parseInt(e.target.value) || 0 })}
+                                                      className="w-20 px-2 py-1 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 font-bold text-xs text-center"
+                                                      autoFocus
+                                                    />
+                                                    <button 
+                                                      onClick={handleUpdateQuantity}
+                                                      className="p-1 text-emerald-600 hover:bg-emerald-50 rounded-md cursor-pointer"
+                                                      title="Salvar"
+                                                    >
+                                                      <Check size={14} />
+                                                    </button>
+                                                    <button 
+                                                      onClick={() => setEditingQuantity(null)}
+                                                      className="p-1 text-rose-600 hover:bg-rose-50 rounded-md cursor-pointer"
+                                                      title="Cancelar"
+                                                    >
+                                                      <X size={14} />
+                                                    </button>
+                                                  </div>
+                                                ) : (
+                                                  <div className="inline-flex items-center gap-1.5 group/qty">
+                                                    <span className={`text-xs font-black tabular-nums ${(item.quantity || 0) === 0 ? 'text-slate-400 italic' : 'text-slate-900'}`}>
+                                                      {item.quantity} un
+                                                    </span>
+                                                    <button 
+                                                      onClick={(e) => { e.stopPropagation(); setEditingQuantity({ id: item.id, quantity: item.quantity }); }}
+                                                      className="opacity-0 group-hover/qty:opacity-100 p-1 text-slate-400 hover:text-blue-700 transition-all cursor-pointer"
+                                                      title="Editar Quantidade deste Lote"
+                                                    >
+                                                      <Edit2 size={12} />
+                                                    </button>
+                                                  </div>
+                                                )
+                                              ) : (
+                                                <span className={`text-xs font-black tabular-nums ${(item.quantity || 0) === 0 ? 'text-slate-400 italic' : 'text-slate-900'}`}>
+                                                  {item.quantity} un
+                                                </span>
+                                              )}
+                                            </td>
+
+                                            <td className="px-4 py-2.5 text-right">
+                                              <div className="inline-flex items-center gap-1">
+                                                <button 
+                                                  onClick={(e) => { 
+                                                    e.stopPropagation(); 
+                                                    setShowItemExitsModal({ show: true, materialName: group.name, batchNumber: item.batch_number }); 
+                                                  }}
+                                                  className="p-1.5 text-slate-600 hover:text-blue-700 bg-slate-100 hover:bg-blue-50 rounded-lg transition-all cursor-pointer"
+                                                  title={`Ver saídas do lote ${item.batch_number || 'Sem lote'}`}
+                                                >
+                                                  <Eye size={14} />
+                                                </button>
+                                                <button 
+                                                  onClick={(e) => { 
+                                                    e.stopPropagation(); 
+                                                    setBulkEntry({
+                                                      supplier: item.supplier || '',
+                                                      category: item.category || 'Expediente',
+                                                      origin: item.origin || 'extra',
+                                                      room: item.room || (inventoryLocation === 'Farmácia' ? 'Farmácia' : 'Almoxarifado Principal'),
+                                                      items: [{
+                                                        id: Math.random().toString(36).substr(2, 9),
+                                                        name: item.name,
+                                                        initial_quantity: 1,
+                                                        min_quantity: item.min_quantity ?? NaN,
+                                                        batch_number: item.batch_number || '',
+                                                        expiry_date: item.expiry_date === 'Indeterminada' ? '' : (item.expiry_date || ''),
+                                                        is_indeterminate_expiry: item.expiry_date === 'Indeterminada',
+                                                        unit_price: item.unit_price || 0,
+                                                        unit_measure: item.unit_measure || 'Unidade (UN)',
+                                                        medication_type: item.medication_type || ''
+                                                      }]
+                                                    });
+                                                    setShowAddModal(true);
+                                                  }}
+                                                  className="p-1.5 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition-all cursor-pointer"
+                                                  title="Adicionar Entrada deste Item"
+                                                >
+                                                  <Plus size={14} />
+                                                </button>
+                                                <button 
+                                                  onClick={(e) => { e.stopPropagation(); setShowTransactionModal({ show: true, type: 'exit', item }); }}
+                                                  className="p-1.5 text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg transition-all cursor-pointer"
+                                                  title="Registrar Saída"
+                                                >
+                                                  <ArrowUpRight size={14} />
+                                                </button>
+                                                {isAdmin && (
+                                                  <button 
+                                                    onClick={(e) => { e.stopPropagation(); handleDeleteItem(item.id); }}
+                                                    className="p-1.5 text-rose-600 bg-rose-50 hover:bg-rose-100 rounded-lg transition-all cursor-pointer"
+                                                    title="Excluir Lote"
+                                                  >
+                                                    <Trash2 size={14} />
+                                                  </button>
+                                                )}
+                                              </div>
+                                            </td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                        );
+                      })}
+                    </tbody>
+                    {displayGroups.length > 0 && (
+                      <tfoot className="bg-slate-50 border-t border-slate-200">
+                        <tr>
+                          <td colSpan={3} className="px-5 py-3.5 text-xs font-extrabold text-slate-600">
+                            Exibindo <strong className="text-slate-900">{displayGroups.length}</strong>{' '}
+                            {displayGroups.length === 1 ? 'material' : 'materiais'}
+                            {inventoryQuickStatus !== 'all' && ` (de ${groupedArray.length} no total)`}
                           </td>
-                          <td className="px-6 py-3.5 text-xs text-slate-300">---</td>
-                          <td className="px-6 py-3.5 text-center">
-                            {item.expiry_date ? (
-                              <span className={`text-xs font-bold ${item.expiry_date === 'Indeterminada' ? 'text-blue-700' : isNearExpiry(item) ? 'text-rose-600 font-black' : 'text-slate-700'}`}>
-                                {item.expiry_date === 'Indeterminada' ? 'Indeterminada' : new Date(item.expiry_date).toLocaleDateString('pt-BR')}
-                              </span>
-                            ) : (
-                              <span className="text-slate-400 text-xs italic">N/A</span>
-                            )}
+                          <td className="px-4 py-3.5">
+                            <span className="text-xs font-black text-blue-900 tabular-nums">
+                              {displayVolume.toLocaleString('pt-BR')} un
+                            </span>
+                            <span className="block text-[10px] font-bold text-slate-400">Volume total exibido</span>
                           </td>
-                          <td className="px-6 py-3.5 text-xs text-slate-300">---</td>
-                          <td className="px-6 py-3.5 text-right space-x-1.5">
-                            <button 
-                              onClick={(e) => { 
-                                e.stopPropagation(); 
-                                setShowItemExitsModal({ show: true, materialName: group.name, batchNumber: item.batch_number }); 
-                              }}
-                              className="p-1.5 text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg transition-all border border-blue-200/60 cursor-pointer"
-                              title={`Ver saídas do lote ${item.batch_number || 'Sem lote'}`}
-                            >
-                              <Eye size={15} />
-                            </button>
-                            <button 
-                              onClick={(e) => { 
-                                e.stopPropagation(); 
-                                setBulkEntry({
-                                  supplier: item.supplier || '',
-                                  category: item.category || 'Expediente',
-                                  origin: item.origin || 'extra',
-                                  room: item.room || (inventoryLocation === 'Farmácia' ? 'Farmácia' : 'Almoxarifado Principal'),
-                                  items: [{
-                                    id: Math.random().toString(36).substr(2, 9),
-                                    name: item.name,
-                                    initial_quantity: 1,
-                                    min_quantity: item.min_quantity ?? NaN,
-                                    batch_number: item.batch_number || '',
-                                    expiry_date: item.expiry_date === 'Indeterminada' ? '' : (item.expiry_date || ''),
-                                    is_indeterminate_expiry: item.expiry_date === 'Indeterminada',
-                                    unit_price: item.unit_price || 0,
-                                    unit_measure: item.unit_measure || 'Unidade (UN)',
-                                    medication_type: item.medication_type || ''
-                                  }]
-                                });
-                                setShowAddModal(true);
-                              }}
-                              className="p-1.5 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition-all border border-emerald-200/60 cursor-pointer"
-                              title="Adicionar Entrada deste Item"
-                            >
-                              <Plus size={15} />
-                            </button>
-                            <button 
-                              onClick={(e) => { e.stopPropagation(); setShowTransactionModal({ show: true, type: 'exit', item }); }}
-                              className="p-1.5 text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg transition-all border border-blue-200/60"
-                              title="Registrar Saída"
-                            >
-                              <ArrowUpRight size={15} />
-                            </button>
-                            {isAdmin && (
-                              <button 
-                                onClick={(e) => { e.stopPropagation(); handleDeleteItem(item.id); }}
-                                className="p-1.5 text-rose-600 bg-rose-50 hover:bg-rose-100 rounded-lg transition-all border border-rose-200/60"
-                                title="Excluir Lote"
-                              >
-                                <Trash2 size={15} />
-                              </button>
-                            )}
-                          </td>
+                          <td colSpan={3}></td>
                         </tr>
-                      ))}
-                    </React.Fragment>
-                    );
-                  })}
-                </tbody>
-                <tfoot className="bg-slate-900 text-white border-t-2 border-slate-800">
-                  <tr>
-                    <td colSpan={4} className="px-6 py-4 font-black text-slate-300 text-right uppercase tracking-wider text-xs">Volume Total em Estoque</td>
-                    <td className="px-6 py-4">
-                      <div className="flex flex-col items-center justify-center bg-gradient-to-r from-blue-600 to-indigo-700 text-white rounded-2xl py-2 px-3 shadow-md border border-blue-500/30">
-                        <span className="text-xl font-black">{totalVolume.toLocaleString('pt-BR')}</span>
-                        <span className="text-[8px] font-black uppercase tracking-widest opacity-90">Unidades</span>
-                      </div>
-                    </td>
-                    <td colSpan={4}></td>
-                  </tr>
-                </tfoot>
-              </table>
-              </div>
-              {filteredItems.length === 0 && (
-                <div className="p-16 text-center">
-                  <div className="w-16 h-16 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-3 border border-blue-100">
-                    <Package size={32} />
-                  </div>
-                  <p className="text-slate-900 font-extrabold text-base">Nenhum item encontrado no estoque</p>
-                  <p className="text-slate-500 text-xs max-w-sm mx-auto mt-1">Tente ajustar os termos de busca ou selecionar outra categoria nos filtros acima.</p>
+                      </tfoot>
+                    )}
+                  </table>
                 </div>
-              )}
+                {displayGroups.length === 0 && (
+                  <div className="p-14 text-center">
+                    <div className="w-14 h-14 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-3 border border-blue-100">
+                      <Package size={28} />
+                    </div>
+                    <p className="text-slate-900 font-extrabold text-sm">Nenhum item encontrado no estoque</p>
+                    <p className="text-slate-500 text-xs max-w-sm mx-auto mt-1">
+                      Tente ajustar os termos de busca, a categoria ou limpar o filtro rápido selecionado acima.
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
-          )}
+            );
+          })()}
 
           {activeTab === 'history' && isAdmin && (
             <div key="history" className="space-y-4">
@@ -11594,99 +11721,7 @@ export default function App() {
                     </div>
                   </div>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 items-stretch">
-                {/* Purchase Planning Card - Standard Single Grid Card */}
-                <div className="bg-white p-6 rounded-3xl border border-indigo-100/90 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group flex flex-col justify-between h-full bg-gradient-to-b from-white via-white to-indigo-50/20">
-                  <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 via-indigo-600 to-indigo-800 absolute top-0 left-0" />
-                  <div className="flex items-start gap-4 pt-2">
-                    <div className="bg-gradient-to-br from-blue-600 via-indigo-600 to-indigo-800 text-white p-3 rounded-2xl shadow-md shadow-indigo-600/20 group-hover:scale-105 transition-transform shrink-0">
-                      <ShoppingCart size={20} />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5 mb-1">
-                        <span className="px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider bg-indigo-100 text-indigo-800">
-                          Planejamento
-                        </span>
-                        <span className="text-[10px] font-bold text-slate-400">
-                          Estimativa
-                        </span>
-                      </div>
-                      <h3 className="text-base font-black text-slate-900 leading-tight">Planejamento de Compras</h3>
-                      <p className="text-slate-500 text-xs font-medium mt-1 leading-snug">
-                        Calcula a quantidade necessária de cada item para durar até o mês de interesse.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col gap-2.5 mt-4 pt-3.5 border-t border-slate-100">
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 ml-1">Mês Alvo</label>
-                        <select 
-                          value={planningTargetMonth}
-                          onChange={(e) => setPlanningTargetMonth(Number(e.target.value))}
-                          className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 font-bold text-xs text-slate-800 cursor-pointer"
-                        >
-                          {['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'].map((m, idx) => (
-                            <option key={idx} value={idx}>{m}</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 ml-1">Ano</label>
-                        <select 
-                          value={planningTargetYear}
-                          onChange={(e) => setPlanningTargetYear(Number(e.target.value))}
-                          className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 font-bold text-xs text-slate-800 cursor-pointer"
-                        >
-                          {Array.from({ length: 4 }).map((_, i) => {
-                            const y = new Date().getFullYear() + i;
-                            return <option key={y} value={y}>{y}</option>;
-                          })}
-                        </select>
-                      </div>
-                    </div>
-
-                    <div className="bg-indigo-50/70 p-2 rounded-xl border border-indigo-100 flex items-center justify-between text-xs">
-                      <div>
-                        <span className="text-[9px] font-extrabold uppercase tracking-wider text-indigo-600 block">Demanda Estimada</span>
-                        <span className="font-black text-slate-800 text-xs">
-                          {purchasePlanningSummary.totalItemsWithDeficit} itens <span className="text-slate-400 font-semibold">({purchasePlanningSummary.totalUnitsToBuy.toLocaleString('pt-BR')} un)</span>
-                        </span>
-                      </div>
-                      <span className="text-[10px] font-bold bg-white px-2 py-0.5 rounded-lg border border-indigo-200 text-indigo-700 shadow-2xs">
-                        ~{purchasePlanningSummary.totalTargetWeeks} sem
-                      </span>
-                    </div>
-
-                    <div className="flex flex-col gap-1.5">
-                      <button 
-                        onClick={() => setShowPurchasePlanningModal(true)}
-                        className="w-full bg-gradient-to-r from-blue-700 via-indigo-700 to-indigo-900 text-white px-3.5 py-2 rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 hover:from-blue-800 hover:to-indigo-950 transition-all shadow-md shadow-indigo-600/20 whitespace-nowrap cursor-pointer"
-                      >
-                        <ShoppingCart size={14} /> Abrir Painel de Compras
-                      </button>
-
-                      <div className="grid grid-cols-2 gap-1.5">
-                        <button 
-                          onClick={handleExportPurchasePlanningPDF}
-                          className="w-full bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 px-2 py-1.5 rounded-xl font-bold text-[10px] flex items-center justify-center gap-1 transition-all cursor-pointer"
-                          title="Baixar Relatório PDF de Compras"
-                        >
-                          <Printer size={11} className="text-rose-600" /> Exportar PDF
-                        </button>
-                        <button 
-                          onClick={handleExportPurchasePlanningExcel}
-                          className="w-full bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 px-2 py-1.5 rounded-xl font-bold text-[10px] flex items-center justify-center gap-1 transition-all cursor-pointer"
-                          title="Baixar Planilha Excel de Compras"
-                        >
-                          <Download size={11} className="text-emerald-600" /> Excel
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Top Row - Col 2: Print Requests Section */}
+                {/* Top Row - Col 1: Print Requests Section */}
                 {isAdmin ? (
                   <div className="bg-white p-6 rounded-3xl border border-blue-100/80 shadow-sm hover:shadow-md transition-all duration-300 relative overflow-hidden group flex flex-col justify-between h-full">
                     <div className="h-1.5 w-full bg-gradient-to-r from-blue-600 to-indigo-600 absolute top-0 left-0" />
@@ -14616,7 +14651,7 @@ export default function App() {
 
       {/* Transaction Modal (Exit) */}
       {showTransactionModal.show && (
-        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-[60] flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white rounded-3xl max-w-2xl w-full p-6 lg:p-8 shadow-2xl border border-slate-200 space-y-6 overflow-hidden my-auto">
             <div className="flex items-center justify-between pb-4 border-b border-slate-100">
               <div className="flex items-center gap-3">
@@ -15127,102 +15162,574 @@ export default function App() {
         </div>
       )}
 
-      {/* Detail / Alert Modal */}
-      {showDetailModal.show && (
-        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white rounded-3xl max-w-4xl w-full p-6 lg:p-8 shadow-2xl border border-slate-200 space-y-6 max-h-[85vh] flex flex-col">
-            <div className="flex items-center justify-between pb-4 border-b border-slate-100 shrink-0">
-              <div className="flex items-center gap-3">
-                <div className="bg-amber-50 text-amber-600 p-2.5 rounded-2xl">
-                  <AlertTriangle size={22} />
+      {/* Detail / Alert Resolution Modal */}
+      {showDetailModal.show && (() => {
+        const searchNorm = normalizeString(alertModalSearch);
+        const matchesSearch = (name?: string | null, category?: string | null, batch?: string | null) => {
+          if (!searchNorm) return true;
+          return (
+            normalizeString(name).includes(searchNorm) ||
+            normalizeString(category).includes(searchNorm) ||
+            normalizeString(batch).includes(searchNorm)
+          );
+        };
+
+        const filteredExpired = expiredItems.filter(i => matchesSearch(i.name, i.category, i.batch_number));
+        const filteredLowStock = lowStockItems.filter(g => matchesSearch(g.name, g.category, g.material_code));
+        const filteredNearExpiry = nearExpiryItems.filter(i => matchesSearch(i.name, i.category, i.batch_number));
+        const filteredSilenced = dismissedAlertsForLocation.filter(d => matchesSearch(d.itemName, d.category, d.batchNumber));
+        const zeroLowStockCount = lowStockItems.filter(g => g.total_quantity <= 0).length;
+
+        const showExpiredSection = (alertModalTab === 'all' || alertModalTab === 'expired') && filteredExpired.length > 0;
+        const showLowSection = (alertModalTab === 'all' || alertModalTab === 'low_stock') && filteredLowStock.length > 0;
+        const showNearSection = (alertModalTab === 'all' || alertModalTab === 'near_expiry') && filteredNearExpiry.length > 0;
+        const showSilencedSection = alertModalTab === 'silenced';
+
+        const activeVisibleCount =
+          (alertModalTab === 'all' || alertModalTab === 'expired' ? filteredExpired.length : 0) +
+          (alertModalTab === 'all' || alertModalTab === 'low_stock' ? filteredLowStock.length : 0) +
+          (alertModalTab === 'all' || alertModalTab === 'near_expiry' ? filteredNearExpiry.length : 0);
+
+        return (
+          <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+            <div className="bg-white rounded-3xl max-w-4xl w-full p-5 sm:p-7 shadow-2xl border border-slate-200 space-y-4 max-h-[88vh] flex flex-col">
+              {/* Header */}
+              <div className="flex items-start justify-between gap-3 pb-3.5 border-b border-slate-100 shrink-0">
+                <div className="flex items-center gap-3">
+                  <div className="bg-amber-50 text-amber-600 p-2.5 rounded-2xl border border-amber-100">
+                    <AlertTriangle size={22} />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-black text-slate-900">Central de Resolução — Atenção Necessária</h3>
+                    <p className="text-xs text-slate-500 font-medium">
+                      Resolva pendências diretamente por aqui: reponha, dê baixa, corrija validade, altere categoria ou silencie alertas.
+                    </p>
+                  </div>
                 </div>
-                <div>
-                  <h3 className="text-lg font-black text-slate-900">Itens em Nível Crítico / Alerta</h3>
-                  <p className="text-xs text-slate-500">Materiais com estoque zerado, baixo ou próximos ao vencimento</p>
+                <button
+                  onClick={() => {
+                    setShowDetailModal({ show: false, type: 'low_stock', items: [] });
+                    setEditingAlertExpiry(null);
+                    setEditingAlertCategory(null);
+                    setConfirmSilenceAllZero(false);
+                  }}
+                  className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-all cursor-pointer"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              {/* Info banner: Medicamentos auto-excluded in Almoxarifado */}
+              {inventoryLocation === 'Almoxarifado' && autoExcludedMedAlertsCount > 0 && (
+                <div className="px-3.5 py-2 rounded-xl bg-blue-50/80 border border-blue-100 flex items-center justify-between gap-2 text-[11px] font-semibold text-blue-900 shrink-0">
+                  <span>
+                    <strong>{autoExcludedMedAlertsCount}</strong> {autoExcludedMedAlertsCount === 1 ? 'alerta de medicamento foi ocultado' : 'alertas de medicamentos foram ocultados'} automaticamente no Almoxarifado. Se algum medicamento ainda aparecer abaixo em outra categoria, clique em <strong>&quot;É Medicamento&quot;</strong> para corrigir na hora.
+                  </span>
+                </div>
+              )}
+
+              {/* Filter Tabs + Search */}
+              <div className="space-y-3 shrink-0">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => { setAlertModalTab('all'); setConfirmSilenceAllZero(false); }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+                      alertModalTab === 'all'
+                        ? 'bg-slate-900 text-white shadow-xs'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    Todos ({totalAlertsCount})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setAlertModalTab('expired'); setConfirmSilenceAllZero(false); }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+                      alertModalTab === 'expired'
+                        ? 'bg-rose-600 text-white shadow-xs'
+                        : 'bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200/70'
+                    }`}
+                  >
+                    Vencidos ({expiredItems.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setAlertModalTab('low_stock'); setConfirmSilenceAllZero(false); }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+                      alertModalTab === 'low_stock'
+                        ? 'bg-amber-600 text-white shadow-xs'
+                        : 'bg-amber-50 text-amber-800 hover:bg-amber-100 border border-amber-200/70'
+                    }`}
+                  >
+                    Estoque Baixo ({lowStockItems.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setAlertModalTab('near_expiry'); setConfirmSilenceAllZero(false); }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+                      alertModalTab === 'near_expiry'
+                        ? 'bg-sky-600 text-white shadow-xs'
+                        : 'bg-sky-50 text-sky-800 hover:bg-sky-100 border border-sky-200/70'
+                    }`}
+                  >
+                    Próx. Vencer ({nearExpiryItems.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setAlertModalTab('silenced'); setConfirmSilenceAllZero(false); }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all flex items-center gap-1.5 cursor-pointer ${
+                      alertModalTab === 'silenced'
+                        ? 'bg-slate-700 text-white shadow-xs'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    <EyeOff size={12} />
+                    Silenciados ({dismissedAlertsForLocation.length})
+                  </button>
+                </div>
+
+                <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                  <div className="relative flex-1">
+                    <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input
+                      type="text"
+                      value={alertModalSearch}
+                      onChange={e => setAlertModalSearch(e.target.value)}
+                      placeholder="Buscar por nome do material, categoria ou lote..."
+                      className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400"
+                    />
+                    {alertModalSearch && (
+                      <button
+                        type="button"
+                        onClick={() => setAlertModalSearch('')}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                      >
+                        <X size={14} />
+                      </button>
+                    )}
+                  </div>
+
+                  {isAdmin && (alertModalTab === 'all' || alertModalTab === 'low_stock') && zeroLowStockCount > 0 && (
+                    confirmSilenceAllZero ? (
+                      <div className="flex items-center gap-1.5 bg-amber-50 border border-amber-300 px-2.5 py-1.5 rounded-xl shrink-0">
+                        <span className="text-[11px] font-bold text-amber-900">
+                          Silenciar {zeroLowStockCount} zerados?
+                        </span>
+                        <button
+                          type="button"
+                          onClick={handleSilenceAllZeroStockAlerts}
+                          disabled={alertActionBusyKey === 'bulk_zero'}
+                          className="px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-extrabold cursor-pointer disabled:opacity-60"
+                        >
+                          {alertActionBusyKey === 'bulk_zero' ? 'Salvando...' : 'Confirmar'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmSilenceAllZero(false)}
+                          className="px-2 py-1 rounded-lg bg-white text-slate-600 border border-slate-200 text-[11px] font-bold cursor-pointer"
+                        >
+                          Cancelar
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmSilenceAllZero(true)}
+                        className="px-3 py-2 rounded-xl bg-slate-100 hover:bg-amber-50 hover:text-amber-900 border border-slate-200 hover:border-amber-200 text-slate-700 text-xs font-bold flex items-center gap-1.5 transition-colors shrink-0 cursor-pointer"
+                        title="Silenciar todos os itens atualmente com saldo 0 (podem ser reativados na aba Silenciados)"
+                      >
+                        <EyeOff size={13} />
+                        Silenciar Zerados ({zeroLowStockCount})
+                      </button>
+                    )
+                  )}
                 </div>
               </div>
-              <button 
-                onClick={() => setShowDetailModal({ show: false, type: 'low_stock', items: [] })}
-                className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-all"
-              >
-                <X size={20} />
-              </button>
-            </div>
 
-            <div className="flex-1 overflow-y-auto pr-1 space-y-3">
-              {showDetailModal.items.map((itemOrGroup: any, idx: number) => {
-                const isGroup = 'total_quantity' in itemOrGroup;
-                const totalStock = isGroup ? itemOrGroup.total_quantity : (Number(itemOrGroup.quantity) || 0);
-                const minStock = itemOrGroup.min_quantity;
-                const isZerado = totalStock <= 0;
-                
-                return (
-                  <div key={itemOrGroup.id || itemOrGroup.material_id || itemOrGroup.name || idx} className="p-4 bg-slate-50 rounded-2xl border border-slate-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-mono text-[10px] font-black px-1.5 py-0.5 rounded bg-slate-200 text-slate-700">
-                          {itemOrGroup.material_code || itemOrGroup.material_id || (itemOrGroup.batch_number ? `Lote: ${itemOrGroup.batch_number}` : 'MAT')}
-                        </span>
-                        <h5 className="font-black text-slate-900 text-sm">{itemOrGroup.name}</h5>
-                        {isGroup ? (
-                          <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-md bg-blue-100 text-blue-800 border border-blue-200">
-                            Estoque Consolidado
-                          </span>
-                        ) : (
-                          <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200">
-                            Lote Específico
-                          </span>
+              {/* Scrollable List */}
+              <div className="flex-1 overflow-y-auto pr-1 space-y-3">
+                {/* SILENCED TAB */}
+                {showSilencedSection ? (
+                  filteredSilenced.length === 0 ? (
+                    <div className="py-12 text-center">
+                      <EyeOff size={34} className="mx-auto text-slate-300 mb-2" />
+                      <p className="text-sm font-bold text-slate-700">Nenhum alerta silenciado</p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Quando você silenciar um alerta de estoque baixo ou validade, ele aparecerá aqui e poderá ser reativado a qualquer momento.
+                      </p>
+                    </div>
+                  ) : (
+                    filteredSilenced.map(rec => (
+                      <div key={rec.id} className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-md border ${
+                              rec.alertType === 'expired'
+                                ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                : rec.alertType === 'near_expiry'
+                                ? 'bg-sky-50 text-sky-700 border-sky-200'
+                                : 'bg-amber-50 text-amber-800 border-amber-200'
+                            }`}>
+                              {rec.alertType === 'expired' ? 'Vencido' : rec.alertType === 'near_expiry' ? 'Próx. Vencer' : 'Estoque Baixo'}
+                            </span>
+                            <h5 className="font-extrabold text-slate-900 text-xs sm:text-sm truncate">
+                              {rec.itemName || rec.id}
+                            </h5>
+                          </div>
+                          <p className="text-[11px] text-slate-500 mt-1">
+                            Categoria: {rec.category || 'Geral'}
+                            {rec.batchNumber ? ` • Lote: ${rec.batchNumber}` : ''}
+                            {rec.dismissedAt ? ` • Silenciado em ${new Date(rec.dismissedAt).toLocaleDateString('pt-BR')}` : ''}
+                            {rec.dismissedBy ? ` por ${rec.dismissedBy}` : ''}
+                          </p>
+                        </div>
+                        {isAdmin && (
+                          <button
+                            type="button"
+                            onClick={() => handleRestoreSilencedAlert(rec.id, rec.itemName)}
+                            disabled={alertActionBusyKey === rec.id}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white hover:bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs font-extrabold transition-colors shrink-0 cursor-pointer disabled:opacity-60"
+                          >
+                            <RotateCcw size={13} />
+                            Reativar Alerta
+                          </button>
                         )}
                       </div>
-                      <p className="text-xs text-slate-500 mt-1">
-                        Categoria: {itemOrGroup.category || 'Geral'} • Local: {itemOrGroup.room || itemOrGroup.location || 'Almoxarifado'}
-                      </p>
-                      
-                      {isGroup && itemOrGroup.batches && itemOrGroup.batches.length > 0 && (
-                        <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-                          <span className="text-[10px] font-extrabold text-slate-600">Saldo por Lote:</span>
-                          {itemOrGroup.batches.map((b: Item) => (
-                            <span key={b.id} className="text-[10px] font-semibold bg-white border border-slate-200 px-2 py-0.5 rounded-md text-slate-700 font-mono">
-                              {b.batch_number || 'Sem Lote'}: <strong>{b.quantity} un</strong>
-                              {b.expiry_date ? ` (val: ${b.expiry_date === 'Indeterminada' ? 'Indet.' : new Date(b.expiry_date).toLocaleDateString('pt-BR')})` : ''}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-
-                      {!isGroup && itemOrGroup.expiry_date && (
-                        <p className={`text-[11px] font-bold mt-1.5 ${isExpired(itemOrGroup) ? 'text-rose-600' : 'text-amber-700'}`}>
-                          Validade deste Lote: {itemOrGroup.expiry_date === 'Indeterminada' ? 'Indeterminada' : new Date(itemOrGroup.expiry_date).toLocaleDateString('pt-BR')} ({itemOrGroup.quantity} un no lote)
-                        </p>
-                      )}
-                    </div>
-                    
-                    <div className="text-right shrink-0">
-                      <span className={`text-xs font-black px-2.5 py-1.5 rounded-xl inline-block ${
-                        isZerado ? 'bg-rose-100 text-rose-800 border border-rose-300' : 'bg-amber-100 text-amber-900 border border-amber-300'
-                      }`}>
-                        {isGroup ? 'Estoque Consolidado' : 'Saldo do Lote'}: {totalStock} {itemOrGroup.unit_measure || 'UN'}
-                      </span>
-                      {minStock !== undefined && !isNaN(minStock) && (
-                        <p className="text-[10px] text-slate-500 font-bold mt-1">Mínimo do Material: {minStock} un</p>
-                      )}
-                    </div>
+                    ))
+                  )
+                ) : activeVisibleCount === 0 ? (
+                  <div className="py-12 text-center">
+                    <CheckCircle size={38} className="mx-auto text-emerald-500 mb-2" />
+                    <p className="text-sm font-bold text-slate-800">Nenhuma pendência nesta visualização</p>
+                    <p className="text-xs text-slate-500 mt-1">
+                      {alertModalSearch ? 'Tente limpar a busca para ver todos os alertas.' : 'Todos os alertas desta categoria foram resolvidos ou silenciados.'}
+                    </p>
                   </div>
-                );
-              })}
-            </div>
+                ) : (
+                  <>
+                    {/* 1. EXPIRED ITEMS */}
+                    {showExpiredSection && filteredExpired.map(item => {
+                      const isEditingExp = editingAlertExpiry?.itemId === item.id;
+                      const isBusy = alertActionBusyKey === getExpiryDismissId(item.id) || alertActionBusyKey === `exp_${item.id}` || alertActionBusyKey === `cat_${normalizeString(item.name)}`;
+                      return (
+                        <div key={`modal-exp-${item.id}`} className="p-4 bg-rose-50/70 rounded-2xl border border-rose-200/90 space-y-2.5">
+                          <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-md bg-rose-200 text-rose-900 border border-rose-300">
+                                  Vencido
+                                </span>
+                                <h5 className="font-black text-slate-900 text-sm">{item.name}</h5>
+                              </div>
+                              <p className="text-xs text-slate-600 mt-1">
+                                Categoria: <strong>{item.category || 'Geral'}</strong> • Lote: <span className="font-mono">{item.batch_number || 'Sem lote'}</span> • Saldo: <strong className="text-rose-700">{item.quantity} {item.unit_measure || 'UN'}</strong>
+                              </p>
+                              <p className="text-[11px] font-bold text-rose-700 mt-0.5">
+                                Venceu em: {item.expiry_date && item.expiry_date !== 'Indeterminada' ? new Date(item.expiry_date).toLocaleDateString('pt-BR') : 'Indeterminada'}
+                              </p>
+                            </div>
 
-            <div className="pt-4 border-t border-slate-100 flex justify-end shrink-0">
-              <button 
-                onClick={() => setShowDetailModal({ show: false, type: 'low_stock', items: [] })}
-                className="px-6 py-2.5 bg-slate-900 text-white rounded-2xl font-bold text-sm hover:bg-slate-800 transition-all"
-              >
-                Fechar
-              </button>
+                            {isAdmin && (
+                              <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => setShowTransactionModal({ show: true, type: 'exit', item })}
+                                  className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-extrabold transition-colors cursor-pointer"
+                                >
+                                  Baixar por Desperdício
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingAlertExpiry(isEditingExp ? null : { itemId: item.id, value: item.expiry_date && item.expiry_date !== 'Indeterminada' ? item.expiry_date.slice(0, 10) : '' })}
+                                  className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                                >
+                                  <Calendar size={12} /> Corrigir Validade
+                                </button>
+                                {inventoryLocation === 'Almoxarifado' && !isMedicamentosCategory(item.category) && (
+                                  <button
+                                    type="button"
+                                    disabled={isBusy}
+                                    onClick={() => handleQuickRecategorizeFromAlert(item.name, [item], 'Medicamentos')}
+                                    className="px-2.5 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 text-xs font-bold transition-colors cursor-pointer disabled:opacity-60"
+                                    title="Alterar categoria para Medicamentos e retirar dos alertas do Almoxarifado"
+                                  >
+                                    É Medicamento
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  disabled={isBusy}
+                                  onClick={() => handleSilenceAlert({ alertType: 'expired', itemName: item.name, itemId: item.id, batchNumber: item.batch_number, category: item.category })}
+                                  className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-60"
+                                  title="Silenciar este alerta sem alterar o estoque"
+                                >
+                                  <EyeOff size={12} /> Silenciar
+                                </button>
+                              </div>
+                            )}
+                          </div>
+
+                          {isEditingExp && (
+                            <div className="pt-2.5 border-t border-rose-200/70 flex flex-wrap items-center gap-2">
+                              <span className="text-[11px] font-extrabold text-slate-700">Nova validade:</span>
+                              <input
+                                type="date"
+                                value={editingAlertExpiry.value}
+                                onChange={e => setEditingAlertExpiry({ itemId: item.id, value: e.target.value })}
+                                className="px-2.5 py-1.5 rounded-xl border border-slate-300 bg-white text-xs font-bold text-slate-800"
+                              />
+                              <button
+                                type="button"
+                                disabled={!editingAlertExpiry.value || isBusy}
+                                onClick={() => handleQuickUpdateExpiryFromAlert(item, editingAlertExpiry.value)}
+                                className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold cursor-pointer disabled:opacity-50"
+                              >
+                                Salvar Data
+                              </button>
+                              <button
+                                type="button"
+                                disabled={isBusy}
+                                onClick={() => handleQuickUpdateExpiryFromAlert(item, 'Indeterminada')}
+                                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold cursor-pointer disabled:opacity-50"
+                              >
+                                Sem Validade
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditingAlertExpiry(null)}
+                                className="px-2.5 py-1.5 rounded-xl bg-white text-slate-600 border border-slate-200 text-xs font-bold cursor-pointer"
+                              >
+                                Cancelar
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    {/* 2. LOW STOCK / ZERO ITEMS */}
+                    {showLowSection && filteredLowStock.map(group => {
+                      const catKey = normalizeString(group.name);
+                      const isEditingCat = editingAlertCategory?.key === catKey;
+                      const isZerado = group.total_quantity <= 0;
+                      const isBusy = alertActionBusyKey === getLowStockDismissId(group.name, inventoryLocation) || alertActionBusyKey === `cat_${catKey}`;
+                      return (
+                        <div key={`modal-low-${group.material_id || group.name}`} className="p-4 bg-slate-50 rounded-2xl border border-slate-200/90 space-y-2.5">
+                          <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-md border ${
+                                  isZerado
+                                    ? 'bg-rose-100 text-rose-800 border-rose-200'
+                                    : 'bg-amber-100 text-amber-900 border-amber-200'
+                                }`}>
+                                  {isZerado ? 'Zerado' : 'Estoque Baixo'}
+                                </span>
+                                <h5 className="font-black text-slate-900 text-sm">{group.name}</h5>
+                              </div>
+                              <p className="text-xs text-slate-600 mt-1">
+                                Categoria: <strong>{group.category || 'Geral'}</strong> • Saldo: <strong className={isZerado ? 'text-rose-700' : 'text-amber-800'}>{group.total_quantity} {group.unit_measure || 'UN'}</strong> • Mínimo: <strong>{group.min_quantity} un</strong>
+                              </p>
+                            </div>
+
+                            {isAdmin && (
+                              <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => setShowTransactionModal({ show: true, type: 'entry', item: group.batches[0] || { name: group.name, category: group.category } as any })}
+                                  className="px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-extrabold transition-colors cursor-pointer"
+                                >
+                                  Repor
+                                </button>
+                                {inventoryLocation === 'Almoxarifado' && !isMedicamentosCategory(group.category) && (
+                                  <button
+                                    type="button"
+                                    disabled={isBusy}
+                                    onClick={() => handleQuickRecategorizeFromAlert(group.name, group.batches, 'Medicamentos')}
+                                    className="px-2.5 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 text-xs font-bold transition-colors cursor-pointer disabled:opacity-60"
+                                    title="Alterar categoria para Medicamentos (sai automaticamente dos alertas do Almoxarifado)"
+                                  >
+                                    É Medicamento
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingAlertCategory(isEditingCat ? null : { key: catKey, value: group.category || 'Geral' })}
+                                  className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                                >
+                                  <Tag size={12} /> Categoria
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={isBusy}
+                                  onClick={() => handleSilenceAlert({ alertType: 'low_stock', itemName: group.name, category: group.category })}
+                                  className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-slate-200 text-slate-700 border border-slate-200 text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-60"
+                                  title="Não manter alerta de estoque baixo para este material"
+                                >
+                                  <EyeOff size={12} /> Silenciar
+                                </button>
+                              </div>
+                            )}
+                          </div>
+
+                          {isEditingCat && (
+                            <div className="pt-2.5 border-t border-slate-200 flex flex-wrap items-center gap-2">
+                              <span className="text-[11px] font-extrabold text-slate-700">Nova categoria:</span>
+                              <select
+                                value={editingAlertCategory.value}
+                                onChange={e => setEditingAlertCategory({ key: catKey, value: e.target.value })}
+                                className="px-2.5 py-1.5 rounded-xl border border-slate-300 bg-white text-xs font-bold text-slate-800"
+                              >
+                                {Array.from(new Set([...categories, 'Medicamentos'])).sort().map(c => (
+                                  <option key={c} value={c}>{c}</option>
+                                ))}
+                              </select>
+                              <button
+                                type="button"
+                                disabled={isBusy}
+                                onClick={() => handleQuickRecategorizeFromAlert(group.name, group.batches, editingAlertCategory.value)}
+                                className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-extrabold cursor-pointer disabled:opacity-50"
+                              >
+                                Salvar Categoria
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditingAlertCategory(null)}
+                                className="px-2.5 py-1.5 rounded-xl bg-white text-slate-600 border border-slate-200 text-xs font-bold cursor-pointer"
+                              >
+                                Cancelar
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    {/* 3. NEAR EXPIRY ITEMS */}
+                    {showNearSection && filteredNearExpiry.map(item => {
+                      const isEditingExp = editingAlertExpiry?.itemId === item.id;
+                      const isBusy = alertActionBusyKey === getExpiryDismissId(item.id) || alertActionBusyKey === `exp_${item.id}` || alertActionBusyKey === `cat_${normalizeString(item.name)}`;
+                      return (
+                        <div key={`modal-near-${item.id}`} className="p-4 bg-sky-50/60 rounded-2xl border border-sky-200/90 space-y-2.5">
+                          <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-md bg-sky-200 text-sky-900 border border-sky-300">
+                                  Próx. Vencer
+                                </span>
+                                <h5 className="font-black text-slate-900 text-sm">{item.name}</h5>
+                              </div>
+                              <p className="text-xs text-slate-600 mt-1">
+                                Categoria: <strong>{item.category || 'Geral'}</strong> • Lote: <span className="font-mono">{item.batch_number || 'Sem lote'}</span> • Saldo: <strong className="text-sky-800">{item.quantity} {item.unit_measure || 'UN'}</strong>
+                              </p>
+                              <p className="text-[11px] font-bold text-sky-800 mt-0.5">
+                                Vence em: {item.expiry_date && item.expiry_date !== 'Indeterminada' ? new Date(item.expiry_date).toLocaleDateString('pt-BR') : 'Indeterminada'}
+                              </p>
+                            </div>
+
+                            {isAdmin && (
+                              <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => setShowTransactionModal({ show: true, type: 'exit', item })}
+                                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-900 text-white text-xs font-extrabold transition-colors cursor-pointer"
+                                >
+                                  Retirar
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingAlertExpiry(isEditingExp ? null : { itemId: item.id, value: item.expiry_date && item.expiry_date !== 'Indeterminada' ? item.expiry_date.slice(0, 10) : '' })}
+                                  className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                                >
+                                  <Calendar size={12} /> Corrigir Validade
+                                </button>
+                                {inventoryLocation === 'Almoxarifado' && !isMedicamentosCategory(item.category) && (
+                                  <button
+                                    type="button"
+                                    disabled={isBusy}
+                                    onClick={() => handleQuickRecategorizeFromAlert(item.name, [item], 'Medicamentos')}
+                                    className="px-2.5 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 text-xs font-bold transition-colors cursor-pointer disabled:opacity-60"
+                                    title="Alterar categoria para Medicamentos e retirar dos alertas do Almoxarifado"
+                                  >
+                                    É Medicamento
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  disabled={isBusy}
+                                  onClick={() => handleSilenceAlert({ alertType: 'near_expiry', itemName: item.name, itemId: item.id, batchNumber: item.batch_number, category: item.category })}
+                                  className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-sky-100 text-sky-800 border border-sky-200 text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-60"
+                                  title="Silenciar este alerta sem alterar o estoque"
+                                >
+                                  <EyeOff size={12} /> Silenciar
+                                </button>
+                              </div>
+                            )}
+                          </div>
+
+                          {isEditingExp && (
+                            <div className="pt-2.5 border-t border-sky-200/70 flex flex-wrap items-center gap-2">
+                              <span className="text-[11px] font-extrabold text-slate-700">Nova validade:</span>
+                              <input
+                                type="date"
+                                value={editingAlertExpiry.value}
+                                onChange={e => setEditingAlertExpiry({ itemId: item.id, value: e.target.value })}
+                                className="px-2.5 py-1.5 rounded-xl border border-slate-300 bg-white text-xs font-bold text-slate-800"
+                              />
+                              <button
+                                type="button"
+                                disabled={!editingAlertExpiry.value || isBusy}
+                                onClick={() => handleQuickUpdateExpiryFromAlert(item, editingAlertExpiry.value)}
+                                className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold cursor-pointer disabled:opacity-50"
+                              >
+                                Salvar Data
+                              </button>
+                              <button
+                                type="button"
+                                disabled={isBusy}
+                                onClick={() => handleQuickUpdateExpiryFromAlert(item, 'Indeterminada')}
+                                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold cursor-pointer disabled:opacity-50"
+                              >
+                                Sem Validade
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditingAlertExpiry(null)}
+                                className="px-2.5 py-1.5 rounded-xl bg-white text-slate-600 border border-slate-200 text-xs font-bold cursor-pointer"
+                              >
+                                Cancelar
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </>
+                )}
+              </div>
+
+              {/* Footer */}
+              <div className="pt-3.5 border-t border-slate-100 flex items-center justify-between gap-3 shrink-0">
+                <span className="text-[11px] font-semibold text-slate-500">
+                  Alterações são salvas automaticamente e não apagam o histórico.
+                </span>
+                <button
+                  onClick={() => {
+                    setShowDetailModal({ show: false, type: 'low_stock', items: [] });
+                    setEditingAlertExpiry(null);
+                    setEditingAlertCategory(null);
+                    setConfirmSilenceAllZero(false);
+                  }}
+                  className="px-6 py-2 bg-slate-900 text-white rounded-2xl font-bold text-xs sm:text-sm hover:bg-slate-800 transition-all cursor-pointer"
+                >
+                  Fechar
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Delete Confirmation Modal */}
       {showDeleteModal.show && (() => {
@@ -15902,107 +16409,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Purchase Planning Modal */}
-      {showPurchasePlanningModal && (
-        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white rounded-3xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 space-y-4">
-            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-              <div className="flex items-center gap-2.5">
-                <div className="bg-blue-50 text-blue-700 p-2 rounded-xl">
-                  <BarChart3 size={20} />
-                </div>
-                <h3 className="text-base font-black text-slate-900">Planejamento de Compras (PCA)</h3>
-              </div>
-              <button onClick={() => setShowPurchasePlanningModal(false)} className="p-1 text-slate-400 hover:text-slate-700">
-                <X size={18} />
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Mês Alvo</label>
-                <select 
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold"
-                  value={planningTargetMonth}
-                  onChange={e => setPlanningTargetMonth(parseInt(e.target.value))}
-                >
-                  {['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'].map((m, i) => (
-                    <option key={m} value={i}>{m}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Ano Alvo</label>
-                <input 
-                  type="number"
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold"
-                  value={planningTargetYear}
-                  onChange={e => setPlanningTargetYear(parseInt(e.target.value))}
-                />
-              </div>
-              <div>
-                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Margem de Segurança</label>
-                <select 
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold"
-                  value={planningSafetyOption}
-                  onChange={e => setPlanningSafetyOption(e.target.value as any)}
-                >
-                  <option value="standard_8w">Padrão (8 Semanas de Reserva)</option>
-                  <option value="margin_10">Margem Adicional de 10%</option>
-                  <option value="margin_20">Margem Adicional de 20%</option>
-                  <option value="none">Sem Margem (Consumo Líquido)</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Categoria</label>
-                <select 
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold"
-                  value={planningCategory}
-                  onChange={e => setPlanningCategory(e.target.value)}
-                >
-                  <option value="all">Todas as Categorias</option>
-                  {categories.map(c => <option key={c} value={c}>{c}</option>)}
-                </select>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2 pt-2">
-              <input 
-                type="checkbox"
-                id="onlyDeficit"
-                checked={planningOnlyWithDeficit}
-                onChange={e => setPlanningOnlyWithDeficit(e.target.checked)}
-                className="rounded text-blue-600 focus:ring-blue-500"
-              />
-              <label htmlFor="onlyDeficit" className="text-xs font-bold text-slate-700 cursor-pointer">
-                Exibir apenas itens com necessidade de compra (Déficit &gt; 0)
-              </label>
-            </div>
-
-            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
-              <button 
-                onClick={() => setShowPurchasePlanningModal(false)}
-                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl"
-              >
-                Fechar
-              </button>
-              <button 
-                onClick={handleExportPurchasePlanningExcel}
-                className="px-4 py-2 bg-emerald-600 text-white text-xs font-bold rounded-xl hover:bg-emerald-700 transition-all flex items-center gap-1.5"
-              >
-                <Download size={14} /> Excel
-              </button>
-              <button 
-                onClick={handleExportPurchasePlanningPDF}
-                className="px-4 py-2 bg-blue-700 text-white text-xs font-bold rounded-xl hover:bg-blue-800 transition-all flex items-center gap-1.5"
-              >
-                <Download size={14} /> PDF
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Item Exits Modal */}
       {showItemExitsModal.show && (
         <ItemExitsModal
@@ -16019,7 +16425,7 @@ export default function App() {
 
       {/* Floating Toast */}
       {toast.show && (
-        <div className={`fixed bottom-6 right-6 z-50 px-5 py-3.5 rounded-2xl shadow-xl flex items-center gap-3 text-sm font-bold text-white transition-all transform animate-bounce ${
+        <div className={`fixed bottom-6 right-6 z-[70] px-5 py-3.5 rounded-2xl shadow-xl flex items-center gap-3 text-sm font-bold text-white transition-all transform animate-bounce ${
           toast.type === 'success' ? 'bg-emerald-600 shadow-emerald-600/30' :
           toast.type === 'error' ? 'bg-rose-600 shadow-rose-600/30' :
           'bg-slate-900 shadow-slate-900/30'
